@@ -10,6 +10,10 @@ use serde::Serialize;
 use std::collections::HashSet;
 use std::path::{Path, PathBuf};
 
+use crate::db::Db;
+use crate::remote::fs_policy::{self, RemoteFs};
+use tauri::State;
+
 /// Hard ceiling so huge repos can't flood the IPC channel or the picker.
 /// Paths are tiny (just relative strings), so this can be generous — the old
 /// 8k cap silently dropped files in larger monorepos, making the `@`-mention
@@ -28,10 +32,15 @@ pub struct ProjectEntry {
 }
 
 #[tauri::command]
-pub async fn list_project_files(project_path: String) -> Result<Vec<ProjectEntry>, String> {
-    let root = project_path.clone();
+pub async fn list_project_files(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    project_path: String,
+) -> Result<Vec<ProjectEntry>, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
+    let root = fs_policy::read(policy.as_ref(), Path::new(&project_path))?;
     // Walking the tree is blocking IO; keep it off the async runtime threads.
-    tokio::task::spawn_blocking(move || walk(&root))
+    tokio::task::spawn_blocking(move || walk(&root.to_string_lossy()))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
@@ -50,13 +59,17 @@ pub struct FileContent {
 /// preview it. `file_path` may be absolute or relative to the project root; the
 /// resolved path must land inside the project or one of the allowed outside
 /// roots (see [`preview_allows`]) — anything else (`/etc`, another user's home,
-/// …) is refused.
+/// …) is refused. A remote desktop (the bridge webview) gets its own, narrower
+/// rules instead ([`RemoteFs`]).
 #[tauri::command]
 pub async fn read_project_file(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     file_path: String,
 ) -> Result<FileContent, String> {
-    tokio::task::spawn_blocking(move || read_within(&project_path, &file_path))
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
+    tokio::task::spawn_blocking(move || read_within(&project_path, &file_path, policy.as_ref()))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
@@ -118,7 +131,7 @@ fn preview_allows(root: &Path, path: &Path) -> bool {
         || temp_root_allows(path)
 }
 
-fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, String> {
+fn read_within(project_path: &str, file_path: &str, policy: Option<&RemoteFs>) -> Result<FileContent, String> {
     let root = Path::new(project_path)
         .canonicalize()
         .map_err(|e| format!("invalid project path: {e}"))?;
@@ -139,8 +152,15 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
     // system temp dirs. Session logs Devdy mirrors live under `~/.claude` /
     // `~/.codex`, and AI scratch files land in `/tmp`, so the file viewer must be
     // able to read them even though they sit outside any project.
-    if !preview_allows(&root, &canonical) {
-        return Err("Refusing to read a file outside the project".to_string());
+    // A remote desktop: its own allowlist, in place of the roots above.
+    match policy {
+        Some(p) => {
+            p.read(&canonical)?;
+        }
+        None if !preview_allows(&root, &canonical) => {
+            return Err("Refusing to read a file outside the project".to_string());
+        }
+        None => {}
     }
     if canonical.is_dir() {
         return Err(format!("{file_path} is a directory, not a file"));
@@ -172,16 +192,24 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
 /// already exist and be a regular file — the editor edits, it does not create.
 #[tauri::command]
 pub async fn write_project_file(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     file_path: String,
     content: String,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || write_within(&project_path, &file_path, &content))
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
+    tokio::task::spawn_blocking(move || write_within(&project_path, &file_path, &content, policy.as_ref()))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
 
-fn write_within(project_path: &str, file_path: &str, content: &str) -> Result<(), String> {
+fn write_within(
+    project_path: &str,
+    file_path: &str,
+    content: &str,
+    policy: Option<&RemoteFs>,
+) -> Result<(), String> {
     let root = Path::new(project_path)
         .canonicalize()
         .map_err(|e| format!("invalid project path: {e}"))?;
@@ -199,8 +227,14 @@ fn write_within(project_path: &str, file_path: &str, content: &str) -> Result<()
         .canonicalize()
         .map_err(|_| format!("File not found: {file_path}"))?;
 
-    if !preview_allows(&root, &canonical) {
-        return Err("Refusing to write a file outside the project".to_string());
+    match policy {
+        Some(p) => {
+            p.write(&canonical)?;
+        }
+        None if !preview_allows(&root, &canonical) => {
+            return Err("Refusing to write a file outside the project".to_string());
+        }
+        None => {}
     }
     if canonical.is_dir() {
         return Err(format!("{file_path} is a directory, not a file"));
@@ -230,13 +264,19 @@ pub struct DirEntry {
 /// Only `.git` itself stays hidden (repo plumbing, not project content). The
 /// resolved path is confined to the project root to block traversal.
 #[tauri::command]
-pub async fn list_dir(project_path: String, rel_dir: String) -> Result<Vec<DirEntry>, String> {
-    tokio::task::spawn_blocking(move || list_dir_inner(&project_path, &rel_dir))
+pub async fn list_dir(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    project_path: String,
+    rel_dir: String,
+) -> Result<Vec<DirEntry>, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
+    tokio::task::spawn_blocking(move || list_dir_inner(&project_path, &rel_dir, policy.as_ref()))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
 
-fn list_dir_inner(project_path: &str, rel_dir: &str) -> Result<Vec<DirEntry>, String> {
+fn list_dir_inner(project_path: &str, rel_dir: &str, policy: Option<&RemoteFs>) -> Result<Vec<DirEntry>, String> {
     let root = Path::new(project_path)
         .canonicalize()
         .map_err(|e| format!("invalid project path: {e}"))?;
@@ -252,6 +292,7 @@ fn list_dir_inner(project_path: &str, rel_dir: &str) -> Result<Vec<DirEntry>, St
     if !target.starts_with(&root) {
         return Err("Refusing to list a directory outside the project".to_string());
     }
+    fs_policy::read(policy, &target)?;
     if !target.is_dir() {
         return Err(format!("{rel_dir} is not a directory"));
     }
@@ -497,15 +538,19 @@ fn copy_recursive(src: &Path, dest: &Path) -> Result<(), String> {
 /// Create an empty directory `name` inside `rel_dir`. Returns the new rel path.
 #[tauri::command]
 pub async fn create_dir(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     rel_dir: String,
     name: String,
 ) -> Result<String, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let name = validate_name(&name)?;
         let parent = resolve_dir(&root, &rel_dir)?;
         let target = parent.join(&name);
+        fs_policy::write(policy.as_ref(), &target)?;
         if target.exists() {
             return Err(format!("\"{name}\" already exists"));
         }
@@ -519,15 +564,19 @@ pub async fn create_dir(
 /// Create an empty file `name` inside `rel_dir`. Returns the new rel path.
 #[tauri::command]
 pub async fn create_file(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     rel_dir: String,
     name: String,
 ) -> Result<String, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let name = validate_name(&name)?;
         let parent = resolve_dir(&root, &rel_dir)?;
         let target = parent.join(&name);
+        fs_policy::write(policy.as_ref(), &target)?;
         // create_new fails if the file already exists — no clobber.
         std::fs::OpenOptions::new()
             .write(true)
@@ -549,10 +598,13 @@ pub async fn create_file(
 /// Rename an entry in place (same parent). Returns the new rel path.
 #[tauri::command]
 pub async fn rename_entry(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     rel_path: String,
     new_name: String,
 ) -> Result<String, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let new_name = validate_name(&new_name)?;
@@ -561,6 +613,8 @@ pub async fn rename_entry(
             .parent()
             .ok_or_else(|| "Could not determine parent directory".to_string())?;
         let dest = parent.join(&new_name);
+        fs_policy::write(policy.as_ref(), &src)?;
+        fs_policy::write(policy.as_ref(), &dest)?;
         if dest == src {
             return Ok(rel_of(&root, &dest));
         }
@@ -576,10 +630,17 @@ pub async fn rename_entry(
 
 /// Move an entry to the OS trash (recoverable) rather than deleting permanently.
 #[tauri::command]
-pub async fn delete_entry(project_path: String, rel_path: String) -> Result<(), String> {
+pub async fn delete_entry(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    project_path: String,
+    rel_path: String,
+) -> Result<(), String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let target = resolve_existing(&root, &rel_path)?;
+        fs_policy::write(policy.as_ref(), &target)?;
         if target == root {
             return Err("Cannot delete the project root".to_string());
         }
@@ -593,10 +654,13 @@ pub async fn delete_entry(project_path: String, rel_path: String) -> Result<(), 
 /// Copy an entry into `dest_dir` (auto-renames on collision). Returns new rel path.
 #[tauri::command]
 pub async fn copy_entry(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     src_rel: String,
     dest_dir: String,
 ) -> Result<String, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let src = resolve_existing(&root, &src_rel)?;
@@ -609,6 +673,11 @@ pub async fn copy_entry(
             .map(|n| n.to_string_lossy().into_owned())
             .ok_or_else(|| "Invalid source name".to_string())?;
         let dest = unique_dest(&dir, &name);
+        if let Some(p) = policy.as_ref() {
+            p.read(&src)?;
+            p.tree(&src)?;
+            p.write(&dest)?;
+        }
         copy_recursive(&src, &dest)?;
         Ok(rel_of(&root, &dest))
     })
@@ -619,10 +688,13 @@ pub async fn copy_entry(
 /// Move an entry into `dest_dir`. Returns the new rel path.
 #[tauri::command]
 pub async fn move_entry(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     src_rel: String,
     dest_dir: String,
 ) -> Result<String, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let src = resolve_existing(&root, &src_rel)?;
@@ -635,6 +707,11 @@ pub async fn move_entry(
             .map(|n| n.to_string_lossy().into_owned())
             .ok_or_else(|| "Invalid source name".to_string())?;
         let dest = dir.join(&name);
+        if let Some(p) = policy.as_ref() {
+            p.write(&src)?;
+            p.tree(&src)?;
+            p.write(&dest)?;
+        }
         if dest == src {
             return Ok(rel_of(&root, &src)); // already there
         }
@@ -652,10 +729,13 @@ pub async fn move_entry(
 /// into `dest_dir`, auto-renaming on collision. Returns the new rel paths.
 #[tauri::command]
 pub async fn import_external_entries(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
     project_path: String,
     src_paths: Vec<String>,
     dest_dir: String,
 ) -> Result<Vec<String>, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
     tokio::task::spawn_blocking(move || {
         let root = canonical_root(&project_path)?;
         let dir = resolve_dir(&root, &dest_dir)?;
@@ -672,6 +752,11 @@ pub async fn import_external_entries(
                 .map(|n| n.to_string_lossy().into_owned())
                 .ok_or_else(|| format!("Invalid source name: {raw}"))?;
             let dest = unique_dest(&dir, &name);
+            if let Some(p) = policy.as_ref() {
+                p.read(&src)?;
+                p.tree(&src)?;
+                p.write(&dest)?;
+            }
             copy_recursive(&src, &dest)?;
             out.push(rel_of(&root, &dest));
         }
@@ -742,7 +827,13 @@ pub async fn start_file_drag(
 /// which has full filesystem access. We validate that the path is an image by
 /// extension and cap the size.
 #[tauri::command]
-pub async fn read_file_base64(path: String) -> Result<FileBase64, String> {
+pub async fn read_file_base64(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    path: String,
+) -> Result<FileBase64, String> {
+    let policy = RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
     tokio::task::spawn_blocking(move || read_file_base64_inner(&path))
         .await
         .map_err(|e| format!("join error: {e}"))?
@@ -807,7 +898,7 @@ mod tests {
         std::fs::write(&path, "# commitment\n").unwrap();
 
         let project = env!("CARGO_MANIFEST_DIR");
-        let res = read_within(project, path.to_str().unwrap());
+        let res = read_within(project, path.to_str().unwrap(), None);
         let _ = std::fs::remove_file(&path);
 
         let res = res.expect("temp-dir file should be readable");
@@ -823,7 +914,7 @@ mod tests {
         let path = Path::new("/tmp").join(&name);
         std::fs::write(&path, "ok\n").unwrap();
 
-        let res = read_within(env!("CARGO_MANIFEST_DIR"), path.to_str().unwrap());
+        let res = read_within(env!("CARGO_MANIFEST_DIR"), path.to_str().unwrap(), None);
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(res.expect("/tmp file should be readable").content, "ok\n");
@@ -833,7 +924,45 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn refuses_a_system_file() {
-        let err = read_within(env!("CARGO_MANIFEST_DIR"), "/etc/hosts").unwrap_err();
+        let err = read_within(env!("CARGO_MANIFEST_DIR"), "/etc/hosts", None).unwrap_err();
         assert!(err.contains("outside the project"), "unexpected error: {err}");
+    }
+
+    /// A remote desktop only reaches its allowlist: a registered project (not
+    /// HOME, even if registered), and never a credential store or a hook inside
+    /// it — whatever `..`, links or `project_path` it passes.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_caller_is_held_to_its_allowlist() {
+        use crate::remote::fs_policy::Roots;
+        let base = std::env::temp_dir().canonicalize().unwrap().join(format!("devdy-viewer-sec-{}", uuid::Uuid::new_v4()));
+        let home = base.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.join("proj/.git/hooks")).unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "KEY").unwrap();
+        std::fs::write(home.join("proj/a.txt"), "ok").unwrap();
+        std::fs::write(home.join("notes.txt"), "private").unwrap();
+        std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), home.join("proj/link")).unwrap();
+        let roots = Roots { writable: vec![home.join("proj"), home.clone()], ..Roots::default() };
+        let policy = RemoteFs::new(roots, Some(&home), crate::remote::guard::SecretPaths::new(Some(&home), None));
+        let proj = home.join("proj");
+        let proj = proj.to_str().unwrap();
+        let home_s = home.to_str().unwrap();
+
+        assert_eq!(read_within(proj, "a.txt", Some(&policy)).unwrap().content, "ok");
+        assert!(write_within(proj, "a.txt", "edited", Some(&policy)).is_ok());
+        for f in ["../.ssh/id_rsa", "link", "../notes.txt"] {
+            assert!(read_within(proj, f, Some(&policy)).unwrap_err().contains("remote desktop"), "{f}");
+            assert!(write_within(proj, f, "PWNED", Some(&policy)).is_err(), "{f}");
+        }
+        // `project_path` = HOME is not a way out (HOME is never a root).
+        assert!(read_within(home_s, ".ssh/id_rsa", Some(&policy)).is_err());
+        assert!(read_within(home_s, "notes.txt", Some(&policy)).is_err());
+        assert!(list_dir_inner(home_s, "", Some(&policy)).is_err());
+        assert!(list_dir_inner(proj, "", Some(&policy)).is_ok());
+        // The local UI is unaffected.
+        assert_eq!(read_within(home_s, ".ssh/id_rsa", None).unwrap().content, "KEY");
+        assert_eq!(std::fs::read_to_string(home.join(".ssh/id_rsa")).unwrap(), "KEY");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

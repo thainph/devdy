@@ -16,6 +16,7 @@
 use crate::db::Db;
 use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
+use crate::remote::guard;
 use crate::remote::command::{
     is_allowed_action, map_remote_decision, CommandRateLimiter, IdempotencyGuard, RejectReason,
 };
@@ -260,7 +261,10 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
 
     // Remote desktop: a full UI driving this app as the local user would. Its
     // calls go to the bridge verbatim — no per-command allow-list or budget,
-    // by design (the paired device is trusted like the person at the keyboard).
+    // by design (the paired device is trusted like the person at the keyboard)
+    // — except what `ipc_refuses` (credentials, security config, plugin
+    // commands): the `ipc` flag is self-advertised, so any signed-in device
+    // can claim it.
     if action.starts_with("ipc_") {
         if !ctx.ipc {
             reject(ctx, action, None, RejectReason::NotAllowed).await;
@@ -323,40 +327,62 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     }
 }
 
-/// Stands in for a refused command: no such command exists, so the bridge's
-/// invoke fails and the Controller gets an error result.
-const DENIED_COMMAND: &str = "remote_denied_local_only";
+/// Whether `ipc_invoke` refuses `name` before it reaches the bridge.
+///
+/// - [`guard::is_local_only_command`]: credentials and security config (the
+///   bridge's `invoke_handler` refuses them too — this is the first wall).
+/// - `plugin:*`: a remote-desktop window runs plugin commands on its OWN
+///   machine (`src/lib/ipc/core.ts`), so none ever needs the bridge — and
+///   through it they would act here: `plugin:event|emit` can post to any
+///   listener of this app, `plugin:fs|*` reads its files.
+/// - `remote_bridge_*`: the bridge's own plumbing, called by the bridge page.
+fn ipc_refuses(name: &str) -> bool {
+    guard::is_local_only_command(name) || name.starts_with("plugin:") || name.starts_with("remote_bridge_")
+}
 
-/// Commands a Controller may never run on this machine (secret notes vault).
-fn is_local_only_command(name: &str) -> bool {
-    name.starts_with("secret_")
+/// Whether `args` hold a Tauri channel reference (`"__CHANNEL__:<id>"`) at any
+/// depth. A channel argument is resolved against the CALLING webview — the
+/// bridge — so a forged one could hand a command the bridge page's own
+/// callbacks (its request channel). No remote command takes a channel.
+fn has_channel_ref(args: &serde_json::Value) -> bool {
+    match args {
+        serde_json::Value::String(s) => s.starts_with("__CHANNEL__:"),
+        serde_json::Value::Array(a) => a.iter().any(has_channel_ref),
+        serde_json::Value::Object(o) => o.values().any(has_channel_ref),
+        _ => false,
+    }
+}
+
+/// The bridge request for one `ipc_*` command, `None` when there is nothing
+/// to forward. A refused invoke goes out as [`guard::DENIED`], a command that
+/// does not exist, so it fails on the Controller like an unknown one.
+fn ipc_request(cmd: &CmdPayload) -> Option<serde_json::Value> {
+    match cmd.action.as_str() {
+        "ipc_invoke" => {
+            let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return None };
+            // Name only: args may carry anything (prompts, paths, secrets).
+            tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
+            let args = cmd.args.clone().unwrap_or(serde_json::Value::Null);
+            let (name, args) = if ipc_refuses(name) || has_channel_ref(&args) {
+                (guard::DENIED, serde_json::Value::Null)
+            } else {
+                (name, args)
+            };
+            Some(serde_json::json!({ "type": "invoke", "id": id, "cmd": name, "args": args }))
+        }
+        "ipc_listen" | "ipc_unlisten" => {
+            let event = cmd.event.as_deref()?;
+            let kind = if cmd.action == "ipc_listen" { "listen" } else { "unlisten" };
+            Some(serde_json::json!({ "type": kind, "event": event }))
+        }
+        _ => None,
+    }
 }
 
 /// Forward one `ipc_*` command to the bridge webview.
 async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
     use tauri::Manager;
-    let request = match cmd.action.as_str() {
-        "ipc_hello" => return,
-        "ipc_invoke" => {
-            let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return };
-            // Name only: args may carry anything (prompts, paths, secrets).
-            tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
-            // Secret notes are local-only: the call fails as an unknown command
-            // (the commands also refuse the bridge webview themselves).
-            let (name, args) = if is_local_only_command(name) {
-                (DENIED_COMMAND, serde_json::Value::Null)
-            } else {
-                (name, cmd.args.clone().unwrap_or(serde_json::Value::Null))
-            };
-            serde_json::json!({ "type": "invoke", "id": id, "cmd": name, "args": args })
-        }
-        "ipc_listen" | "ipc_unlisten" => {
-            let Some(event) = cmd.event.as_deref() else { return };
-            let kind = if cmd.action == "ipc_listen" { "listen" } else { "unlisten" };
-            serde_json::json!({ "type": kind, "event": event })
-        }
-        _ => return,
-    };
+    let Some(request) = ipc_request(cmd) else { return };
     if let Some(state) = ctx.app.try_state::<crate::remote::RemoteState>() {
         state.ipc.forward(&ctx.app, request).await;
     }
@@ -1019,11 +1045,73 @@ async fn create_session_run_for_remote(
 mod tests {
     use super::*;
 
+    fn payload(v: serde_json::Value) -> CmdPayload {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn invoke_of(name: &str, args: serde_json::Value) -> serde_json::Value {
+        ipc_request(&payload(serde_json::json!({ "action": "ipc_invoke", "id": "c1", "cmd": name, "args": args })))
+            .expect("an invoke request")
+    }
+
     #[test]
-    fn secret_vault_commands_are_local_only() {
-        for name in ["secret_notes_list", "secret_note_reveal", "secret_vault_unlock", "secret_note_from_note"] {
-            assert!(is_local_only_command(name), "{name}");
+    fn everyday_invokes_reach_the_bridge_verbatim() {
+        let req = invoke_of("list_runs", serde_json::json!({ "projectId": "p" }));
+        assert_eq!(req, serde_json::json!({ "type": "invoke", "id": "c1", "cmd": "list_runs", "args": { "projectId": "p" } }));
+    }
+
+    #[test]
+    fn local_only_invokes_go_out_as_an_unknown_command_without_args() {
+        for name in ["export_settings_backup", "secret_note_reveal", "sync_revoke_device", "read_local_file_chunk"] {
+            let req = invoke_of(name, serde_json::json!({ "path": "/tmp/x" }));
+            assert_eq!(req["cmd"], guard::DENIED, "{name}");
+            assert!(req["args"].is_null(), "{name}");
         }
-        assert!(!is_local_only_command("list_notes"));
+    }
+
+    #[test]
+    fn plugin_commands_never_reach_the_bridge() {
+        // The bridge listens for nothing a JS emit can reach any more, but an
+        // emit must not even get there: it could post to any listener here.
+        for (name, args) in [
+            (
+                "plugin:event|emit",
+                serde_json::json!({ "event": "remote-bridge://request", "payload": { "type": "invoke", "id": "x", "cmd": "export_settings_backup", "args": {} } }),
+            ),
+            ("plugin:event|emit_to", serde_json::json!({ "target": { "kind": "AnyLabel", "label": "remote-bridge" }, "event": "remote-bridge://request" })),
+            ("plugin:event|emit", serde_json::json!({ "event": "menu://action", "payload": "quit" })),
+            ("plugin:fs|read_file", serde_json::json!({ "path": "$APPDATA/server-keys/k" })),
+            ("plugin:opener|open_path", serde_json::json!({ "path": "/Applications/Calculator.app" })),
+            ("plugin:webview|create_webview_window", serde_json::json!({})),
+            ("remote_bridge_ready", serde_json::json!({})),
+            ("remote_bridge_batch", serde_json::json!({ "items": [] })),
+        ] {
+            let req = invoke_of(name, args);
+            assert_eq!(req["cmd"], guard::DENIED, "{name}");
+            assert!(req["args"].is_null(), "{name}");
+        }
+    }
+
+    #[test]
+    fn forged_channel_arguments_are_refused() {
+        for args in [
+            serde_json::json!({ "requests": "__CHANNEL__:1" }),
+            serde_json::json!({ "payload": { "on": ["x", "__CHANNEL__:7"] } }),
+        ] {
+            let req = invoke_of("list_runs", args);
+            assert_eq!(req["cmd"], guard::DENIED);
+            assert!(req["args"].is_null());
+        }
+        // A string merely mentioning it is fine.
+        let req = invoke_of("add_todo", serde_json::json!({ "title": "see __CHANNEL__:1" }));
+        assert_eq!(req["cmd"], "add_todo");
+    }
+
+    #[test]
+    fn listen_and_malformed_requests() {
+        let req = ipc_request(&payload(serde_json::json!({ "action": "ipc_listen", "event": "run://status" }))).unwrap();
+        assert_eq!(req, serde_json::json!({ "type": "listen", "event": "run://status" }));
+        assert!(ipc_request(&payload(serde_json::json!({ "action": "ipc_invoke", "id": "c1" }))).is_none());
+        assert!(ipc_request(&payload(serde_json::json!({ "action": "ipc_hello" }))).is_none());
     }
 }

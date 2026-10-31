@@ -9,8 +9,11 @@
 //! [`remote_fs_read`]. They are ordinary app commands, so a remote window
 //! reaches them through the IPC bridge like any other `invoke`.
 //!
-//! Full parity: nothing is hidden or filtered — the local UI can already read
-//! any path through the asset protocol (scope `**`).
+//! Listing shows names anywhere except inside credential stores (Devdy's app
+//! data, `~/.ssh`, cloud CLI logins, …, [`crate::remote::guard::SecretPaths`]).
+//! Reading is held to the remote desktop's allowlist (projects, uploads,
+//! transcripts, [`crate::remote::fs_policy::RemoteFs`]): the remote desktop
+//! must not be a way to copy files off this machine.
 
 use std::fs::{self, Metadata};
 use std::io::{Read, Seek, SeekFrom};
@@ -159,20 +162,50 @@ async fn blocking<T: Send + 'static>(f: impl FnOnce() -> Result<T, String> + Sen
 
 /// The entries of a directory (nothing hidden), directories first; at most
 /// [`MAX_LIST`] of them.
+/// Browsing (the remote file dialog picks folders to add as projects, files
+/// to attach) sees names anywhere but inside a credential store.
 #[tauri::command]
-pub async fn remote_fs_list(path: String) -> Result<FsListing, String> {
-    blocking(move || list_dir(&path, MAX_LIST)).await
+pub async fn remote_fs_list(app: tauri::AppHandle, path: String) -> Result<FsListing, String> {
+    let secrets = crate::remote::guard::SecretPaths::for_app(&app);
+    blocking(move || {
+        let canonical = secrets.check(&path)?;
+        list_dir(&canonical.to_string_lossy(), MAX_LIST)
+    })
+    .await
 }
 
 #[tauri::command]
-pub async fn remote_fs_stat(path: String) -> Result<FsEntry, String> {
-    blocking(move || stat(&path)).await
+pub async fn remote_fs_stat(app: tauri::AppHandle, path: String) -> Result<FsEntry, String> {
+    let secrets = crate::remote::guard::SecretPaths::for_app(&app);
+    blocking(move || {
+        secrets.check(&path)?;
+        stat(&path)
+    })
+    .await
 }
 
-/// Up to `len` bytes (capped at 4 MiB) of a file from `offset`.
+/// Up to `len` bytes (capped at 4 MiB) of a file from `offset`. From the
+/// remote-desktop bridge: only inside its allowlist
+/// ([`crate::remote::fs_policy::RemoteFs`]); never a credential store.
 #[tauri::command]
-pub async fn remote_fs_read(path: String, offset: u64, len: u64) -> Result<FsChunk, String> {
-    blocking(move || read_chunk(&path, offset, len)).await
+pub async fn remote_fs_read(
+    app: tauri::AppHandle,
+    webview: tauri::Webview,
+    db: tauri::State<'_, crate::db::Db>,
+    path: String,
+    offset: u64,
+    len: u64,
+) -> Result<FsChunk, String> {
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let secrets = crate::remote::guard::SecretPaths::for_app(&app);
+    blocking(move || {
+        let canonical = match policy {
+            Some(p) => p.read(Path::new(&path))?,
+            None => secrets.check(&path)?,
+        };
+        read_chunk(&canonical.to_string_lossy(), offset, len)
+    })
+    .await
 }
 
 #[tauri::command]

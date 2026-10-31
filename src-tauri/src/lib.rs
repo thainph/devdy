@@ -491,7 +491,8 @@ pub fn run() {
             }
             Ok(())
         })
-        .invoke_handler(tauri::generate_handler![
+        // Refuse credential / security commands to the remote-desktop bridge.
+        .invoke_handler(remote::guard::gated(tauri::generate_handler![
             health_check,
             set_app_menu,
             set_tray_menu,
@@ -851,7 +852,7 @@ pub fn run() {
             procs::commands::stop_background_processes,
             procs::commands::kill_background_process,
             procs::quit::resolve_quit,
-        ])
+        ]))
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {

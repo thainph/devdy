@@ -8,8 +8,10 @@
 //! command) behaves byte-for-byte as if the local user had triggered it — and
 //! sends results and events back through [`IpcHub::reply`].
 //!
-//! Requests that arrive before the bridge page has loaded are queued and handed
-//! over by `remote_bridge_ready`; the set of subscribed events is kept here too,
+//! Requests reach the page over the [`Channel`] it hands in with
+//! `remote_bridge_ready` — not an app event: any webview may `emit` one, and
+//! the bridge runs whatever it receives. Requests that arrive before the
+//! bridge page has loaded are queued and handed over by `remote_bridge_ready`; the set of subscribed events is kept here too,
 //! so a reloaded bridge re-subscribes and a dropped Controller unsubscribes all.
 //! The bridge is kept alive: closing it only hides it, a destroyed one is
 //! recreated, and a (re)loading page marks it not-ready so requests queue. An
@@ -34,6 +36,7 @@ use std::time::Duration;
 
 use remote_e2e::Session;
 use serde::{Deserialize, Serialize};
+use tauri::ipc::Channel;
 use tauri::webview::PageLoadEvent;
 use tauri::{AppHandle, Emitter, Manager, WebviewUrl, WebviewWindowBuilder, WindowEvent};
 
@@ -45,8 +48,6 @@ use crate::remote::protocol::StreamPayload;
 pub const FEATURE_IPC: &str = "ipc";
 /// Label of the hidden bridge webview.
 pub const BRIDGE_LABEL: &str = "remote-bridge";
-/// Event the bridge receives requests on.
-const BRIDGE_REQUEST_EVENT: &str = "remote-bridge://request";
 /// App event: an IPC Controller started driving this Devdy (`{ since_unix }`).
 pub const ATTACHED_EVENT: &str = "remote://desktop-attached";
 /// App event: the IPC Controller left or was cut off (`{}`).
@@ -80,6 +81,8 @@ struct Inner {
     /// When the current IPC Controller attached (Unix secs).
     since: Option<u64>,
     bridge_ready: bool,
+    /// Where the current bridge page takes requests (set while ready).
+    channel: Option<Channel<serde_json::Value>>,
     queue: Vec<serde_json::Value>,
     events: HashSet<String>,
     /// Invokes handed to the current bridge page, awaiting their result.
@@ -166,7 +169,7 @@ impl IpcHub {
         self.set_route(Route { session, room_id: room_id.clone(), out, seq }, since);
         // Start from a clean bridge: drop any subscription a previous
         // Controller left behind.
-        let _ = app.emit_to(BRIDGE_LABEL, BRIDGE_REQUEST_EVENT, serde_json::json!({ "type": "reset" }));
+        self.send_to_bridge(serde_json::json!({ "type": "reset" }));
         self.ensure_bridge(app);
         let _ = app.emit(ATTACHED_EVENT, serde_json::json!({ "since_unix": since }));
         tracing::info!(event = "remote_desktop_attached", room_id = %room_id);
@@ -189,7 +192,7 @@ impl IpcHub {
             inner.route.take().map(|r| r.room_id)
         };
         if let Some(room_id) = had {
-            let _ = app.emit_to(BRIDGE_LABEL, BRIDGE_REQUEST_EVENT, serde_json::json!({ "type": "reset" }));
+            self.send_to_bridge(serde_json::json!({ "type": "reset" }));
             let _ = app.emit(DETACHED_EVENT, serde_json::json!({}));
             tracing::info!(event = "remote_desktop_detached", room_id = %room_id);
             audit_lifecycle(app, &room_id, "desktop_detach").await;
@@ -209,9 +212,20 @@ impl IpcHub {
             self.accept_request(&request, ready)
         };
         if deliver {
-            let _ = app.emit_to(BRIDGE_LABEL, BRIDGE_REQUEST_EVENT, request);
+            self.send_to_bridge(request);
         } else {
             self.ensure_bridge(app);
+        }
+    }
+
+    /// Post one request on the ready bridge page's channel (dropped when no
+    /// page is ready: a fresh one starts from `remote_bridge_ready`).
+    fn send_to_bridge(&self, request: serde_json::Value) {
+        let channel = self.lock().channel.clone();
+        if let Some(channel) = channel {
+            if let Err(e) = channel.send(request) {
+                tracing::warn!(event = "remote_bridge_send_failed", error = %e);
+            }
         }
     }
 
@@ -248,8 +262,9 @@ impl IpcHub {
         }
     }
 
-    /// The bridge page (re)loaded.
-    pub async fn bridge_ready(&self) -> BridgeHello {
+    /// The bridge page (re)loaded; it takes requests on `channel` from now on.
+    pub async fn bridge_ready(&self, channel: Channel<serde_json::Value>) -> BridgeHello {
+        self.lock().channel = Some(channel);
         self.take_hello()
     }
 
@@ -270,6 +285,7 @@ impl IpcHub {
     fn bridge_lost(&self) {
         let mut inner = self.lock();
         inner.bridge_ready = false;
+        inner.channel = None;
         inner.fail_inflight();
     }
 
@@ -411,18 +427,31 @@ async fn audit_lifecycle(app: &AppHandle, room_id: &str, action: &str) {
 
 // ---- Tauri commands (called by the bridge page only) ----
 
+/// The bridge page is up; `requests` is where it takes them. Only the bridge
+/// webview may claim the request stream.
 #[tauri::command]
-pub async fn remote_bridge_ready(state: tauri::State<'_, crate::remote::RemoteState>) -> Result<BridgeHello, String> {
-    Ok(state.ipc.bridge_ready().await)
+pub async fn remote_bridge_ready(
+    webview: tauri::Webview,
+    state: tauri::State<'_, crate::remote::RemoteState>,
+    requests: Channel<serde_json::Value>,
+) -> Result<BridgeHello, String> {
+    if webview.label() != BRIDGE_LABEL {
+        return Err(crate::remote::guard::DENIED.to_string());
+    }
+    Ok(state.ipc.bridge_ready(requests).await)
 }
 
 /// Results and events, in the order the bridge produced them. The bridge sends
 /// one batch at a time, so batches are handled in order too.
 #[tauri::command]
 pub async fn remote_bridge_batch(
+    webview: tauri::Webview,
     state: tauri::State<'_, crate::remote::RemoteState>,
     items: Vec<BridgeItem>,
 ) -> Result<(), String> {
+    if webview.label() != BRIDGE_LABEL {
+        return Err(crate::remote::guard::DENIED.to_string());
+    }
     state.ipc.reply_batch(items);
     Ok(())
 }
@@ -566,5 +595,34 @@ mod tests {
         .unwrap();
         assert!(matches!(&items[0], BridgeItem::Result { id, value, .. } if id == "a" && value.is_null()));
         assert!(matches!(&items[1], BridgeItem::Event { event, .. } if event == "e"));
+    }
+
+    /// A channel that records what the bridge page would receive.
+    fn recording_channel() -> (Channel<serde_json::Value>, Arc<Mutex<Vec<serde_json::Value>>>) {
+        let got = Arc::new(Mutex::new(Vec::new()));
+        let sink = got.clone();
+        let channel = Channel::new(move |body| {
+            if let tauri::ipc::InvokeResponseBody::Json(json) = body {
+                sink.lock().unwrap().push(serde_json::from_str(&json).unwrap());
+            }
+            Ok(())
+        });
+        (channel, got)
+    }
+
+    #[test]
+    fn requests_go_to_the_ready_page_channel_only() {
+        let (hub, _rx, _ctrl) = routed();
+        let (channel, got) = recording_channel();
+        tauri::async_runtime::block_on(hub.bridge_ready(channel));
+        let req = serde_json::json!({ "type": "invoke", "id": "a", "cmd": "list_runs", "args": null });
+        assert!(hub.accept_request(&req, true));
+        hub.send_to_bridge(req.clone());
+        assert_eq!(*got.lock().unwrap(), vec![req]);
+        // A reloading page loses its channel: nothing is sent into the void,
+        // the next request is queued for the new page instead.
+        hub.bridge_lost();
+        hub.send_to_bridge(serde_json::json!({ "type": "reset" }));
+        assert_eq!(got.lock().unwrap().len(), 1);
     }
 }

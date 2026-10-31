@@ -1510,8 +1510,14 @@ fn from_remote(webview: &tauri::Webview) -> bool {
 // ---- Import ------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn inspect_settings_backup(path: String) -> Result<BackupInfo, String> {
-    Ok(read_bundle(&path)?.info())
+pub async fn inspect_settings_backup(
+    webview: tauri::Webview,
+    db: State<'_, Db>,
+    path: String,
+) -> Result<BackupInfo, String> {
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
+    Ok(read_bundle(&path.to_string_lossy())?.info())
 }
 
 #[tauri::command]
