@@ -1,11 +1,18 @@
 //! The Controller's Web Push actions (`push_*`). Reached only through
 //! [`crate::remote::handler::handle`], after the allow-list, the rate limit
-//! and the `push` feature gate. Every outcome is audited exactly once.
+//! and the `push` feature gate. Every outcome is audited exactly once, except
+//! an accepted `push_visibility`: it fires on every app switch and changes
+//! nothing but whether pushes are held back.
+//!
+//! `push_test` waits on a push service (up to the send timeout), so it runs
+//! on its own task and is acknowledged when the send finishes — the room's
+//! command loop never waits on it.
 
 use super::{send, store};
 use crate::remote::command::RejectReason;
 use crate::remote::handler::{accept, command_ack, reject, send_payload, HandlerCtx};
-use crate::remote::protocol::{CmdPayload, StreamPayload};
+use crate::remote::protocol::{CmdPayload, Envelope, FrameType, StreamPayload};
+use std::sync::Arc;
 use tauri::Manager;
 
 /// Longest device label kept.
@@ -63,12 +70,18 @@ pub async fn handle(ctx: &HandlerCtx, cmd: &CmdPayload) {
         "push_visibility" => visibility(ctx, cmd),
         "push_subscribe" => subscribe(ctx, cmd).await,
         "push_unsubscribe" => unsubscribe(ctx, cmd).await,
-        "push_test" => test(ctx, cmd).await,
+        "push_test" => match start_test(ctx, cmd).await {
+            // Audited and acknowledged by the send task.
+            Ok(()) => return,
+            Err(reason) => Err(reason),
+        },
         _ => Err(RejectReason::NotAllowed.as_str()),
     };
     match result {
         Ok(()) => {
-            accept(ctx, action, None, None).await;
+            if action != "push_visibility" {
+                accept(ctx, action, None, None).await;
+            }
             command_ack(ctx, cmd, true, None).await;
         }
         Err(reason) => {
@@ -144,14 +157,68 @@ async fn unsubscribe(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static 
     send_config(ctx, Some(endpoint)).await
 }
 
-async fn test(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static str> {
+/// The ack reason for a test send's outcome (`None` = delivered).
+pub fn test_failure(outcome: &send::Outcome) -> Option<&'static str> {
+    match outcome {
+        send::Outcome::Delivered => None,
+        send::Outcome::Gone => Some("not_found"),
+        send::Outcome::Failed(_) => Some("push_failed"),
+    }
+}
+
+/// Validate a `push_test` here, then send it on its own task.
+async fn start_test(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static str> {
     let endpoint = validate_endpoint(cmd).map_err(RejectReason::as_str)?;
     let sub = store::by_endpoint(&ctx.db, &endpoint).await.ok_or("not_found")?;
     let hub = hub(ctx).ok_or("push_unavailable")?;
-    match super::send_test(&hub, &ctx.db, &sub).await {
-        send::Outcome::Delivered => Ok(()),
-        send::Outcome::Gone => Err("not_found"),
-        send::Outcome::Failed(_) => Err("push_failed"),
+    let reply = Reply {
+        db: ctx.db.clone(),
+        session: ctx.session.clone(),
+        room_id: ctx.room_id.clone(),
+        out: ctx.out.clone(),
+        seq: ctx.seq.clone(),
+        command_id: cmd.command_id.clone(),
+    };
+    tokio::spawn(async move {
+        let failure = test_failure(&super::send_test(&hub, &reply.db, &sub).await);
+        reply.finish("push_test", failure).await;
+    });
+    Ok(())
+}
+
+/// What a detached task needs to answer the command that started it. Holds
+/// the room it came from: if that room is gone by then, the frame goes nowhere.
+struct Reply {
+    db: crate::db::Db,
+    session: Arc<remote_e2e::Session>,
+    room_id: String,
+    out: crate::remote::outbound::OutboundTx,
+    seq: Arc<crate::remote::forwarder::SeqCounter>,
+    command_id: Option<String>,
+}
+
+impl Reply {
+    /// Audit the outcome and send the correlated `command_ack`.
+    async fn finish(&self, action: &str, failure: Option<&'static str>) {
+        let (result, audited) = match failure {
+            None => (crate::remote::audit::RESULT_ACCEPTED, None),
+            Some("not_found") => (crate::remote::audit::RESULT_REJECTED, Some(RejectReason::NotFound.as_str())),
+            Some(_) => (crate::remote::audit::RESULT_REJECTED, Some(RejectReason::Malformed.as_str())),
+        };
+        crate::remote::audit::audit(&self.db, None, Some(&self.room_id), None, action, result, audited).await;
+        let Some(command_id) = self.command_id.clone() else { return };
+        let payload = StreamPayload::CommandAck {
+            command_id,
+            action: action.to_string(),
+            accepted: failure.is_none(),
+            reason: failure.map(str::to_string),
+            run_id: None,
+            item_id: None,
+        };
+        if let Ok(json) = serde_json::to_vec(&payload) {
+            let cipher = self.session.seal(&json);
+            let _ = self.out.send(Envelope::data(FrameType::Stream, &self.room_id, cipher, self.seq.next()));
+        }
     }
 }
 
@@ -198,6 +265,13 @@ mod tests {
             v[field] = value;
             assert_eq!(validate_subscribe(&cmd(v)), Err(RejectReason::Malformed), "{field}");
         }
+    }
+
+    #[test]
+    fn test_send_outcomes_map_to_ack_reasons() {
+        assert_eq!(test_failure(&send::Outcome::Delivered), None);
+        assert_eq!(test_failure(&send::Outcome::Gone), Some("not_found"));
+        assert_eq!(test_failure(&send::Outcome::Failed("http 500".into())), Some("push_failed"));
     }
 
     #[test]

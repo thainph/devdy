@@ -6,7 +6,7 @@
 //! browser's push service — the relay is not involved. A dispatcher task, alive
 //! while Remote Control runs, listens on the [`RemoteBus`], collapses bursts of
 //! prompts / finished runs into one notification per device, and stays quiet
-//! while a Controller is connected and on screen.
+//! while a phone Controller is connected and on screen.
 
 pub mod actions;
 pub mod coalesce;
@@ -30,7 +30,10 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Push runtime state, held in [`crate::remote::RemoteState`].
 #[derive(Clone)]
 pub struct PushHub {
-    /// Whether the connected Controller is on screen (`push_visibility`).
+    /// A phone Controller is connected. A remote desktop (`ipc`) does not
+    /// count: it is another computer, not the phone being notified.
+    phone_connected: Arc<AtomicBool>,
+    /// Whether the connected phone is on screen (`push_visibility`).
     /// Reset to true on every authentication: a freshly opened app is visible.
     visible: Arc<AtomicBool>,
     client: reqwest::Client,
@@ -40,6 +43,7 @@ pub struct PushHub {
 impl Default for PushHub {
     fn default() -> Self {
         PushHub {
+            phone_connected: Arc::new(AtomicBool::new(false)),
             visible: Arc::new(AtomicBool::new(true)),
             client: reqwest::Client::builder()
                 .timeout(SEND_TIMEOUT)
@@ -62,17 +66,34 @@ impl PushHub {
         self.visible.store(visible, Ordering::SeqCst);
     }
 
+    /// A Controller authenticated: `phone` is false for a remote desktop.
+    pub fn controller_attached(&self, phone: bool) {
+        self.phone_connected.store(phone, Ordering::SeqCst);
+        self.visible.store(true, Ordering::SeqCst);
+    }
+
+    /// The Controller's room is gone.
+    pub fn controller_detached(&self) {
+        self.phone_connected.store(false, Ordering::SeqCst);
+    }
+
+    /// Whether pushes are held back right now (a phone is open on screen).
+    pub fn is_suppressed(&self) -> bool {
+        suppressed(self.phone_connected.load(Ordering::SeqCst), self.visible.load(Ordering::SeqCst))
+    }
+
     /// Start the dispatcher (no-op if running). Runs alongside the relay agent.
-    pub fn start(&self, db: Db, bus: RemoteBus, connected: Arc<AtomicBool>) {
+    pub fn start(&self, db: Db, bus: RemoteBus) {
         let mut task = self.task.lock().unwrap_or_else(|e| e.into_inner());
         if task.as_ref().is_some_and(|t| !t.is_finished()) {
             return;
         }
         let hub = self.clone();
-        *task = Some(tokio::spawn(dispatch(hub, db, bus, connected)));
+        *task = Some(tokio::spawn(dispatch(hub, db, bus)));
     }
 
     pub fn stop(&self) {
+        self.controller_detached();
         if let Some(t) = self.task.lock().unwrap_or_else(|e| e.into_inner()).take() {
             t.abort();
         }
@@ -121,7 +142,7 @@ fn kind_of(ev: &RemoteRunEvent) -> Option<PushKind> {
     }
 }
 
-async fn dispatch(hub: PushHub, db: Db, bus: RemoteBus, connected: Arc<AtomicBool>) {
+async fn dispatch(hub: PushHub, db: Db, bus: RemoteBus) {
     let mut rx = bus.subscribe();
     let mut co = Coalescer::new(COALESCE_WINDOW);
     loop {
@@ -144,7 +165,7 @@ async fn dispatch(hub: PushHub, db: Db, bus: RemoteBus, connected: Arc<AtomicBoo
                 }
             } => {
                 if let Some(counts) = co.take_due(Instant::now()) {
-                    if suppressed(connected.load(Ordering::SeqCst), hub.visible.load(Ordering::SeqCst)) {
+                    if hub.is_suppressed() {
                         tracing::debug!(event = "remote_push_suppressed_foreground");
                         continue;
                     }
@@ -184,6 +205,21 @@ pub async fn send_test(hub: &PushHub, db: &Db, sub: &store::Subscription) -> sen
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn only_a_phone_on_screen_holds_pushes_back() {
+        let hub = PushHub::default();
+        assert!(!hub.is_suppressed(), "nobody connected");
+        hub.controller_attached(false);
+        assert!(!hub.is_suppressed(), "a remote desktop does not count");
+        hub.controller_attached(true);
+        assert!(hub.is_suppressed(), "a phone just opened the app");
+        hub.set_visible(false);
+        assert!(!hub.is_suppressed(), "the phone went to the background");
+        hub.set_visible(true);
+        hub.controller_detached();
+        assert!(!hub.is_suppressed(), "the phone disconnected");
+    }
 
     #[test]
     fn prompts_and_finished_runs_count_but_nothing_else() {

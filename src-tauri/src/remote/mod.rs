@@ -176,7 +176,7 @@ impl RemoteState {
             device_id,
         };
         let handle = tokio::spawn(agent::run_agent(config, deps, auth_token, stop_rx));
-        self.push.start(db.clone(), self.bus.clone(), self.connected.clone());
+        self.push.start(db.clone(), self.bus.clone());
         *self.agent.lock().await = Some(AgentControl {
             stop: stop_tx,
             handle,
