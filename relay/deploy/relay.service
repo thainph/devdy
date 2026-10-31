@@ -18,6 +18,9 @@ Description=Devdy Remote Control Relay (WSS bridge, localhost)
 Documentation=https://github.com/devdy/relay
 After=network-online.target
 Wants=network-online.target
+# Never stop restarting (NFR-006). This is a [Unit] option; systemd ignores it
+# under [Service] and keeps the default start limit.
+StartLimitIntervalSec=0
 
 [Service]
 Type=simple
@@ -35,7 +38,6 @@ ExecStart=/usr/local/bin/devdy-relay
 # Reliability (NFR-006): recover within <=10s after a crash.
 Restart=always
 RestartSec=2s
-StartLimitIntervalSec=0
 
 # Resource limits (NFR-002/CON-02): keep the relay small.
 # 256M leaves room for forwarded sync messages (up to 4 MiB each, 16 MiB queued per target).
