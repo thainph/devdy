@@ -9,8 +9,10 @@
 //! [`remote_fs_read`]. They are ordinary app commands, so a remote window
 //! reaches them through the IPC bridge like any other `invoke`.
 //!
-//! Full parity: nothing is hidden or filtered — the local UI can already read
-//! any path through the asset protocol (scope `**`).
+//! Listing is full parity (nothing hidden). Reading is too, except on-disk
+//! credentials (Devdy's app data, `~/.ssh`, cloud CLI logins, …): the remote
+//! desktop must not be a way to copy them off this machine
+//! ([`crate::remote::guard::SecretPaths`]).
 
 use std::fs::{self, Metadata};
 use std::io::{Read, Seek, SeekFrom};
@@ -169,10 +171,16 @@ pub async fn remote_fs_stat(path: String) -> Result<FsEntry, String> {
     blocking(move || stat(&path)).await
 }
 
-/// Up to `len` bytes (capped at 4 MiB) of a file from `offset`.
+/// Up to `len` bytes (capped at 4 MiB) of a file from `offset`; never a
+/// credential store.
 #[tauri::command]
-pub async fn remote_fs_read(path: String, offset: u64, len: u64) -> Result<FsChunk, String> {
-    blocking(move || read_chunk(&path, offset, len)).await
+pub async fn remote_fs_read(app: tauri::AppHandle, path: String, offset: u64, len: u64) -> Result<FsChunk, String> {
+    let secrets = crate::remote::guard::SecretPaths::for_app(&app);
+    blocking(move || {
+        let canonical = secrets.check(&path)?;
+        read_chunk(&canonical.to_string_lossy(), offset, len)
+    })
+    .await
 }
 
 #[tauri::command]

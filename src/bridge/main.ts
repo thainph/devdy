@@ -8,7 +8,7 @@
  * (see lib/ipc/bridgeOutbox.ts and `src-tauri/src/remote/ipc.rs`).
  */
 // Always the real APIs: this page serves remote calls, it never makes them.
-import { invoke } from '@tauri-real/core'
+import { Channel, invoke } from '@tauri-real/core'
 import { listen, type UnlistenFn } from '@tauri-real/event'
 import { BridgeOutbox } from '@/lib/ipc/bridgeOutbox'
 import { isBridgeDeniedEvent } from '@/lib/ipc/bridgeEvents'
@@ -87,9 +87,11 @@ function handle(req: Request): void {
 }
 
 async function start(): Promise<void> {
-  // Our own event comes in through the REAL listen (this page is never remote).
-  await listen<Request>('remote-bridge://request', (e) => handle(e.payload))
-  const hello = await invoke<{ requests: Request[]; events: string[] }>('remote_bridge_ready')
+  // Requests come on a channel only the backend can post to — never an app
+  // event, which any webview could emit to make this page run anything.
+  const requests = new Channel<Request>()
+  requests.onmessage = handle
+  const hello = await invoke<{ requests: Request[]; events: string[] }>('remote_bridge_ready', { requests })
   for (const event of hello.events) subscribe(event)
   for (const req of hello.requests) handle(req)
 }

@@ -25,6 +25,7 @@ pub mod commands;
 pub mod file_proxy;
 pub mod forwarder;
 pub mod fs_bridge;
+pub mod guard;
 pub mod handler;
 pub mod ipc;
 pub mod login;

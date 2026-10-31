@@ -266,10 +266,15 @@ pub async fn resolve_default_engine(db: &Db) -> String {
 
 #[tauri::command]
 pub async fn update_setting(
+    webview: tauri::Webview,
     db: State<'_, Db>,
     key: String,
     value: String,
 ) -> Result<(), String> {
+    // A remote desktop only changes the user-facing settings.
+    if crate::remote::guard::from_remote_bridge(&webview) && !crate::remote::guard::remote_may_set_setting(&key) {
+        return Err(crate::remote::guard::DENIED.to_string());
+    }
     sqlx::query("INSERT OR REPLACE INTO settings (key, value) VALUES (?, ?)")
         .bind(&key)
         .bind(&value)

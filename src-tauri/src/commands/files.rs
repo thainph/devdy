@@ -50,13 +50,16 @@ pub struct FileContent {
 /// preview it. `file_path` may be absolute or relative to the project root; the
 /// resolved path must land inside the project or one of the allowed outside
 /// roots (see [`preview_allows`]) — anything else (`/etc`, another user's home,
-/// …) is refused.
+/// …) is refused. A remote desktop (the bridge webview) can't read on-disk
+/// credentials either (see [`crate::remote::guard::SecretPaths`]).
 #[tauri::command]
 pub async fn read_project_file(
+    webview: tauri::Webview,
     project_path: String,
     file_path: String,
 ) -> Result<FileContent, String> {
-    tokio::task::spawn_blocking(move || read_within(&project_path, &file_path))
+    let secrets = remote_secret_paths(&webview);
+    tokio::task::spawn_blocking(move || read_within(&project_path, &file_path, secrets.as_ref()))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
@@ -118,7 +121,30 @@ fn preview_allows(root: &Path, path: &Path) -> bool {
         || temp_root_allows(path)
 }
 
-fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, String> {
+/// The credential-store policy when the caller is the remote-desktop bridge.
+fn remote_secret_paths(webview: &tauri::Webview) -> Option<crate::remote::guard::SecretPaths> {
+    use tauri::Manager;
+    crate::remote::guard::from_remote_bridge(webview)
+        .then(|| crate::remote::guard::SecretPaths::for_app(webview.app_handle()))
+}
+
+/// `Err` when `secrets` (a remote caller's policy) covers `canonical`.
+fn refuse_secret(
+    secrets: Option<&crate::remote::guard::SecretPaths>,
+    canonical: &Path,
+    file_path: &str,
+) -> Result<(), String> {
+    match secrets {
+        Some(s) if s.denies(canonical) => Err(format!("Refusing to open {file_path} from a remote desktop")),
+        _ => Ok(()),
+    }
+}
+
+fn read_within(
+    project_path: &str,
+    file_path: &str,
+    secrets: Option<&crate::remote::guard::SecretPaths>,
+) -> Result<FileContent, String> {
     let root = Path::new(project_path)
         .canonicalize()
         .map_err(|e| format!("invalid project path: {e}"))?;
@@ -142,6 +168,7 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
     if !preview_allows(&root, &canonical) {
         return Err("Refusing to read a file outside the project".to_string());
     }
+    refuse_secret(secrets, &canonical, file_path)?;
     if canonical.is_dir() {
         return Err(format!("{file_path} is a directory, not a file"));
     }
@@ -172,16 +199,23 @@ fn read_within(project_path: &str, file_path: &str) -> Result<FileContent, Strin
 /// already exist and be a regular file — the editor edits, it does not create.
 #[tauri::command]
 pub async fn write_project_file(
+    webview: tauri::Webview,
     project_path: String,
     file_path: String,
     content: String,
 ) -> Result<(), String> {
-    tokio::task::spawn_blocking(move || write_within(&project_path, &file_path, &content))
+    let secrets = remote_secret_paths(&webview);
+    tokio::task::spawn_blocking(move || write_within(&project_path, &file_path, &content, secrets.as_ref()))
         .await
         .map_err(|e| format!("join error: {e}"))?
 }
 
-fn write_within(project_path: &str, file_path: &str, content: &str) -> Result<(), String> {
+fn write_within(
+    project_path: &str,
+    file_path: &str,
+    content: &str,
+    secrets: Option<&crate::remote::guard::SecretPaths>,
+) -> Result<(), String> {
     let root = Path::new(project_path)
         .canonicalize()
         .map_err(|e| format!("invalid project path: {e}"))?;
@@ -202,6 +236,7 @@ fn write_within(project_path: &str, file_path: &str, content: &str) -> Result<()
     if !preview_allows(&root, &canonical) {
         return Err("Refusing to write a file outside the project".to_string());
     }
+    refuse_secret(secrets, &canonical, file_path)?;
     if canonical.is_dir() {
         return Err(format!("{file_path} is a directory, not a file"));
     }
@@ -807,7 +842,7 @@ mod tests {
         std::fs::write(&path, "# commitment\n").unwrap();
 
         let project = env!("CARGO_MANIFEST_DIR");
-        let res = read_within(project, path.to_str().unwrap());
+        let res = read_within(project, path.to_str().unwrap(), None);
         let _ = std::fs::remove_file(&path);
 
         let res = res.expect("temp-dir file should be readable");
@@ -823,7 +858,7 @@ mod tests {
         let path = Path::new("/tmp").join(&name);
         std::fs::write(&path, "ok\n").unwrap();
 
-        let res = read_within(env!("CARGO_MANIFEST_DIR"), path.to_str().unwrap());
+        let res = read_within(env!("CARGO_MANIFEST_DIR"), path.to_str().unwrap(), None);
         let _ = std::fs::remove_file(&path);
 
         assert_eq!(res.expect("/tmp file should be readable").content, "ok\n");
@@ -833,7 +868,36 @@ mod tests {
     #[cfg(unix)]
     #[test]
     fn refuses_a_system_file() {
-        let err = read_within(env!("CARGO_MANIFEST_DIR"), "/etc/hosts").unwrap_err();
+        let err = read_within(env!("CARGO_MANIFEST_DIR"), "/etc/hosts", None).unwrap_err();
         assert!(err.contains("outside the project"), "unexpected error: {err}");
+    }
+
+    /// A remote desktop's policy refuses credential stores even inside an
+    /// allowed root (here the project is HOME itself), through `..` and links.
+    #[cfg(unix)]
+    #[test]
+    fn a_remote_caller_cannot_read_or_write_credentials() {
+        let base = std::env::temp_dir().canonicalize().unwrap().join(format!("devdy-viewer-sec-{}", uuid::Uuid::new_v4()));
+        let home = base.join("home");
+        std::fs::create_dir_all(home.join(".ssh")).unwrap();
+        std::fs::create_dir_all(home.join("proj")).unwrap();
+        std::fs::write(home.join(".ssh/id_rsa"), "KEY").unwrap();
+        std::fs::write(home.join("proj/a.txt"), "ok").unwrap();
+        std::os::unix::fs::symlink(home.join(".ssh/id_rsa"), home.join("proj/link")).unwrap();
+        let policy = crate::remote::guard::SecretPaths::new(Some(&home), None);
+        let proj = home.join("proj");
+        let proj = proj.to_str().unwrap();
+
+        assert_eq!(read_within(proj, "a.txt", Some(&policy)).unwrap().content, "ok");
+        for f in ["../.ssh/id_rsa", "link"] {
+            assert!(read_within(proj, f, Some(&policy)).unwrap_err().contains("remote desktop"), "{f}");
+            assert!(write_within(proj, f, "PWNED", Some(&policy)).is_err(), "{f}");
+        }
+        let home_s = home.to_str().unwrap();
+        assert!(read_within(home_s, ".ssh/id_rsa", Some(&policy)).is_err());
+        // The local UI is unaffected.
+        assert_eq!(read_within(home_s, ".ssh/id_rsa", None).unwrap().content, "KEY");
+        assert_eq!(std::fs::read_to_string(home.join(".ssh/id_rsa")).unwrap(), "KEY");
+        let _ = std::fs::remove_dir_all(&base);
     }
 }

@@ -1,7 +1,7 @@
 {
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
-  "description": "Capability for the main window and pop-out (file viewer + permission + todo/note capture + todo list + note list + secret notes + gantt + mascot + Slack threads + PR inbox + calendar + focus) windows, and their remote-desktop counterparts (remote-*)",
+  "description": "Capability for the main window and pop-out (file viewer + permission + todo/note capture + todo list + note list + secret notes + gantt + mascot + Slack threads + PR inbox + calendar + focus) windows, and their remote-desktop counterparts (remote-desktop + remote-<label>). Never the hidden remote-bridge webview: it has its own capability (remote-bridge.json)",
   "windows": [
     "main",
     "fileviewer-*",
@@ -17,9 +17,20 @@
     "pr-inbox",
     "calendar",
     "focus",
-    "remote-bridge",
     "remote-desktop",
-    "remote-*"
+    "remote-fileviewer-*",
+    "remote-permission-*",
+    "remote-item-create",
+    "remote-item-list-todo",
+    "remote-item-list-note",
+    "remote-secret-notes",
+    "remote-gantt",
+    "remote-mascot",
+    "remote-session-*",
+    "remote-slack-threads",
+    "remote-pr-inbox",
+    "remote-calendar",
+    "remote-focus"
   ],
   "permissions": [
     "core:default",

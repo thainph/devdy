@@ -16,6 +16,7 @@
 use crate::db::Db;
 use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
+use crate::remote::guard;
 use crate::remote::command::{
     is_allowed_action, map_remote_decision, CommandRateLimiter, IdempotencyGuard, RejectReason,
 };
@@ -261,8 +262,9 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     // Remote desktop: a full UI driving this app as the local user would. Its
     // calls go to the bridge verbatim — no per-command allow-list or budget,
     // by design (the paired device is trusted like the person at the keyboard)
-    // — except the credential / security commands of `is_local_only_command`:
-    // the `ipc` flag is self-advertised, so any signed-in device can claim it.
+    // — except what `ipc_refuses` (credentials, security config, plugin
+    // commands): the `ipc` flag is self-advertised, so any signed-in device
+    // can claim it.
     if action.starts_with("ipc_") {
         if !ctx.ipc {
             reject(ctx, action, None, RejectReason::NotAllowed).await;
@@ -325,115 +327,48 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     }
 }
 
-/// Stands in for a refused command: no such command exists, so the bridge's
-/// invoke fails and the Controller gets an error result.
-const DENIED_COMMAND: &str = "remote_denied_local_only";
-
-/// Command-name prefixes a Controller may never run on this machine: the secret
-/// notes vault (`secret_*`).
-const LOCAL_ONLY_PREFIXES: &[&str] = &["secret_"];
-
-/// Commands a Controller may never run on this machine.
+/// Whether `ipc_invoke` refuses `name` before it reaches the bridge.
 ///
-/// The `ipc` feature is self-advertised and the Host cannot tell a remote
-/// desktop from a phone (both sign in the same way), so this list is what keeps
-/// a paired device away from the Keychain. Rule: deny every command that
-/// returns, sets or validates a credential (PATs, cloud/CLI logins, OAuth
-/// clients, MCP env/header values, SSH keys and passphrases, the inbox API
-/// token, backups carrying secrets), and every command that changes who can
-/// reach this machine or its secrets (Remote Control config, master password,
-/// OTP / session links, sync-group pairing and secret sync). Runs are not
-/// covered on purpose: they never see Keychain secrets (credential broker).
-/// Reads that only report key names or `has_*` flags stay allowed.
-const LOCAL_ONLY_COMMANDS: &[&str] = &[
-    // Accounts: create / update / validate take or check a token; logins mint one.
-    "create_github_account",
-    "update_github_account",
-    "validate_github_account",
-    "create_gitlab_account",
-    "update_gitlab_account",
-    "validate_gitlab_account",
-    "create_aws_account",
-    "update_aws_account",
-    "validate_aws_account",
-    "aws_sso_login",
-    "aws_sso_login_profile",
-    "create_azure_account",
-    "update_azure_account",
-    "validate_azure_account",
-    "azure_login",
-    "create_claude_account",
-    "validate_claude_account",
-    "login_claude_account",
-    "submit_claude_login_code",
-    "add_google_account",
-    "reauth_google_account",
-    "validate_google_account",
-    // MCP servers: create / update / import set env + header values; export
-    // writes them out in clear.
-    "create_mcp_server",
-    "update_mcp_server",
-    "import_mcp_server",
-    "export_mcp_server",
-    // VPS servers: create / update set the SSH key and passphrase.
-    "create_vps_server",
-    "update_vps_server",
-    // Backups carry (or overwrite) every secret above.
-    "export_settings_backup",
-    "import_settings_backup",
-    // Inbox API: returns / rotates its bearer token, opens a local listener.
-    "get_inbox_api_info",
-    "regenerate_inbox_api_token",
-    "set_inbox_api_enabled",
-    // Sync: pairing a device into the group hands it the synced data (and the
-    // secrets, when secret sync is on).
-    "sync_create_group",
-    "sync_join",
-    "sync_accept_open",
-    "sync_join_respond",
-    "sync_set_secrets",
-    // Remote Control itself: who may connect, and how.
-    "remote_enable",
-    "remote_disable",
-    "remote_set_config",
-    "remote_set_master_password",
-    "remote_set_device_alias",
-    "remote_reveal_otp",
-    "remote_create_session_link",
-    "remote_kick_controller",
-    "remote_clear_audit",
-];
+/// - [`guard::is_local_only_command`]: credentials and security config (the
+///   bridge's `invoke_handler` refuses them too — this is the first wall).
+/// - `plugin:*`: a remote-desktop window runs plugin commands on its OWN
+///   machine (`src/lib/ipc/core.ts`), so none ever needs the bridge — and
+///   through it they would act here: `plugin:event|emit` can post to any
+///   listener of this app, `plugin:fs|*` reads its files.
+/// - `remote_bridge_*`: the bridge's own plumbing, called by the bridge page.
+fn ipc_refuses(name: &str) -> bool {
+    guard::is_local_only_command(name) || name.starts_with("plugin:") || name.starts_with("remote_bridge_")
+}
 
-/// Whether `name` is refused over `ipc_invoke` (see [`LOCAL_ONLY_COMMANDS`]).
-fn is_local_only_command(name: &str) -> bool {
-    LOCAL_ONLY_PREFIXES.iter().any(|p| name.starts_with(p)) || LOCAL_ONLY_COMMANDS.contains(&name)
+/// The bridge request for one `ipc_*` command, `None` when there is nothing
+/// to forward. A refused invoke goes out as [`guard::DENIED`], a command that
+/// does not exist, so it fails on the Controller like an unknown one.
+fn ipc_request(cmd: &CmdPayload) -> Option<serde_json::Value> {
+    match cmd.action.as_str() {
+        "ipc_invoke" => {
+            let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return None };
+            // Name only: args may carry anything (prompts, paths, secrets).
+            tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
+            let (name, args) = if ipc_refuses(name) {
+                (guard::DENIED, serde_json::Value::Null)
+            } else {
+                (name, cmd.args.clone().unwrap_or(serde_json::Value::Null))
+            };
+            Some(serde_json::json!({ "type": "invoke", "id": id, "cmd": name, "args": args }))
+        }
+        "ipc_listen" | "ipc_unlisten" => {
+            let event = cmd.event.as_deref()?;
+            let kind = if cmd.action == "ipc_listen" { "listen" } else { "unlisten" };
+            Some(serde_json::json!({ "type": kind, "event": event }))
+        }
+        _ => None,
+    }
 }
 
 /// Forward one `ipc_*` command to the bridge webview.
 async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
     use tauri::Manager;
-    let request = match cmd.action.as_str() {
-        "ipc_hello" => return,
-        "ipc_invoke" => {
-            let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return };
-            // Name only: args may carry anything (prompts, paths, secrets).
-            tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
-            // Secrets and security config are local-only: the call fails as an
-            // unknown command (the vault commands also refuse the bridge webview).
-            let (name, args) = if is_local_only_command(name) {
-                (DENIED_COMMAND, serde_json::Value::Null)
-            } else {
-                (name, cmd.args.clone().unwrap_or(serde_json::Value::Null))
-            };
-            serde_json::json!({ "type": "invoke", "id": id, "cmd": name, "args": args })
-        }
-        "ipc_listen" | "ipc_unlisten" => {
-            let Some(event) = cmd.event.as_deref() else { return };
-            let kind = if cmd.action == "ipc_listen" { "listen" } else { "unlisten" };
-            serde_json::json!({ "type": kind, "event": event })
-        }
-        _ => return,
-    };
+    let Some(request) = ipc_request(cmd) else { return };
     if let Some(state) = ctx.app.try_state::<crate::remote::RemoteState>() {
         state.ipc.forward(&ctx.app, request).await;
     }
@@ -1096,85 +1031,58 @@ async fn create_session_run_for_remote(
 mod tests {
     use super::*;
 
-    #[test]
-    fn secret_vault_commands_are_local_only() {
-        for name in ["secret_notes_list", "secret_note_reveal", "secret_vault_unlock", "secret_note_from_note"] {
-            assert!(is_local_only_command(name), "{name}");
-        }
-        assert!(!is_local_only_command("list_notes"));
+    fn payload(v: serde_json::Value) -> CmdPayload {
+        serde_json::from_value(v).unwrap()
+    }
+
+    fn invoke_of(name: &str, args: serde_json::Value) -> serde_json::Value {
+        ipc_request(&payload(serde_json::json!({ "action": "ipc_invoke", "id": "c1", "cmd": name, "args": args })))
+            .expect("an invoke request")
     }
 
     #[test]
-    fn credential_and_security_commands_are_local_only() {
-        for name in [
-            "create_github_account",
-            "validate_gitlab_account",
-            "update_aws_account",
-            "aws_sso_login_profile",
-            "azure_login",
-            "login_claude_account",
-            "submit_claude_login_code",
-            "add_google_account",
-            "reauth_google_account",
-            "update_mcp_server",
-            "export_mcp_server",
-            "create_vps_server",
-            "export_settings_backup",
-            "import_settings_backup",
-            "get_inbox_api_info",
-            "regenerate_inbox_api_token",
-            "sync_join_respond",
-            "sync_set_secrets",
-            "remote_set_master_password",
-            "remote_reveal_otp",
-            "remote_create_session_link",
-            "remote_kick_controller",
-            "remote_set_config",
-            "remote_enable",
-            "remote_disable",
-            "remote_clear_audit",
+    fn everyday_invokes_reach_the_bridge_verbatim() {
+        let req = invoke_of("list_runs", serde_json::json!({ "projectId": "p" }));
+        assert_eq!(req, serde_json::json!({ "type": "invoke", "id": "c1", "cmd": "list_runs", "args": { "projectId": "p" } }));
+    }
+
+    #[test]
+    fn local_only_invokes_go_out_as_an_unknown_command_without_args() {
+        for name in ["export_settings_backup", "secret_note_reveal", "sync_revoke_device", "read_local_file_chunk"] {
+            let req = invoke_of(name, serde_json::json!({ "path": "/tmp/x" }));
+            assert_eq!(req["cmd"], guard::DENIED, "{name}");
+            assert!(req["args"].is_null(), "{name}");
+        }
+    }
+
+    #[test]
+    fn plugin_commands_never_reach_the_bridge() {
+        // The bridge listens for nothing a JS emit can reach any more, but an
+        // emit must not even get there: it could post to any listener here.
+        for (name, args) in [
+            (
+                "plugin:event|emit",
+                serde_json::json!({ "event": "remote-bridge://request", "payload": { "type": "invoke", "id": "x", "cmd": "export_settings_backup", "args": {} } }),
+            ),
+            ("plugin:event|emit_to", serde_json::json!({ "target": { "kind": "AnyLabel", "label": "remote-bridge" }, "event": "remote-bridge://request" })),
+            ("plugin:event|emit", serde_json::json!({ "event": "menu://action", "payload": "quit" })),
+            ("plugin:fs|read_file", serde_json::json!({ "path": "$APPDATA/server-keys/k" })),
+            ("plugin:opener|open_path", serde_json::json!({ "path": "/Applications/Calculator.app" })),
+            ("plugin:webview|create_webview_window", serde_json::json!({})),
+            ("remote_bridge_ready", serde_json::json!({})),
+            ("remote_bridge_batch", serde_json::json!({ "items": [] })),
         ] {
-            assert!(is_local_only_command(name), "{name}");
+            let req = invoke_of(name, args);
+            assert_eq!(req["cmd"], guard::DENIED, "{name}");
+            assert!(req["args"].is_null(), "{name}");
         }
     }
 
     #[test]
-    fn everyday_commands_stay_available_over_ipc() {
-        // Remote desktop drives the normal UI: reads that expose only key names
-        // or `has_*` flags, and non-credential work, must still go through.
-        for name in [
-            "list_runs",
-            "start_run",
-            "send_user_message",
-            "list_github_accounts",
-            "list_mcp_servers",
-            "get_mcp_server",
-            "set_project_mcp_servers",
-            "list_vps_servers",
-            "remote_status",
-            "remote_end_session",
-            "remote_bridge_ready",
-            "sync_status",
-            "sync_get_secrets",
-            "add_todo",
-            "update_setting",
-        ] {
-            assert!(!is_local_only_command(name), "{name}");
-        }
-        // Exact names only: no accidental prefix match.
-        assert!(!is_local_only_command("remote_enable_extra"));
-    }
-
-    #[test]
-    fn local_only_commands_are_registered() {
-        // A renamed command would silently fall off the list.
-        let lib = include_str!("../lib.rs");
-        let handler = &lib[lib.find("generate_handler![").expect("generate_handler! in lib.rs")..];
-        for name in LOCAL_ONLY_COMMANDS {
-            assert!(
-                handler.lines().any(|l| l.trim().trim_end_matches(',').rsplit("::").next() == Some(name)),
-                "{name} is not in generate_handler!"
-            );
-        }
+    fn listen_and_malformed_requests() {
+        let req = ipc_request(&payload(serde_json::json!({ "action": "ipc_listen", "event": "run://status" }))).unwrap();
+        assert_eq!(req, serde_json::json!({ "type": "listen", "event": "run://status" }));
+        assert!(ipc_request(&payload(serde_json::json!({ "action": "ipc_invoke", "id": "c1" }))).is_none());
+        assert!(ipc_request(&payload(serde_json::json!({ "action": "ipc_hello" }))).is_none());
     }
 }
