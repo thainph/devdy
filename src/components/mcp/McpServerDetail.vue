@@ -1,16 +1,17 @@
 <script setup lang="ts">
 // Right pane of the MCP servers screen for a user server (or a new draft):
 // header with the live name, meta (transport · enabled · added) and actions
-// (enabled switch · Test · Save · ⋯), then the form in flat sections.
+// laid out like SkillDetail (Save · ⋯ with Test / enable / export / …), then
+// the form in flat sections.
 //
-// A saved server's enabled switch applies at once (like the sidebar's power
+// A saved server's enable/disable applies at once (like the sidebar's power
 // button), so it is not part of the dirty check; on a draft it is a form field.
 // Secret VALUEs are write-only: stored keys come back without values, a blank
 // value on a stored key keeps it (see lib/mcpRows toSecretEntries).
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertCircle, AlertTriangle, CheckCircle2, Copy, Download, MoreHorizontal, Plug, Plus, Server, Trash2, X, XCircle,
+  AlertCircle, AlertTriangle, CheckCircle2, Copy, Download, MoreHorizontal, Plug, Plus, Power, PowerOff, Save, Trash2, X, XCircle,
 } from 'lucide-vue-next'
 import {
   AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, Textarea,
@@ -203,9 +204,6 @@ defineExpose({ dirty })
 <template>
   <section class="flex min-w-0 flex-1 flex-col" @keydown="onKeydown">
     <DetailHeader :title="form.name.trim() || (server?.name ?? '')" :placeholder="t('mcp.editor.newTitle')">
-      <template #leading>
-        <Server class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-      </template>
       <template #meta>
         {{ meta }}<template v-if="isSse && defaultIsCodex">
           ·
@@ -215,68 +213,51 @@ defineExpose({ dirty })
         </template>
       </template>
       <template #actions>
-        <!-- Validation error inline -->
-        <div
-          v-if="validationError"
-          class="flex min-w-0 items-center gap-1 rounded-md border border-amber-500/20 bg-amber-500/10 px-2.5 py-1 text-xs text-amber-500"
-          :title="validationError"
-        >
-          <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="max-w-48 truncate">{{ validationError }}</span>
-        </div>
-        <button
-          type="button"
-          class="flex shrink-0 cursor-pointer select-none items-center gap-1.5 rounded-md px-2 py-1 text-xs transition-colors hover:bg-accent disabled:cursor-default disabled:opacity-50"
-          :aria-pressed="enabled"
-          :disabled="toggling"
-          :title="enabled ? t('mcp.list.disable') : t('mcp.list.enable')"
-          @click="toggleEnabled"
-        >
-          <span
-            class="relative inline-flex h-4 w-7 items-center rounded-full transition-colors"
-            :class="enabled ? 'bg-primary' : 'bg-muted'"
-          >
-            <span
-              class="inline-block h-3 w-3 transform rounded-full bg-white transition-transform"
-              :class="enabled ? 'translate-x-3.5' : 'translate-x-0.5'"
-            />
-          </span>
-          <span class="text-muted-foreground">{{ enabled ? t('mcp.editor.enabled') : t('mcp.editor.disabled') }}</span>
-        </button>
-        <Button variant="outline" size="xs" class="shrink-0" :disabled="testing" @click="handleTest">
-          <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ testing ? t('mcp.editor.testing') : t('mcp.editor.testConnection') }}
-        </Button>
-        <Button size="xs" class="shrink-0" :disabled="!dirty || saving" @click="save">
+        <Button size="sm" :disabled="!dirty || saving" :title="t('mcp.detail.saveHint')" @click="save">
+          <Save class="h-3.5 w-3.5" :stroke-width="2" />
           {{ saving ? t('mcp.editor.saving') : t('common.save') }}
         </Button>
-        <DropdownMenu v-if="server" align="right" class="shrink-0">
+        <DropdownMenu align="right">
           <template #trigger>
-            <Button
-              variant="outline"
-              size="icon-sm"
-              :title="t('mcp.detail.moreActions')"
-              :aria-label="t('mcp.detail.moreActions')"
-            >
-              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+            <Button variant="ghost" size="icon-sm" :title="t('mcp.detail.moreActions')" :aria-label="t('mcp.detail.moreActions')">
+              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
             </Button>
           </template>
-          <DropdownItem @click="emit('export')">
-            <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('mcp.list.exportTitle') }}
+          <DropdownItem :disabled="testing" @click="handleTest">
+            <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ testing ? t('mcp.editor.testing') : t('mcp.editor.testConnection') }}
           </DropdownItem>
-          <DropdownItem @click="emit('duplicate')">
-            <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('mcp.detail.duplicate') }}
+          <DropdownItem :disabled="toggling" @click="toggleEnabled">
+            <component :is="enabled ? PowerOff : Power" class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ enabled ? t('mcp.list.disable') : t('mcp.list.enable') }}
           </DropdownItem>
-          <DropdownSeparator />
-          <DropdownItem variant="destructive" @click="emit('delete')">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('common.delete') }}
-          </DropdownItem>
+          <template v-if="server">
+            <DropdownSeparator />
+            <DropdownItem @click="emit('export')">
+              <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('mcp.list.exportTitle') }}
+            </DropdownItem>
+            <DropdownItem @click="emit('duplicate')">
+              <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('mcp.detail.duplicate') }}
+            </DropdownItem>
+            <DropdownSeparator />
+            <DropdownItem variant="destructive" @click="emit('delete')">
+              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('common.delete') }}
+            </DropdownItem>
+          </template>
         </DropdownMenu>
       </template>
     </DetailHeader>
+
+    <div
+      v-if="validationError"
+      class="flex shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-500"
+    >
+      <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+      <span class="min-w-0 truncate" :title="validationError">{{ validationError }}</span>
+    </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-5">
       <div class="max-w-xl">

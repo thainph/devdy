@@ -16,14 +16,10 @@
     },
     "toast": {
       "deleted": "Deleted",
-      "online": "{label} is online",
-      "offline": "{label} is offline: {message}",
       "testAllSummary": "{online} online / {offline} offline"
     },
-    "new": "New",
     "searchPlaceholder": "Search label, host, user, tag",
     "allTags": "All tags",
-    "filterAll": "All",
     "untagged": "Untagged",
     "testAll": "Test all connections",
     "noSelection": "Select a server, or create a new one"
@@ -72,7 +68,6 @@
   },
   "detail": {
     "newTitle": "New server",
-    "renameHint": "Click to rename",
     "unsavedMeta": "Not saved yet — save to test the connection",
     "checked": "checked {age}",
     "test": "Test",
@@ -87,6 +82,7 @@
     "notTested": "Not tested yet in this session.",
     "discardTitle": "Discard changes?",
     "discardMessage": "This server has unsaved changes. Discard them?",
-    "discard": "Discard"
+    "discard": "Discard",
+    "saveHint": "Save (⌘/Ctrl+S)"
   }
 }

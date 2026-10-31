@@ -1,13 +1,13 @@
 <script setup lang="ts">
 // Servers screen, laid out like the Notes window: the sidebar lists the VPS
-// servers (search, tag filter, status filter, folders by first tag) and the
+// servers (search, tag filter, folders by first tag) and the
 // right pane edits the selected one inline (ServerDetail). The selection lives
 // in the URL query — `?id=<id>` a server, `?new=1` a blank draft — so a
 // reload reopens it.
 import { computed, onMounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { HardDrive, KeyRound, Plug, RotateCw, Trash2, UserCog } from 'lucide-vue-next'
+import { HardDrive, RotateCw } from 'lucide-vue-next'
 import { AppSelect, Button } from '@/components/ui'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
@@ -15,14 +15,11 @@ import ServerDetail, { type ServerPrefill } from '@/components/servers/ServerDet
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { relativeAge } from '@/lib/itemText'
 import {
   allServerTags,
   filterServers,
   groupServers,
-  serverStatus,
   summarizeTests,
-  type ServerStatus,
 } from '@/lib/serverRows'
 import { useServersStore, type TestConnectionResult, type VpsServer } from '@/stores/servers'
 
@@ -41,7 +38,6 @@ const { t } = useI18n()
 
 const search = ref('')
 const tagFilter = ref('')
-const statusFilter = ref<'' | ServerStatus>('')
 
 const tags = computed(() => allServerTags(store.items))
 const tagOptions = computed(() => [
@@ -53,25 +49,12 @@ watch(tags, (list) => {
   if (tagFilter.value && !list.includes(tagFilter.value)) tagFilter.value = ''
 })
 
-const statusFilters = computed(() => [
-  { value: '', label: t('servers.list.filterAll') },
-  { value: 'online', label: t('servers.list.status.online') },
-  { value: 'offline', label: t('servers.list.status.offline') },
-  { value: 'unknown', label: t('servers.list.status.notChecked') },
-])
-
 const groups = computed(() =>
   groupServers(
-    filterServers(store.items, { search: search.value, tag: tagFilter.value, status: statusFilter.value }),
+    filterServers(store.items, { search: search.value, tag: tagFilter.value }),
     t('servers.list.untagged'),
   ),
 )
-
-const statusDot: Record<ServerStatus, string> = {
-  online: 'bg-emerald-500',
-  offline: 'bg-destructive',
-  unknown: 'bg-muted-foreground/40',
-}
 
 // ── Selection (URL query) ───────────────────────────────────────────────────
 
@@ -223,16 +206,6 @@ async function runTest(id: string): Promise<TestConnectionResult> {
   }
 }
 
-async function testRow(server: VpsServer) {
-  try {
-    const result = await runTest(server.id)
-    if (result.ok) toast.success(t('servers.list.toast.online', { label: server.label }))
-    else toast.error(t('servers.list.toast.offline', { label: server.label, message: result.message }))
-  } catch (e) {
-    toast.error(String(e))
-  }
-}
-
 async function testSelected() {
   if (!selectedId.value) return
   // The detail pane shows the outcome inline.
@@ -275,22 +248,16 @@ async function handleDelete(server: VpsServer) {
     deletingId.value = null
   }
 }
-
-const rowAction =
-  'flex h-6 w-6 cursor-pointer items-center justify-center rounded text-muted-foreground transition-colors hover:bg-accent hover:text-foreground disabled:opacity-40'
 </script>
 
 <template>
   <div class="flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
-      v-model:filter="statusFilter"
       :groups="groups"
       :selected-id="selectedId"
       collapse-key="devdy.servers.collapsedGroups"
-      :new-label="t('servers.list.new')"
       :search-placeholder="t('servers.list.searchPlaceholder')"
-      :filters="statusFilters"
       :loading="store.loading && !loaded"
       :error="store.error"
       :empty-store="loaded && store.items.length === 0"
@@ -317,48 +284,10 @@ const rowAction =
         <AppSelect v-model="tagFilter" size="sm" :options="tagOptions" />
       </template>
       <template #row="{ row }">
-        <div class="flex min-w-0 items-center gap-1.5">
-          <span class="h-2 w-2 shrink-0 rounded-full" :class="statusDot[serverStatus(row)]" />
-          <span class="min-w-0 truncate text-[13px] font-medium">{{ row.label }}</span>
-          <span
-            class="flex shrink-0 items-center gap-0.5 rounded bg-muted px-1 py-px text-[9px] font-medium uppercase tracking-wide text-muted-foreground"
-          >
-            <KeyRound v-if="row.auth_method === 'key'" class="h-2.5 w-2.5" :stroke-width="2" />
-            <UserCog v-else class="h-2.5 w-2.5" :stroke-width="2" />
-            {{ row.auth_method }}
-          </span>
-          <span
-            v-if="row.last_checked_at"
-            class="ml-auto shrink-0 pl-1 text-[10px] tabular-nums text-muted-foreground/80"
-          >
-            {{ relativeAge(row.last_checked_at) }}
-          </span>
-        </div>
-        <span class="mt-0.5 truncate pl-3.5 font-mono text-[11px] text-muted-foreground">
+        <span class="min-w-0 truncate text-sm font-medium leading-snug">{{ row.label }}</span>
+        <span class="mt-1 truncate font-mono text-[11px] text-muted-foreground/70">
           {{ row.username }}@{{ row.host }}:{{ row.port }}
         </span>
-      </template>
-      <template #row-actions="{ row }">
-        <button
-          type="button"
-          :class="rowAction"
-          :title="t('servers.list.testTitle')"
-          :aria-label="t('servers.list.testTitle')"
-          :disabled="testingIds.has(row.id)"
-          @click="testRow(row)"
-        >
-          <Plug class="h-3.5 w-3.5" :class="testingIds.has(row.id) && 'animate-pulse'" :stroke-width="1.75" />
-        </button>
-        <button
-          type="button"
-          :class="[rowAction, 'hover:bg-destructive/10 hover:text-destructive']"
-          :title="t('common.delete')"
-          :aria-label="t('common.delete')"
-          :disabled="deletingId === row.id"
-          @click="handleDelete(row)"
-        >
-          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
       </template>
     </ListDetailSidebar>
 

@@ -2,7 +2,6 @@
   "list": {
     "import": "Nhập",
     "importing": "Đang nhập…",
-    "newServer": "Server mới",
     "builtin": {
       "active": "Tích hợp sẵn · hoạt động",
       "disabled": "Tích hợp sẵn · đã tắt",
@@ -36,18 +35,15 @@
       "enabled": "Đã bật"
     },
     "searchPlaceholder": "Tìm theo tên, lệnh, URL…",
-    "filter": {
-      "all": "Tất cả",
-      "enabled": "Đã bật",
-      "disabled": "Đã tắt"
-    },
     "groups": {
       "builtin": "Tích hợp sẵn",
       "stdio": "stdio · tiến trình cục bộ",
       "http": "http · từ xa",
       "sse": "sse · từ xa"
     },
-    "noSelection": "Chọn một MCP server, hoặc tạo server mới"
+    "noSelection": "Chọn một MCP server, hoặc tạo server mới",
+    "allTypes": "Tất cả loại",
+    "filterByType": "Lọc theo loại"
   },
   "editor": {
     "newTitle": "MCP Server mới",
@@ -114,6 +110,7 @@
       "title": "Bỏ thay đổi?",
       "message": "MCP server này có thay đổi chưa lưu. Bỏ các thay đổi đó?",
       "confirm": "Bỏ"
-    }
+    },
+    "saveHint": "Lưu (⌘/Ctrl+S)"
   }
 }

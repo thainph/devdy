@@ -2,7 +2,6 @@
   "list": {
     "importing": "Đang nhập…",
     "import": "Nhập",
-    "newSkill": "Skill mới",
     "emptyTitle": "Chưa có skill nào",
     "emptyHint": "Tạo skill đầu tiên hoặc nhập từ tệp ZIP",
     "applyToAll": "Áp dụng cho tất cả dự án",
