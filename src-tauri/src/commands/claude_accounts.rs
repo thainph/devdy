@@ -3,9 +3,10 @@ use crate::runs::sidecar::{apply_claude_config_dir, augment_command_path};
 use serde::Serialize;
 use serde_json::Value;
 use sqlx::Row;
+use std::collections::HashMap;
 use std::path::{Path, PathBuf};
-use std::process::Command as StdCommand;
 use std::process::Stdio;
+use std::sync::{Arc, OnceLock};
 use std::time::Duration;
 use tauri::{AppHandle, Emitter, Manager, State};
 use tokio::process::Command;
@@ -83,14 +84,6 @@ fn claude_accounts_root(app: &AppHandle) -> Result<PathBuf, String> {
 
 fn account_config_dir(app: &AppHandle, id: &str) -> Result<PathBuf, String> {
     Ok(claude_accounts_root(app)?.join(id))
-}
-
-fn shell_quote(value: &str) -> String {
-    format!("'{}'", value.replace('\'', "'\\''"))
-}
-
-fn applescript_string(value: &str) -> String {
-    value.replace('\\', "\\\\").replace('"', "\\\"")
 }
 
 fn claude_path_from_rows(rows: &[sqlx::sqlite::SqliteRow]) -> String {
@@ -299,53 +292,199 @@ pub async fn set_project_claude_account(
     Ok(())
 }
 
+/// How long a background `claude auth login` may wait for the browser flow.
+const LOGIN_TIMEOUT: Duration = Duration::from_secs(10 * 60);
+
+/// A `claude auth login` in flight for one account. The CLI waits for the
+/// browser's localhost callback; as a fallback it also accepts the code shown
+/// by the manual-login page on stdin.
+struct LoginSession {
+    stdin: Mutex<Option<tokio::process::ChildStdin>>,
+    cancel: tokio::sync::Notify,
+}
+
+fn login_sessions() -> &'static std::sync::Mutex<HashMap<String, Arc<LoginSession>>> {
+    static SESSIONS: OnceLock<std::sync::Mutex<HashMap<String, Arc<LoginSession>>>> =
+        OnceLock::new();
+    SESSIONS.get_or_init(Default::default)
+}
+
+fn login_session(id: &str) -> Option<Arc<LoginSession>> {
+    login_sessions().lock().ok()?.get(id).cloned()
+}
+
+/// Removes the account's session when the login ends, however it ends.
+struct LoginSessionGuard(String);
+
+impl Drop for LoginSessionGuard {
+    fn drop(&mut self) {
+        if let Ok(mut map) = login_sessions().lock() {
+            map.remove(&self.0);
+        }
+    }
+}
+
+#[derive(Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeLoginUrlEvent {
+    account_id: String,
+    url: String,
+}
+
+/// The manual-login URL from the CLI's "If the browser didn't open, visit: <url>" line.
+fn parse_login_url(line: &str) -> Option<String> {
+    let rest = &line[line.find("visit:")? + "visit:".len()..];
+    let url = rest.trim().split_whitespace().next()?;
+    url.starts_with("https://").then(|| url.to_string())
+}
+
+/// Forward CLI output: emit the manual-login URL once seen, keep the text for
+/// error details.
+fn pump_login_output<R>(
+    reader: R,
+    app: AppHandle,
+    account_id: String,
+) -> tokio::task::JoinHandle<String>
+where
+    R: tokio::io::AsyncRead + Unpin + Send + 'static,
+{
+    tokio::spawn(async move {
+        use tokio::io::AsyncBufReadExt;
+        let mut lines = tokio::io::BufReader::new(reader).lines();
+        let mut text = String::new();
+        while let Ok(Some(line)) = lines.next_line().await {
+            if let Some(url) = parse_login_url(&line) {
+                let _ = app.emit(
+                    "claude_login_url",
+                    ClaudeLoginUrlEvent {
+                        account_id: account_id.clone(),
+                        url,
+                    },
+                );
+            } else if !line.trim().is_empty() {
+                text.push_str(line.trim());
+                text.push('\n');
+            }
+        }
+        text
+    })
+}
+
+/// Sign an account in by running `claude auth login` in the background (no
+/// terminal), like `aws sso login` / `az login`. The CLI opens the browser and
+/// finishes on its own via the localhost callback; resolves once it exits,
+/// with the account re-validated.
 #[tauri::command]
-pub async fn open_claude_account_login(
+pub async fn login_claude_account(
+    app: AppHandle,
     db: State<'_, Db>,
     id: String,
-    terminal_app: Option<String>,
-) -> Result<(), String> {
+) -> Result<ClaudeValidation, String> {
     let account = fetch_account(db.inner(), &id).await?;
     std::fs::create_dir_all(&account.config_dir).map_err(|e| e.to_string())?;
     let claude_bin = load_claude_path(db.inner()).await?;
-    let cwd = std::env::var("HOME").unwrap_or_else(|_| account.config_dir.clone());
-    let login_cmd = format!(
-        "cd {} && export CLAUDE_CONFIG_DIR={} && unset ANTHROPIC_API_KEY ANTHROPIC_AUTH_TOKEN CLAUDE_CODE_OAUTH_TOKEN ANTHROPIC_PROFILE && {} auth login --claudeai",
-        shell_quote(&cwd),
-        shell_quote(&account.config_dir),
-        shell_quote(&claude_bin),
-    );
 
-    #[cfg(target_os = "macos")]
+    let session = Arc::new(LoginSession {
+        stdin: Mutex::new(None),
+        cancel: tokio::sync::Notify::new(),
+    });
     {
-        let terminal = terminal_app.unwrap_or_else(|| "terminal".to_string());
-        let command = applescript_string(&login_cmd);
-        let script = if terminal == "iterm" {
-            format!(
-                "tell application \"iTerm\"\n  create window with default profile\n  tell current session of current window to write text \"{}\"\n  activate\nend tell",
-                command
-            )
+        let mut map = login_sessions().lock().map_err(|e| e.to_string())?;
+        if map.contains_key(&id) {
+            return Err("A Claude login is already in progress for this account.".to_string());
+        }
+        map.insert(id.clone(), session.clone());
+    }
+    let _guard = LoginSessionGuard(id.clone());
+
+    let mut cmd = Command::new(&claude_bin);
+    cmd.arg("auth")
+        .arg("login")
+        .arg("--claudeai")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .kill_on_drop(true);
+    if let Ok(home) = std::env::var("HOME") {
+        cmd.current_dir(home);
+    }
+    augment_command_path(&mut cmd);
+    apply_claude_config_dir(&mut cmd, Some(&account.config_dir));
+
+    let mut child = cmd
+        .spawn()
+        .map_err(|e| format!("Failed to run Claude login: {e}"))?;
+    *session.stdin.lock().await = child.stdin.take();
+    let stdout = child
+        .stdout
+        .take()
+        .map(|r| pump_login_output(r, app.clone(), id.clone()));
+    let stderr = child
+        .stderr
+        .take()
+        .map(|r| pump_login_output(r, app.clone(), id.clone()));
+
+    let status = tokio::select! {
+        res = tokio::time::timeout(LOGIN_TIMEOUT, child.wait()) => match res {
+            Ok(Ok(status)) => status,
+            Ok(Err(e)) => return Err(format!("Claude login failed: {e}")),
+            Err(_) => {
+                return Err(format!(
+                    "Claude login timed out after {} minutes",
+                    LOGIN_TIMEOUT.as_secs() / 60
+                ))
+            }
+        },
+        _ = session.cancel.notified() => {
+            let _ = child.kill().await;
+            return Err("Claude login cancelled".to_string());
+        }
+    };
+
+    if !status.success() {
+        let mut detail = String::new();
+        for task in [stderr, stdout].into_iter().flatten() {
+            if let Ok(text) = task.await {
+                detail.push_str(&text);
+            }
+        }
+        let detail = detail.trim();
+        return Err(if detail.is_empty() {
+            "Claude login failed.".to_string()
         } else {
-            format!(
-                "tell application \"Terminal\"\n  do script \"{}\"\n  activate\nend tell",
-                command
-            )
-        };
-        StdCommand::new("osascript")
-            .arg("-e")
-            .arg(script)
-            .spawn()
-            .map_err(|e| format!("Failed to open terminal for Claude login: {e}"))?;
-        Ok(())
+            format!("Claude login failed: {detail}")
+        });
     }
 
-    #[cfg(not(target_os = "macos"))]
-    {
-        let _ = terminal_app;
-        Err(format!(
-            "Open login in terminal is only supported on macOS. Run manually: {login_cmd}"
-        ))
+    validate_claude_account_inner(db.inner(), &id).await
+}
+
+/// Fallback when the browser can't reach the CLI's localhost callback: pass the
+/// code shown by the manual-login page to the waiting `claude auth login`.
+#[tauri::command]
+pub async fn submit_claude_login_code(id: String, code: String) -> Result<(), String> {
+    use tokio::io::AsyncWriteExt;
+    let code = code.trim();
+    if code.is_empty() {
+        return Err("Code is required".to_string());
     }
+    let session = login_session(&id).ok_or_else(|| "No Claude login in progress".to_string())?;
+    let mut stdin = session.stdin.lock().await;
+    let pipe = stdin
+        .as_mut()
+        .ok_or_else(|| "Claude login is not accepting a code".to_string())?;
+    pipe.write_all(format!("{code}\n").as_bytes())
+        .await
+        .map_err(|e| format!("Failed to send code to Claude login: {e}"))?;
+    pipe.flush().await.map_err(|e| e.to_string())
+}
+
+#[tauri::command]
+pub async fn cancel_claude_account_login(id: String) -> Result<(), String> {
+    if let Some(session) = login_session(&id) {
+        session.cancel.notify_one();
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -858,4 +997,19 @@ pub async fn account_config_dirs(db: &Db) -> Vec<String> {
         .into_iter()
         .filter(|d| !d.trim().is_empty())
         .collect()
+}
+
+#[cfg(test)]
+mod login_url_tests {
+    use super::parse_login_url;
+
+    #[test]
+    fn parses_manual_login_url() {
+        assert_eq!(
+            parse_login_url("If the browser didn't open, visit: https://claude.com/cai/oauth/authorize?code=true&x=1"),
+            Some("https://claude.com/cai/oauth/authorize?code=true&x=1".to_string())
+        );
+        assert_eq!(parse_login_url("Opening browser to sign in…"), None);
+        assert_eq!(parse_login_url("visit: javascript:alert(1)"), None);
+    }
 }
