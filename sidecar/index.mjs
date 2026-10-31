@@ -244,6 +244,18 @@ function cancelPermission(requestId, reason, level, text) {
 }
 const NO_TOOLS_REASON = 'This session has no tool access.'
 
+// Agents never read the macOS Keychain through the `security` CLI: Devdy's item
+// holds PATs / tokens (and the sealed secret notes vault). Deny rules hold in
+// every permission mode, bypass included. A determined agent can still go around
+// a prefix rule (another binary, a script), which is why secret notes are also
+// encrypted under a password only the user knows.
+const KEYCHAIN_DENY_RULES = [
+  'Bash(security find-generic-password:*)',
+  'Bash(security find-internet-password:*)',
+  'Bash(security dump-keychain:*)',
+  'Bash(security export:*)',
+]
+
 // Lock a session's options down to text-only: no built-in tools, no MCP servers
 // (passed or from settings/plugins), no skills, and any tool call that still
 // reaches the permission layer is denied — never auto-approved. Used for the
@@ -386,6 +398,7 @@ function startQuery(firstText, opts = {}, firstImages) {
   // permission modal when the mode can actually gate a call (e.g. conductor
   // sessions run in bypass and never need it).
   if (permissionMode !== 'bypassPermissions') options.canUseTool = canUseTool
+  options.disallowedTools = KEYCHAIN_DENY_RULES
   // Model: explicit per-turn option wins, else the broker-provided env default.
   if (opts.model) options.model = opts.model
   else if (process.env.DEVDY_MODEL) options.model = process.env.DEVDY_MODEL

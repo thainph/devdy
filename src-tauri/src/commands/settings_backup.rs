@@ -544,6 +544,10 @@ struct SecretPayload {
     google_client: Option<GoogleClientCreds>,
     #[serde(default)]
     google_accounts: BTreeMap<String, String>,
+    /// The secret notes vault as the Keychain holds it: already sealed under the vault
+    /// password, so it needs that password too once imported.
+    #[serde(default)]
+    secret_vault: Option<crate::secret_vault::VaultData>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
@@ -1051,6 +1055,9 @@ async fn collect(
     }
     if with_secrets {
         secret.google_client = secrets::get_google_client();
+        secret.secret_vault = secrets::with_vault(false, |v| Ok(v.clone()))
+            .ok()
+            .filter(|v| v.header.is_some() || !v.old_headers.is_empty());
     }
 
     let claude_accounts = sqlx::query("SELECT id, label FROM claude_accounts ORDER BY label")
@@ -1464,6 +1471,7 @@ async fn collect_groups(
 #[tauri::command]
 pub async fn export_settings_backup(
     app: AppHandle,
+    webview: tauri::Webview,
     db: State<'_, Db>,
     path: String,
     password: Option<String>,
@@ -1477,7 +1485,10 @@ pub async fn export_settings_backup(
             "The password must be at least {MIN_PASSWORD_LEN} characters"
         ));
     }
-    let (mut bundle, payload) = collect(&app, db.inner(), password.is_some()).await?;
+    let (mut bundle, mut payload) = collect(&app, db.inner(), password.is_some()).await?;
+    if from_remote(&webview) {
+        payload.secret_vault = None;
+    }
     if let Some(password) = password {
         let sealed = tokio::task::spawn_blocking(move || seal(&payload, &password))
             .await
@@ -1487,6 +1498,13 @@ pub async fn export_settings_backup(
     let json = serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string())?;
     write_private_file(&path, &json)?;
     Ok(bundle.info())
+}
+
+/// Called by a Remote Control controller: the secret notes vault stays out of
+/// it (its sealed data would allow offline guessing of the vault password, and
+/// an import could overwrite notes).
+fn from_remote(webview: &tauri::Webview) -> bool {
+    webview.label() == crate::remote::ipc::BRIDGE_LABEL
 }
 
 // ---- Import ------------------------------------------------------------------
@@ -1499,6 +1517,7 @@ pub async fn inspect_settings_backup(path: String) -> Result<BackupInfo, String>
 #[tauri::command]
 pub async fn import_settings_backup(
     app: AppHandle,
+    webview: tauri::Webview,
     db: State<'_, Db>,
     path: String,
     password: Option<String>,
@@ -1516,6 +1535,10 @@ pub async fn import_settings_backup(
                 .await
                 .map_err(|e| e.to_string())??;
             report.secrets_imported = true;
+            let mut payload = payload;
+            if from_remote(&webview) {
+                payload.secret_vault = None;
+            }
             Some(payload)
         }
         (Some(_), None) => {
@@ -1670,6 +1693,12 @@ async fn apply_bundle(
     for entry in &bundle.azure_accounts {
         let result = import_azure(&app, db, entry).await;
         report.record("azureAccounts", &entry.label, result);
+    }
+    if let Some(vault) = secret.secret_vault.clone() {
+        match secrets::with_vault(true, |local| Ok(crate::secret_vault::import(local, vault))) {
+            Ok(n) => report.counts.entry("secretNotes".to_string()).or_default().created += n,
+            Err(e) => report.warnings.push(format!("Secret notes: {e}")),
+        }
     }
     if let Some(client) = &secret.google_client {
         let same = secrets::get_google_client().is_some_and(|c| {

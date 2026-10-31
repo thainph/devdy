@@ -11,6 +11,7 @@ mod item_links;
 mod procs;
 mod remote;
 mod runs;
+mod secret_vault;
 mod secrets;
 mod slack_threads;
 mod sync;
@@ -131,6 +132,11 @@ use commands::focus_ai::{
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
+};
+use commands::secret_vault::{
+    secret_note_copy, secret_note_create, secret_note_delete, secret_note_from_note, secret_note_reveal, secret_note_set_project,
+    secret_note_update, secret_notes_list, secret_notes_reorder, secret_vault_change_password, secret_vault_lock,
+    secret_vault_merge_old, secret_vault_setup, secret_vault_status, secret_vault_touch, secret_vault_unlock, secret_vault_unlock_recovery,
 };
 use commands::todos::{
     add_todo, clear_completed_todos, delete_todo, delete_todos, list_todos, reorder_todos,
@@ -338,6 +344,7 @@ pub fn run() {
             }
             // Focus reminders (focus::scheduler): a 60 s tick while the app runs.
             focus::scheduler::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
+            commands::secret_vault::spawn_auto_lock(app.handle().clone());
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
             app.manage(new_registry());
@@ -725,6 +732,23 @@ pub fn run() {
             delete_note,
             delete_notes,
             reorder_notes,
+            secret_vault_status,
+            secret_vault_setup,
+            secret_vault_unlock,
+            secret_vault_unlock_recovery,
+            secret_vault_lock,
+            secret_vault_touch,
+            secret_vault_change_password,
+            secret_vault_merge_old,
+            secret_notes_list,
+            secret_note_reveal,
+            secret_note_copy,
+            secret_note_create,
+            secret_note_update,
+            secret_note_set_project,
+            secret_note_delete,
+            secret_notes_reorder,
+            secret_note_from_note,
             get_inbox_api_info,
             regenerate_inbox_api_token,
             set_inbox_api_enabled,

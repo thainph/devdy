@@ -12,6 +12,8 @@ const DENIED_EVENTS = new Set([
   // src-tauri/src/commands/tray.rs OPEN_PROCS_EVENT / OPEN_RUN_EVENT
   'tray:open-processes',
   'tray://open-run',
+  // src-tauri/src/commands/secret_vault.rs SECRET_VAULT_EVENT (secret notes are local-only)
+  'secret-vault://changed',
 ])
 
 const DENIED_PREFIXES = ['remote-bridge://', 'tauri://']

@@ -1067,6 +1067,10 @@ dependencies = [
  "libc",
  "notify",
  "notify-rust",
+ "objc2-app-kit",
+ "objc2-core-foundation",
+ "objc2-core-graphics",
+ "objc2-foundation",
  "octocrab",
  "pbkdf2",
  "rand 0.8.6",
@@ -1096,6 +1100,7 @@ dependencies = [
  "unicode-normalization",
  "uuid",
  "walkdir",
+ "zeroize",
  "zip",
 ]
 

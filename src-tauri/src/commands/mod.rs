@@ -37,6 +37,7 @@ pub mod skills;
 pub mod slack_threads;
 pub mod stats;
 pub mod storage;
+pub mod secret_vault;
 pub mod sync;
 pub mod sync_bootstrap;
 pub mod sync_folder;
