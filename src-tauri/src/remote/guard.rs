@@ -1,6 +1,12 @@
 //! What a remote-desktop Controller may NOT do on this machine, enforced where
 //! the work happens.
 //!
+//! Policy: a paired remote desktop controls EVERYTHING the person at the
+//! keyboard can (accounts, MCP servers, VPS, backups, settings, the secret
+//! notes vault, files under HOME) — except Remote Control's own configuration,
+//! so a Controller can neither lock the owner out nor erase its traces, and
+//! except on-disk credentials, which no remote file read ever returns.
+//!
 //! A remote desktop's `invoke`s run in the hidden `remote-bridge` webview
 //! ([`BRIDGE_LABEL`]), so the webview label is the one fact the backend can
 //! trust about a call's origin — unlike the Controller's self-advertised `ipc`
@@ -9,9 +15,10 @@
 //!
 //! - [`refuses_invoke`]: the app's `invoke_handler` (lib.rs) refuses every
 //!   [`is_local_only_command`] coming from the bridge, whatever route it took.
-//!   The relay handler checks the same names first (defence in depth).
-//! - [`remote_may_set_setting`]: `update_setting` from the bridge only writes
-//!   the portable, user-facing settings.
+//!   The relay handler checks the same names first (defence in depth), and
+//!   audits those plus the sensitive ones it lets through ([`audited_command`]).
+//! - [`remote_may_set_setting`]: `update_setting` from the bridge writes any
+//!   setting but Remote Control's (and sync's) own.
 //! - [`SecretPaths`]: file reads from the bridge never return on-disk
 //!   credentials (Devdy's app data, `~/.ssh`, cloud CLI logins, …).
 //!
@@ -29,71 +36,15 @@ use crate::remote::ipc::BRIDGE_LABEL;
 /// command that does not exist, so a refused call fails like an unknown one.
 pub const DENIED: &str = "remote_denied_local_only";
 
-/// Command-name prefixes a Controller may never run on this machine: the secret
-/// notes vault (`secret_*`).
-const LOCAL_ONLY_PREFIXES: &[&str] = &["secret_"];
-
 /// Commands a Controller may never run on this machine.
 ///
-/// The `ipc` feature is self-advertised and the Host cannot tell a remote
-/// desktop from a phone (both sign in the same way), so this list is what keeps
-/// a paired device away from the Keychain. Rule: deny every command that
-/// returns, sets, validates or forgets a credential (PATs, cloud/CLI logins,
-/// OAuth clients, MCP env/header values, SSH keys and passphrases, the inbox
-/// API token, backups carrying secrets), and every command that changes who can
-/// reach this machine or its secrets (Remote Control config, master password,
-/// OTP / session links, sync-group membership, leadership and secret sync).
-/// Runs are not covered on purpose: they never see Keychain secrets
-/// (credential broker). Reads that only report key names or `has_*` flags stay
-/// allowed (`sync_get_secrets` returns a bool).
+/// Rule: everything that changes who can reach this machine, or wipes the
+/// record of who did (Remote Control config, master password, OTP / session
+/// links, kicking a Controller, clearing the audit, Web Push recipients), plus
+/// the plumbing of the CONTROLLING side. Everything else — credentials
+/// included — is the paired device's to manage, like the person at the
+/// keyboard ([`audited_command`] keeps a trace of the sensitive part).
 const LOCAL_ONLY_COMMANDS: &[&str] = &[
-    // Accounts: create / update / validate take or check a token; logins mint
-    // one; deletes drop it (and the projects linked to it).
-    "create_github_account",
-    "update_github_account",
-    "validate_github_account",
-    "delete_github_account",
-    "create_gitlab_account",
-    "update_gitlab_account",
-    "validate_gitlab_account",
-    "delete_gitlab_account",
-    "create_aws_account",
-    "update_aws_account",
-    "validate_aws_account",
-    "delete_aws_account",
-    "aws_sso_login",
-    "aws_sso_login_profile",
-    "create_azure_account",
-    "update_azure_account",
-    "validate_azure_account",
-    "delete_azure_account",
-    "azure_login",
-    "create_claude_account",
-    "validate_claude_account",
-    "delete_claude_account",
-    "login_claude_account",
-    "submit_claude_login_code",
-    "add_google_account",
-    "reauth_google_account",
-    "validate_google_account",
-    "delete_google_account",
-    "google_forget_client",
-    // MCP servers: create / update / import set env + header values; export
-    // writes them out in clear.
-    "create_mcp_server",
-    "update_mcp_server",
-    "import_mcp_server",
-    "export_mcp_server",
-    // VPS servers: create / update set the SSH key and passphrase.
-    "create_vps_server",
-    "update_vps_server",
-    // Backups carry (or overwrite) every secret above.
-    "export_settings_backup",
-    "import_settings_backup",
-    // Inbox API: returns / rotates its bearer token, opens a local listener.
-    "get_inbox_api_info",
-    "regenerate_inbox_api_token",
-    "set_inbox_api_enabled",
     // Sync: pairing a device into the group hands it the synced data (and the
     // secrets, when secret sync is on); membership, leadership, bootstrap and
     // folder moves reshape what the group holds.
@@ -138,7 +89,7 @@ const LOCAL_ONLY_COMMANDS: &[&str] = &[
 
 /// Whether `name` is refused to a Controller (see [`LOCAL_ONLY_COMMANDS`]).
 pub fn is_local_only_command(name: &str) -> bool {
-    LOCAL_ONLY_PREFIXES.iter().any(|p| name.starts_with(p)) || LOCAL_ONLY_COMMANDS.contains(&name)
+    LOCAL_ONLY_COMMANDS.contains(&name)
 }
 
 /// Whether the calling webview is the remote-desktop bridge.
@@ -165,22 +116,77 @@ pub fn gated<R: Runtime>(handler: impl Fn(Invoke<R>) -> bool + Send + Sync + 'st
     }
 }
 
-/// Whether the bridge may write setting `key`: only the user-facing settings a
-/// backup carries ([`PORTABLE_SETTING_KEYS`]). Everything else — machine paths
-/// of the CLIs that get the credentials (`claude_path`, `codex_path`), Remote
-/// Control (`remote_*`), sync (`sync_*`, group bookkeeping), secret sync
-/// (`secret_*`), the inbox API token — stays local.
-///
-/// [`PORTABLE_SETTING_KEYS`]: crate::commands::settings::PORTABLE_SETTING_KEYS
+/// Whether the bridge may write setting `key`: any but Remote Control's own
+/// (`remote_*`: relay URL, enabled, device id / alias, Web Push recipients and
+/// events — who can reach this machine) and sync's (`sync_*`: group,
+/// leadership, whether secrets leave this machine).
 pub fn remote_may_set_setting(key: &str) -> bool {
-    crate::commands::settings::PORTABLE_SETTING_KEYS.contains(&key) && !REMOTE_LOCAL_SETTINGS.contains(&key)
+    !key.is_empty() && !key.starts_with("remote_") && !key.starts_with("sync_")
 }
 
-/// Portable settings a remote desktop still may not change: they decide what
-/// every future run may do without asking (`default_permission_mode`) or pass
-/// raw flags to the CLI (`extra_args`, e.g. `--dangerously-skip-permissions`,
-/// `--mcp-config`).
-const REMOTE_LOCAL_SETTINGS: &[&str] = &["extra_args", "default_permission_mode"];
+/// Commands that, run by a remote desktop, leave a trace in the Remote Control
+/// audit (by name only — never their arguments): they take, mint, change or
+/// drop credentials, or reach the secret notes vault. `update_setting` is
+/// audited too, with its key (see the relay handler).
+const AUDITED_COMMANDS: &[&str] = &[
+    // Accounts (tokens, cloud / CLI logins, OAuth clients).
+    "create_github_account",
+    "update_github_account",
+    "validate_github_account",
+    "delete_github_account",
+    "create_gitlab_account",
+    "update_gitlab_account",
+    "validate_gitlab_account",
+    "delete_gitlab_account",
+    "create_aws_account",
+    "update_aws_account",
+    "validate_aws_account",
+    "delete_aws_account",
+    "aws_sso_login",
+    "aws_sso_login_profile",
+    "create_azure_account",
+    "update_azure_account",
+    "validate_azure_account",
+    "delete_azure_account",
+    "azure_login",
+    "create_claude_account",
+    "validate_claude_account",
+    "delete_claude_account",
+    "login_claude_account",
+    "submit_claude_login_code",
+    "add_google_account",
+    "reauth_google_account",
+    "validate_google_account",
+    "delete_google_account",
+    "google_forget_client",
+    // MCP servers: env + header values in, or out in clear.
+    "create_mcp_server",
+    "update_mcp_server",
+    "import_mcp_server",
+    "export_mcp_server",
+    // VPS servers: SSH key and passphrase.
+    "create_vps_server",
+    "update_vps_server",
+    // Backups carry (or overwrite) every secret above.
+    "export_settings_backup",
+    "import_settings_backup",
+    // Inbox API: its bearer token, its local listener.
+    "get_inbox_api_info",
+    "regenerate_inbox_api_token",
+    "set_inbox_api_enabled",
+];
+
+/// Vault commands too frequent or too bland to audit (status polls, the idle
+/// lock pushed back while typing, the list of titles).
+const UNAUDITED_SECRET_COMMANDS: &[&str] = &["secret_vault_status", "secret_vault_touch", "secret_notes_list"];
+
+/// Whether a remote desktop running `name` is recorded in the audit (see
+/// [`AUDITED_COMMANDS`]): those, and the secret notes vault (`secret_*`).
+pub fn audited_command(name: &str) -> bool {
+    AUDITED_COMMANDS.contains(&name)
+        || name == "update_setting"
+        || (name.starts_with("secret_") && !UNAUDITED_SECRET_COMMANDS.contains(&name))
+}
 
 // ---- On-disk credentials ----------------------------------------------------
 
@@ -449,16 +455,40 @@ mod tests {
     use std::fs;
 
     #[test]
-    fn secret_vault_commands_are_local_only() {
-        for name in ["secret_notes_list", "secret_note_reveal", "secret_vault_unlock", "secret_note_from_note"] {
+    fn only_remote_control_config_and_plumbing_are_local_only() {
+        for name in [
+            "remote_set_master_password",
+            "remote_reveal_otp",
+            "remote_create_session_link",
+            "remote_kick_controller",
+            "remote_set_config",
+            "remote_set_device_alias",
+            "remote_enable",
+            "remote_disable",
+            "remote_clear_audit",
+            "remote_push_remove",
+            "remote_push_set_events",
+            "remote_push_test",
+            "read_local_file_chunk",
+            "stat_local_files",
+            "rdfile_register",
+            "rdfile_respond",
+            "rd_download_create",
+            "rd_download_append",
+            "start_file_drag",
+        ] {
             assert!(is_local_only_command(name), "{name}");
         }
-        assert!(!is_local_only_command("list_notes"));
     }
 
     #[test]
-    fn credential_and_security_commands_are_local_only() {
+    fn everything_else_is_available_over_ipc() {
+        // Full control: credentials, the vault, backups and settings included.
         for name in [
+            "list_runs",
+            "start_run",
+            "send_user_message",
+            "list_github_accounts",
             "create_github_account",
             "validate_gitlab_account",
             "update_aws_account",
@@ -469,12 +499,8 @@ mod tests {
             "add_google_account",
             "reauth_google_account",
             "google_forget_client",
-            "delete_github_account",
-            "delete_gitlab_account",
-            "delete_aws_account",
-            "delete_azure_account",
-            "delete_claude_account",
             "delete_google_account",
+            "list_mcp_servers",
             "update_mcp_server",
             "export_mcp_server",
             "create_vps_server",
@@ -482,54 +508,13 @@ mod tests {
             "import_settings_backup",
             "get_inbox_api_info",
             "regenerate_inbox_api_token",
-            "sync_join_respond",
-            "sync_set_secrets",
-            "sync_prefs_set_categories",
-            "sync_revoke_device",
-            "sync_set_leader",
-            "sync_leave",
-            "sync_accept_close",
-            "sync_bootstrap_commit",
-            "sync_rebootstrap",
-            "sync_folder_apply",
-            "remote_set_master_password",
-            "remote_reveal_otp",
-            "remote_create_session_link",
-            "remote_kick_controller",
-            "remote_set_config",
-            "remote_enable",
-            "remote_disable",
-            "remote_clear_audit",
-            "remote_push_remove",
-            "remote_push_set_events",
-            "remote_push_test",
-            "read_local_file_chunk",
-            "stat_local_files",
-            "rd_download_create",
-        ] {
-            assert!(is_local_only_command(name), "{name}");
-        }
-    }
-
-    #[test]
-    fn everyday_commands_stay_available_over_ipc() {
-        // Remote desktop drives the normal UI: reads that expose only key names
-        // or `has_*` flags, and non-credential work, must still go through.
-        for name in [
-            "list_runs",
-            "start_run",
-            "send_user_message",
-            "list_github_accounts",
-            "list_mcp_servers",
-            "get_mcp_server",
-            "set_project_mcp_servers",
-            "list_vps_servers",
+            "secret_notes_list",
+            "secret_note_reveal",
+            "secret_vault_unlock",
+            "secret_note_from_note",
             "remote_status",
             "remote_end_session",
             "remote_fs_read",
-            "sync_status",
-            "sync_get_secrets",
-            "sync_prefs_get",
             "add_todo",
             "update_setting",
         ] {
@@ -540,11 +525,34 @@ mod tests {
     }
 
     #[test]
-    fn local_only_commands_are_registered() {
+    fn sensitive_commands_are_audited() {
+        for name in [
+            "create_github_account",
+            "delete_claude_account",
+            "aws_sso_login",
+            "update_mcp_server",
+            "export_mcp_server",
+            "update_vps_server",
+            "export_settings_backup",
+            "regenerate_inbox_api_token",
+            "secret_note_reveal",
+            "secret_note_copy",
+            "secret_vault_unlock",
+            "update_setting",
+        ] {
+            assert!(audited_command(name), "{name}");
+        }
+        for name in ["list_runs", "list_github_accounts", "secret_vault_touch", "secret_vault_status", "secret_notes_list"] {
+            assert!(!audited_command(name), "{name}");
+        }
+    }
+
+    #[test]
+    fn local_only_and_audited_commands_are_registered() {
         // A renamed command would silently fall off the list.
         let lib = include_str!("../lib.rs");
         let handler = &lib[lib.find("generate_handler![").expect("generate_handler! in lib.rs")..];
-        for name in LOCAL_ONLY_COMMANDS {
+        for name in LOCAL_ONLY_COMMANDS.iter().chain(AUDITED_COMMANDS) {
             assert!(
                 handler.lines().any(|l| l.trim().trim_end_matches(',').rsplit("::").next() == Some(name)),
                 "{name} is not in generate_handler!"
@@ -554,9 +562,10 @@ mod tests {
 
     #[test]
     fn the_invoke_gate_refuses_only_the_bridge() {
-        assert!(refuses_invoke(BRIDGE_LABEL, "export_settings_backup"));
-        assert!(refuses_invoke(BRIDGE_LABEL, "secret_note_reveal"));
+        assert!(refuses_invoke(BRIDGE_LABEL, "remote_set_master_password"));
         assert!(refuses_invoke(BRIDGE_LABEL, "read_local_file_chunk"));
+        assert!(!refuses_invoke(BRIDGE_LABEL, "export_settings_backup"));
+        assert!(!refuses_invoke(BRIDGE_LABEL, "secret_note_reveal"));
         assert!(!refuses_invoke(BRIDGE_LABEL, "list_runs"));
         // The bridge's own plumbing must keep working.
         assert!(!refuses_invoke(BRIDGE_LABEL, "remote_bridge_ready"));
@@ -564,7 +573,7 @@ mod tests {
         // The local UI (and the remote-desktop windows on the controlling side)
         // are not the bridge.
         for label in ["main", "remote-desktop", "remote-secret-notes", "secret-notes", "remote-bridge-x"] {
-            assert!(!refuses_invoke(label, "export_settings_backup"), "{label}");
+            assert!(!refuses_invoke(label, "remote_set_master_password"), "{label}");
         }
     }
 
@@ -604,28 +613,34 @@ mod tests {
     }
 
     #[test]
-    fn remote_settings_are_limited_to_portable_keys() {
-        for key in ["theme", "language", "default_engine", "saved_prompts", "claude_model", "codex_model"] {
+    fn remote_settings_are_all_but_remote_controls_own() {
+        for key in [
+            "theme",
+            "language",
+            "default_engine",
+            "claude_model",
+            "extra_args",
+            "default_permission_mode",
+            "claude_path",
+            "codex_path",
+            "node_path",
+            "inbox_api_enabled",
+            "project_path_map",
+            "member",
+            "secret_salt",
+        ] {
             assert!(remote_may_set_setting(key), "{key}");
         }
         for key in [
             "remote_enabled",
+            "remote_relay_url",
+            "remote_device_id",
+            "remote_device_alias",
+            "remote_push_events",
             "remote_anything",
             "sync_categories_off",
             "sync_leader_device",
-            "sync_device_name:abc",
-            "secret_salt",
-            "secret_key_moves",
-            "inbox_api_token",
-            "inbox_api_enabled",
-            "claude_path",
-            "codex_path",
-            "node_path",
-            "sidecar_path",
-            "project_path_map",
-            "member",
-            "extra_args",
-            "default_permission_mode",
+            "sync_secrets_enabled",
             "",
         ] {
             assert!(!remote_may_set_setting(key), "{key}");
