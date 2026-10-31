@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Host-side Remote Control settings. Lets the Owner enable the feature and
 // review the audit log; the relay, device name and master password it uses are
-// in DeviceRelaySettings (shared with Sync). Remote sessions are now
+// in DeviceRelaySettings. Remote sessions are now
 // created per-run via the Remote button inside a run (RemoteSessionModal) —
 // there is no global device pairing anymore.
 import { onMounted, onUnmounted, ref, computed } from 'vue'

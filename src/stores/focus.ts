@@ -21,8 +21,7 @@ import {
  * The board is recomputed by the backend, so writes simply refetch it: right
  * after our own writes, on `focus:changed` / `item:changed` and every 60 s so
  * the relative times stay true. The backend emits both events after every
- * todo write made through its commands (any window, the AI), after sync
- * applies todo rows, and — for writes that bypass it, like the MCP sidecar
+ * todo write made through its commands (any window, the AI), and — for writes that bypass it, like the MCP sidecar
  * writing SQLite directly — on the next 60 s reminder tick that sees the
  * table changed.
  */

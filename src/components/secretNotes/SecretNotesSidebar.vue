@@ -165,7 +165,7 @@ const groups = computed(() => {
 
     <!-- Groups -->
     <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-      <!-- Notes of another vault (sync / backup): merge with its password. -->
+      <!-- Notes of another vault (backup import): merge with its password. -->
       <form
         v-if="legacyCount"
         class="mb-2 space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5"

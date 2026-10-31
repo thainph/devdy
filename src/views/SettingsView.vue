@@ -461,8 +461,8 @@ const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 // the "Settings" buttons on the MCP Servers screen's built-in cards).
 const route = useRoute()
 const devicesTab = ref<DevicesTab>('remote')
-// Remote Control and Sync (`backup` before two-way sync) were sections of their own: now tabs of `devices`.
-const DEVICES_TAB_OF: Record<string, DevicesTab> = { remote: 'remote', sync: 'sync', backup: 'sync' }
+// Remote Control and Backup (once Sync) were sections of their own: now tabs of `devices`.
+const DEVICES_TAB_OF: Record<string, DevicesTab> = { remote: 'remote', sync: 'backup', backup: 'backup' }
 function applySectionFromRoute() {
   let target = route.query.section
   if (typeof target === 'string' && DEVICES_TAB_OF[target]) {

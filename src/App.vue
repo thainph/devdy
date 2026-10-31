@@ -20,8 +20,6 @@ import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import ActiveRemoteDock from '@/components/ActiveRemoteDock.vue'
 import RemoteDesktopIndicator from '@/components/RemoteDesktopIndicator.vue'
-import SyncIndicator from '@/components/SyncIndicator.vue'
-import SyncDialog from '@/components/SyncDialog.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -992,7 +990,6 @@ onMounted(async () => {
           <!-- Version footer -->
           <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
             <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
-            <SyncIndicator />
           </div>
         </div>
       </aside>
@@ -1042,9 +1039,6 @@ onMounted(async () => {
 
     <!-- App-wide toast host (see useToast) -->
     <ToastHost />
-
-    <!-- On-demand Sync dialog (opened from Settings → Sync and the sidebar indicator) -->
-    <SyncDialog />
 
     <!-- "Being controlled from another Devdy" pill + kill switch. Lives outside
          the sidebar so it stays visible when the sidebar is hidden. -->

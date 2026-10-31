@@ -1,17 +1,15 @@
 <script setup lang="ts">
-// Settings → Devices & Sync: the card both features share (relay, device name, master
-// password), then a tab each for Remote Control and for Sync (with the offline backup).
-// Tabs mount only while shown: Sync closes its "Accept a new device" window on unmount.
+// Settings → Devices: the relay card (relay, device name, master password), then a tab
+// each for Remote Control and for the offline backup.
 import { useI18n } from 'vue-i18n'
 import DeviceRelaySettings from '@/components/remote/DeviceRelaySettings.vue'
 import RemoteControlSettings from '@/components/remote/RemoteControlSettings.vue'
-import SettingsSync from '@/components/SettingsSync.vue'
 import SettingsBackup from '@/components/SettingsBackup.vue'
 
-export type DevicesTab = 'remote' | 'sync'
+export type DevicesTab = 'remote' | 'backup'
 
 const tab = defineModel<DevicesTab>('tab', { default: 'remote' })
-const TABS: DevicesTab[] = ['remote', 'sync']
+const TABS: DevicesTab[] = ['remote', 'backup']
 const { t } = useI18n()
 </script>
 
@@ -35,9 +33,6 @@ const { t } = useI18n()
     </div>
 
     <RemoteControlSettings v-if="tab === 'remote'" />
-    <template v-else>
-      <SettingsSync />
-      <SettingsBackup />
-    </template>
+    <SettingsBackup v-else />
   </div>
 </template>
