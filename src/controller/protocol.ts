@@ -1010,6 +1010,9 @@ export interface CmdPayload {
   label?: string
   /** `push_visibility`: whether the controller is on screen. */
   visible?: boolean
+  /** `push_subscribe`: sent on the phone's own initiative (a desktop removal
+   * stands), not from a tap on "turn on". */
+  auto?: boolean
 }
 
 /** The fields a `todo_update` may change (the Host refuses any other key). */
@@ -1322,8 +1325,13 @@ export function pushVisibilityCmd(visible: boolean): CmdPayload {
 }
 
 /** `push_subscribe` — the Host replies with a fresh {@link PushConfigKind}. */
-export function pushSubscribeCmd(sub: { endpoint: string; p256dh: string; auth: string; label: string }): CmdPayload {
-  return { kind: 'cmd', action: 'push_subscribe', ...sub }
+export function pushSubscribeCmd(
+  sub: { endpoint: string; p256dh: string; auth: string; label: string },
+  auto = false,
+): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'push_subscribe', ...sub }
+  if (auto) cmd.auto = true
+  return cmd
 }
 
 /** `push_unsubscribe`. */

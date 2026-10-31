@@ -12,6 +12,7 @@ import {
   pushSupport,
   pushUiState,
   sameServerKey,
+  shouldAutoResubscribe,
   subscriptionWire,
 } from '../remotePush.ts'
 
@@ -114,5 +115,88 @@ test('the service worker words counts in the phone language', () => {
 
 test('the service worker caches nothing', () => {
   const { listeners } = loadServiceWorker()
-  assert.deepEqual(Object.keys(listeners).sort(), ['activate', 'install', 'notificationclick', 'push'])
+  assert.deepEqual(Object.keys(listeners).sort(), [
+    'activate',
+    'install',
+    'notificationclick',
+    'push',
+    'pushsubscriptionchange',
+  ])
+})
+
+test('auto re-subscribe only when the Host lost a granted, current subscription', () => {
+  const base = { permission: 'granted', hasLocalSubscription: true, hostSubscribed: false, alreadyTried: false }
+  assert.equal(shouldAutoResubscribe(base), true)
+  assert.equal(shouldAutoResubscribe({ ...base, hostSubscribed: true }), false)
+  assert.equal(shouldAutoResubscribe({ ...base, hostSubscribed: null }), false, 'Host has not answered')
+  assert.equal(shouldAutoResubscribe({ ...base, permission: 'default' }), false)
+  assert.equal(shouldAutoResubscribe({ ...base, hasLocalSubscription: false }), false)
+  assert.equal(shouldAutoResubscribe({ ...base, alreadyTried: true }), false, 'once per endpoint per load')
+})
+
+function fakeWorkerEnv() {
+  const src = readFileSync(new URL('../../../public/controller-sw.js', import.meta.url), 'utf8')
+  const listeners = {}
+  const calls = []
+  const windows = []
+  const self = {
+    addEventListener: (type, fn) => (listeners[type] = fn),
+    navigator: {
+      language: 'en',
+      setAppBadge: async (n) => calls.push(['setAppBadge', n]),
+      clearAppBadge: async () => calls.push(['clearAppBadge']),
+    },
+    registration: {
+      showNotification: async (title, opts) => calls.push(['show', title, opts.tag]),
+      pushManager: { subscribe: async (o) => (calls.push(['subscribe', o.applicationServerKey]), {}) },
+    },
+    clients: {
+      matchAll: async () => windows,
+      openWindow: async (url) => calls.push(['openWindow', url]),
+    },
+  }
+  vm.runInNewContext(src, { self, URL })
+  const fire = async (type, event) => {
+    let done
+    listeners[type]({ ...event, waitUntil: (p) => (done = p) })
+    await done
+  }
+  return { fire, calls, windows }
+}
+
+test('the badge follows the pending count and clears at zero', async () => {
+  const w = fakeWorkerEnv()
+  const push = (data) => ({ data: { json: () => data } })
+  await w.fire('push', push({ v: 1, t: 'summary', pending: 2, done: 0, failed: 0 }))
+  await w.fire('push', push({ v: 1, t: 'summary', pending: 0, done: 1, failed: 0 }))
+  assert.deepEqual(
+    w.calls.filter((c) => c[0] !== 'show'),
+    [['setAppBadge', 2], ['clearAppBadge']],
+  )
+  assert.ok(w.calls.filter((c) => c[0] === 'show').every((c) => c[2] === 'devdy'), 'one tag')
+})
+
+test('a click focuses only the controller window, else opens it', async () => {
+  const w = fakeWorkerEnv()
+  const msgs = []
+  const win = (url) => ({ url, postMessage: (m) => msgs.push([url, m.type]), focus: async () => msgs.push([url, 'focus']) })
+  w.windows.push(win('https://relay.example/other'))
+  await w.fire('notificationclick', { notification: { close() {} } })
+  assert.deepEqual(w.calls.at(-1), ['openWindow', '/controller.html'])
+  assert.equal(msgs.length, 0)
+  w.windows.push(win('https://relay.example/controller.html#x'))
+  await w.fire('notificationclick', { notification: { close() {} } })
+  assert.deepEqual(msgs, [
+    ['https://relay.example/controller.html#x', 'devdy:open-inbox'],
+    ['https://relay.example/controller.html#x', 'focus'],
+  ])
+})
+
+test('a rotated subscription is renewed with the same key and reported to open windows', async () => {
+  const w = fakeWorkerEnv()
+  const msgs = []
+  w.windows.push({ url: 'https://relay.example/controller.html', postMessage: (m) => msgs.push(m.type) })
+  await w.fire('pushsubscriptionchange', { oldSubscription: { options: { applicationServerKey: 'KEY' } } })
+  assert.deepEqual(w.calls, [['subscribe', 'KEY']])
+  assert.deepEqual(msgs, ['devdy:subscription-changed'])
 })

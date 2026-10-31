@@ -475,6 +475,8 @@ window.addEventListener('pagehide', onPageHide)
 function onWorkerMessage(e: MessageEvent): void {
   const msg = e.data as { type?: unknown } | null
   if (msg?.type === 'devdy:open-inbox' && phase.value === 'session') openInbox()
+  // The browser rotated the push subscription: re-sync it with the Host.
+  if (msg?.type === 'devdy:subscription-changed' && hasPush.value) void push.refresh()
 }
 navigator.serviceWorker?.addEventListener('message', onWorkerMessage)
 

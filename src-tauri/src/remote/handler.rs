@@ -96,6 +96,9 @@ pub struct HandlerCtx {
     ///
     /// [`FEATURE_PUSH`]: crate::remote::protocol::FEATURE_PUSH
     pub push: bool,
+    /// Tags the push subscriptions this session makes, so ending or kicking
+    /// it drops them ([`crate::remote::push::session_tag`]).
+    pub push_session_tag: String,
 }
 
 impl HandlerCtx {
@@ -311,6 +314,14 @@ pub(super) async fn reject(ctx: &HandlerCtx, action: &str, run_id: Option<&str>,
 pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
     let action = cmd.action.as_str();
     let run_id = cmd.run_id.clone();
+
+    // Any frame from a phone proves it is alive: "on screen" stays fresh.
+    if ctx.push {
+        use tauri::Manager;
+        if let Some(state) = ctx.app.try_state::<crate::remote::RemoteState>() {
+            state.push.touch();
+        }
+    }
 
     // Remote desktop: a full UI driving this app as the local user would. Its
     // calls go to the bridge verbatim — no per-command allow-list or budget,

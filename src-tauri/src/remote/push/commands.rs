@@ -27,7 +27,9 @@ pub async fn remote_push_overview(db: State<'_, Db>) -> Result<PushOverview, Str
 
 #[tauri::command]
 pub async fn remote_push_remove(db: State<'_, Db>, id: String) -> Result<bool, String> {
-    Ok(store::remove_id(db.inner(), &id).await)
+    // A tombstone, not a delete: the phone's automatic re-subscribe must not
+    // bring it back (turning notifications on again on the phone does).
+    Ok(store::mark_removed(db.inner(), &id, &chrono::Utc::now().to_rfc3339()).await)
 }
 
 #[tauri::command]
@@ -43,6 +45,7 @@ pub async fn remote_push_test(db: State<'_, Db>, state: State<'_, RemoteState>, 
     match super::send_test(&state.push, db.inner(), &sub).await {
         Outcome::Delivered => Ok(()),
         Outcome::Gone => Err("not_found".into()),
+        Outcome::Unauthorized => Err("unauthorized".into()),
         Outcome::Failed(reason) => Err(reason),
     }
 }

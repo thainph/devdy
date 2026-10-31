@@ -10,6 +10,9 @@
  *     the text is composed here in the phone's language, so nothing about a
  *     run (tool, command, project, title) ever leaves the Host.
  *   - `notificationclick`: focus the open controller (or open one) on the Inbox.
+ *   - `pushsubscriptionchange`: re-subscribe with the same Host key and tell any
+ *     open controller, which hands the new endpoint to the Host (the worker
+ *     cannot reach the Host itself: that channel is end-to-end encrypted).
  */
 
 const TAG = 'devdy'
@@ -85,10 +88,14 @@ self.addEventListener('push', (event) => {
     badge: '/pwa-icon-192.png',
     data: { url: APP_URL },
   })
-  const badge =
-    self.navigator && typeof self.navigator.setAppBadge === 'function'
-      ? (n.badge ? self.navigator.setAppBadge(n.badge) : Promise.resolve()).catch(() => {})
-      : Promise.resolve()
+  const nav = self.navigator
+  const badge = !nav
+    ? Promise.resolve()
+    : n.badge && typeof nav.setAppBadge === 'function'
+      ? nav.setAppBadge(n.badge).catch(() => {})
+      : !n.badge && typeof nav.clearAppBadge === 'function'
+        ? nav.clearAppBadge().catch(() => {})
+        : Promise.resolve()
   event.waitUntil(Promise.all([shown, badge]))
 })
 
@@ -96,14 +103,27 @@ self.addEventListener('notificationclick', (event) => {
   event.notification.close()
   event.waitUntil(
     self.clients.matchAll({ type: 'window', includeUncontrolled: true }).then((list) => {
-      // Everything in this origin is the controller (nginx serves it for any
-      // path), so whichever window is open will do.
-      const open = list[0]
+      const open = list.find((c) => new URL(c.url).pathname === APP_URL)
       if (open) {
         open.postMessage({ type: 'devdy:open-inbox' })
         return open.focus()
       }
       return self.clients.openWindow(APP_URL)
     }),
+  )
+})
+
+self.addEventListener('pushsubscriptionchange', (event) => {
+  const old = event.oldSubscription
+  const resubscribe =
+    old && old.options && old.options.applicationServerKey
+      ? self.registration.pushManager
+          .subscribe({ userVisibleOnly: true, applicationServerKey: old.options.applicationServerKey })
+          .catch(() => null)
+      : Promise.resolve(null)
+  event.waitUntil(
+    resubscribe
+      .then(() => self.clients.matchAll({ type: 'window', includeUncontrolled: true }))
+      .then((list) => list.forEach((c) => c.postMessage({ type: 'devdy:subscription-changed' }))),
   )
 })

@@ -96,6 +96,51 @@ pub struct BurstCounts {
     pub failed: u32,
 }
 
+impl BurstCounts {
+    pub fn merge(self, other: BurstCounts) -> BurstCounts {
+        BurstCounts {
+            new_pending: self.new_pending.saturating_add(other.new_pending),
+            done: self.done.saturating_add(other.done),
+            failed: self.failed.saturating_add(other.failed),
+        }
+    }
+}
+
+/// Bursts that came due while a phone was on screen. They are not dropped:
+/// once the phone leaves (background, disconnect, gone quiet) whatever is
+/// still worth saying goes out at once.
+#[derive(Debug, Default)]
+pub struct Holder {
+    held: Option<BurstCounts>,
+}
+
+impl Holder {
+    /// A burst came due. Returns what to send now (with anything held), or
+    /// keeps it while `suppressed`.
+    pub fn on_due(&mut self, counts: BurstCounts, suppressed: bool) -> Option<BurstCounts> {
+        let merged = self.held.take().map_or(counts, |h| h.merge(counts));
+        if suppressed {
+            self.held = Some(merged);
+            None
+        } else {
+            Some(merged)
+        }
+    }
+
+    /// The phone may have left: hand out the held batch unless still suppressed.
+    pub fn release(&mut self, suppressed: bool) -> Option<BurstCounts> {
+        if suppressed {
+            None
+        } else {
+            self.held.take()
+        }
+    }
+
+    pub fn is_holding(&self) -> bool {
+        self.held.is_some()
+    }
+}
+
 /// Collapses events into bursts: the first event opens a window, later ones
 /// join it, and the burst is handed out once the window has elapsed.
 #[derive(Debug)]
@@ -169,11 +214,17 @@ pub fn compose(counts: BurstCounts, open_pending: u32, events: PushEvents) -> Op
     Some(PushMessage { v: 1, t: "summary", pending: Some(pending), done: Some(done), failed: Some(failed) })
 }
 
-/// Stay quiet while a Controller is connected and on screen: it already shows
-/// everything live. A phone that reported itself hidden (screen locked, app in
-/// the background) still gets notified.
-pub fn suppressed(controller_connected: bool, controller_visible: bool) -> bool {
-    controller_connected && controller_visible
+/// How long "on screen" holds without hearing from the phone. iOS can freeze
+/// a page before its `push_visibility(false)` gets out; a visible phone sends a
+/// heartbeat well inside this.
+pub const VISIBLE_STALE_AFTER: Duration = Duration::from_secs(60);
+
+/// Stay quiet while a phone Controller is connected and on screen: it already
+/// shows everything live. A phone that reported itself hidden (screen locked,
+/// app in the background), or has gone quiet past [`VISIBLE_STALE_AFTER`],
+/// still gets notified.
+pub fn suppressed(phone_connected: bool, phone_visible: bool, since_heard: Duration) -> bool {
+    phone_connected && phone_visible && since_heard < VISIBLE_STALE_AFTER
 }
 
 #[cfg(test)]
@@ -248,11 +299,37 @@ mod tests {
     }
 
     #[test]
-    fn only_a_connected_visible_controller_silences_pushes() {
-        assert!(suppressed(true, true));
-        assert!(!suppressed(true, false), "phone reported hidden");
-        assert!(!suppressed(false, true));
-        assert!(!suppressed(false, false));
+    fn only_a_connected_visible_recently_heard_phone_silences_pushes() {
+        let fresh = Duration::from_secs(5);
+        assert!(suppressed(true, true, fresh));
+        assert!(!suppressed(true, false, fresh), "phone reported hidden");
+        assert!(!suppressed(false, true, fresh));
+        assert!(!suppressed(false, false, fresh));
+        assert!(!suppressed(true, true, VISIBLE_STALE_AFTER), "frozen before it could say so");
+    }
+
+    #[test]
+    fn suppressed_bursts_are_held_and_released_together() {
+        let one = |k: PushKind| {
+            let mut c = BurstCounts::default();
+            match k {
+                PushKind::Pending => c.new_pending = 1,
+                PushKind::Done => c.done = 1,
+                PushKind::Failed => c.failed = 1,
+            }
+            c
+        };
+        let mut h = Holder::default();
+        assert_eq!(h.on_due(one(PushKind::Pending), true), None);
+        assert_eq!(h.on_due(one(PushKind::Done), true), None);
+        assert!(h.is_holding());
+        assert_eq!(h.release(true), None, "still on screen");
+        assert_eq!(h.release(false), Some(BurstCounts { new_pending: 1, done: 1, failed: 0 }));
+        assert!(!h.is_holding());
+        assert_eq!(h.release(false), None, "released once");
+        // Held counts ride along with the next burst that is sent.
+        h.on_due(one(PushKind::Failed), true);
+        assert_eq!(h.on_due(one(PushKind::Done), false), Some(BurstCounts { new_pending: 0, done: 1, failed: 1 }));
     }
 
     #[test]

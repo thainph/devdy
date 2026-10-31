@@ -48,6 +48,26 @@ export function pushUiState(input: {
   return input.permission === 'granted' && input.browserSubscribed && input.hostSubscribed ? 'on' : 'off'
 }
 
+/** Re-subscribe on the Host without asking the user: notifications were
+ * granted and this browser still holds a subscription for the Host's key, but
+ * the Host lost it (kicked session, key replaced, rotated endpoint). The Host
+ * refuses this for a device removed on the desktop. */
+export function shouldAutoResubscribe(input: {
+  permission: 'default' | 'granted' | 'denied'
+  /** A local subscription made with the Host's current key. */
+  hasLocalSubscription: boolean
+  hostSubscribed: boolean | null
+  /** Already tried for this endpoint on this page load. */
+  alreadyTried: boolean
+}): boolean {
+  return (
+    input.permission === 'granted' &&
+    input.hasLocalSubscription &&
+    input.hostSubscribed === false &&
+    !input.alreadyTried
+  )
+}
+
 /** base64url (VAPID public key) → bytes for `applicationServerKey`. */
 export function base64UrlToBytes(s: string): Uint8Array {
   const b64 = s.replace(/-/g, '+').replace(/_/g, '/')

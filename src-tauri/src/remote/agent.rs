@@ -1242,6 +1242,7 @@ async fn try_authenticate_first_frame(
         ipc,
         data,
         push,
+        push_session_tag: crate::remote::push::session_tag(&session_secret),
     });
     *room_ctx = Some(ctx.clone());
 

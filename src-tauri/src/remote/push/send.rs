@@ -63,6 +63,9 @@ pub enum Outcome {
     Delivered,
     /// 404 / 410: the subscription expired or was revoked — forget it.
     Gone,
+    /// 401 / 403: the push service refused our VAPID credentials for this
+    /// subscription. Once could be a clock blip; several in a row means gone.
+    Unauthorized,
     Failed(String),
 }
 
@@ -70,6 +73,7 @@ pub fn classify(status: u16) -> Outcome {
     match status {
         200..=299 => Outcome::Delivered,
         404 | 410 => Outcome::Gone,
+        401 | 403 => Outcome::Unauthorized,
         s => Outcome::Failed(format!("http {s}")),
     }
 }
@@ -114,6 +118,12 @@ pub async fn send(client: &reqwest::Client, vapid: &SecretKey, subject: &str, su
 /// Record what a delivery attempt means for the stored subscription.
 pub async fn apply_outcome(db: &Db, sub: &Subscription, outcome: &Outcome) {
     match outcome {
+        Outcome::Unauthorized => {
+            if store::note_auth_failure(db, &sub.id).await {
+                store::remove_id(db, &sub.id).await;
+                tracing::info!(event = "remote_push_subscription_unauthorized", id = %sub.id);
+            }
+        }
         Outcome::Delivered => store::mark_ok(db, &sub.id, &chrono::Utc::now().to_rfc3339()).await,
         Outcome::Gone => {
             store::remove_id(db, &sub.id).await;
@@ -137,7 +147,7 @@ pub async fn deliver(db: &Db, client: &reqwest::Client, vapid: &SecretKey, subje
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::remote::push::store::tests::mem_db;
+    use crate::remote::push::store::tests::{mem_db, row};
 
     #[test]
     fn only_https_push_services_are_accepted() {
@@ -179,6 +189,8 @@ mod tests {
         assert_eq!(classify(201), Outcome::Delivered);
         assert_eq!(classify(404), Outcome::Gone);
         assert_eq!(classify(410), Outcome::Gone);
+        assert_eq!(classify(401), Outcome::Unauthorized);
+        assert_eq!(classify(403), Outcome::Unauthorized);
         assert_eq!(classify(429), Outcome::Failed("http 429".into()));
         assert_eq!(classify(413), Outcome::Failed("http 413".into()));
     }
@@ -186,8 +198,8 @@ mod tests {
     #[tokio::test]
     async fn a_gone_subscription_is_removed_and_a_delivery_is_recorded() {
         let db = mem_db().await;
-        store::upsert(&db, "https://fcm.googleapis.com/a", "k", "a", "A", "t").await.unwrap();
-        store::upsert(&db, "https://fcm.googleapis.com/b", "k", "a", "B", "t").await.unwrap();
+        store::upsert(&db, row("https://fcm.googleapis.com/a"), "t").await.unwrap();
+        store::upsert(&db, row("https://fcm.googleapis.com/b"), "t").await.unwrap();
         let a = store::by_endpoint(&db, "https://fcm.googleapis.com/a").await.unwrap();
         let b = store::by_endpoint(&db, "https://fcm.googleapis.com/b").await.unwrap();
 
@@ -200,5 +212,22 @@ mod tests {
 
         apply_outcome(&db, &b, &classify(201)).await;
         assert!(store::by_id(&db, &b.id).await.unwrap().last_ok_at.is_some());
+    }
+
+    #[tokio::test]
+    async fn repeated_auth_refusals_count_as_gone_and_a_delivery_resets_them() {
+        let db = mem_db().await;
+        store::upsert(&db, row("https://web.push.apple.com/a"), "t").await.unwrap();
+        let a = store::by_endpoint(&db, "https://web.push.apple.com/a").await.unwrap();
+        apply_outcome(&db, &a, &classify(403)).await;
+        apply_outcome(&db, &a, &classify(401)).await;
+        apply_outcome(&db, &a, &classify(201)).await;
+        assert_eq!(store::by_id(&db, &a.id).await.unwrap().auth_failures, 0);
+        for _ in 0..store::MAX_AUTH_FAILURES - 1 {
+            apply_outcome(&db, &a, &classify(403)).await;
+        }
+        assert!(store::by_id(&db, &a.id).await.is_some(), "not yet");
+        apply_outcome(&db, &a, &classify(403)).await;
+        assert!(store::by_id(&db, &a.id).await.is_none());
     }
 }

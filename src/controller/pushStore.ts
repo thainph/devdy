@@ -14,6 +14,7 @@ import {
   pushUiState,
   base64UrlToBytes,
   sameServerKey,
+  shouldAutoResubscribe,
   subscriptionWire,
   type PushSupport,
   type PushUiState,
@@ -30,6 +31,11 @@ import {
 } from './protocol.ts'
 
 const SW_URL = '/controller-sw.js'
+
+/** While on screen, re-assert visibility this often: the Host treats "on
+ * screen" as stale after 60s of silence (iOS may freeze the page before it
+ * can say it left). */
+const VISIBLE_HEARTBEAT_MS = 30_000
 
 /** Register the (non-caching) service worker at the site root. Never inside
  * the desktop app's webview. */
@@ -123,8 +129,17 @@ export function createPushStore(send: SendCommand) {
     }
   }
 
+  /** Endpoints already re-subscribed automatically on this page load. */
+  const autoTried = new Set<string>()
+  let heartbeat: ReturnType<typeof setInterval> | null = null
+
   /** Ask the Host for its key and whether it knows this browser. */
   async function refresh(): Promise<void> {
+    if (!heartbeat) {
+      heartbeat = setInterval(() => {
+        if (document.visibilityState === 'visible') send(pushVisibilityCmd(true))
+      }, VISIBLE_HEARTBEAT_MS)
+    }
     state.permission = permissionNow()
     const sub = await currentSubscription()
     state.endpoint = sub?.endpoint ?? null
@@ -143,10 +158,31 @@ export function createPushStore(send: SendCommand) {
    * another key (another Host, or one the Host replaced) does not count. When
    * that changes which endpoint we hold, ask again about the right one. */
   async function reconcile(): Promise<void> {
-    const endpoint = (await currentSubscription())?.endpoint ?? null
-    if (endpoint === state.endpoint) return
-    state.endpoint = endpoint
-    send(pushConfigCmd(endpoint))
+    const sub = await currentSubscription()
+    const endpoint = sub?.endpoint ?? null
+    if (endpoint !== state.endpoint) {
+      state.endpoint = endpoint
+      send(pushConfigCmd(endpoint))
+      return
+    }
+    state.permission = permissionNow()
+    if (
+      !sub ||
+      state.busy ||
+      !shouldAutoResubscribe({
+        permission: state.permission,
+        hasLocalSubscription: true,
+        hostSubscribed: state.hostSubscribed,
+        alreadyTried: autoTried.has(sub.endpoint),
+      })
+    ) {
+      return
+    }
+    autoTried.add(sub.endpoint)
+    const wire = subscriptionWire(sub.toJSON())
+    // Answered with a fresh push_config when accepted; a refusal (removed on
+    // the desktop) just leaves the switch off.
+    if (wire) send(pushSubscribeCmd({ ...wire, label: deviceLabel(navigator.userAgent, env.ios) }, true))
   }
 
   function ack(resolve: (ok: boolean) => void) {
@@ -174,6 +210,9 @@ export function createPushStore(send: SendCommand) {
       const reg = await registration()
       let sub = await reg.pushManager.getSubscription()
       if (sub && !sameServerKey(sub.options.applicationServerKey, state.vapidKey)) {
+        // Made for another Host key: tell the Host to forget it first, or its
+        // row lingers and every send to it fails verification.
+        send(pushUnsubscribeCmd(sub.endpoint))
         await sub.unsubscribe().catch(() => false)
         sub = null
       }

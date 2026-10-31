@@ -162,7 +162,16 @@ pub async fn remote_end_session(
     db: State<'_, Db>,
     state: State<'_, RemoteState>,
 ) -> Result<(), String> {
-    let run_id = state.bound.lock().await.take().map(|b| b.run_id);
+    let bound = state.bound.lock().await.take();
+    let secret = bound
+        .as_ref()
+        .map(|b| b.session_secret.clone())
+        .or_else(|| crate::secrets::get_remote_session().map(|c| c.session_secret));
+    let run_id = bound.map(|b| b.run_id);
+    // The devices that subscribed through this session stop being notified.
+    if let Some(secret) = secret {
+        crate::remote::push::forget_session(db.inner(), &secret).await;
+    }
     // The agent sees no bound session and revokes its relay listen + room.
     state.announce_signal.notify_one();
     let _ = crate::secrets::delete_remote_session();
@@ -301,6 +310,12 @@ pub async fn remote_kick_controller(
     db: State<'_, Db>,
     state: State<'_, RemoteState>,
 ) -> Result<(), String> {
+    // The signed-out session's phones stop being notified (they subscribe
+    // again after signing back in).
+    let secret = state.bound.lock().await.as_ref().map(|b| b.session_secret.clone());
+    if let Some(secret) = secret {
+        crate::remote::push::forget_session(db.inner(), &secret).await;
+    }
     // Rotate before cutting the room, so a fast re-join already meets the new
     // secret. Done even when nobody is attached right now (e.g. a controller
     // mid-reconnect): the owner asked for it to be signed out.

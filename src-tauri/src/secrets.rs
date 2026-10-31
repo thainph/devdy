@@ -824,13 +824,25 @@ pub fn get_remote_vapid_key() -> Option<String> {
         .filter(|k| !k.trim().is_empty())
 }
 
-/// Persist the Web Push VAPID private key (base64url).
-pub fn set_remote_vapid_key(key: &str) -> Result<()> {
+/// The Web Push VAPID private key (base64url), minted with `generate` and
+/// stored if there is none yet. Read-or-create happens under one lock, so two
+/// callers racing on first use cannot each keep a different key.
+pub fn get_or_create_remote_vapid_key(generate: impl FnOnce() -> String) -> Result<String> {
     let mut guard = CACHE.lock().map_err(|_| anyhow!("secret cache poisoned"))?;
     ensure_loaded(&mut guard);
     let store = guard.as_mut().expect("store loaded");
-    store.remote.vapid_private_key = Some(key.to_string());
-    persist(store)
+    if let Some(k) = store.remote.vapid_private_key.clone().filter(|k| !k.trim().is_empty()) {
+        return Ok(k);
+    }
+    let key = generate();
+    store.remote.vapid_private_key = Some(key.clone());
+    if let Err(e) = persist(store) {
+        // Not kept: a later attempt mints again rather than trusting a key
+        // that would vanish with this process.
+        store.remote.vapid_private_key = None;
+        return Err(e);
+    }
+    Ok(key)
 }
 
 /// Persist (or replace) the single remote session's reconnect credential.

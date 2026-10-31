@@ -106,20 +106,27 @@ async fn send_config(ctx: &HandlerCtx, endpoint: Option<&str>) -> Result<(), &'s
         tracing::warn!(event = "remote_push_vapid_unavailable", error = %e);
         "push_unavailable"
     })?;
+    let public = super::vapid_public_key(&key);
     let subscribed = match endpoint.map(str::trim).filter(|e| !e.is_empty()) {
-        Some(e) => store::by_endpoint(&ctx.db, e).await.is_some(),
+        Some(e) => counts_as_subscribed(store::by_endpoint(&ctx.db, e).await.as_ref(), &public),
         None => false,
     };
     send_payload(
         ctx,
         StreamPayload::PushConfig {
-            vapid_public_key: super::vapid_public_key(&key),
+            vapid_public_key: public,
             subscribed,
             events: store::events(&ctx.db).await,
         },
     )
     .await;
     Ok(())
+}
+
+/// Whether the Host will notify this row: present, not removed on the
+/// desktop, and made for the Host's current key.
+pub fn counts_as_subscribed(row: Option<&store::Subscription>, vapid_public_key: &str) -> bool {
+    row.is_some_and(|r| !r.removed && r.vapid_key == vapid_public_key)
 }
 
 async fn config(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static str> {
@@ -136,11 +143,23 @@ fn visibility(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static str> {
 
 async fn subscribe(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static str> {
     let sub = validate_subscribe(cmd).map_err(RejectReason::as_str)?;
+    let key = super::vapid_key().map_err(|_| "push_unavailable")?;
+    let vapid_public = super::vapid_public_key(&key);
     let now = chrono::Utc::now().to_rfc3339();
-    store::upsert(&ctx.db, &sub.endpoint, &sub.p256dh, &sub.auth, &sub.label, &now)
+    let row = store::NewRow {
+        endpoint: &sub.endpoint,
+        p256dh: &sub.p256dh,
+        auth: &sub.auth,
+        label: &sub.label,
+        vapid_key: &vapid_public,
+        session_tag: &ctx.push_session_tag,
+        automatic: cmd.auto == Some(true),
+    };
+    store::upsert(&ctx.db, row, &now)
         .await
         .map_err(|e| match e {
             store::UpsertError::TooMany => "too_many_devices",
+            store::UpsertError::Removed => "removed_on_desktop",
             store::UpsertError::Db(e) => {
                 tracing::warn!(event = "remote_push_subscribe_failed", error = %e);
                 "failed"
@@ -162,14 +181,14 @@ pub fn test_failure(outcome: &send::Outcome) -> Option<&'static str> {
     match outcome {
         send::Outcome::Delivered => None,
         send::Outcome::Gone => Some("not_found"),
-        send::Outcome::Failed(_) => Some("push_failed"),
+        send::Outcome::Unauthorized | send::Outcome::Failed(_) => Some("push_failed"),
     }
 }
 
 /// Validate a `push_test` here, then send it on its own task.
 async fn start_test(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static str> {
     let endpoint = validate_endpoint(cmd).map_err(RejectReason::as_str)?;
-    let sub = store::by_endpoint(&ctx.db, &endpoint).await.ok_or("not_found")?;
+    let sub = store::by_endpoint(&ctx.db, &endpoint).await.filter(|s| !s.removed).ok_or("not_found")?;
     let hub = hub(ctx).ok_or("push_unavailable")?;
     let reply = Reply {
         db: ctx.db.clone(),
@@ -272,6 +291,28 @@ mod tests {
         assert_eq!(test_failure(&send::Outcome::Delivered), None);
         assert_eq!(test_failure(&send::Outcome::Gone), Some("not_found"));
         assert_eq!(test_failure(&send::Outcome::Failed("http 500".into())), Some("push_failed"));
+    }
+
+    #[test]
+    fn only_a_live_row_for_the_current_key_counts_as_subscribed() {
+        let row = |removed: bool, key: &str| store::Subscription {
+            id: "i".into(),
+            endpoint: "e".into(),
+            p256dh: "p".into(),
+            auth: "a".into(),
+            label: String::new(),
+            events: Default::default(),
+            created_at: "t".into(),
+            last_ok_at: None,
+            vapid_key: key.into(),
+            session_tag: String::new(),
+            removed,
+            auth_failures: 0,
+        };
+        assert!(counts_as_subscribed(Some(&row(false, "K")), "K"));
+        assert!(!counts_as_subscribed(Some(&row(false, "OLD")), "K"), "made for another key");
+        assert!(!counts_as_subscribed(Some(&row(true, "K")), "K"), "removed on the desktop");
+        assert!(!counts_as_subscribed(None, "K"));
     }
 
     #[test]

@@ -742,6 +742,10 @@ pub struct CmdPayload {
     /// `push_visibility`: whether the controller is on screen.
     #[serde(default)]
     pub visible: Option<bool>,
+    /// `push_subscribe`: the phone re-subscribed on its own (not a tap on
+    /// "turn on"), so a removal on the desktop stands.
+    #[serde(default)]
+    pub auto: Option<bool>,
 }
 
 /// The E2E handshake exchange (spec §3). Ephemeral public keys are NOT secret,
