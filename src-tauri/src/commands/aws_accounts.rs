@@ -306,8 +306,8 @@ pub async fn delete_aws_account(
     id: String,
 ) -> Result<(), String> {
     let _ = secrets::delete_aws_secret(&id);
-    // Capture the projects losing this account before we NULL the link, so their
-    // now-stale sandboxes can be removed.
+    // Capture the projects using this account as their default before we NULL
+    // the link: their sandboxes follow the new default (or are removed).
     let affected: Vec<String> =
         sqlx::query_scalar("SELECT id FROM projects WHERE aws_account_id = ?")
             .bind(&id)
@@ -318,14 +318,23 @@ pub async fn delete_aws_account(
         .bind(&id)
         .execute(db.inner())
         .await;
+    // project_aws_accounts cascades; a project that used it as the default falls
+    // back to another enabled account.
     sqlx::query("DELETE FROM aws_accounts WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    super::project_git_accounts::repair_defaults(
+        db.inner(),
+        super::project_git_accounts::AWS,
+        None,
+    )
+    .await?;
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         for project_id in &affected {
-            crate::aws_sandbox::remove_project_aws_config(&app_data_dir, project_id);
+            crate::aws_sandbox::write_project_aws_config(db.inner(), &app_data_dir, project_id)
+                .await;
         }
     }
     Ok(())
@@ -371,6 +380,8 @@ pub async fn aws_sso_login(db: State<'_, Db>, id: String) -> Result<(), String> 
     crate::commands::aws_sso::run_sso_login(profile_name).await
 }
 
+/// Make `account_id` the project's default AWS account (enabling it), or clear
+/// the default with `None`.
 #[tauri::command]
 pub async fn set_project_aws_account(
     app: AppHandle,
@@ -378,12 +389,13 @@ pub async fn set_project_aws_account(
     project_id: String,
     account_id: Option<String>,
 ) -> Result<(), String> {
-    sqlx::query("UPDATE projects SET aws_account_id = ? WHERE id = ?")
-        .bind(&account_id)
-        .bind(&project_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    super::project_git_accounts::set_default(
+        db.inner(),
+        super::project_git_accounts::AWS,
+        &project_id,
+        account_id.as_deref(),
+    )
+    .await?;
     // Refresh (or remove) the project's AWS sandbox so runs read current config
     // without ever writing it themselves.
     if let Ok(app_data_dir) = app.path().app_data_dir() {

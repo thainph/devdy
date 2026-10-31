@@ -747,6 +747,37 @@ export function listGitAccounts() {
   ];
 }
 
+// ---- Cloud accounts -----------------------------------------------------------
+
+/**
+ * AWS / Azure accounts enabled for the current project (plus its default
+ * account), with which one is the default. A command picks another one with
+ * `DEVDY_AWS_ACCOUNT=<label>` / `DEVDY_AZURE_ACCOUNT=<label>`. Metadata only —
+ * AWS secret keys stay in the Keychain and az sessions in Devdy's config dirs.
+ */
+export function listCloudAccounts() {
+  const projectId = process.env.DEVDY_PROJECT_ID || null;
+  if (!projectId) return { aws: [], azure: [] };
+  const query = (table, link, column, cols) =>
+    db()
+      .prepare(
+        `SELECT a.id, a.label, ${cols}, a.id = p.${column} AS is_default
+         FROM ${table} a JOIN projects p ON p.id = ?
+         WHERE a.id IN (SELECT account_id FROM ${link} WHERE project_id = p.id) OR a.id = p.${column}
+         ORDER BY a.label COLLATE NOCASE, a.id`,
+      )
+      .all(projectId);
+  return {
+    aws: query('aws_accounts', 'project_aws_accounts', 'aws_account_id', 'a.account_id, a.region, a.profile_name'),
+    azure: query(
+      'azure_accounts',
+      'project_azure_accounts',
+      'azure_account_id',
+      'a.subscription_name, a.subscription_id, a.tenant_id',
+    ),
+  };
+}
+
 export function getServer(id) {
   if (!id) throw new Error('server id is required');
   return db()

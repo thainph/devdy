@@ -149,6 +149,11 @@ struct ProjectEntry {
     github_accounts: Vec<String>,
     #[serde(default)]
     gitlab_accounts: Vec<String>,
+    /// Every AWS / Azure account enabled for the project (labels).
+    #[serde(default)]
+    aws_accounts: Vec<String>,
+    #[serde(default)]
+    azure_accounts: Vec<String>,
     #[serde(default)]
     aws_account: Option<String>,
     #[serde(default)]
@@ -1265,6 +1270,16 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
              WHERE pa.project_id = ? ORDER BY a.label",
         )
         .await?;
+        let aws_accounts = names(
+            "SELECT a.label FROM project_aws_accounts pa JOIN aws_accounts a ON a.id = pa.account_id \
+             WHERE pa.project_id = ? ORDER BY a.label",
+        )
+        .await?;
+        let azure_accounts = names(
+            "SELECT a.label FROM project_azure_accounts pa JOIN azure_accounts a ON a.id = pa.account_id \
+             WHERE pa.project_id = ? ORDER BY a.label",
+        )
+        .await?;
         let servers = sqlx::query(
             "SELECT s.label, ps.role FROM project_servers ps JOIN servers s ON s.id = ps.server_id \
              WHERE ps.project_id = ? ORDER BY ps.role, s.label",
@@ -1295,6 +1310,8 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
             gitlab_account: row.get("gitlab_account"),
             github_accounts,
             gitlab_accounts,
+            aws_accounts,
+            azure_accounts,
             aws_account: row.get("aws_account"),
             azure_account: row.get("azure_account"),
             claude_account: row.get("claude_account"),
@@ -3053,7 +3070,7 @@ async fn import_project(
         }
     }
 
-    // Enabled git accounts: the listed ones plus the default (and an old
+    // Enabled git / cloud accounts: the listed ones plus the default (and an old
     // backup's reviewer), so the default stays inside the enabled set.
     for (provider, table, labels) in [
         (
@@ -3071,6 +3088,16 @@ async fn import_project(
             "gitlab_accounts",
             entry.gitlab_accounts.iter().chain(&entry.gitlab_account).collect(),
         ),
+        (
+            super::project_git_accounts::AWS,
+            "aws_accounts",
+            entry.aws_accounts.iter().chain(&entry.aws_account).collect(),
+        ),
+        (
+            super::project_git_accounts::AZURE,
+            "azure_accounts",
+            entry.azure_accounts.iter().chain(&entry.azure_account).collect(),
+        ),
     ] {
         let mut labels = labels;
         labels.sort();
@@ -3081,7 +3108,7 @@ async fn import_project(
                     touched |= super::project_git_accounts::enable(db, provider, &id, &account_id)
                         .await?;
                 }
-                None => warnings.push(format!("git account '{label}' not found")),
+                None => warnings.push(format!("account '{label}' not found in {table}")),
             }
         }
         super::project_git_accounts::repair_defaults(db, provider, Some(&id)).await?;

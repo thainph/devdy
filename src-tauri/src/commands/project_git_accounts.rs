@@ -1,13 +1,14 @@
-//! Per-project enabled GitHub / GitLab accounts (toggled on/off like servers).
+//! Per-project enabled GitHub / GitLab / AWS / Azure accounts (toggled on/off
+//! like servers).
 //!
-//! `project_github_accounts` / `project_gitlab_accounts` hold the enabled set;
-//! `projects.github_account_id` / `gitlab_account_id` hold the default, which is
+//! `project_{github,gitlab,aws,azure}_accounts` hold the enabled set;
+//! `projects.{github,gitlab,aws,azure}_account_id` hold the default, which is
 //! always kept inside the enabled set: enabling the first account makes it the
 //! default, disabling (or deleting) the default promotes another enabled one.
-//! Ids only — PATs stay in the Keychain.
+//! Ids only — PATs and cloud credentials stay in the Keychain / CLI config.
 
 use crate::db::Db;
-use tauri::State;
+use tauri::{AppHandle, Manager, State};
 
 /// Tables and columns of one provider.
 #[derive(Clone, Copy)]
@@ -29,11 +30,31 @@ pub const GITLAB: Provider = Provider {
     default_column: "gitlab_account_id",
 };
 
+pub const AWS: Provider = Provider {
+    link_table: "project_aws_accounts",
+    account_table: "aws_accounts",
+    default_column: "aws_account_id",
+};
+
+pub const AZURE: Provider = Provider {
+    link_table: "project_azure_accounts",
+    account_table: "azure_accounts",
+    default_column: "azure_account_id",
+};
+
 fn provider(name: &str) -> Result<Provider, String> {
     match name {
         "github" => Ok(GITHUB),
         "gitlab" => Ok(GITLAB),
         other => Err(format!("unknown git provider: {other}")),
+    }
+}
+
+fn cloud_provider(name: &str) -> Result<Provider, String> {
+    match name {
+        "aws" => Ok(AWS),
+        "azure" => Ok(AZURE),
+        other => Err(format!("unknown cloud provider: {other}")),
     }
 }
 
@@ -159,6 +180,29 @@ pub async fn set_project_git_account_enabled(
         enabled,
     )
     .await
+}
+
+/// Toggle one AWS (`provider = "aws"`) or Azure (`"azure"`) account for a
+/// project.
+#[tauri::command]
+pub async fn set_project_cloud_account_enabled(
+    app: AppHandle,
+    db: State<'_, Db>,
+    project_id: String,
+    provider: String,
+    account_id: String,
+    enabled: bool,
+) -> Result<(), String> {
+    let p = cloud_provider(&provider)?;
+    set_enabled(db.inner(), p, &project_id, &account_id, enabled).await?;
+    // The default may have changed: the AWS sandbox pins its region.
+    if p.default_column == AWS.default_column {
+        if let Ok(app_data_dir) = app.path().app_data_dir() {
+            crate::aws_sandbox::write_project_aws_config(db.inner(), &app_data_dir, &project_id)
+                .await;
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]

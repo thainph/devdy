@@ -24,7 +24,7 @@ import {
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
 import ProjectGroupToggles from '@/components/ProjectGroupToggles.vue'
-import ProjectGitAccounts, { type GitAccountRow } from '@/components/ProjectGitAccounts.vue'
+import ProjectAccountsList, { type AccountRow } from '@/components/ProjectAccountsList.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { parseRepoUrl, repoKey, repoWebUrl } from '@/lib/repoUrl'
@@ -333,13 +333,13 @@ const linkedAccountId = computed(() => project.value?.github_account_id ?? null)
 const linkedAccount = computed(() => ghStore.accounts.find(a => a.id === linkedAccountId.value) ?? null)
 
 // --- GitHub / GitLab accounts (several per project, toggled like servers) ---
-const githubAccountRows = computed<GitAccountRow[]>(() => ghStore.accounts.map(a => ({
+const githubAccountRows = computed<AccountRow[]>(() => ghStore.accounts.map(a => ({
   id: a.id,
   label: a.label,
   username: a.username,
   detail: a.scopes.length ? a.scopes.join(', ') : null,
 })))
-const gitlabAccountRows = computed<GitAccountRow[]>(() => glStore.accounts.map(a => ({
+const gitlabAccountRows = computed<AccountRow[]>(() => glStore.accounts.map(a => ({
   id: a.id,
   label: a.label,
   username: a.username,
@@ -347,12 +347,12 @@ const gitlabAccountRows = computed<GitAccountRow[]>(() => glStore.accounts.map(a
 })))
 const busyGitAccountId = ref<string | null>(null)
 
-async function handleToggleGitAccount(provider: 'github' | 'gitlab', account: GitAccountRow, enabled: boolean) {
+async function handleToggleGitAccount(provider: 'github' | 'gitlab', account: AccountRow, enabled: boolean) {
   if (busyGitAccountId.value) return
   busyGitAccountId.value = account.id
   try {
     await projectStore.setProjectGitAccountEnabled(projectId.value, provider, account.id, enabled)
-    toast.success(t(enabled ? 'projectDetail.toastGitAccountEnabled' : 'projectDetail.toastGitAccountDisabled', { name: account.label }))
+    toast.success(t(enabled ? 'projectDetail.toastAccountEnabled' : 'projectDetail.toastAccountDisabled', { name: account.label }))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -360,13 +360,13 @@ async function handleToggleGitAccount(provider: 'github' | 'gitlab', account: Gi
   }
 }
 
-async function handleMakeDefaultGitAccount(provider: 'github' | 'gitlab', account: GitAccountRow) {
+async function handleMakeDefaultGitAccount(provider: 'github' | 'gitlab', account: AccountRow) {
   if (busyGitAccountId.value) return
   busyGitAccountId.value = account.id
   try {
     if (provider === 'github') await projectStore.setProjectAccount(projectId.value, account.id)
     else await projectStore.setProjectGitlabAccount(projectId.value, account.id)
-    toast.success(t('projectDetail.toastDefaultGitAccount', { name: account.label }))
+    toast.success(t('projectDetail.toastDefaultAccount', { name: account.label }))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -487,47 +487,46 @@ async function unlinkBoard() {
   }
 }
 
-// --- AWS account linking (one account per project, mirroring Git accounts) ---
-const linkedAwsAccountId = computed(() => project.value?.aws_account_id ?? null)
-const linkedAwsAccount = computed(
-  () => awsStore.accounts.find(a => a.id === linkedAwsAccountId.value) ?? null,
-)
-const awsAccountOptions = computed(() => [
-  { value: '', label: 'None' },
-  ...awsStore.accounts.map(a => ({
-    value: a.id,
-    label: a.account_id ? `${a.label} (${a.account_id})` : a.label,
-  })),
-])
+// --- AWS / Azure accounts (several per project, toggled like Git accounts) ---
+const awsAccountRows = computed<AccountRow[]>(() => awsStore.accounts.map(a => ({
+  id: a.id,
+  label: a.label,
+  username: null,
+  detail: [a.auth_method.toUpperCase(), a.region, a.account_id, a.profile_name].filter(Boolean).join(' · '),
+})))
+const azureAccountRows = computed<AccountRow[]>(() => azureStore.accounts.map(a => ({
+  id: a.id,
+  label: a.label,
+  username: null,
+  detail: [a.subscription_name, a.subscription_id].filter(Boolean).join(' · ') || null,
+  warning: a.logged_in ? null : t('projectDetail.azureNotSignedIn'),
+})))
+const busyCloudAccountId = ref<string | null>(null)
 
-async function handleSelectAwsAccount(accountId: string) {
+async function handleToggleCloudAccount(provider: 'aws' | 'azure', account: AccountRow, enabled: boolean) {
+  if (busyCloudAccountId.value) return
+  busyCloudAccountId.value = account.id
   try {
-    await projectStore.setProjectAwsAccount(projectId.value, accountId || null)
-    toast.success(t('projectDetail.toastAwsLinked'))
+    await projectStore.setProjectCloudAccountEnabled(projectId.value, provider, account.id, enabled)
+    toast.success(t(enabled ? 'projectDetail.toastAccountEnabled' : 'projectDetail.toastAccountDisabled', { name: account.label }))
   } catch (e) {
     toast.error(String(e))
+  } finally {
+    busyCloudAccountId.value = null
   }
 }
 
-// --- Azure account linking (one account per project, mirroring AWS) ---
-const linkedAzureAccountId = computed(() => project.value?.azure_account_id ?? null)
-const linkedAzureAccount = computed(
-  () => azureStore.accounts.find(a => a.id === linkedAzureAccountId.value) ?? null,
-)
-const azureAccountOptions = computed(() => [
-  { value: '', label: 'None' },
-  ...azureStore.accounts.map(a => ({
-    value: a.id,
-    label: a.subscription_name ? `${a.label} (${a.subscription_name})` : a.label,
-  })),
-])
-
-async function handleSelectAzureAccount(accountId: string) {
+async function handleMakeDefaultCloudAccount(provider: 'aws' | 'azure', account: AccountRow) {
+  if (busyCloudAccountId.value) return
+  busyCloudAccountId.value = account.id
   try {
-    await projectStore.setProjectAzureAccount(projectId.value, accountId || null)
-    toast.success(t('projectDetail.toastAzureLinked'))
+    if (provider === 'aws') await projectStore.setProjectAwsAccount(projectId.value, account.id)
+    else await projectStore.setProjectAzureAccount(projectId.value, account.id)
+    toast.success(t('projectDetail.toastDefaultAccount', { name: account.label }))
   } catch (e) {
     toast.error(String(e))
+  } finally {
+    busyCloudAccountId.value = null
   }
 }
 
@@ -1405,7 +1404,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 
         <!-- GitHub tab -->
         <div v-if="activeTab === 'github'" class="max-w-lg space-y-4">
-          <ProjectGitAccounts
+          <ProjectAccountsList
             provider="github"
             :accounts="githubAccountRows"
             :enabled-ids="project?.github_account_ids ?? []"
@@ -1494,7 +1493,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 
         <!-- GitLab tab -->
         <div v-if="activeTab === 'gitlab'" class="max-w-lg space-y-4">
-          <ProjectGitAccounts
+          <ProjectAccountsList
             provider="gitlab"
             :accounts="gitlabAccountRows"
             :enabled-ids="project?.gitlab_account_ids ?? []"
@@ -1507,72 +1506,28 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 
         <!-- AWS tab -->
         <div v-if="activeTab === 'aws'" class="max-w-lg space-y-4">
-          <Card body-class="p-4 space-y-4">
-            <template #header>
-              <Cloud class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">{{ t('projectDetail.linkedAwsAccount') }}</span>
-            </template>
-            <p class="text-[11px] text-muted-foreground leading-relaxed">
-              {{ t('projectDetail.awsAccountHint') }}
-              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
-            </p>
-
-            <div v-if="awsStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
-              {{ t('projectDetail.noAwsAccounts') }}
-              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
-              {{ t('projectDetail.toLinkHere') }}
-            </div>
-            <AppSelect
-              size="sm"
-              v-else
-              :model-value="linkedAwsAccountId ?? ''"
-              :options="awsAccountOptions"
-              :placeholder="t('projectDetail.selectAccountPlaceholder')"
-              @update:model-value="handleSelectAwsAccount"
-            />
-
-            <div v-if="linkedAwsAccount" class="text-[11px] text-muted-foreground">
-              <span class="uppercase">{{ linkedAwsAccount.auth_method }}</span>
-              <span> · {{ linkedAwsAccount.region }}</span>
-              <span v-if="linkedAwsAccount.account_id"> · {{ linkedAwsAccount.account_id }}</span>
-              <span v-if="linkedAwsAccount.profile_name"> · {{ linkedAwsAccount.profile_name }}</span>
-            </div>
-          </Card>
+          <ProjectAccountsList
+            provider="aws"
+            :accounts="awsAccountRows"
+            :enabled-ids="project?.aws_account_ids ?? []"
+            :default-id="project?.aws_account_id ?? null"
+            :busy="busyCloudAccountId"
+            @toggle="(a, on) => handleToggleCloudAccount('aws', a, on)"
+            @make-default="(a) => handleMakeDefaultCloudAccount('aws', a)"
+          />
         </div>
 
         <!-- Azure tab -->
         <div v-if="activeTab === 'azure'" class="max-w-lg space-y-4">
-          <Card body-class="p-4 space-y-4">
-            <template #header>
-              <CloudCog class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">{{ t('projectDetail.linkedAzureAccount') }}</span>
-            </template>
-            <p class="text-[11px] text-muted-foreground leading-relaxed">
-              {{ t('projectDetail.azureAccountHint') }}
-              <RouterLink to="/settings?section=azure" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
-            </p>
-
-            <div v-if="azureStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
-              {{ t('projectDetail.noAzureAccounts') }}
-              <RouterLink to="/settings?section=azure" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
-              {{ t('projectDetail.toLinkHere') }}
-            </div>
-            <AppSelect
-              size="sm"
-              v-else
-              :model-value="linkedAzureAccountId ?? ''"
-              :options="azureAccountOptions"
-              :placeholder="t('projectDetail.selectAccountPlaceholder')"
-              @update:model-value="handleSelectAzureAccount"
-            />
-
-            <div v-if="linkedAzureAccount" class="text-[11px] text-muted-foreground">
-              <span v-if="linkedAzureAccount.subscription_name">{{ linkedAzureAccount.subscription_name }}</span>
-              <span v-if="linkedAzureAccount.subscription_id" class="font-mono"> · {{ linkedAzureAccount.subscription_id }}</span>
-              <span v-if="linkedAzureAccount.tenant_id" class="font-mono"> · {{ linkedAzureAccount.tenant_id }}</span>
-              <span v-if="!linkedAzureAccount.logged_in" class="text-amber-500"> · {{ t('projectDetail.azureNotSignedIn') }}</span>
-            </div>
-          </Card>
+          <ProjectAccountsList
+            provider="azure"
+            :accounts="azureAccountRows"
+            :enabled-ids="project?.azure_account_ids ?? []"
+            :default-id="project?.azure_account_id ?? null"
+            :busy="busyCloudAccountId"
+            @toggle="(a, on) => handleToggleCloudAccount('azure', a, on)"
+            @make-default="(a) => handleMakeDefaultCloudAccount('azure', a)"
+          />
         </div>
 
         <!-- Claude account tab -->

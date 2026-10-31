@@ -38,8 +38,8 @@ const EXIT_EXEC_FAILED = 95 // spawning the real binary failed
  * Ask the broker for a decision. Sends one NDJSON request line, reads one
  * NDJSON response line.
  * @param {string} sockPath
- * @param {{project_id: string, tool: string, argv: string[], host: string|null, run_id?: string|null, account?: string|null, username?: string, tf_external_code?: boolean, tf_external_hits?: string[]}} req
- * @returns {Promise<{decision: string, reason?: string, token?: string, aws_access_key_id?: string, aws_secret_access_key?: string, aws_session_token?: string, aws_profile?: string, aws_region?: string, azure_config_dir?: string, azure_tenant_id?: string, azure_subscription_id?: string}>}
+ * @param {{project_id: string, tool: string, argv: string[], host: string|null, run_id?: string|null, account?: string|null, username?: string, aws_account?: string|null, aws_profile?: string, azure_account?: string|null, tf_external_code?: boolean, tf_external_hits?: string[]}} req
+ * @returns {Promise<{decision: string, reason?: string, token?: string, aws_access_key_id?: string, aws_secret_access_key?: string, aws_session_token?: string, aws_profile?: string, aws_region?: string, aws_account_label?: string, azure_config_dir?: string, azure_tenant_id?: string, azure_subscription_id?: string}>}
  */
 export function ask(sockPath, req) {
   return new Promise((resolve, reject) => {
@@ -174,20 +174,22 @@ export function pathWithoutDir(pathValue, dir) {
 export function stripAwsProfileArgs(argv) {
   const out = []
   let stripped = false
+  let profile = null
   for (let i = 0; i < argv.length; i++) {
     const a = argv[i]
     if (a === '--profile') {
       stripped = true
-      if (i + 1 < argv.length) i++ // also drop the value token
+      if (i + 1 < argv.length) profile = argv[++i] // also drop the value token
       continue
     }
     if (a.startsWith('--profile=')) {
       stripped = true
+      profile = a.slice('--profile='.length)
       continue
     }
     out.push(a)
   }
-  return { argv: out, stripped }
+  return { argv: out, stripped, profile }
 }
 
 /**
@@ -221,6 +223,19 @@ export async function run(tool) {
     // The command may pick one of the project's enabled accounts
     // (`DEVDY_GIT_ACCOUNT=work gh ...`); unset → the default account.
     req.account = gitAccountSelector(process.env)
+  }
+  if (tool === 'aws' || tool === 'terraform') {
+    // The command may pick one of the project's enabled AWS accounts
+    // (`DEVDY_AWS_ACCOUNT=prod aws ...`, or `aws --profile <label|profile>`).
+    req.aws_account = cloudAccountSelector(process.env, 'DEVDY_AWS_ACCOUNT')
+    if (tool === 'aws') {
+      const profile = stripAwsProfileArgs(argv).profile
+      if (profile && profile.trim()) req.aws_profile = profile.trim()
+    }
+  }
+  if (tool === 'az' || tool === 'terraform') {
+    // Likewise for Azure (`DEVDY_AZURE_ACCOUNT=prod az ...`).
+    req.azure_account = cloudAccountSelector(process.env, 'DEVDY_AZURE_ACCOUNT')
   }
   if (tool === 'glab') {
     // The host glab will talk to, so the broker only hands out a token of an
@@ -273,6 +288,8 @@ export async function run(tool) {
   delete childEnv.DEVDY_BROKER_SOCK
   delete childEnv.DEVDY_PROJECT_ID
   delete childEnv.DEVDY_RUN_ID
+  delete childEnv.DEVDY_AWS_ACCOUNT
+  delete childEnv.DEVDY_AZURE_ACCOUNT
   delete childEnv.DEVDY_ORIGINAL_AWS_CONFIG_FILE
   delete childEnv.DEVDY_ORIGINAL_AWS_SHARED_CREDENTIALS_FILE
 
@@ -302,13 +319,13 @@ export async function run(tool) {
     childEnv.AZURE_CONFIG_DIR = resp.azure_config_dir
   } else if (tool === 'aws' || tool === 'terraform') {
     if (tool === 'aws') {
-      // The broker (project-linked account) decides which identity is used, so a
-      // `--profile` flag on the command line can only point at a profile the
-      // sandbox config does not contain. Drop it instead of letting `aws` fail.
+      // The broker already picked the account (a `--profile` naming an enabled
+      // account selects it), and the sandbox config holds no profiles, so drop
+      // the flag instead of letting `aws` fail on it.
       const sanitized = stripAwsProfileArgs(argv)
-      if (sanitized.stripped) {
+      if (sanitized.stripped && resp.aws_account_label) {
         process.stderr.write(
-          'devdy: ignoring --profile for aws; using the account linked to this project\n',
+          `devdy: aws — using the project's AWS account "${resp.aws_account_label}" (--profile handled by Devdy)\n`,
         )
       }
       execArgv = sanitized.argv
@@ -409,6 +426,18 @@ export async function run(tool) {
  */
 export function gitAccountSelector(env) {
   const v = (env.DEVDY_GIT_ACCOUNT || '').trim()
+  return v === '' ? null : v
+}
+
+/**
+ * The cloud account a command picked via `envName` (DEVDY_AWS_ACCOUNT /
+ * DEVDY_AZURE_ACCOUNT), or null for the default. Pure.
+ * @param {Record<string, string|undefined>} env
+ * @param {string} envName
+ * @returns {string|null}
+ */
+export function cloudAccountSelector(env, envName) {
+  const v = (env[envName] || '').trim()
   return v === '' ? null : v
 }
 

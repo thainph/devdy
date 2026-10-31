@@ -86,6 +86,8 @@ pub static TABLE_CATEGORIES: &[(&str, &str)] = &[
     ("gitlab_accounts", "accounts"),
     ("project_github_accounts", "accounts"),
     ("project_gitlab_accounts", "accounts"),
+    ("project_aws_accounts", "accounts"),
+    ("project_azure_accounts", "accounts"),
     ("aws_accounts", "accounts"),
     ("azure_accounts", "accounts"),
     ("google_accounts", "accounts"),
