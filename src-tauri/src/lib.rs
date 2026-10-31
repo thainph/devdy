@@ -29,7 +29,8 @@ use commands::azure_accounts::{
 };
 use commands::claude_accounts::{
     create_claude_account, delete_claude_account, get_claude_balance, list_claude_accounts,
-    open_claude_account_login, rename_claude_account, set_default_claude_account,
+    cancel_claude_account_login, login_claude_account, rename_claude_account,
+    submit_claude_login_code, set_default_claude_account,
     set_project_claude_account, validate_claude_account, BalanceGuard,
 };
 use commands::codex_sessions::reconcile_codex_sessions;
@@ -551,7 +552,9 @@ pub fn run() {
             rename_claude_account,
             delete_claude_account,
             set_default_claude_account,
-            open_claude_account_login,
+            login_claude_account,
+            submit_claude_login_code,
+            cancel_claude_account_login,
             validate_claude_account,
             set_project_claude_account,
             get_claude_balance,
