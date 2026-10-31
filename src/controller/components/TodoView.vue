@@ -10,7 +10,7 @@
  * through the `save` / `remove` props so the sheet only closes once the Host
  * accepted the change.
  */
-import { computed, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, Plus, RefreshCw, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
@@ -36,6 +36,8 @@ const props = defineProps<{
   busy: boolean
   /** The last refused write, already translated. */
   error: string | null
+  /** The list request failed (refused / no answer). */
+  failed?: boolean
   save: (input: TodoSave) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
 }>()
@@ -50,12 +52,28 @@ const { t, locale } = useI18n()
 
 const projectFilter = ref('')
 const tab = ref<TodoTab>('active')
-// Captured on open; a phone left on this screen overnight refreshes on reload.
+// The phone's local calendar date. Re-read every minute and whenever the app
+// comes back to the foreground, so a screen left open past midnight (or a
+// phone woken the next morning) regroups Today / Overdue on its own.
 const today = ref(localYmd())
+function refreshToday(): void {
+  const now = localYmd()
+  if (now !== today.value) today.value = now
+}
+function onVisibility(): void {
+  if (document.visibilityState === 'visible') refreshToday()
+}
+let tick: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
-  today.value = localYmd()
+  refreshToday()
+  tick = setInterval(refreshToday, 60_000)
+  document.addEventListener('visibilitychange', onVisibility)
   emit('refresh')
+})
+onBeforeUnmount(() => {
+  if (tick) clearInterval(tick)
+  document.removeEventListener('visibilitychange', onVisibility)
 })
 
 const projectOptions = computed(() => [
@@ -172,7 +190,16 @@ async function onDelete(id: string): Promise<void> {
         </button>
       </div>
 
-      <p v-if="todos === null" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
+      <div v-if="todos === null && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
+        {{ t('controller.data.loadFailed') }}
+        <button
+          class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
+          @click="emit('refresh')"
+        >
+          {{ t('controller.data.retry') }}
+        </button>
+      </div>
+      <p v-else-if="todos === null" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
         <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
       </p>
       <p v-else-if="isEmpty" class="py-10 text-center text-sm text-foreground/50">

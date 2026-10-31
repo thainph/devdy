@@ -15,6 +15,7 @@ import type { CommandAckHandler } from './connection'
 import {
   noteAddCmd,
   noteDeleteCmd,
+  noteGetCmd,
   noteListCmd,
   noteUpdateCmd,
   projectTogglesGetCmd,
@@ -26,13 +27,14 @@ import {
   todoUpdateCmd,
   type CmdPayload,
   type NoteInfo,
+  type NoteSummary,
   type NotePatchWire,
   type ProjectTogglesKind,
   type StreamPayload,
   type TodoInfo,
   type TodoPatchWire,
   type ToggleKind,
-} from './protocol'
+} from './protocol.ts'
 
 /** `ControllerConnection.sendCommand`; false when the room is not live. */
 export type SendCommand = (cmd: CmdPayload, onAck?: CommandAckHandler) => boolean
@@ -43,6 +45,9 @@ export interface TodoSave {
   text: string
   dueDate: string
   projectId: string
+  /** The todo as the sheet opened it: only fields changed since then are sent,
+   * so a field the user did not touch never overwrites a desktop edit. */
+  base?: TodoInfo | null
 }
 
 /** What the note editor saves. `id` null = a new note. */
@@ -51,12 +56,27 @@ export interface NoteSave {
   title: string
   content: string
   projectId: string
+  /** The note as the editor loaded it (see {@link TodoSave.base}). */
+  base?: NoteInfo | null
+}
+
+/** Which reads failed (refused, or the Host never answered): the screen shows
+ * an error with a retry instead of spinning forever. */
+export interface LoadFailures {
+  todos: boolean
+  notes: boolean
+  toggles: boolean
+  note: boolean
 }
 
 export interface DataState {
   /** null until the first `todo_list` arrives. */
   todos: TodoInfo[] | null
-  notes: NoteInfo[] | null
+  notes: NoteSummary[] | null
+  /** The full note the editor asked for (`note_get`); null while loading. */
+  note: NoteInfo | null
+  /** The id of that note. */
+  noteId: string | null
   /** The filter of the last note request; replies for another one are dropped. */
   noteFilter: { projectId: string | null; query: string }
   toggles: ProjectTogglesKind | null
@@ -66,17 +86,21 @@ export interface DataState {
   pending: number
   /** The last refused / undelivered write, already human-readable. */
   error: string | null
+  failed: LoadFailures
 }
 
 export function createDataStore(send: SendCommand, describeError: (reason: string | null) => string) {
   const state = reactive<DataState>({
     todos: null,
     notes: null,
+    note: null,
+    noteId: null,
     noteFilter: { projectId: null, query: '' },
     toggles: null,
     togglesProjectId: null,
     pending: 0,
     error: null,
+    failed: { todos: false, notes: false, toggles: false, note: false },
   })
 
   function apply(p: StreamPayload): void {
@@ -96,6 +120,25 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
       case 'project_toggles':
         if (p.project_id === state.togglesProjectId) state.toggles = p
         break
+      case 'note':
+        if (p.note.id === state.noteId) state.note = p.note
+        break
+    }
+  }
+
+  /** Send a read. Its answer arrives as a payload (see {@link apply}) before
+   * the ack; a refusal or a missing ack marks `which` failed so the screen
+   * stops spinning. */
+  function read(cmd: CmdPayload, which: keyof LoadFailures, stillWanted: () => boolean = () => true): void {
+    state.failed[which] = false
+    const sent = send(cmd, (accepted, reason) => {
+      if (accepted || !stillWanted()) return
+      state.failed[which] = true
+      state.error = describeError(reason === 'host_ack_timeout' ? 'load_timeout' : (reason ?? null))
+    })
+    if (!sent) {
+      state.failed[which] = true
+      state.error = describeError('not_connected')
     }
   }
 
@@ -125,16 +168,16 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
   // ---- todos ----
 
   function loadTodos(): void {
-    send(todoListCmd())
+    read(todoListCmd(), 'todos')
   }
 
   async function saveTodo(input: TodoSave): Promise<boolean> {
     if (!input.id) {
       return write(todoAddCmd({ text: input.text, projectId: input.projectId, dueDate: input.dueDate }))
     }
-    const current = state.todos?.find((t) => t.id === input.id)
-    // Send only what changed: an untouched field must not overwrite a
-    // concurrent desktop edit.
+    // Diff against what the sheet opened with — not the live list, which may
+    // already carry a desktop edit the user never saw.
+    const current = input.base ?? null
     const patch: TodoPatchWire = {}
     if (!current || current.text !== input.text) patch.text = input.text
     if (!current || (current.due_date ?? '') !== input.dueDate) patch.due_date = input.dueDate || null
@@ -159,8 +202,27 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
   // ---- notes ----
 
   function loadNotes(projectId: string | null = state.noteFilter.projectId, query = state.noteFilter.query): void {
-    state.noteFilter = { projectId, query: query.trim() }
-    send(noteListCmd(projectId, query))
+    const filter = { projectId, query: query.trim() }
+    state.noteFilter = filter
+    read(
+      noteListCmd(projectId, query),
+      'notes',
+      () => state.noteFilter.projectId === filter.projectId && state.noteFilter.query === filter.query,
+    )
+  }
+
+  /** Fetch one full note for the editor (the list only carries previews). */
+  function loadNote(id: string): void {
+    if (state.noteId !== id) state.note = null
+    state.noteId = id
+    read(noteGetCmd(id), 'note', () => state.noteId === id)
+  }
+
+  /** The editor closed (or moved to a new note). */
+  function closeNote(): void {
+    state.noteId = null
+    state.note = null
+    state.failed.note = false
   }
 
   /** Save a note; resolves to the note as stored (null when refused), so the
@@ -180,9 +242,14 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
       if (!ok) return null
       loadNotes()
       // An id-less ack (an older Host) still saved it: '' sends the editor back to the list.
-      return saved(itemId ?? '')
+      const stored = saved(itemId ?? '')
+      if (itemId) {
+        state.noteId = itemId
+        state.note = stored
+      }
+      return stored
     }
-    const current = state.notes?.find((n) => n.id === input.id)
+    const current = input.base ?? null
     const patch: NotePatchWire = {}
     if (!current || current.title !== input.title) patch.title = input.title
     if (!current || current.content !== input.content) patch.content = input.content
@@ -190,7 +257,9 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     if (Object.keys(patch).length === 0) return saved(input.id)
     if (!(await write(noteUpdateCmd(input.id, patch)))) return null
     loadNotes()
-    return saved(input.id)
+    const stored = saved(input.id)
+    if (state.noteId === input.id) state.note = stored
+    return stored
   }
 
   async function deleteNote(id: string): Promise<boolean> {
@@ -204,7 +273,7 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
   function loadToggles(projectId: string): void {
     if (state.togglesProjectId !== projectId) state.toggles = null
     state.togglesProjectId = projectId
-    send(projectTogglesGetCmd(projectId))
+    read(projectTogglesGetCmd(projectId), 'toggles', () => state.togglesProjectId === projectId)
   }
 
   /** Flip a switch optimistically. The Host answers with the real state — a
@@ -221,7 +290,9 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
       if (item) item.enabled = enabled
     }
     void write(projectToggleSetCmd(projectId, kind, itemId, enabled)).then((ok) => {
-      if (!ok) loadToggles(projectId)
+      // Only if the user is still on that project: re-fetching another one
+      // would yank the screen back to it.
+      if (!ok && state.togglesProjectId === projectId) loadToggles(projectId)
     })
   }
 
@@ -230,6 +301,7 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     if (state.todos) loadTodos()
     if (state.notes) loadNotes()
     if (state.togglesProjectId) loadToggles(state.togglesProjectId)
+    if (state.noteId) loadNote(state.noteId)
   }
 
   function clearError(): void {
@@ -239,6 +311,9 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
   function reset(): void {
     state.todos = null
     state.notes = null
+    state.note = null
+    state.noteId = null
+    state.failed = { todos: false, notes: false, toggles: false, note: false }
     state.noteFilter = { projectId: null, query: '' }
     state.toggles = null
     state.togglesProjectId = null
@@ -254,6 +329,8 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     toggleTodo,
     deleteTodo,
     loadNotes,
+    loadNote,
+    closeNote,
     saveNote,
     deleteNote,
     loadToggles,

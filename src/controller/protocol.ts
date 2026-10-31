@@ -176,6 +176,9 @@ export interface PermissionRequestKind {
   tool: string
   input: unknown
   cwd?: string | null
+  /** A broker prompt (gh / glab / ssh / aws / az / terraform): answer once
+   * only — the Host refuses Always for it. */
+  once_only?: boolean
 }
 /** The run finished (`run:done`). */
 export interface DoneKind {
@@ -217,6 +220,9 @@ export interface PermissionResolvedKind {
   request_id: string
   accepted: boolean
   reason?: string | null
+  /** Always answers only: whether the desktop could keep the standing choice
+   * (false = it applied this once). */
+  remembered?: boolean | null
 }
 /**
  * The Host granted a session token after a successful OTP (or reconnect). The
@@ -232,6 +238,8 @@ export interface SessionTokenKind {
   rendezvous_code: string
   /** Absolute idle expiry as Unix seconds (advisory; the store slides its own). */
   idle_expires_at: number
+  /** What the Host supports ({@link HostFeature}); empty from an older Host. */
+  host_features: string[]
 }
 /**
  * The outcome of an auth attempt. `ok:false` means the OTP was wrong / expired /
@@ -354,6 +362,8 @@ export interface RunInfo {
   engine: string
   created_at: string
   updated_at?: string | null
+  /** When the last turn ended (a multi-turn session finishes every turn). */
+  finished_at?: string | null
 }
 
 /** A snapshot of every run the Controller may browse/control (FR-004+). */
@@ -429,11 +439,21 @@ export interface NoteInfo {
   updated_at: string
 }
 
+/** One note-list row: title + the start of the body (mirror of Host `NoteSummary`). */
+export interface NoteSummary {
+  id: string
+  title: string
+  /** The first few hundred characters of the Markdown body. */
+  preview: string
+  project_id?: string | null
+  updated_at: string
+}
+
 /** Notes matching a `note_list` / `note_search`, echoing the filter so a stale
- * reply can be dropped. */
+ * reply can be dropped. Rows carry a preview only; see {@link NoteKind}. */
 export interface NoteListKind {
   kind: 'note_list'
-  notes: NoteInfo[]
+  notes: NoteSummary[]
   project_id: string | null
   query: string | null
 }
@@ -462,6 +482,12 @@ export interface ProjectTogglesKind {
   builtin_devdy: BuiltinToggle
 }
 
+/** One full note (`note_get`). */
+export interface NoteKind {
+  kind: 'note'
+  note: NoteInfo
+}
+
 /** Everything the Host can send the Controller inside a sealed `stream` frame. */
 export type StreamPayload =
   | StreamKind
@@ -488,6 +514,7 @@ export type StreamPayload =
   | TodoListKind
   | NoteListKind
   | ProjectTogglesKind
+  | NoteKind
 
 /**
  * Narrow a decoded stream payload. Returns `null` for anything with an
@@ -526,6 +553,7 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             tool: o.tool,
             input: o.input,
             cwd: typeof o.cwd === 'string' ? o.cwd : null,
+            once_only: o.once_only === true,
           }
         : null
     case 'done':
@@ -569,6 +597,7 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             request_id: o.request_id,
             accepted: o.accepted,
             reason: typeof o.reason === 'string' ? o.reason : null,
+            remembered: typeof o.remembered === 'boolean' ? o.remembered : null,
           }
         : null
     case 'session_token':
@@ -581,6 +610,9 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
             run_id: o.run_id,
             rendezvous_code: o.rendezvous_code,
             idle_expires_at: typeof o.idle_expires_at === 'number' ? o.idle_expires_at : 0,
+            host_features: Array.isArray(o.host_features)
+              ? o.host_features.filter((f): f is string => typeof f === 'string')
+              : [],
           }
         : null
     case 'auth_result':
@@ -702,11 +734,13 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
       return Array.isArray(o.notes)
         ? {
             kind: 'note_list',
-            notes: (o.notes as unknown[]).filter(isNoteInfo),
+            notes: (o.notes as unknown[]).filter(isNoteSummary),
             project_id: typeof o.project_id === 'string' ? o.project_id : null,
             query: typeof o.query === 'string' ? o.query : null,
           }
         : null
+    case 'note':
+      return isNoteInfo(o.note) ? { kind: 'note', note: o.note } : null
     case 'project_toggles': {
       if (typeof o.project_id !== 'string') return null
       const items = (v: unknown): ToggleItem[] =>
@@ -750,6 +784,18 @@ function isNoteInfo(v: unknown): v is NoteInfo {
     typeof o.id === 'string' &&
     typeof o.title === 'string' &&
     typeof o.content === 'string' &&
+    typeof o.updated_at === 'string'
+  )
+}
+
+/** Narrow one note-list row. */
+function isNoteSummary(v: unknown): v is NoteSummary {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return (
+    typeof o.id === 'string' &&
+    typeof o.title === 'string' &&
+    typeof o.preview === 'string' &&
     typeof o.updated_at === 'string'
   )
 }
@@ -864,6 +910,7 @@ export interface CmdPayload {
     | 'note_delete'
     | 'project_toggles_get'
     | 'project_toggle_set'
+    | 'note_get'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -956,6 +1003,15 @@ export const FEATURE_IPC = 'ipc'
 /** Advertise the Todo / Note / project-switch screens (`todo_*`, `note_*`,
  * `project_toggle*`). Without it the Host refuses those actions. */
 export const FEATURE_DATA = 'data'
+
+/** What a Host can advertise in `session_token.host_features`. An older Host
+ * sends none: the Controller then hides what it would only be refused. */
+export type HostFeature = 'data' | 'inbox' | 'remember'
+
+/** Whether the Host advertised `feature`. */
+export function hostHas(features: readonly string[] | null | undefined, feature: HostFeature): boolean {
+  return !!features && features.includes(feature)
+}
 
 /** Everything this controller bundle understands, sent on the gate frame. */
 export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN, FEATURE_DATA]
@@ -1156,6 +1212,11 @@ export function noteListCmd(projectId: string | null, query = ''): CmdPayload {
   if (projectId) cmd.project_id = projectId
   if (q) cmd.query = q
   return cmd
+}
+
+/** `note_get` — one full note, answered with a {@link NoteKind}. */
+export function noteGetCmd(id: string): CmdPayload {
+  return { kind: 'cmd', action: 'note_get', item_id: id }
 }
 
 /** `note_add` — the Host does not push; re-list after the ack. */

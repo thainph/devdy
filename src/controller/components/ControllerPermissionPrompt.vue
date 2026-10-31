@@ -36,8 +36,10 @@ const props = withDefaults(
     variant?: 'session' | 'inbox'
     /** Inbox only: which run is asking (project · run · age). */
     context?: string
+    /** The Host accepts Always from a Controller (an older one does not). */
+    allowAlways?: boolean
   }>(),
-  { variant: 'session', context: '' },
+  { variant: 'session', context: '', allowAlways: true },
 )
 const inbox = computed(() => props.variant === 'inbox')
 const emit = defineEmits<{
@@ -151,8 +153,13 @@ function submitAnswers(): void {
 // "Always" needs a stable key, as on the desktop: bare `MCP` (an engine that
 // could not name the server/tool) would allow every MCP call, and a plan review
 // is not a tool to remember. Those stay once-only.
+// A broker prompt (gh / ssh / aws …) is once-only, and an older Host refuses
+// Always outright.
 const canRemember = computed(
-  () => !['MCP', 'ExitPlanMode', 'AskUserQuestion'].includes(props.request.tool_name),
+  () =>
+    props.allowAlways &&
+    !props.request.once_only &&
+    !['MCP', 'ExitPlanMode', 'AskUserQuestion'].includes(props.request.tool_name),
 )
 // Codex keys Google MCP prompts on the whole server (Drive + Gmail + Calendar).
 const broadRememberWarning = computed(

@@ -122,7 +122,10 @@
     "finishedOk": "finished {ago}",
     "finishedFailed": "failed {ago}",
     "unread": "New",
-    "loading": "Loading…"
+    "loading": "Loading…",
+    "alreadyHandled": "Already handled on the desktop.",
+    "notRemembered": "Allowed this once — Always could not be saved for this tool.",
+    "onceOnly": "This prompt can only be answered once (no Always)."
   },
   "data": {
     "allProjects": "All projects",
@@ -143,8 +146,11 @@
       "rate_limited": "Too many changes — wait a moment and try again.",
       "action_not_allowed": "This host does not support this yet — update Devdy on the desktop.",
       "failed": "The host could not save the change.",
-      "generic": "The host refused the change: {reason}"
-    }
+      "generic": "The host refused the change: {reason}",
+      "load_timeout": "The host did not answer — pull to refresh or try again."
+    },
+    "loadFailed": "Could not load this.",
+    "retry": "Try again"
   },
   "todo": {
     "title": "Todo",

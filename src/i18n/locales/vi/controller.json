@@ -122,7 +122,10 @@
     "finishedOk": "xong {ago}",
     "finishedFailed": "lỗi {ago}",
     "unread": "Mới",
-    "loading": "Đang tải…"
+    "loading": "Đang tải…",
+    "alreadyHandled": "Đã được xử lý trên máy tính.",
+    "notRemembered": "Chỉ áp dụng lần này — không lưu được \"Luôn\" cho công cụ này.",
+    "onceOnly": "Yêu cầu này chỉ trả lời được một lần (không có \"Luôn\")."
   },
   "data": {
     "allProjects": "Tất cả project",
@@ -143,8 +146,11 @@
       "rate_limited": "Thay đổi quá nhanh — đợi một chút rồi thử lại.",
       "action_not_allowed": "Host chưa hỗ trợ chức năng này — hãy cập nhật Devdy trên máy tính.",
       "failed": "Host không lưu được thay đổi.",
-      "generic": "Host từ chối thay đổi: {reason}"
-    }
+      "generic": "Host từ chối thay đổi: {reason}",
+      "load_timeout": "Host không phản hồi — hãy thử tải lại."
+    },
+    "loadFailed": "Không tải được.",
+    "retry": "Thử lại"
   },
   "todo": {
     "title": "Todo",

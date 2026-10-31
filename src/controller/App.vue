@@ -44,6 +44,7 @@ import type { LoginGrant } from './login'
 import {
   cancelRunCmd,
   listPendingCmd,
+  hostHas,
   listProjectFilesCmd,
   listProjectsCmd,
   listRunsCmd,
@@ -52,7 +53,7 @@ import {
   respondPermissionCmd,
   sendTurnCmd,
   setRunMetaCmd,
-  type NoteInfo,
+  type NoteSummary,
   type QuestionAnswers,
   type RemoteDecision,
   type SessionLinkPayload,
@@ -67,7 +68,7 @@ const conn = shallowRef<ControllerConnection | null>(null)
 // Todo / Note / project-switch screens (FEATURE_DATA).
 const DATA_ERRORS = new Set([
   'not_connected', 'connection_lost', 'host_ack_timeout', 'not_found', 'malformed',
-  'rate_limited', 'action_not_allowed', 'failed',
+  'rate_limited', 'action_not_allowed', 'failed', 'load_timeout',
 ])
 const data = createDataStore(
   (cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false,
@@ -78,16 +79,35 @@ const data = createDataStore(
       : t('controller.data.errors.generic', { reason: reason ?? '?' })
   },
 )
-/** The note open in the editor (a snapshot), or null for a new note. */
-const openNote = ref<NoteInfo | null>(null)
 const noteEditorOpen = ref(false)
 const toggleProjectId = ref<string | null>(null)
 const dataBusy = computed(() => data.state.pending > 0)
 
-function openNoteEditor(note: NoteInfo | null): void {
+// What the Host supports (`session_token.host_features`). An older Host sends
+// none: hide what it would only refuse rather than let it fail on use.
+const hostFeatures = computed(() => conn.value?.state.hostFeatures.value ?? null)
+const hasData = computed(() => hostHas(hostFeatures.value, 'data'))
+const hasInbox = computed(() => hostHas(hostFeatures.value, 'inbox'))
+const hasRemember = computed(() => hostHas(hostFeatures.value, 'remember'))
+const DATA_TABS: ControllerTab[] = ['todo', 'note', 'project']
+const hiddenTabs = computed<ControllerTab[]>(() =>
+  // Unknown until the token arrives: show everything rather than flicker.
+  hostFeatures.value === null || hasData.value ? [] : DATA_TABS,
+)
+watch(hiddenTabs, (hidden) => {
+  if (hidden.includes(tab.value)) tab.value = 'inbox'
+})
+
+/** Open the editor on a list row (fetched in full) or, with null, a new note. */
+function openNoteEditor(note: NoteSummary | null): void {
   data.clearError()
-  openNote.value = note
+  if (note) data.loadNote(note.id)
+  else data.closeNote()
   noteEditorOpen.value = true
+}
+function closeNoteEditor(): void {
+  noteEditorOpen.value = false
+  data.closeNote()
 }
 function selectToggleProject(projectId: string): void {
   toggleProjectId.value = projectId
@@ -389,10 +409,14 @@ function refreshRuns(): void {
 function syncInbox(): void {
   const c = conn.value
   if (!c) return
-  store.beginPendingSync()
-  const sent = c.sendCommand(listPendingCmd(), (accepted) => store.endPendingSync(accepted))
-  if (!sent) store.endPendingSync(false)
   refreshRuns()
+  // An older Host has no `list_pending`: live prompts are all it can offer.
+  if (!hasInbox.value) return
+  // One sync at a time; the one in flight covers this request too.
+  const token = store.beginPendingSync()
+  if (token === null) return
+  const sent = c.sendCommand(listPendingCmd(), (accepted) => store.endPendingSync(token, accepted))
+  if (!sent) store.endPendingSync(token, false)
 }
 
 const inboxPending = computed(() =>
@@ -439,7 +463,7 @@ window.addEventListener('pagehide', onPageHide)
 function onTab(next: ControllerTab): void {
   if (next !== tab.value) data.clearError()
   tab.value = next
-  noteEditorOpen.value = false
+  closeNoteEditor()
   if (next === 'inbox') syncInbox()
   else if (next === 'runs') refreshRuns()
 }
@@ -461,7 +485,6 @@ watch(
   () => auth.value,
   (v) => {
     if (v !== 'authenticated' || !link.value) return
-    data.reload()
     const active = store.state.activeRunId
     if (!active) {
       if (landOnLinkRun) store.setActiveRun(link.value.run_id)
@@ -479,7 +502,9 @@ watch(
 watch(
   () => status.value === 'connected' && auth.value === 'authenticated',
   (ready) => {
-    if (ready) syncInbox()
+    if (!ready) return
+    syncInbox()
+    if (hasData.value) data.reload()
   },
 )
 const entries = computed(() => runView.value?.entries ?? [])
@@ -694,7 +719,9 @@ function onRequestFiles(): void {
   <!-- The note editor is full height, like a session: no tab bar. -->
   <NoteEditorView
     v-else-if="!runId && !draftProjectId && tab === 'note' && noteEditorOpen"
-    :note="openNote"
+    :note="data.state.note"
+    :note-id="data.state.noteId"
+    :failed="data.state.failed.note"
     :projects="store.state.projectList"
     :default-project-id="data.state.noteFilter.projectId ?? ''"
     :busy="dataBusy"
@@ -702,8 +729,8 @@ function onRequestFiles(): void {
     :render-text="renderText"
     :save="data.saveNote"
     :remove="data.deleteNote"
-    @created="openNote = $event"
-    @back="noteEditorOpen = false"
+    @retry="data.state.noteId && data.loadNote(data.state.noteId)"
+    @back="closeNoteEditor"
     @clear-error="data.clearError()"
   />
 
@@ -721,6 +748,7 @@ function onRequestFiles(): void {
         :projects="store.state.projectList"
         :since-ms="sinceMs"
         :read-ids="visit.read"
+        :allow-always="hasRemember"
         @decide="respond"
         @answer="(req, answers) => respond(req, 'allow_once', answers)"
         @open="openRun"
@@ -749,6 +777,7 @@ function onRequestFiles(): void {
         :projects="store.state.projectList"
         :busy="dataBusy"
         :error="data.state.error"
+        :failed="data.state.failed.todos"
         :save="data.saveTodo"
         :remove="data.deleteTodo"
         @toggle="data.toggleTodo"
@@ -762,6 +791,7 @@ function onRequestFiles(): void {
         :project-id="data.state.noteFilter.projectId"
         :query="data.state.noteFilter.query"
         :error="data.state.error"
+        :failed="data.state.failed.notes"
         @filter="(p, q) => data.loadNotes(p, q)"
         @open="openNoteEditor"
         @new="openNoteEditor(null)"
@@ -773,16 +803,18 @@ function onRequestFiles(): void {
         :toggles="data.state.toggles"
         :project-id="toggleProjectId"
         :error="data.state.error"
+        :failed="data.state.failed.toggles"
         @select="selectToggleProject"
         @set="data.setToggle"
         @clear-error="data.clearError()"
       />
     </div>
-    <BottomTabBar :tab="tab" :inbox-count="inboxCount" @update:tab="onTab" />
+    <BottomTabBar :tab="tab" :inbox-count="inboxCount" :hidden="hiddenTabs" @update:tab="onTab" />
   </div>
 
   <SessionView
     v-else
+    :allow-always="hasRemember"
     :run-key="runId ?? (draftProjectId ? `draft:${draftProjectId}` : null)"
     :title="title"
     :status="status"

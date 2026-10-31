@@ -11,6 +11,7 @@ import {
   FIRST_VISIT_LOOKBACK_MS,
   agoParts,
   finishedKind,
+  createSyncGate,
   finishedSince,
   headOf,
   leaveVisit,
@@ -106,6 +107,16 @@ test('finishedSince lists runs finished after the anchor, newest first', () => {
   assert.deepEqual(finishedSince(runs, since).map((r) => r.id), ['b', 'a', 'created'])
 })
 
+test('finishedSince counts a session whose later turn ended after the anchor', () => {
+  const since = Date.UTC(2026, 9, 31, 9)
+  // Follow-up sent before the visit (updated_at), turn finished during it.
+  const runs = [
+    { id: 'turn', status: 'done', updated_at: '2026-10-31T08:50:00Z', finished_at: '2026-10-31T09:20:00Z' },
+    { id: 'stale', status: 'done', updated_at: '2026-10-31T09:40:00Z', finished_at: '2026-10-31T08:00:00Z' },
+  ]
+  assert.deepEqual(finishedSince(runs, since).map((r) => r.id), ['turn'])
+})
+
 test('parseVisitState tolerates junk', () => {
   const empty = { anchor: null, lastLeftAt: null, read: [] }
   assert.deepEqual(parseVisitState(null), empty)
@@ -162,4 +173,17 @@ test('agoParts picks the largest whole unit', () => {
   assert.deepEqual(agoParts(now - 50 * 3_600_000, now), { value: -2, unit: 'day' })
   // A clock skew into the future reads as "now", never as a future time.
   assert.deepEqual(agoParts(now + 5_000, now), { value: -0, unit: 'second' })
+})
+
+test('createSyncGate: one sync at a time, stale acks ignored', () => {
+  const gate = createSyncGate()
+  const a = gate.begin()
+  assert.equal(gate.begin(), null, 'a second sync waits for the first')
+  assert.equal(gate.end(a), true)
+  assert.equal(gate.end(a), false, 'an ack applies once')
+  const b = gate.begin()
+  gate.reset() // reconnect abandons b
+  const c = gate.begin()
+  assert.equal(gate.end(b), false, "an abandoned sync's ack cannot prune")
+  assert.equal(gate.end(c), true)
 })

@@ -11,6 +11,7 @@
  * so nothing is duplicated (FR-012/AC-15).
  */
 import { reactive } from 'vue'
+import { i18n } from '@/i18n'
 import {
   applyStreamEvent,
   extractContextTokens,
@@ -22,7 +23,14 @@ import {
   type StreamState,
 } from '@/lib/streamEvents'
 import type { RateLimitWindows } from '@/stores/liveRuns'
-import { dequeuePending, dropRun, enqueuePending, headOf, retainPending } from '@/lib/remoteInbox'
+import {
+  createSyncGate,
+  dequeuePending,
+  dropRun,
+  enqueuePending,
+  headOf,
+  retainPending,
+} from '@/lib/remoteInbox'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import type {
   ClaudeAccountChoice,
@@ -217,8 +225,10 @@ export function createRunStore() {
     claudeAccounts: [],
   })
 
-  // Request ids re-sent since `beginPendingSync` (null when not syncing).
+  // Request ids re-sent since `beginPendingSync` (null when not syncing); the
+  // gate makes sure only that sync's own ack may prune the queues.
   let resent: Set<string> | null = null
+  const syncGate = createSyncGate()
 
   /** Replace the prompt queues and re-derive the per-run heads. */
   function setQueues(next: Record<string, PermissionRequest[]>): void {
@@ -287,6 +297,7 @@ export function createRunStore() {
             tool_name: payload.tool,
             tool_input: payload.input,
             cwd: payload.cwd ?? null,
+            once_only: payload.once_only === true,
           }),
         )
         resent?.add(payload.request_id)
@@ -374,6 +385,16 @@ export function createRunStore() {
         }
         if (!payload.accepted && payload.reason === 'delivery_failed') {
           state.notice = 'Host chưa nhận được phản hồi permission — hãy thử lại.'
+        }
+        // This device answered, but the desktop (or a standing choice) was first.
+        if (!payload.accepted && payload.reason === 'already_handled') {
+          state.notice = i18n.global.t('controller.inbox.alreadyHandled')
+        }
+        if (!payload.accepted && payload.reason === 'remember_not_allowed') {
+          state.notice = i18n.global.t('controller.inbox.onceOnly')
+        }
+        if (payload.accepted && payload.remembered === false) {
+          state.notice = i18n.global.t('controller.inbox.notRemembered')
         }
         break
       case 'command_ack':
@@ -482,13 +503,21 @@ export function createRunStore() {
   }
 
   /** A `list_pending` was just sent: collect the prompts the Host re-sends. */
-  function beginPendingSync(): void {
-    resent = new Set()
+  /** Start a `list_pending` sync and return its token, or null while one is
+   * already in flight (that one's ack covers this request too; a lost ack is
+   * failed by the connection's timeout / link-down, which frees the slot). */
+  function beginPendingSync(): number | null {
+    const token = syncGate.begin()
+    if (token !== null) resent = new Set()
+    return token
   }
 
   /** Its ack arrived (after every re-sent prompt): drop prompts the Host no
-   * longer has — they were answered elsewhere while this device was away. */
-  function endPendingSync(accepted: boolean): void {
+   * longer has — they were answered elsewhere while this device was away. A
+   * stale token (a sync abandoned by a reset) is ignored. Kept prompts keep
+   * their `pendingSeenAt`; only dropped ones lose it. */
+  function endPendingSync(token: number, accepted: boolean): void {
+    if (!syncGate.end(token)) return
     if (accepted && resent) setQueues(retainPending(state.pendingQueues, resent))
     resent = null
   }
@@ -518,6 +547,7 @@ export function createRunStore() {
     state.pendingQueues = {}
     state.pendingSeenAt = {}
     resent = null
+    syncGate.reset()
     state.notice = null
     state.slashCommands = []
     state.engineModelOptions = []

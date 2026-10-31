@@ -20,6 +20,8 @@ const props = defineProps<{
   toggles: ProjectTogglesKind | null
   /** The project shown; owned by the parent so it survives leaving the screen. */
   projectId: string | null
+  /** Loading the switches failed (refused / no answer). */
+  failed?: boolean
   error: string | null
 }>()
 
@@ -102,7 +104,16 @@ const sections = computed<{ kind: ToggleKind; label: string; items: ToggleItem[]
           :options="projectOptions"
         />
 
-        <p v-if="!current" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
+        <div v-if="!current && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
+          {{ t('controller.data.loadFailed') }}
+          <button
+            class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
+            @click="selected && emit('select', selected)"
+          >
+            {{ t('controller.data.retry') }}
+          </button>
+        </div>
+        <p v-else-if="!current" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
           <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
         </p>
 

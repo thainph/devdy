@@ -30,6 +30,8 @@ import type {
 const props = defineProps<{
   /** The run (or draft) on screen; a change re-pins the view to the bottom. */
   runKey: string | null
+  /** The Host accepts Always from a Controller. */
+  allowAlways?: boolean
   title: string
   status: ConnStatus
   live: boolean
@@ -350,6 +352,7 @@ onUnmounted(() => {
     <div v-if="pending" class="shrink-0 max-h-[60dvh]">
       <ControllerPermissionPrompt
         :request="pending"
+        :allow-always="allowAlways"
         @decide="emit('decide', $event)"
         @answer="emit('answer', $event)"
       />

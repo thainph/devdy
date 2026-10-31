@@ -16,6 +16,8 @@ export interface RunLike {
   status: string
   updated_at?: string | null
   created_at?: string | null
+  /** When the last turn ended (a multi-turn session finishes every turn). */
+  finished_at?: string | null
 }
 
 /** Add `req` to its run's queue (arrival order), replacing a same-id entry. */
@@ -122,11 +124,15 @@ export function finishedKind(status: string): 'success' | 'failure' | null {
 }
 
 /**
- * Runs that finished (done / failed) after `sinceMs`, newest first. A run
+ * Runs that finished (done / failed) after `sinceMs`, newest first — including
+ * a multi-turn session that finished a turn and now waits for the next message
+ * (its sidecar exits per turn, so it reads `done`). Keyed on `finished_at`:
+ * `updated_at` stays on the last user activity, before the turn ended. A run
  * without a usable timestamp is left out rather than guessed into the list.
  */
 export function finishedSince<T extends RunLike>(runs: T[], sinceMs: number): T[] {
-  const at = (r: T) => parseHostTime(r.updated_at) ?? parseHostTime(r.created_at)
+  const at = (r: T) =>
+    parseHostTime(r.finished_at) ?? parseHostTime(r.updated_at) ?? parseHostTime(r.created_at)
   return runs
     .filter((r) => finishedKind(r.status) !== null)
     .filter((r) => {
@@ -208,4 +214,33 @@ export function agoParts(
   const hr = Math.floor(min / 60)
   if (hr < 24) return { value: -hr, unit: 'hour' }
   return { value: -Math.floor(hr / 24), unit: 'day' }
+}
+
+/**
+ * One `list_pending` sync at a time. `begin` hands out a token (null while a
+ * sync is in flight — its ack covers the new request too); only that token's
+ * `end` closes it, so an ack from a sync abandoned by `reset` (a reconnect)
+ * can never prune the queues of the current one.
+ */
+export function createSyncGate() {
+  let token = 0
+  let inFlight = false
+  return {
+    begin(): number | null {
+      if (inFlight) return null
+      inFlight = true
+      token += 1
+      return token
+    },
+    /** Whether `t` is the sync in flight (and so may apply its result). */
+    end(t: number): boolean {
+      if (!inFlight || t !== token) return false
+      inFlight = false
+      return true
+    },
+    reset(): void {
+      inFlight = false
+      token += 1
+    },
+  }
 }

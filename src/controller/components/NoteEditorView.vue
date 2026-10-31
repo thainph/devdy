@@ -2,23 +2,28 @@
 /**
  * One note on the phone Controller (spec §2.B2): View renders the Markdown,
  * Edit is a plain title / project / Markdown form with Delete and Save. A new
- * note (`note` null) opens straight in Edit.
+ * note (`noteId` null) opens straight in Edit; an existing one is fetched in
+ * full (`note_get` — the list only has previews) and shows a spinner meanwhile.
  *
  * Writes go through the `save` / `remove` props so the editor only moves on
- * once the Host accepted them. After saving an existing note it shows what was
- * saved; a new note is re-opened under the id the Host's ack carries.
+ * once the Host accepted them. A save sends only the fields changed since the
+ * user entered Edit. A new note stays open under the id the Host's ack carries.
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronLeft, X } from 'lucide-vue-next'
+import { ChevronLeft, Loader2, X } from 'lucide-vue-next'
 import { AppSelect, Button, Input, Textarea } from '@/components/ui'
 import { noteDisplayTitle } from '@/lib/remoteTodos'
 import type { NoteInfo, ProjectInfo } from '../protocol'
 import type { NoteSave } from '../dataStore'
 
 const props = defineProps<{
-  /** The note to show; null for a new one. */
+  /** The note being shown; null while it loads, or for a new note. */
   note: NoteInfo | null
+  /** Its id; null for a new note. */
+  noteId: string | null
+  /** Fetching the note failed (refused / no answer). */
+  failed: boolean
   projects: ProjectInfo[]
   /** Project a new note starts in ('' = none). */
   defaultProjectId: string
@@ -31,8 +36,8 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  /** A new note was saved; show it. */
-  created: [note: NoteInfo]
+  /** Fetch the note again after a failure. */
+  retry: []
   back: []
   'clear-error': []
 }>()
@@ -47,16 +52,25 @@ const content = ref('')
 const projectId = ref('')
 const confirmingDelete = ref(false)
 const localError = ref<string | null>(null)
+/** The note as it was when the user entered Edit: what a save diffs against. */
+const base = ref<NoteInfo | null>(null)
+
+const isNew = computed(() => props.noteId === null)
+const loading = computed(() => !isNew.value && !props.note && !props.failed)
 
 watch(
   () => props.note,
-  (note) => {
+  (note, prev) => {
     shown.value = {
       title: note?.title ?? '',
       content: note?.content ?? '',
       projectId: note ? (note.project_id ?? '') : props.defaultProjectId,
     }
-    mode.value = note ? 'view' : 'edit'
+    // A refresh of the note being edited (a reconnect re-fetches it) must not
+    // wipe the draft.
+    if (note && prev && note.id === prev.id && mode.value === 'edit') return
+    mode.value = isNew.value && !note ? 'edit' : 'view'
+    base.value = null
     resetForm()
   },
   { immediate: true },
@@ -74,6 +88,7 @@ function setMode(next: 'view' | 'edit'): void {
   if (next === mode.value) return
   // Leaving Edit without saving drops the draft, like Cancel.
   if (next === 'view') resetForm()
+  else base.value = props.note
   mode.value = next
 }
 
@@ -83,7 +98,7 @@ const projectOptions = computed(() => [
 ])
 
 const heading = computed(() =>
-  props.note
+  !isNew.value
     ? noteDisplayTitle(shown.value) || t('controller.notes.untitled')
     : t('controller.notes.newNote'),
 )
@@ -102,19 +117,22 @@ async function submit(): Promise<void> {
     return
   }
   localError.value = null
+  const wasNew = isNew.value
   const stored = await props.save({
-    id: props.note?.id ?? null,
+    id: props.noteId,
     title: title.value,
     content: content.value,
     projectId: projectId.value,
+    base: base.value,
   })
   if (!stored) return
-  if (!props.note) {
-    // A new note: the parent re-opens the editor on it (in View).
-    if (stored.id) emit('created', stored)
-    else emit('back')
+  // A new note stays open under its new id (the parent's store adopts it); an
+  // id-less ack from an older Host can only send us back to the list.
+  if (wasNew && !stored.id) {
+    emit('back')
     return
   }
+  base.value = null
   shown.value = { title: stored.title, content: stored.content, projectId: stored.project_id ?? '' }
   resetForm()
   mode.value = 'view'
@@ -171,7 +189,14 @@ function clearBanner(): void {
     </div>
 
     <main class="flex-1 min-h-0 overflow-auto px-3 py-3">
-      <template v-if="mode === 'view'">
+      <p v-if="loading" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
+        <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
+      </p>
+      <div v-else-if="!isNew && !note" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
+        {{ t('controller.data.loadFailed') }}
+        <Button variant="outline" size="sm" @click="emit('retry')">{{ t('controller.data.retry') }}</Button>
+      </div>
+      <template v-else-if="mode === 'view'">
         <span
           v-if="projectName"
           class="mb-2 inline-block rounded-full border border-border bg-secondary px-1.5 py-px text-[10px] text-muted-foreground"

@@ -168,6 +168,9 @@ export interface ControllerState {
   /** A newer connection to this session (another tab or device) took it over
    * and this one stopped for good rather than fight it. */
   superseded: Ref<boolean>
+  /** What the Host advertised on the last session token; null until then, and
+   * empty from an older Host (see `hostHas`). */
+  hostFeatures: Ref<string[] | null>
 }
 
 /**
@@ -280,6 +283,7 @@ export class ControllerConnection {
       decodeErrors: ref<number>(0),
       auth: ref<AuthState | null>(null),
       superseded: ref<boolean>(false),
+      hostFeatures: ref<string[] | null>(null),
     }
   }
 
@@ -848,6 +852,7 @@ export class ControllerConnection {
 
     // Transport-level auth signals: handle here, don't forward to the run store.
     if (payload.kind === 'session_token') {
+      this.state.hostFeatures.value = payload.host_features
       this.onSessionToken(payload.token)
       return
     }

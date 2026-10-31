@@ -4,15 +4,18 @@
  * Hidden while a session is open (that screen is full height). The Inbox tab
  * carries the count of prompts waiting for an answer.
  */
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CheckSquare, FileText, Inbox, MessageSquare, Settings2 } from 'lucide-vue-next'
 
 export type ControllerTab = 'inbox' | 'runs' | 'todo' | 'note' | 'project'
 
-defineProps<{
+const props = defineProps<{
   tab: ControllerTab
   /** Prompts waiting across all runs (the Inbox badge). */
   inboxCount: number
+  /** Tabs the Host cannot serve (an older Host has no data screens). */
+  hidden?: ControllerTab[]
 }>()
 
 const emit = defineEmits<{ 'update:tab': [tab: ControllerTab] }>()
@@ -26,15 +29,18 @@ const TABS = [
   { id: 'note', icon: FileText },
   { id: 'project', icon: Settings2 },
 ] as const
+
+const visible = computed(() => TABS.filter((item) => !props.hidden?.includes(item.id)))
 </script>
 
 <template>
   <nav
-    class="shrink-0 grid grid-cols-5 border-t border-border bg-card pb-[env(safe-area-inset-bottom)]"
+    class="shrink-0 grid border-t border-border bg-card pb-[env(safe-area-inset-bottom)]"
+    :style="{ gridTemplateColumns: `repeat(${visible.length}, minmax(0, 1fr))` }"
     role="tablist"
   >
     <button
-      v-for="item in TABS"
+      v-for="item in visible"
       :key="item.id"
       type="button"
       role="tab"

@@ -13,11 +13,13 @@ import { Loader2, Plus, Search, X } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { noteDisplayTitle, noteListPreview } from '@/lib/remoteTodos'
-import type { NoteInfo, ProjectInfo } from '../protocol'
+import type { NoteSummary, ProjectInfo } from '../protocol'
 
 const props = defineProps<{
   /** null until the Host answers. */
-  notes: NoteInfo[] | null
+  notes: NoteSummary[] | null
+  /** The last list request failed (refused / no answer). */
+  failed?: boolean
   projects: ProjectInfo[]
   /** The filter last asked for. */
   projectId: string | null
@@ -28,7 +30,7 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** Ask the Host for notes matching this filter. */
   filter: [projectId: string | null, query: string]
-  open: [note: NoteInfo]
+  open: [note: NoteSummary]
   new: []
   'clear-error': []
 }>()
@@ -58,6 +60,10 @@ const projectOptions = computed(() => [
 ])
 const projectNames = computed(() => new Map(props.projects.map((p) => [p.id, p.name])))
 const searching = computed(() => search.value.trim().length > 0)
+/** The Host sends the start of the body; flatten it for one or two lines. */
+function previewOf(note: NoteSummary): string {
+  return noteListPreview({ title: note.title, content: note.preview })
+}
 </script>
 
 <template>
@@ -109,7 +115,16 @@ const searching = computed(() => search.value.trim().length > 0)
     </div>
 
     <main class="flex-1 min-h-0 overflow-auto px-3 pt-3 pb-24">
-      <p v-if="notes === null" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
+      <div v-if="notes === null && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
+        {{ t('controller.data.loadFailed') }}
+        <button
+          class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
+          @click="emit('filter', projectFilter || null, search)"
+        >
+          {{ t('controller.data.retry') }}
+        </button>
+      </div>
+      <p v-else-if="notes === null" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
         <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
       </p>
       <p v-else-if="!notes.length" class="py-10 text-center text-sm text-foreground/50">
@@ -124,12 +139,12 @@ const searching = computed(() => search.value.trim().length > 0)
         >
           <span class="flex items-baseline gap-2">
             <span class="min-w-0 flex-1 truncate text-sm font-medium">
-              {{ noteDisplayTitle(note) || t('controller.notes.untitled') }}
+              {{ noteDisplayTitle({ title: note.title, content: note.preview }) || t('controller.notes.untitled') }}
             </span>
             <span class="shrink-0 text-[10px] text-muted-foreground">{{ relativeAge(note.updated_at) }}</span>
           </span>
-          <span v-if="noteListPreview(note)" class="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
-            {{ noteListPreview(note) }}
+          <span v-if="previewOf(note)" class="mt-0.5 block line-clamp-2 text-xs text-muted-foreground">
+            {{ previewOf(note) }}
           </span>
           <span
             v-if="note.project_id && projectNames.get(note.project_id)"

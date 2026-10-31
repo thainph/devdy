@@ -37,6 +37,8 @@ const props = defineProps<{
   sinceMs: number
   /** Finished runs already opened (no unread dot). */
   readIds: string[]
+  /** The Host accepts Always from a Controller. */
+  allowAlways?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -167,6 +169,7 @@ const sinceLabel = computed(() =>
           :request="req"
           variant="inbox"
           :context="contextOf(req)"
+          :allow-always="allowAlways"
           @decide="emit('decide', req, $event)"
           @answer="emit('answer', req, $event)"
           @open="emit('open', req.run_id)"

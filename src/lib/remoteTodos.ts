@@ -1,6 +1,13 @@
 // Pure logic behind the Remote Controller's Todo and Note screens: splitting a
 // todo's text into title + note, filtering and grouping the list by deadline,
 // and the due-date shortcut chips. Tauri- and i18n-free so node:test can run it.
+//
+// Dates: a todo's `due_date` is a plain calendar date (`YYYY-MM-DD`, no time
+// or zone) — the day the user picked, stored as-is by the Host (the desktop's
+// "local date"). It is compared, as a string-derived day number, against the
+// PHONE's local calendar date (`localYmd`); no Date/zone conversion ever
+// touches it, so it never shifts a day. A phone in another time zone than the
+// desktop sees Today / Overdue by its own clock, as a paper diary would.
 
 import { daysUntil } from './todoDue.ts'
 

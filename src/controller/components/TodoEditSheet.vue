@@ -78,6 +78,7 @@ function save(): void {
     text: joinTodoText(title.value, note.value),
     dueDate: dueDate.value,
     projectId: projectId.value,
+    base: props.todo,
   })
 }
 
