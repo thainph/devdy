@@ -11,13 +11,14 @@
 //! sizes, and the exact set of patch keys a phone may touch. Every outcome is
 //! audited exactly once; writes are answered with a `command_ack`.
 
-use crate::commands::{mcp, notes, projects, rules, settings, todos};
+use crate::commands::project_git_accounts::{self as git_accounts, Provider};
+use crate::commands::{claude_accounts, mcp, notes, projects, rules, settings, todos, vps_servers};
 use crate::db::Db;
 use crate::item_links::{self, ItemKind};
 use crate::remote::command::RejectReason;
 use crate::remote::handler::{accept, command_ack, command_ack_item, reject, send_payload, HandlerCtx};
 use crate::remote::protocol::{
-    BuiltinToggle, CmdPayload, NoteInfo, NoteSummary, StreamPayload, TodoInfo, ToggleItem,
+    BuiltinToggle, ClaudeAccountToggle, CmdPayload, NoteInfo, NoteSummary, StreamPayload, TodoInfo, ToggleItem,
     NOTE_PREVIEW_CHARS,
 };
 use serde_json::{Map, Value};
@@ -165,6 +166,15 @@ pub enum ToggleKind {
     Mcp,
     /// The built-in `devdy` MCP server (an app-wide setting today).
     BuiltinMcp,
+    /// A VPS server.
+    Server,
+    GithubAccount,
+    GitlabAccount,
+    AwsAccount,
+    AzureAccount,
+    /// The project's Claude account: on links the project to it, off returns
+    /// the project to the default account.
+    ClaudeAccount,
 }
 
 impl ToggleKind {
@@ -174,6 +184,12 @@ impl ToggleKind {
             Some("rule") => Ok(ToggleKind::Rule),
             Some("mcp") => Ok(ToggleKind::Mcp),
             Some("builtin_mcp") => Ok(ToggleKind::BuiltinMcp),
+            Some("server") => Ok(ToggleKind::Server),
+            Some("github_account") => Ok(ToggleKind::GithubAccount),
+            Some("gitlab_account") => Ok(ToggleKind::GitlabAccount),
+            Some("aws_account") => Ok(ToggleKind::AwsAccount),
+            Some("azure_account") => Ok(ToggleKind::AzureAccount),
+            Some("claude_account") => Ok(ToggleKind::ClaudeAccount),
             _ => Err(RejectReason::Malformed),
         }
     }
@@ -233,9 +249,48 @@ async fn toggle_rows(db: &Db, sql: &str, project_id: &str) -> Result<Vec<ToggleI
         .collect())
 }
 
-/// Every skill / rule / MCP server with whether it is on for `project_id`,
-/// plus the built-in `devdy` server. Selects ids and names only — nothing a
-/// server is configured with (command, URL, env / header keys) is read.
+/// `account_table` rows (id + label) with whether `link_table` enables them for
+/// the project. Both names are our literals, never wire input.
+async fn account_rows(
+    db: &Db,
+    account_table: &str,
+    link_table: &str,
+    project_id: &str,
+) -> Result<Vec<ToggleItem>, String> {
+    let sql = format!(
+        "SELECT a.id, a.label AS name, EXISTS(SELECT 1 FROM {link_table} p \
+         WHERE p.project_id = ? AND p.account_id = a.id) AS enabled \
+         FROM {account_table} a ORDER BY a.label COLLATE NOCASE"
+    );
+    toggle_rows(db, &sql, project_id).await
+}
+
+/// Every managed Claude account, marking the one `project_id` is linked to.
+async fn claude_account_rows(db: &Db, project_id: &str) -> Result<Vec<ClaudeAccountToggle>, String> {
+    let rows = sqlx::query(
+        "SELECT a.id, a.label, a.is_default, \
+         EXISTS(SELECT 1 FROM projects p WHERE p.id = ? AND p.claude_account_id = a.id) AS enabled \
+         FROM claude_accounts a ORDER BY a.is_default DESC, a.label COLLATE NOCASE",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| ClaudeAccountToggle {
+            id: r.get("id"),
+            name: r.get("label"),
+            enabled: r.get::<i64, _>("enabled") != 0,
+            is_default: r.get::<i64, _>("is_default") != 0,
+        })
+        .collect())
+}
+
+/// Every skill / rule / MCP server / VPS server / account with whether it is on
+/// for `project_id`, plus the built-in `devdy` server. Selects ids and names
+/// only — nothing a server or account is configured with (command, URL, env /
+/// header keys, host, login, email) is read.
 pub async fn project_toggles(db: &Db, project_id: &str) -> Result<StreamPayload, String> {
     let mcp_servers = toggle_rows(
         db,
@@ -261,6 +316,14 @@ pub async fn project_toggles(db: &Db, project_id: &str) -> Result<StreamPayload,
         project_id,
     )
     .await?;
+    let servers = toggle_rows(
+        db,
+        "SELECT s.id, s.label AS name, EXISTS(SELECT 1 FROM project_servers p \
+         WHERE p.project_id = ? AND p.server_id = s.id) AS enabled \
+         FROM servers s ORDER BY s.label COLLATE NOCASE",
+        project_id,
+    )
+    .await?;
     Ok(StreamPayload::ProjectToggles {
         project_id: project_id.to_string(),
         mcp_servers,
@@ -270,6 +333,12 @@ pub async fn project_toggles(db: &Db, project_id: &str) -> Result<StreamPayload,
             enabled: mcp::builtin_devdy_enabled(db).await,
             global: true,
         },
+        servers,
+        github_accounts: account_rows(db, "github_accounts", "project_github_accounts", project_id).await?,
+        gitlab_accounts: account_rows(db, "gitlab_accounts", "project_gitlab_accounts", project_id).await?,
+        aws_accounts: account_rows(db, "aws_accounts", "project_aws_accounts", project_id).await?,
+        azure_accounts: account_rows(db, "azure_accounts", "project_azure_accounts", project_id).await?,
+        claude_accounts: claude_account_rows(db, project_id).await?,
     })
 }
 
@@ -567,6 +636,49 @@ async fn toggle_set(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
                 _ => mcp::set_project_mcp_server_enabled(db, &pid, &id, enabled).await,
             }
         }
+        ToggleKind::Server => {
+            let id = valid_id(cmd.item_id.as_deref())?;
+            if !exists(db, "servers", &id).await {
+                return Err(RejectReason::NotFound.into());
+            }
+            vps_servers::set_project_server_enabled(db, &pid, &id, enabled).await
+        }
+        ToggleKind::GithubAccount
+        | ToggleKind::GitlabAccount
+        | ToggleKind::AwsAccount
+        | ToggleKind::AzureAccount => {
+            let id = valid_id(cmd.item_id.as_deref())?;
+            let (table, provider): (&str, Provider) = match kind {
+                ToggleKind::GithubAccount => ("github_accounts", git_accounts::GITHUB),
+                ToggleKind::GitlabAccount => ("gitlab_accounts", git_accounts::GITLAB),
+                ToggleKind::AwsAccount => ("aws_accounts", git_accounts::AWS),
+                _ => ("azure_accounts", git_accounts::AZURE),
+            };
+            if !exists(db, table, &id).await {
+                return Err(RejectReason::NotFound.into());
+            }
+            match kind {
+                ToggleKind::GithubAccount | ToggleKind::GitlabAccount => {
+                    git_accounts::set_enabled(db, provider, &pid, &id, enabled).await
+                }
+                _ => git_accounts::set_cloud_enabled(&ctx.app, db, provider, &pid, &id, enabled).await,
+            }
+        }
+        ToggleKind::ClaudeAccount => {
+            let id = valid_id(cmd.item_id.as_deref())?;
+            if !exists(db, "claude_accounts", &id).await {
+                return Err(RejectReason::NotFound.into());
+            }
+            if enabled {
+                claude_accounts::set_project_account(db, &pid, Some(&id)).await
+            } else if project_claude_account(db, &pid).await.as_deref() == Some(id.as_str()) {
+                // Only the linked account can be switched off; a stale tap on
+                // another one must not unlink the project.
+                claude_accounts::set_project_account(db, &pid, None).await
+            } else {
+                Ok(())
+            }
+        }
     };
     if let Err(e) = outcome {
         // Still push the real state so the phone's switch snaps back.
@@ -574,6 +686,16 @@ async fn toggle_set(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
         return Err(Failure::Failed(e));
     }
     send_toggles(ctx, &pid).await
+}
+
+async fn project_claude_account(db: &Db, project_id: &str) -> Option<String> {
+    sqlx::query_scalar::<_, Option<String>>("SELECT claude_account_id FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .flatten()
 }
 
 #[cfg(test)]
@@ -697,6 +819,12 @@ mod tests {
         assert_eq!(ToggleKind::parse(Some("rule")), Ok(ToggleKind::Rule));
         assert_eq!(ToggleKind::parse(Some("mcp")), Ok(ToggleKind::Mcp));
         assert_eq!(ToggleKind::parse(Some("builtin_mcp")), Ok(ToggleKind::BuiltinMcp));
+        assert_eq!(ToggleKind::parse(Some("server")), Ok(ToggleKind::Server));
+        assert_eq!(ToggleKind::parse(Some("github_account")), Ok(ToggleKind::GithubAccount));
+        assert_eq!(ToggleKind::parse(Some("gitlab_account")), Ok(ToggleKind::GitlabAccount));
+        assert_eq!(ToggleKind::parse(Some("aws_account")), Ok(ToggleKind::AwsAccount));
+        assert_eq!(ToggleKind::parse(Some("azure_account")), Ok(ToggleKind::AzureAccount));
+        assert_eq!(ToggleKind::parse(Some("claude_account")), Ok(ToggleKind::ClaudeAccount));
         for bad in [None, Some(""), Some("account"), Some("MCP")] {
             assert_eq!(ToggleKind::parse(bad), Err(RejectReason::Malformed));
         }
@@ -737,6 +865,17 @@ mod tests {
             "INSERT INTO rules (id, name, description, source_path, updated_at) \
              VALUES ('r1', 'git-rule', 'desc-SECRET', '/path-SECRET', 'c')",
             "INSERT INTO settings (key, value) VALUES ('mcp_builtin_devdy_enabled', 'false')",
+            "INSERT INTO servers (id, label, host, port, username, auth_method, private_key_path, created_at) \
+             VALUES ('v1', 'prod', 'host-SECRET', 22, 'user-SECRET', 'key', '/key-SECRET', 'c')",
+            "INSERT INTO project_servers (project_id, server_id, role, created_at) VALUES ('p1', 'v1', 'staging', 'c')",
+            "INSERT INTO github_accounts (id, label, username, created_at) VALUES ('g1', 'work', 'login-SECRET', 'c')",
+            "INSERT INTO project_github_accounts (project_id, account_id, created_at) VALUES ('p1', 'g1', 'c')",
+            "INSERT INTO aws_accounts (id, label, auth_method, profile_name, region, created_at) \
+             VALUES ('aw1', 'aws-dev', 'profile', 'profile-SECRET', 'region-SECRET', 'c')",
+            "INSERT INTO claude_accounts (id, label, config_dir, email, is_default, created_at) \
+             VALUES ('c1', 'main', '/dir-SECRET', 'mail-SECRET', 1, 'c'), \
+                    ('c2', 'alt', '/dir2-SECRET', NULL, 0, 'c')",
+            "UPDATE projects SET claude_account_id = 'c2' WHERE id = 'p1'",
         ] {
             sqlx::query(sql).execute(&db).await.unwrap();
         }
@@ -751,12 +890,22 @@ mod tests {
         assert_eq!(v["skills"], json!([{ "id": "s1", "name": "git-flow", "enabled": false }]));
         assert_eq!(v["rules"], json!([{ "id": "r1", "name": "git-rule", "enabled": false }]));
         assert_eq!(v["builtin_devdy"], json!({ "enabled": false, "global": true }));
+        assert_eq!(v["servers"], json!([{ "id": "v1", "name": "prod", "enabled": true }]));
+        assert_eq!(v["github_accounts"], json!([{ "id": "g1", "name": "work", "enabled": true }]));
+        assert_eq!(v["gitlab_accounts"], json!([]));
+        assert_eq!(v["aws_accounts"], json!([{ "id": "aw1", "name": "aws-dev", "enabled": false }]));
+        assert_eq!(v["azure_accounts"], json!([]));
+        assert_eq!(v["claude_accounts"], json!([
+            { "id": "c1", "name": "main", "enabled": false, "is_default": true },
+            { "id": "c2", "name": "alt", "enabled": true, "is_default": false },
+        ]));
 
         let mut seen = std::collections::BTreeSet::new();
         keys(&v, &mut seen);
         let allowed = [
             "kind", "project_id", "mcp_servers", "skills", "rules", "builtin_devdy", "id", "name",
-            "enabled", "global",
+            "enabled", "global", "servers", "github_accounts", "gitlab_accounts", "aws_accounts",
+            "azure_accounts", "claude_accounts", "is_default",
         ];
         for k in &seen {
             assert!(allowed.contains(&k.as_str()), "unexpected field `{k}` in project_toggles");

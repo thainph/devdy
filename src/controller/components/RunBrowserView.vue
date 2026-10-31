@@ -18,10 +18,11 @@
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import {
-  AlertTriangle, ChevronLeft, ChevronRight, FolderGit2, Loader2, Plus, RefreshCw,
-  Search, ShieldCheck, Wifi, WifiOff, X,
-} from 'lucide-vue-next'
+import { AlertTriangle, ChevronLeft, ChevronRight, FolderGit2, Plus, RefreshCw, X } from 'lucide-vue-next'
+import ConnectionBadge from './ConnectionBadge.vue'
+import ControllerHeader from './ControllerHeader.vue'
+import HeaderButton from './HeaderButton.vue'
+import SearchField from './SearchField.vue'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, RunInfo } from '../protocol'
 
@@ -50,7 +51,6 @@ const emit = defineEmits<{
 const { t } = useI18n()
 
 const isActive = computed(() => props.status === 'connected')
-const shortFp = computed(() => (props.hostFingerprint ? props.hostFingerprint.slice(0, 12) : ''))
 const pending = computed(() => new Set(props.pendingRunIds))
 
 const query = ref('')
@@ -140,45 +140,17 @@ function backToProjects(): void {
 
 <template>
   <div class="flex h-full min-h-0 flex-col bg-background text-foreground">
-    <!-- Top bar: mirrors SessionView so the two screens read as one app. -->
-    <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <span
-        class="inline-flex items-center gap-1.5 text-xs font-medium min-w-0"
-        :class="isActive && live ? 'text-emerald-500' : status === 'error' ? 'text-destructive' : 'text-amber-500'"
-      >
-        <Loader2
-          v-if="status === 'joining' || status === 'handshaking' || status === 'reconnecting'"
-          class="h-3.5 w-3.5 animate-spin"
-          :stroke-width="2"
-        />
-        <Wifi v-else-if="isActive" class="h-3.5 w-3.5" :stroke-width="2" />
-        <WifiOff v-else class="h-3.5 w-3.5" :stroke-width="2" />
-        <span class="truncate">{{ statusLabel }}</span>
-      </span>
-      <span
-        v-if="shortFp"
-        class="inline-flex items-center gap-1 text-[10px] font-mono text-foreground/45"
-        :title="t('controller.session.verifiedFingerprint', { fp: hostFingerprint })"
-      >
-        <ShieldCheck class="h-3 w-3 text-emerald-500" :stroke-width="2" /> {{ shortFp }}…
-      </span>
-      <div class="ml-auto flex items-center gap-1.5">
-        <button
-          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          :title="t('controller.browser.refresh')"
-          @click="emit('refresh')"
-        >
-          <RefreshCw class="h-4 w-4" :stroke-width="2" />
-        </button>
-        <button
-          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          :title="t('controller.session.disconnect')"
-          @click="emit('disconnect')"
-        >
-          <X class="h-4 w-4" :stroke-width="2" />
-        </button>
-      </div>
-    </header>
+    <ControllerHeader :title="t('controller.browser.title')">
+      <template #badge>
+        <ConnectionBadge :status="status" :live="live" :status-label="statusLabel" :host-fingerprint="hostFingerprint" />
+      </template>
+      <HeaderButton :label="t('controller.browser.refresh')" @click="emit('refresh')">
+        <RefreshCw class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+      <HeaderButton :label="t('controller.session.disconnect')" @click="emit('disconnect')">
+        <X class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+    </ControllerHeader>
 
     <!-- Title row: doubles as the level-up control once inside a project. -->
     <div class="shrink-0 flex items-center gap-1 px-3 py-1.5 border-b border-border/60">
@@ -210,30 +182,11 @@ function backToProjects(): void {
     </div>
 
     <!-- Search spans every project, so it is available at both levels. -->
-    <div class="shrink-0 px-3 py-2 border-b border-border/40">
-      <div class="relative">
-        <Search
-          class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-foreground/40"
-          :stroke-width="2"
-        />
-        <input
-          v-model="query"
-          type="search"
-          inputmode="search"
-          autocomplete="off"
-          :placeholder="t('controller.browser.searchPlaceholder')"
-          class="search-input w-full rounded-md border border-border bg-background py-1.5 pl-7 pr-7 text-sm outline-none placeholder:text-foreground/40 focus:border-foreground/30"
-        />
-        <button
-          v-if="searching"
-          class="absolute right-1.5 top-1/2 inline-flex h-5 w-5 -translate-y-1/2 items-center justify-center rounded text-foreground/40 hover:text-foreground cursor-pointer"
-          :title="t('controller.browser.clearSearch')"
-          @click="query = ''"
-        >
-          <X class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
-      </div>
-    </div>
+    <SearchField
+      v-model="query"
+      :placeholder="t('controller.browser.searchPlaceholder')"
+      :clear-label="t('controller.browser.clearSearch')"
+    />
 
     <main class="flex-1 min-h-0 overflow-auto">
       <!-- ── Level 1: projects ────────────────────────────────────────────── -->
@@ -303,14 +256,3 @@ function backToProjects(): void {
     </main>
   </div>
 </template>
-
-<style scoped>
-/* `type="search"` gets a native clear button in WebKit/Blink, which would sit
-   next to our own — two X's side by side. Ours stays: it matches the rest of the
-   controller's iconography and is positioned with the input's padding. */
-.search-input::-webkit-search-cancel-button,
-.search-input::-webkit-search-decoration {
-  -webkit-appearance: none;
-  appearance: none;
-}
-</style>

@@ -33,6 +33,7 @@ import {
   type StreamPayload,
   type TodoInfo,
   type TodoPatchWire,
+  type ToggleItem,
   type ToggleKind,
 } from './protocol.ts'
 
@@ -284,9 +285,24 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     if (!projectId || !tg) return
     if (kind === 'builtin_mcp') {
       tg.builtin_devdy.enabled = enabled
+    } else if (kind === 'claude_account') {
+      // One linked account at most: switching one on switches the rest off.
+      for (const a of tg.claude_accounts) {
+        if (a.id === itemId) a.enabled = enabled
+        else if (enabled) a.enabled = false
+      }
     } else {
-      const list = kind === 'skill' ? tg.skills : kind === 'rule' ? tg.rules : tg.mcp_servers
-      const item = list.find((i) => i.id === itemId)
+      const lists: Record<Exclude<ToggleKind, 'builtin_mcp' | 'claude_account'>, ToggleItem[]> = {
+        skill: tg.skills,
+        rule: tg.rules,
+        mcp: tg.mcp_servers,
+        server: tg.servers,
+        github_account: tg.github_accounts,
+        gitlab_account: tg.gitlab_accounts,
+        aws_account: tg.aws_accounts,
+        azure_account: tg.azure_accounts,
+      }
+      const item = lists[kind].find((i) => i.id === itemId)
       if (item) item.enabled = enabled
     }
     void write(projectToggleSetCmd(projectId, kind, itemId, enabled)).then((ok) => {

@@ -1,14 +1,14 @@
 <script setup lang="ts">
 /**
- * Todo screen of the phone Controller (spec §2.B1): a project filter, an
- * Active / Done switch, open todos grouped Overdue / Today / Upcoming / No due
- * date, a circle that toggles done, and a bottom sheet (tap a row, or the
- * floating +) to create / edit / delete.
+ * Todo screen of the phone Controller (spec §2.B1): a project filter, a
+ * search, an Active / Done switch, open todos grouped Overdue / Today /
+ * Upcoming / No due date and a circle that toggles done. Tapping a row (or the
+ * floating +) asks the parent to open the full-height todo editor.
  *
  * Backend-agnostic like the other controller views: the list comes in as a
- * prop; `toggle` / `refresh` go out as events, and the sheet's writes go
- * through the `save` / `remove` props so the sheet only closes once the Host
- * accepted the change.
+ * prop; `toggle` / `refresh` / `open` go out as events. The filter, search and
+ * Active / Done switch are models owned by the parent, so they survive a trip
+ * to the editor and back.
  */
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -20,38 +20,40 @@ import {
   doneTodos,
   filterByProject,
   groupOpenTodos,
+  searchTodos,
   splitTodoText,
   todoGroup,
   type TodoTab,
 } from '@/lib/remoteTodos'
-import TodoEditSheet from './TodoEditSheet.vue'
+import ControllerHeader from './ControllerHeader.vue'
+import HeaderButton from './HeaderButton.vue'
+import SearchField from './SearchField.vue'
 import type { ProjectInfo, TodoInfo } from '../protocol'
-import type { TodoSave } from '../dataStore'
 
 const props = defineProps<{
   /** null until the Host's first `todo_list`. */
   todos: TodoInfo[] | null
   projects: ProjectInfo[]
-  /** A write is in flight. */
-  busy: boolean
   /** The last refused write, already translated. */
   error: string | null
   /** The list request failed (refused / no answer). */
   failed?: boolean
-  save: (input: TodoSave) => Promise<boolean>
-  remove: (id: string) => Promise<boolean>
 }>()
 
 const emit = defineEmits<{
   toggle: [id: string]
   refresh: []
+  /** Open the editor on this todo, or on a new one (null). */
+  open: [todo: TodoInfo | null]
   'clear-error': []
 }>()
 
 const { t, locale } = useI18n()
 
-const projectFilter = ref('')
-const tab = ref<TodoTab>('active')
+/** Project filter ('' = every project). */
+const projectFilter = defineModel<string>('projectId', { required: true })
+const tab = defineModel<TodoTab>('tab', { required: true })
+const query = defineModel<string>('query', { required: true })
 // The phone's local calendar date. Re-read every minute and whenever the app
 // comes back to the foreground, so a screen left open past midnight (or a
 // phone woken the next morning) regroups Today / Overdue on its own.
@@ -83,7 +85,10 @@ const projectOptions = computed(() => [
 
 const projectNames = computed(() => new Map(props.projects.map((p) => [p.id, p.name])))
 
-const scoped = computed(() => filterByProject(props.todos ?? [], projectFilter.value || null))
+const searching = computed(() => query.value.trim().length > 0)
+const scoped = computed(() =>
+  searchTodos(filterByProject(props.todos ?? [], projectFilter.value || null), query.value),
+)
 const counts = computed(() => countTodos(scoped.value))
 const groups = computed(() => groupOpenTodos(scoped.value, today.value))
 const finished = computed(() => doneTodos(scoped.value))
@@ -115,56 +120,16 @@ const CHIP_TONES: Record<string, string> = {
   muted: 'border-border bg-secondary text-muted-foreground',
 }
 
-// ── sheet ───────────────────────────────────────────────────────────────────
-const sheetOpen = ref(false)
-const editing = ref<TodoInfo | null>(null)
-
-function openNew(): void {
-  editing.value = null
-  sheetOpen.value = true
-}
-
-function openEdit(todo: TodoInfo): void {
-  editing.value = todo
-  sheetOpen.value = true
-}
-
-function closeSheet(): void {
-  if (props.busy) return
-  sheetOpen.value = false
-  editing.value = null
-}
-
-async function onSave(input: TodoSave): Promise<void> {
-  if (await props.save(input)) {
-    sheetOpen.value = false
-    editing.value = null
-  }
-}
-
-async function onDelete(id: string): Promise<void> {
-  if (await props.remove(id)) {
-    sheetOpen.value = false
-    editing.value = null
-  }
-}
 </script>
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <h1 class="text-base font-semibold">{{ t('controller.todo.title') }}</h1>
-      <div class="ml-auto flex min-w-0 items-center gap-1.5">
-        <AppSelect v-model="projectFilter" size="xs" variant="outline" class="w-40 max-w-full" :options="projectOptions" />
-        <button
-          class="inline-flex items-center justify-center h-7 w-7 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          :title="t('controller.browser.refresh')"
-          @click="emit('refresh')"
-        >
-          <RefreshCw class="h-4 w-4" :stroke-width="2" />
-        </button>
-      </div>
-    </header>
+    <ControllerHeader :title="t('controller.todo.title')">
+      <AppSelect v-model="projectFilter" size="xs" variant="outline" class="w-36 max-w-full" :options="projectOptions" />
+      <HeaderButton :label="t('controller.browser.refresh')" @click="emit('refresh')">
+        <RefreshCw class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+    </ControllerHeader>
 
     <div
       v-if="error"
@@ -175,6 +140,12 @@ async function onDelete(id: string): Promise<void> {
         <X class="h-3.5 w-3.5" :stroke-width="2" />
       </button>
     </div>
+
+    <SearchField
+      v-model="query"
+      :placeholder="t('controller.todo.searchPlaceholder')"
+      :clear-label="t('controller.todo.clearSearch')"
+    />
 
     <main class="flex-1 min-h-0 overflow-auto px-3 pt-3 pb-24">
       <!-- Active / Done -->
@@ -203,7 +174,13 @@ async function onDelete(id: string): Promise<void> {
         <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
       </p>
       <p v-else-if="isEmpty" class="py-10 text-center text-sm text-foreground/50">
-        {{ tab === 'active' ? t('controller.todo.empty') : t('controller.todo.emptyDone') }}
+        {{
+          searching
+            ? t('controller.todo.noResults')
+            : tab === 'active'
+              ? t('controller.todo.empty')
+              : t('controller.todo.emptyDone')
+        }}
       </p>
 
       <template v-else-if="tab === 'active'">
@@ -216,7 +193,7 @@ async function onDelete(id: string): Promise<void> {
               v-for="todo in g.todos"
               :key="todo.id"
               class="flex items-start gap-2.5 px-3 py-2.5 border-b border-border/60 last:border-b-0 cursor-pointer hover:bg-accent/50"
-              @click="openEdit(todo)"
+              @click="emit('open', todo)"
             >
               <button
                 class="mt-0.5 h-5 w-5 shrink-0 rounded-full border-2 border-foreground/30 transition-colors hover:border-emerald-500 cursor-pointer"
@@ -259,7 +236,7 @@ async function onDelete(id: string): Promise<void> {
           v-for="todo in finished"
           :key="todo.id"
           class="flex items-start gap-2.5 px-3 py-2.5 border-b border-border/60 last:border-b-0 cursor-pointer hover:bg-accent/50"
-          @click="openEdit(todo)"
+          @click="emit('open', todo)"
         >
           <button
             class="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 border-emerald-500 bg-emerald-500 text-[11px] font-black text-black cursor-pointer"
@@ -285,21 +262,9 @@ async function onDelete(id: string): Promise<void> {
       class="absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer"
       :title="t('controller.todo.add')"
       :aria-label="t('controller.todo.add')"
-      @click="openNew"
+      @click="emit('open', null)"
     >
       <Plus class="h-6 w-6" :stroke-width="2.25" />
     </button>
-
-    <TodoEditSheet
-      v-if="sheetOpen"
-      :todo="editing"
-      :projects="projects"
-      :default-project-id="projectFilter"
-      :today="today"
-      :busy="busy"
-      @save="onSave"
-      @delete="onDelete"
-      @close="closeSheet"
-    />
   </div>
 </template>

@@ -13,13 +13,14 @@
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import {
-  Bell, BellOff, CheckCircle2, Loader2, RefreshCw, ShieldCheck, Wifi, WifiOff, X, XCircle,
-} from 'lucide-vue-next'
+import { Bell, BellOff, CheckCircle2, RefreshCw, X, XCircle } from 'lucide-vue-next'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { agoParts, finishedKind, finishedSince, parseHostTime } from '@/lib/remoteInbox'
 import ControllerPermissionPrompt from './ControllerPermissionPrompt.vue'
 import PushSheet from './PushSheet.vue'
+import ConnectionBadge from './ConnectionBadge.vue'
+import ControllerHeader from './ControllerHeader.vue'
+import HeaderButton from './HeaderButton.vue'
 import type { PushStore } from '../pushStore'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, QuestionAnswers, RemoteDecision, RunInfo } from '../protocol'
@@ -56,7 +57,6 @@ const emit = defineEmits<{
 const { t, locale } = useI18n()
 
 const isActive = computed(() => props.status === 'connected')
-const shortFp = computed(() => (props.hostFingerprint ? props.hostFingerprint.slice(0, 12) : ''))
 
 // Relative times ("2 min ago") drift while the screen stays open.
 const now = ref(Date.now())
@@ -120,56 +120,21 @@ const sinceLabel = computed(() =>
 
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
-    <!-- Top bar: mirrors the run browser so the tabs read as one app. -->
-    <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <h1 class="text-sm font-medium shrink-0">{{ t('controller.inbox.title') }}</h1>
-      <span
-        class="inline-flex items-center gap-1.5 text-xs font-medium min-w-0"
-        :class="isActive && live ? 'text-emerald-500' : status === 'error' ? 'text-destructive' : 'text-amber-500'"
-      >
-        <Loader2
-          v-if="status === 'joining' || status === 'handshaking' || status === 'reconnecting'"
-          class="h-3.5 w-3.5 animate-spin"
-          :stroke-width="2"
-        />
-        <Wifi v-else-if="isActive" class="h-3.5 w-3.5" :stroke-width="2" />
-        <WifiOff v-else class="h-3.5 w-3.5" :stroke-width="2" />
-        <span class="truncate">{{ statusLabel }}</span>
-      </span>
-      <span
-        v-if="shortFp"
-        class="hidden min-[380px]:inline-flex items-center gap-1 text-[10px] font-mono text-foreground/45"
-        :title="t('controller.session.verifiedFingerprint', { fp: hostFingerprint })"
-      >
-        <ShieldCheck class="h-3 w-3 text-emerald-500" :stroke-width="2" /> {{ shortFp }}…
-      </span>
-      <div class="ml-auto flex items-center gap-1.5">
-        <button
-          v-if="push"
-          class="inline-flex items-center justify-center h-7 w-7 rounded-md transition-colors cursor-pointer hover:bg-accent"
-          :class="pushOn ? 'text-emerald-500' : 'text-foreground/60 hover:text-foreground'"
-          :title="t('controller.push.title')"
-          @click="pushOpen = true"
-        >
-          <Bell v-if="pushOn" class="h-4 w-4" :stroke-width="2" />
-          <BellOff v-else class="h-4 w-4" :stroke-width="2" />
-        </button>
-        <button
-          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          :title="t('controller.browser.refresh')"
-          @click="emit('refresh')"
-        >
-          <RefreshCw class="h-4 w-4" :stroke-width="2" />
-        </button>
-        <button
-          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          :title="t('controller.session.disconnect')"
-          @click="emit('disconnect')"
-        >
-          <X class="h-4 w-4" :stroke-width="2" />
-        </button>
-      </div>
-    </header>
+    <ControllerHeader :title="t('controller.inbox.title')">
+      <template #badge>
+        <ConnectionBadge :status="status" :live="live" :status-label="statusLabel" :host-fingerprint="hostFingerprint" />
+      </template>
+      <HeaderButton v-if="push" :label="t('controller.push.title')" :active="pushOn" @click="pushOpen = true">
+        <Bell v-if="pushOn" class="h-4 w-4" :stroke-width="2" />
+        <BellOff v-else class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+      <HeaderButton :label="t('controller.browser.refresh')" @click="emit('refresh')">
+        <RefreshCw class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+      <HeaderButton :label="t('controller.session.disconnect')" @click="emit('disconnect')">
+        <X class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+    </ControllerHeader>
 
     <main class="flex-1 min-h-0 overflow-auto">
       <!-- ── Waiting for you ─────────────────────────────────────────────── -->

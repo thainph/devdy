@@ -385,13 +385,37 @@ pub enum StreamPayload {
         query: Option<String>,
     },
     /// What is switched on for one project. Names + on/off only: never an MCP
-    /// command, URL, env / header key or value, account or token.
+    /// command, URL, env / header key or value, a server's host / user, an
+    /// account's login / email, or a token.
     ProjectToggles {
         project_id: String,
         mcp_servers: Vec<ToggleItem>,
         skills: Vec<ToggleItem>,
         rules: Vec<ToggleItem>,
         builtin_devdy: BuiltinToggle,
+        /// VPS servers (by label).
+        #[serde(default)]
+        servers: Vec<ToggleItem>,
+        #[serde(default)]
+        github_accounts: Vec<ToggleItem>,
+        #[serde(default)]
+        gitlab_accounts: Vec<ToggleItem>,
+        #[serde(default)]
+        aws_accounts: Vec<ToggleItem>,
+        #[serde(default)]
+        azure_accounts: Vec<ToggleItem>,
+        /// Managed Claude accounts; at most one is `enabled` (the project's
+        /// link). None enabled means the project follows the default account.
+        #[serde(default)]
+        claude_accounts: Vec<ClaudeAccountToggle>,
+    },
+    /// The desktop's look (Settings → Appearance) so the Controller renders
+    /// with the same palette. Pushed on pairing.
+    Appearance {
+        /// `light` / `dark` / `system`.
+        theme: String,
+        /// The named palette (`default`, …).
+        color_theme: String,
     },
     /// One full note (`note_get`).
     Note { note: NoteInfo },
@@ -458,6 +482,16 @@ pub struct ToggleItem {
     pub id: String,
     pub name: String,
     pub enabled: bool,
+}
+
+/// One managed Claude account as a project switch: `enabled` when the project
+/// is linked to it, `is_default` for the app-wide default it otherwise follows.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct ClaudeAccountToggle {
+    pub id: String,
+    pub name: String,
+    pub enabled: bool,
+    pub is_default: bool,
 }
 
 /// The built-in `devdy` MCP server switch. `global` is true while the setting

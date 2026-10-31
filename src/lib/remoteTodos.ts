@@ -44,6 +44,27 @@ export function filterByProject<T extends TodoLike>(todos: T[], projectId: strin
   return projectId ? todos.filter((t) => t.project_id === projectId) : todos
 }
 
+/** Todos whose text (title + note) contains every word of `query`, case- and
+ * accent-insensitively. A blank query keeps them all. */
+export function searchTodos<T extends TodoLike>(todos: T[], query: string): T[] {
+  const words = foldText(query).split(/\s+/).filter(Boolean)
+  if (!words.length) return todos
+  return todos.filter((t) => {
+    const text = foldText(t.text)
+    return words.every((w) => text.includes(w))
+  })
+}
+
+/** Lower-case and strip diacritics ("Đã xong" → "da xong"). */
+function foldText(s: string): string {
+  return s
+    .normalize('NFD')
+    .replace(/[̀-ͯ]/g, '')
+    .replace(/đ/g, 'd')
+    .replace(/Đ/g, 'D')
+    .toLowerCase()
+}
+
 /** Open / done counts for the segmented control. */
 export function countTodos(todos: TodoLike[]): Record<TodoTab, number> {
   let done = 0

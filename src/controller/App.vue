@@ -21,10 +21,12 @@ import SessionView from './components/SessionView.vue'
 import RunBrowserView from './components/RunBrowserView.vue'
 import InboxView from './components/InboxView.vue'
 import TodoView from './components/TodoView.vue'
+import TodoEditorView from './components/TodoEditorView.vue'
 import NoteListView from './components/NoteListView.vue'
 import NoteEditorView from './components/NoteEditorView.vue'
 import ProjectTogglesView from './components/ProjectTogglesView.vue'
 import { createDataStore } from './dataStore'
+import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
 import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
@@ -58,7 +60,10 @@ import {
   type QuestionAnswers,
   type RemoteDecision,
   type SessionLinkPayload,
+  type TodoInfo,
 } from './protocol'
+import { localYmd } from '@/lib/todoDue'
+import type { TodoTab } from '@/lib/remoteTodos'
 
 const { t } = useI18n()
 const { renderText, loadMarkdown } = useMarkdown()
@@ -83,6 +88,12 @@ const data = createDataStore(
 // Web Push (host feature `push`): this phone's notification switch.
 const push = createPushStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false)
 const noteEditorOpen = ref(false)
+// The todo editor: closed (null), a new todo (`todo: null`) or an existing one.
+const todoEditor = ref<{ todo: TodoInfo | null; today: string } | null>(null)
+// The Todo tab's filter, search and Active / Done switch, kept across the editor.
+const todoProjectId = ref('')
+const todoTab = ref<TodoTab>('active')
+const todoQuery = ref('')
 const toggleProjectId = ref<string | null>(null)
 const dataBusy = computed(() => data.state.pending > 0)
 
@@ -108,6 +119,13 @@ function openNoteEditor(note: NoteSummary | null): void {
   if (note) data.loadNote(note.id)
   else data.closeNote()
   noteEditorOpen.value = true
+}
+function openTodoEditor(todo: TodoInfo | null): void {
+  data.clearError()
+  todoEditor.value = { todo, today: localYmd() }
+}
+function closeTodoEditor(): void {
+  todoEditor.value = null
 }
 function closeNoteEditor(): void {
   noteEditorOpen.value = false
@@ -337,6 +355,7 @@ function startConnection(secret: SecretSource | null): void {
     store.apply(p)
     data.apply(p)
     push.apply(p)
+    if (p.kind === 'appearance') setAppearance(p)
   })
   conn.value = c
   void c.connect()
@@ -349,6 +368,7 @@ function disconnect(): void {
   store.reset()
   data.reset()
   noteEditorOpen.value = false
+  todoEditor.value = null
   link.value = null
   phase.value = 'link'
   status.value = 'idle'
@@ -755,6 +775,21 @@ function onRequestFiles(): void {
     @clear-error="data.clearError()"
   />
 
+  <!-- The todo editor too: full height, like the note editor. -->
+  <TodoEditorView
+    v-else-if="!runId && !draftProjectId && tab === 'todo' && todoEditor"
+    :todo="todoEditor.todo"
+    :projects="store.state.projectList"
+    :default-project-id="todoProjectId"
+    :today="todoEditor.today"
+    :busy="dataBusy"
+    :error="data.state.error"
+    :save="data.saveTodo"
+    :remove="data.deleteTodo"
+    @back="closeTodoEditor"
+    @clear-error="data.clearError()"
+  />
+
   <div v-else-if="!runId && !draftProjectId" class="flex h-dvh min-h-0 flex-col">
     <div class="flex-1 min-h-0">
       <InboxView
@@ -795,13 +830,14 @@ function onRequestFiles(): void {
       />
       <TodoView
         v-else-if="tab === 'todo'"
+        v-model:project-id="todoProjectId"
+        v-model:tab="todoTab"
+        v-model:query="todoQuery"
         :todos="data.state.todos"
         :projects="store.state.projectList"
-        :busy="dataBusy"
         :error="data.state.error"
         :failed="data.state.failed.todos"
-        :save="data.saveTodo"
-        :remove="data.deleteTodo"
+        @open="openTodoEditor"
         @toggle="data.toggleTodo"
         @refresh="data.loadTodos()"
         @clear-error="data.clearError()"

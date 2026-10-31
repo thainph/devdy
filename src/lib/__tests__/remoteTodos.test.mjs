@@ -14,6 +14,7 @@ import {
   noteDisplayTitle,
   noteListPreview,
   notePreview,
+  searchTodos,
   splitTodoText,
   todoGroup,
 } from '../remoteTodos.ts'
@@ -118,4 +119,16 @@ test('noteListPreview skips the line used as the title', () => {
   assert.equal(noteListPreview({ title: '', content: '# Go-live\n- Backup\n- Alert' }), 'Backup Alert')
   assert.equal(noteListPreview({ title: 'T', content: 'body' }), 'body')
   assert.equal(noteListPreview({ title: '', content: '' }), '')
+})
+
+test('searchTodos matches every word in title + note, ignoring case and accents', () => {
+  const todos = [
+    { id: 'a', text: 'Sửa lỗi đăng nhập\nkiểm tra token', done: false, created_at: 'c' },
+    { id: 'b', text: 'Deploy relay', done: true, created_at: 'c' },
+  ]
+  assert.deepEqual(searchTodos(todos, '').map((t) => t.id), ['a', 'b'])
+  assert.deepEqual(searchTodos(todos, '  dang NHAP ').map((t) => t.id), ['a'])
+  assert.deepEqual(searchTodos(todos, 'token sua').map((t) => t.id), ['a'])
+  assert.deepEqual(searchTodos(todos, 'relay').map((t) => t.id), ['b'])
+  assert.deepEqual(searchTodos(todos, 'relay token'), [])
 })

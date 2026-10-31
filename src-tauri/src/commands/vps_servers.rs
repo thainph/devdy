@@ -739,6 +739,36 @@ pub async fn map_server_to_project(
     Ok(())
 }
 
+/// The project page's simple on/off: on maps the server under the default role,
+/// off drops every role mapping it has for the project.
+pub async fn set_project_server_enabled(
+    db: &Db,
+    project_id: &str,
+    server_id: &str,
+    enabled: bool,
+) -> Result<(), String> {
+    if enabled {
+        sqlx::query(
+            "INSERT OR IGNORE INTO project_servers (project_id, server_id, role, created_at) \
+             VALUES (?, ?, 'production', ?)",
+        )
+        .bind(project_id)
+        .bind(server_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    } else {
+        sqlx::query("DELETE FROM project_servers WHERE project_id = ? AND server_id = ?")
+            .bind(project_id)
+            .bind(server_id)
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    Ok(())
+}
+
 /// FR-103 / AC-106 / BR-104: remove exactly the (project, server, role) triple.
 /// Other mappings of the same server/project are untouched.
 #[tauri::command]
