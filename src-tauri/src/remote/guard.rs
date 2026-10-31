@@ -70,6 +70,9 @@ const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "rd_download_append",
     "rd_copy_secret",
     "start_file_drag",
+    // File Transfer window, this machine's half (remote/transfer.rs).
+    "local_fs_home", "local_fs_list", "local_fs_mkdir", "local_fs_rename", "local_fs_delete", "local_fs_walk",
+    "local_fs_hash", "local_fs_write_begin", "local_fs_write_chunk", "local_fs_write_finish", "local_fs_write_abort",
 ];
 
 /// Whether `name` is refused to a Controller (see [`LOCAL_ONLY_COMMANDS`]).

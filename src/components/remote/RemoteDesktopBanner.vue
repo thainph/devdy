@@ -8,12 +8,14 @@
  * "Sign in again" is also offered after STUCK_MS without a connection, as a
  * fallback. When another device takes the session over, the client stops
  * instead of fighting it and only a deliberate "Reconnect" takes it back.
+ * "Files" opens the File Transfer window (lib/fileTransferWindow.ts).
  */
 import { computed, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { LogOut, MonitorSmartphone, RefreshCw } from 'lucide-vue-next'
+import { ArrowLeftRight, LogOut, MonitorSmartphone, RefreshCw } from 'lucide-vue-next'
 import type { RemoteIpcClient } from '@/lib/ipc/remote'
 import { clearRemoteDesktopSession } from '@/lib/remoteDesktopSession'
+import { openFileTransferWindow } from '@/lib/fileTransferWindow'
 
 const props = defineProps<{ client: RemoteIpcClient; device: string }>()
 
@@ -82,6 +84,10 @@ function reconnect(): void {
   location.reload()
 }
 
+function openFiles(): void {
+  void openFileTransferWindow().catch((e) => console.error('[remoteDesktop] file transfer window failed', e))
+}
+
 function signOut(): void {
   props.client.close()
   clearRemoteDesktopSession()
@@ -98,6 +104,15 @@ function signOut(): void {
     <span class="font-medium">{{ t('remote.desktop.banner.controlling', { device: label }) }}</span>
     <span class="h-2 w-2 rounded-full" :class="dotClass" />
     <span class="text-muted-foreground">{{ stateText }}</span>
+    <button
+      v-if="connected"
+      type="button"
+      class="inline-flex items-center gap-1 rounded-full px-2 py-0.5 hover:bg-muted"
+      :title="t('remote.desktop.banner.filesHint')"
+      @click="openFiles"
+    >
+      <ArrowLeftRight class="h-3 w-3" :stroke-width="2" /> {{ t('remote.desktop.banner.files') }}
+    </button>
     <button
       v-if="canReconnect && !needsSignIn"
       type="button"
