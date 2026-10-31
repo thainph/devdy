@@ -26,6 +26,7 @@ pub mod mcp_packages;
 pub mod models;
 pub mod notes;
 pub mod notifications;
+pub mod project_git_accounts;
 pub mod project_links;
 pub mod projects;
 pub mod rules;

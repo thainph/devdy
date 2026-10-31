@@ -139,10 +139,10 @@ const isSessionWindow = IS_SESSION_WINDOW
 
 // GĐ6 (AC3): the project's active git account(s). Shows one badge per linked
 // provider (GitHub first, then GitLab) so both attached accounts are visible.
-// GitHub accounts the open session actually uses: `general` for ordinary gh
-// calls, `review` for review/comment actions (a pinned PR-inbox review or a
-// review session differs from the project default). Null until resolved.
-interface RunGithubAccounts { default: string | null; review: string | null; general: string | null }
+// GitHub accounts the open session uses: `default` for commands that name no
+// account (a pinned PR-inbox review differs from the project default) and every
+// `enabled` account the agent may pick. Null until resolved.
+interface RunGithubAccounts { default: string | null; pinned: boolean; enabled: string[] }
 const runGithubAccounts = ref<RunGithubAccounts | null>(null)
 let runGithubAccountsSeq = 0
 async function loadRunGithubAccounts() {
@@ -165,47 +165,48 @@ const activeAccounts = computed(() => {
   // Tone per provider is kept in sync with the Projects list: GitHub=info,
   // GitLab=warning (server chips use status tones, AWS uses primary).
   const badges: { key: string; icon: typeof Github; tone: 'info' | 'warning'; username: string; title: string; tag?: string }[] = []
-  // One GitHub chip: the account this session's gh calls run as. The reviewer
-  // account only shows in the tooltip, unless the session itself runs as it
-  // (review session / PR-inbox review) — then the chip is tagged "review".
+  // One chip per provider: the default account of this session. Other enabled
+  // accounts (the agent may pick them per command) show as "+N" and in the tooltip.
   const ghLabel = (id: string | null | undefined) => {
     const acc = id ? ghStore.accounts.find(a => a.id === id) : undefined
     return acc ? (acc.username ? `@${acc.username}` : acc.label) : null
   }
-  const defaultId = runGithubAccounts.value?.default ?? project.value?.github_account_id
-  const ghId = runGithubAccounts.value?.general ?? defaultId
-  const reviewId = runGithubAccounts.value?.review
+  const ghId = runGithubAccounts.value?.default ?? project.value?.github_account_id
   const ghName = ghLabel(ghId)
   if (ghId && ghName) {
-    const reviewMode = !!defaultId && ghId !== defaultId
-    const lines = [`GitHub account: ${ghName}`]
-    if (reviewMode) {
-      lines[0] = `Review session — gh runs as ${ghName}`
-      const defName = ghLabel(defaultId)
-      if (defName) lines.push(`git fetch/push & commits: ${defName}`)
-    } else if (reviewId && reviewId !== ghId) {
-      const revName = ghLabel(reviewId)
-      if (revName) lines.push(`PR reviews/comments: ${revName}`)
-    }
+    const others = (runGithubAccounts.value?.enabled ?? project.value?.github_account_ids ?? [])
+      .filter(id => id !== ghId)
+      .map(ghLabel)
+      .filter((n): n is string => !!n)
+    const lines = [runGithubAccounts.value?.pinned ? `Review session — GitHub runs as ${ghName}` : `GitHub account: ${ghName} (default)`]
+    if (others.length) lines.push(`Also enabled: ${others.join(', ')}`)
     badges.push({
       key: 'github',
       icon: Github,
       tone: 'info',
       username: ghName,
       title: lines.join('\n'),
-      tag: reviewMode ? 'review' : undefined,
+      tag: runGithubAccounts.value?.pinned ? 'review' : others.length ? `+${others.length}` : undefined,
     })
   }
   const glId = project.value?.gitlab_account_id
   if (glId) {
     const acc = glStore.accounts.find(a => a.id === glId)
     if (acc) {
+      const others = (project.value?.gitlab_account_ids ?? [])
+        .filter(id => id !== glId)
+        .map(id => glStore.accounts.find(a => a.id === id))
+        .filter((a): a is NonNullable<typeof a> => !!a)
+        .map(a => (a.username ? `@${a.username}` : a.label))
+      const lines = [`GitLab account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}${acc.host ? ` on ${acc.host}` : ''} (default)`]
+      if (others.length) lines.push(`Also enabled: ${others.join(', ')}`)
       badges.push({
         key: 'gitlab',
         icon: Gitlab,
         tone: 'warning',
         username: acc.username ? `@${acc.username}` : acc.label,
-        title: `GitLab account: ${acc.label}${acc.username ? ` (@${acc.username})` : ''}${acc.host ? ` on ${acc.host}` : ''}`,
+        title: lines.join('\n'),
+        tag: others.length ? `+${others.length}` : undefined,
       })
     }
   }
@@ -1908,7 +1909,7 @@ watch(projectId, () => {
 // Re-resolve the session's GitHub accounts when the project, the open session,
 // or the project's account links change.
 watch(
-  [projectId, currentRunId, () => project.value?.github_account_id, () => project.value?.github_reviewer_account_id],
+  [projectId, currentRunId, () => project.value?.github_account_id, () => project.value?.github_account_ids.join(',')],
   () => { void loadRunGithubAccounts() },
   { immediate: true },
 )

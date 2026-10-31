@@ -23,20 +23,6 @@ pub async fn client_for_project(db: &Db, project_id: &str) -> Result<Octocrab> {
     Ok(client)
 }
 
-/// Build an Octocrab client for review work: the project's reviewer account when
-/// one is linked, else the default account (same as `client_for_project`).
-pub async fn client_for_review(db: &Db, project_id: &str) -> Result<Octocrab> {
-    let row = sqlx::query("SELECT github_reviewer_account_id FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_one(db)
-        .await?;
-    let reviewer: Option<String> = row.get("github_reviewer_account_id");
-    match reviewer {
-        Some(account_id) => client_for_account(&account_id),
-        None => client_for_project(db, project_id).await,
-    }
-}
-
 /// Build an Octocrab client directly from a GitHub account's stored PAT. Unlike
 /// `client_for_project`, this is not tied to any project — used by the PR inbox
 /// which aggregates review requests across all configured accounts.

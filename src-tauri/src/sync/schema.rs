@@ -154,6 +154,8 @@ pub static SYNCED_TABLES: &[TableSpec] = &[
     TableSpec::new("project_rule_groups", &["project_id", "group_id"]),
     TableSpec::new("project_mcp_servers", &["project_id", "server_id"]),
     TableSpec::new("project_servers", &["project_id", "server_id", "role"]),
+    TableSpec::new("project_github_accounts", &["project_id", "account_id"]),
+    TableSpec::new("project_gitlab_accounts", &["project_id", "account_id"]),
     // Same imported CLI session (unique index idx_runs_project_engine_session).
     TableSpec::new("runs", ID)
         .natural(&["project_id", "engine", "session_id"])

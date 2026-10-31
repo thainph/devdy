@@ -720,6 +720,33 @@ export function listServers({ scope = 'project' } = {}) {
   return db().prepare(`SELECT ${cols}, NULL AS role FROM servers s ORDER BY s.label`).all();
 }
 
+// ---- Git accounts -------------------------------------------------------------
+
+/**
+ * GitHub / GitLab accounts enabled for the current project (plus its default
+ * account), with which one is the default. A command picks another one with
+ * `DEVDY_GIT_ACCOUNT=<label or username>`. Metadata only — PATs stay in the
+ * Keychain and are never readable here.
+ */
+export function listGitAccounts() {
+  const projectId = process.env.DEVDY_PROJECT_ID || null;
+  if (!projectId) return [];
+  const query = (provider, table, link, column, host) =>
+    db()
+      .prepare(
+        `SELECT '${provider}' AS provider, a.id, a.label, a.username, a.email, ${host} AS host,
+                a.id = p.${column} AS is_default
+         FROM ${table} a JOIN projects p ON p.id = ?
+         WHERE a.id IN (SELECT account_id FROM ${link} WHERE project_id = p.id) OR a.id = p.${column}
+         ORDER BY a.label COLLATE NOCASE, a.id`,
+      )
+      .all(projectId);
+  return [
+    ...query('github', 'github_accounts', 'project_github_accounts', 'github_account_id', "'github.com'"),
+    ...query('gitlab', 'gitlab_accounts', 'project_gitlab_accounts', 'gitlab_account_id', "COALESCE(a.host, 'gitlab.com')"),
+  ];
+}
+
 export function getServer(id) {
   if (!id) throw new Error('server id is required');
   return db()

@@ -17,7 +17,7 @@
 //   - The helper never invokes real git and never reads `credential.helper`
 //     recursively.
 
-import { ask } from './shim.mjs'
+import { ask, gitAccountSelector } from './shim.mjs'
 
 /**
  * Parse git credential stdin (lines of `key=value`, terminated by a blank line)
@@ -109,14 +109,24 @@ export async function run(action) {
       argv: ['credential', 'get'],
       host,
       run_id: process.env.DEVDY_RUN_ID || null,
+      // Account picked for this git command (`DEVDY_GIT_ACCOUNT=work git push`),
+      // and the remote URL's username (`https://<user>@host/...`), which selects
+      // that account when it is one of the project's enabled accounts.
+      account: gitAccountSelector(process.env),
+      ...(fields.username ? { username: fields.username } : {}),
     })
   } catch {
     // Broker unreachable → fail-closed, print nothing, do NOT crash the run.
     return
   }
 
-  // deny / no token → fail-closed (print nothing).
-  if (!resp || resp.decision !== 'allow' || !resp.token) return
+  // deny / no token → fail-closed (print nothing on stdout). The reason (no
+  // secret — e.g. the enabled accounts for an unknown DEVDY_GIT_ACCOUNT) goes
+  // to stderr, which git shows to the caller.
+  if (!resp || resp.decision !== 'allow' || !resp.token) {
+    if (resp && resp.reason) process.stderr.write(`devdy: git credential — ${resp.reason}\n`)
+    return
+  }
 
   process.stdout.write(
     formatCredentialOutput({

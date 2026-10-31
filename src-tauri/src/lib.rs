@@ -49,9 +49,9 @@ use commands::github::{
 };
 use commands::github_accounts::{
     create_github_account, delete_github_account, list_github_accounts, set_project_github_account,
-    set_project_github_reviewer_account, get_run_github_accounts,
-    update_github_account, validate_github_account,
+    get_run_github_accounts, update_github_account, validate_github_account,
 };
+use commands::project_git_accounts::set_project_git_account_enabled;
 use commands::gitlab_accounts::{
     create_gitlab_account, delete_gitlab_account, list_gitlab_accounts, set_project_gitlab_account,
     update_gitlab_account, validate_gitlab_account,
@@ -591,8 +591,8 @@ pub fn run() {
             delete_github_account,
             validate_github_account,
             set_project_github_account,
-            set_project_github_reviewer_account,
             get_run_github_accounts,
+            set_project_git_account_enabled,
             list_gitlab_accounts,
             create_gitlab_account,
             update_gitlab_account,

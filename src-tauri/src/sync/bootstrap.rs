@@ -99,6 +99,8 @@ pub static REFS: &[(&str, &str, &str)] = &[
     ("github_accounts", "projects", "github_reviewer_account_id"),
     ("github_accounts", "runs", "github_account_id"),
     ("gitlab_accounts", "projects", "gitlab_account_id"),
+    ("github_accounts", "project_github_accounts", "account_id"),
+    ("gitlab_accounts", "project_gitlab_accounts", "account_id"),
     ("aws_accounts", "projects", "aws_account_id"),
     ("azure_accounts", "projects", "azure_account_id"),
     ("claude_accounts", "projects", "claude_account_id"),
@@ -133,6 +135,8 @@ pub static REFS: &[(&str, &str, &str)] = &[
     ("projects", "project_rule_groups", "project_id"),
     ("projects", "project_mcp_servers", "project_id"),
     ("projects", "project_servers", "project_id"),
+    ("projects", "project_github_accounts", "project_id"),
+    ("projects", "project_gitlab_accounts", "project_id"),
     ("projects", "project_secrets", "project_id"),
     ("projects", "sync_conflicts", "project_id"),
     ("projects", "rule_sync_conflicts", "project_id"),
@@ -1268,6 +1272,8 @@ mod tests {
             "INSERT INTO project_rule_groups (project_id, group_id, enabled_at) VALUES ('pr-P', 'rg-P', 'x')",
             "INSERT INTO project_mcp_servers (project_id, server_id, enabled_at) VALUES ('pr-P', 'mcp-P', 'x')",
             "INSERT INTO project_servers (project_id, server_id, role, created_at) VALUES ('pr-P', 'sv-P', 'staging', 'x')",
+            "INSERT INTO project_github_accounts (project_id, account_id, created_at) VALUES ('pr-P', 'gh-P', 'x')",
+            "INSERT INTO project_gitlab_accounts (project_id, account_id, created_at) VALUES ('pr-P', 'gl-P', 'x')",
             "INSERT INTO runs (id, project_id, repo_id, type, created_at, claude_account_id, github_account_id, server_id, engine, session_id, output_path) \
              VALUES ('rn-P', 'pr-P', 're-P', 'session', 'x', 'ca-P', 'gh-P', 'sv-P', 'claude', 'sess-P', '{home}/w/devdy/.devdy/runs/rn-P.md')",
             "INSERT INTO run_usage (id, run_id, project_id, claude_account_id, engine, created_at) VALUES ('ru1-P', 'rn-P', 'pr-P', 'ca-P', 'claude', 'x')",
@@ -1331,7 +1337,8 @@ mod tests {
             assert_eq!((t.matched, t.rekeyed, t.new_remote, t.new_local), (1, 1, 0, 0), "{tbl}");
         }
         for tbl in ["skill_group_members", "rule_group_members", "project_skills", "project_rules",
-                    "project_skill_groups", "project_rule_groups", "project_mcp_servers", "project_servers"] {
+                    "project_skill_groups", "project_rule_groups", "project_mcp_servers", "project_servers",
+                    "project_github_accounts", "project_gitlab_accounts"] {
             let t = table(&p, tbl);
             assert_eq!((t.matched, t.rekeyed, t.new_remote, t.new_local), (1, 0, 0, 0), "{tbl} matches by pk after its parents");
         }

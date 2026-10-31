@@ -212,13 +212,20 @@ pub async fn update_gitlab_account(
 #[tauri::command]
 pub async fn delete_gitlab_account(db: State<'_, Db>, id: String) -> Result<(), String> {
     let _ = secrets::delete_gitlab_account_pat(&id);
-    // projects.gitlab_account_id is ON DELETE SET NULL, so linked projects simply unlink.
+    // projects.gitlab_account_id is ON DELETE SET NULL and project_gitlab_accounts
+    // cascades, so linked projects simply unlink; a project that used it as the
+    // default falls back to another enabled account.
     sqlx::query("DELETE FROM gitlab_accounts WHERE id = ?")
         .bind(&id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
-    Ok(())
+    super::project_git_accounts::repair_defaults(
+        db.inner(),
+        super::project_git_accounts::GITLAB,
+        None,
+    )
+    .await
 }
 
 #[tauri::command]
@@ -257,11 +264,11 @@ pub async fn set_project_gitlab_account(
     project_id: String,
     account_id: Option<String>,
 ) -> Result<(), String> {
-    sqlx::query("UPDATE projects SET gitlab_account_id = ? WHERE id = ?")
-        .bind(&account_id)
-        .bind(&project_id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
-    Ok(())
+    super::project_git_accounts::set_default(
+        db.inner(),
+        super::project_git_accounts::GITLAB,
+        &project_id,
+        account_id.as_deref(),
+    )
+    .await
 }

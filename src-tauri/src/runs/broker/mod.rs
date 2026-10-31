@@ -45,6 +45,15 @@ pub struct BrokerRequest {
     /// fail-closed denies (reads/allows are unaffected).
     #[serde(default)]
     pub run_id: Option<String>,
+    /// gh / glab / git: the account the command picked (`DEVDY_GIT_ACCOUNT`) —
+    /// label, username or id of one of the project's enabled accounts. Absent →
+    /// the default account.
+    #[serde(default)]
+    pub account: Option<String>,
+    /// git credential helper only: the username of the remote URL
+    /// (`https://<user>@host/...`). Selects that account when it is enabled.
+    #[serde(default)]
+    pub username: Option<String>,
     /// terraform only: the shim found code in the config that runs outside
     /// Terraform (`data "external"`, `local-exec`, `data "http"`), or could not
     /// read the config (fail-closed). Absent → false (other shims never send it).
@@ -65,6 +74,10 @@ pub struct BrokerResponse {
     /// GitHub/GitLab token for gh/glab/git. Secret.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub token: Option<String>,
+    /// gh/glab: host of the account the token belongs to (not a secret). The glab
+    /// shim points glab at it (GITLAB_HOST) so the token only goes to that host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host: Option<String>,
     /// Credential username for the git credential helper (NOT a secret). Only set
     /// on the `git credential get` branch; `None` (and thus omitted from JSON) for
     /// gh/glab so the existing shim contract is unchanged (backward-compat).
@@ -103,10 +116,11 @@ impl BrokerResponse {
             ..Default::default()
         }
     }
-    fn allow(token: Option<String>) -> Self {
+    fn allow_token(token: String, host: String) -> Self {
         BrokerResponse {
             decision: "allow".into(),
-            token,
+            token: Some(token),
+            host: Some(host),
             ..Default::default()
         }
     }
@@ -343,6 +357,34 @@ async fn process_line(
         _ => decision,
     };
 
+    // gh / glab / git: settle which account the call uses before asking the
+    // user — an unknown DEVDY_GIT_ACCOUNT is denied up front, and an approval
+    // prompt names the account (it matters when several are enabled).
+    let sel = token::AccountSelect {
+        run_id: req.run_id.as_deref(),
+        account: req.account.as_deref(),
+        url_username: req.username.as_deref(),
+    };
+    let decision = if is_git_tool(&req.tool) && !matches!(decision, PolicyDecision::Deny { .. }) {
+        match token::pick_git_account(db, &req.project_id, &req.tool, req.host.as_deref(), sel).await {
+            Err(e) if e.starts_with(token::UNKNOWN_GIT_ACCOUNT) => {
+                // Lists enabled account labels/usernames only — no secret.
+                audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(token::UNKNOWN_GIT_ACCOUNT));
+                return BrokerResponse::deny(e);
+            }
+            Ok(Some(acct)) => match decision {
+                PolicyDecision::Ask { reason } => PolicyDecision::Ask {
+                    reason: format!("{reason} (as {} account {})", provider_name(acct.provider), acct.display()),
+                },
+                d => d,
+            },
+            // No account / DB error: the resolve step below denies.
+            _ => decision,
+        }
+    } else {
+        decision
+    };
+
     // 3. Resolve decision → whether we proceed to token resolution.
     let (proceed, base_resp): (bool, Option<BrokerResponse>) = match &decision {
         PolicyDecision::Deny { reason } => {
@@ -433,20 +475,11 @@ async fn process_line(
             .map(|a| a.eq_ignore_ascii_case("credential"))
             .unwrap_or(false);
 
-    // 4. Token resolution (fail-closed). `gh` is run-aware: a pinned/review run
-    // or a review action (`gh pr review`/`comment`, review API calls) resolves to
-    // the reviewer account; git keeps the project's default account.
-    let resolved = if req.tool == "gh" || req.tool == "github" {
-        token::resolve_gh_token_for_run(
-            db,
-            &req.project_id,
-            req.run_id.as_deref(),
-            policy::is_github_review_action(&req.argv),
-        )
-        .await
-    } else {
-        token::resolve_token_for_project(db, &req.project_id, &req.tool, req.host.as_deref()).await
-    };
+    // 4. Token resolution (fail-closed). The command may name one of the
+    // project's enabled accounts; otherwise the default (or the run's pin) is used.
+    let resolved =
+        token::resolve_token_for_project(db, &req.project_id, &req.tool, req.host.as_deref(), sel)
+            .await;
     match resolved {
         Ok(Some(resolved)) => {
             audit::audit_request(run_id, &req.tool, &req.argv, "allow", None);
@@ -459,7 +492,7 @@ async fn process_line(
                     .unwrap_or_else(|| credential_username_fallback(&resolved.host));
                 BrokerResponse::allow_credential(resolved.token, username)
             } else {
-                BrokerResponse::allow(Some(resolved.token))
+                BrokerResponse::allow_token(resolved.token, resolved.host)
             }
         }
         Ok(None) => {
@@ -467,6 +500,11 @@ async fn process_line(
             let reason = "no account linked for this project/host";
             audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(reason));
             BrokerResponse::deny(reason)
+        }
+        Err(e) if e.starts_with(token::UNKNOWN_GIT_ACCOUNT) => {
+            // Lists enabled account labels/usernames only — no secret.
+            audit::audit_request(run_id, &req.tool, &req.argv, "deny", Some(token::UNKNOWN_GIT_ACCOUNT));
+            BrokerResponse::deny(e)
         }
         Err(_) => {
             // Never surface the underlying error (may reference secrets).
@@ -623,6 +661,19 @@ fn notify_login_required(app: Option<&AppHandle>, key: &str, title: &str, body: 
     let _ = app.notification().builder().title(title).body(body).show();
 }
 
+/// Tools whose credentials are GitHub / GitLab accounts.
+fn is_git_tool(tool: &str) -> bool {
+    matches!(tool, "gh" | "github" | "glab" | "gitlab" | "git")
+}
+
+fn provider_name(provider: &str) -> &'static str {
+    if provider == "github" {
+        "GitHub"
+    } else {
+        "GitLab"
+    }
+}
+
 /// Provider-appropriate git credential username when the account has none stored.
 /// GitHub accepts any username with a PAT as password; the safe convention is
 /// `x-access-token`. GitLab accepts `oauth2` + PAT as password. Gitlab is
@@ -677,6 +728,12 @@ mod tests {
             .execute(&pool)
             .await
             .unwrap();
+        for t in ["project_github_accounts", "project_gitlab_accounts"] {
+            sqlx::query(&format!("CREATE TABLE {t} (project_id TEXT, account_id TEXT, created_at TEXT)"))
+                .execute(&pool)
+                .await
+                .unwrap();
+        }
         sqlx::query(
             "CREATE TABLE aws_accounts (id TEXT PRIMARY KEY, label TEXT, auth_method TEXT, account_id TEXT, arn TEXT, region TEXT, access_key_id TEXT, profile_name TEXT)",
         )
@@ -721,6 +778,7 @@ mod tests {
             decision: v["decision"].as_str().unwrap().to_string(),
             reason: field("reason"),
             token: field("token"),
+            host: field("host"),
             username: field("username"),
             aws_access_key_id: field("aws_access_key_id"),
             aws_secret_access_key: field("aws_secret_access_key"),
@@ -1216,5 +1274,63 @@ mod tests {
         // Give the abort + remove a moment.
         tokio::time::sleep(std::time::Duration::from_millis(50)).await;
         assert!(!path.exists(), "socket file should be removed on drop");
+    }
+
+    // ---- several enabled git accounts ----
+
+    /// Approves and records each prompt's reason.
+    #[derive(Default)]
+    struct RecordingApprover(std::sync::Mutex<Vec<String>>);
+
+    #[async_trait]
+    impl Approver for RecordingApprover {
+        async fn approve(&self, _req: &BrokerRequest, reason: &str) -> bool {
+            self.0.lock().unwrap().push(reason.to_string());
+            true
+        }
+    }
+
+    async fn seed_two_github_accounts(db: &Db) {
+        for sql in [
+            "INSERT INTO github_accounts (id, label, username) VALUES ('gh1', 'main', 'author'), ('gh2', 'work', 'worker')",
+            "INSERT INTO projects (id, github_account_id) VALUES ('p1', 'gh1')",
+            "INSERT INTO project_github_accounts (project_id, account_id) VALUES ('p1', 'gh1'), ('p1', 'gh2')",
+        ] {
+            sqlx::query(sql).execute(db).await.unwrap();
+        }
+    }
+
+    #[tokio::test]
+    async fn unknown_git_account_is_denied_before_asking() {
+        let db = mem_db().await;
+        seed_two_github_accounts(&db).await;
+        let approver = Arc::new(RecordingApprover::default());
+        let resp = round_trip(
+            db,
+            approver.clone(),
+            r#"{"project_id":"p1","tool":"gh","argv":["pr","merge","1"],"account":"nobody"}"#,
+        )
+        .await;
+        assert_eq!(resp.decision, "deny");
+        let reason = resp.reason.unwrap();
+        assert!(reason.starts_with(token::UNKNOWN_GIT_ACCOUNT), "{reason}");
+        assert!(reason.contains("\"work\" (@worker)"), "{reason}");
+        assert!(approver.0.lock().unwrap().is_empty(), "the user must not be asked");
+    }
+
+    #[tokio::test]
+    async fn ask_names_the_picked_account() {
+        let db = mem_db().await;
+        seed_two_github_accounts(&db).await;
+        let approver = Arc::new(RecordingApprover::default());
+        let _ = round_trip(
+            db,
+            approver.clone(),
+            r#"{"project_id":"p1","tool":"gh","argv":["pr","merge","1"],"account":"@worker"}"#,
+        )
+        .await;
+        let reasons = approver.0.lock().unwrap().clone();
+        assert_eq!(reasons.len(), 1);
+        assert!(reasons[0].ends_with("(as GitHub account \"work\" (@worker))"), "{reasons:?}");
     }
 }

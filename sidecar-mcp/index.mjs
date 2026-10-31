@@ -596,6 +596,26 @@ const tools = {
     handler: (a) => gitDiff({ staged: !!a.staged, stat: !!a.stat }),
   },
 
+  // ---- Git accounts -------------------------------------------------------
+
+  git_accounts_list: {
+    description:
+      'List the GitHub / GitLab accounts enabled for the current project and which one is the default. gh / glab / git use the default unless a command is prefixed with DEVDY_GIT_ACCOUNT=<label or username> (e.g. `DEVDY_GIT_ACCOUNT=work git push`) — pick the account that has access to the repository. A PR-review session may default gh to the account the review was requested from (see the system prompt). No secrets are returned.',
+    inputSchema: { type: 'object', properties: {} },
+    handler: () => {
+      const rows = store.listGitAccounts();
+      if (!rows.length) return 'No git accounts are enabled for this project.';
+      return rows
+        .map(
+          (a) =>
+            `- ${a.provider === 'github' ? 'GitHub' : 'GitLab'}: "${a.label}"` +
+            `${a.username ? ` (@${a.username})` : ''} on ${a.host}` +
+            `${a.email ? ` · email ${a.email}` : ''}${a.is_default ? ' · default' : ''}`,
+        )
+        .join('\n');
+    },
+  },
+
   // ---- Phase 4: VPS / managed servers --------------------------------------
 
   vps_list: {

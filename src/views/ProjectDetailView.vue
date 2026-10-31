@@ -24,6 +24,7 @@ import {
 import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
 import ProjectGroupToggles from '@/components/ProjectGroupToggles.vue'
+import ProjectGitAccounts, { type GitAccountRow } from '@/components/ProjectGitAccounts.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { parseRepoUrl, repoKey, repoWebUrl } from '@/lib/repoUrl'
@@ -330,36 +331,46 @@ async function handleReapplyGroup(kind: GroupKind, group: ProjectGroupState) {
 
 const linkedAccountId = computed(() => project.value?.github_account_id ?? null)
 const linkedAccount = computed(() => ghStore.accounts.find(a => a.id === linkedAccountId.value) ?? null)
-const accountOptions = computed(() => [
-  { value: '', label: 'None' },
-  ...ghStore.accounts.map(a => ({
-    value: a.id,
-    label: a.username ? `${a.label} (@${a.username})` : a.label,
-  })),
-])
 
-const reviewerAccountId = computed(() => project.value?.github_reviewer_account_id ?? null)
-const reviewerAccount = computed(() => ghStore.accounts.find(a => a.id === reviewerAccountId.value) ?? null)
-const reviewerAccountOptions = computed(() => [
-  { value: '', label: t('projectDetail.reviewerSameAsDefault') },
-  ...accountOptions.value.slice(1),
-])
+// --- GitHub / GitLab accounts (several per project, toggled like servers) ---
+const githubAccountRows = computed<GitAccountRow[]>(() => ghStore.accounts.map(a => ({
+  id: a.id,
+  label: a.label,
+  username: a.username,
+  detail: a.scopes.length ? a.scopes.join(', ') : null,
+})))
+const gitlabAccountRows = computed<GitAccountRow[]>(() => glStore.accounts.map(a => ({
+  id: a.id,
+  label: a.label,
+  username: a.username,
+  detail: a.host,
+})))
+const busyGitAccountId = ref<string | null>(null)
 
-async function handleSelectReviewerAccount(accountId: string) {
+async function handleToggleGitAccount(provider: 'github' | 'gitlab', account: GitAccountRow, enabled: boolean) {
+  if (busyGitAccountId.value) return
+  busyGitAccountId.value = account.id
   try {
-    await projectStore.setProjectReviewerAccount(projectId.value, accountId || null)
-    toast.success(t('projectDetail.toastReviewerAccountLinked'))
+    await projectStore.setProjectGitAccountEnabled(projectId.value, provider, account.id, enabled)
+    toast.success(t(enabled ? 'projectDetail.toastGitAccountEnabled' : 'projectDetail.toastGitAccountDisabled', { name: account.label }))
   } catch (e) {
     toast.error(String(e))
+  } finally {
+    busyGitAccountId.value = null
   }
 }
 
-async function handleSelectAccount(accountId: string) {
+async function handleMakeDefaultGitAccount(provider: 'github' | 'gitlab', account: GitAccountRow) {
+  if (busyGitAccountId.value) return
+  busyGitAccountId.value = account.id
   try {
-    await projectStore.setProjectAccount(projectId.value, accountId || null)
-    toast.success(t('projectDetail.toastAccountLinked'))
+    if (provider === 'github') await projectStore.setProjectAccount(projectId.value, account.id)
+    else await projectStore.setProjectGitlabAccount(projectId.value, account.id)
+    toast.success(t('projectDetail.toastDefaultGitAccount', { name: account.label }))
   } catch (e) {
     toast.error(String(e))
+  } finally {
+    busyGitAccountId.value = null
   }
 }
 
@@ -473,28 +484,6 @@ async function unlinkBoard() {
     toast.error(String(e))
   } finally {
     savingBoard.value = false
-  }
-}
-
-// --- GitLab account linking (mirror of GitHub) ---
-const linkedGitlabAccountId = computed(() => project.value?.gitlab_account_id ?? null)
-const linkedGitlabAccount = computed(
-  () => glStore.accounts.find(a => a.id === linkedGitlabAccountId.value) ?? null,
-)
-const gitlabAccountOptions = computed(() => [
-  { value: '', label: 'None' },
-  ...glStore.accounts.map(a => ({
-    value: a.id,
-    label: a.username ? `${a.label} (@${a.username})` : a.label,
-  })),
-])
-
-async function handleSelectGitlabAccount(accountId: string) {
-  try {
-    await projectStore.setProjectGitlabAccount(projectId.value, accountId || null)
-    toast.success(t('projectDetail.toastGitlabLinked'))
-  } catch (e) {
-    toast.error(String(e))
   }
 }
 
@@ -1416,60 +1405,15 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 
         <!-- GitHub tab -->
         <div v-if="activeTab === 'github'" class="max-w-lg space-y-4">
-          <Card body-class="p-4 space-y-4">
-            <template #header>
-              <Github class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">{{ t('projectDetail.linkedGithubAccount') }}</span>
-            </template>
-            <p class="text-[11px] text-muted-foreground leading-relaxed">
-              {{ t('projectDetail.githubAccountHint') }}
-              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
-            </p>
-
-            <div v-if="ghStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
-              {{ t('projectDetail.noGithubAccounts') }}
-              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
-              {{ t('projectDetail.toLinkHere') }}
-            </div>
-            <template v-else>
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.defaultGithubAccount') }}</label>
-                <AppSelect
-                  size="sm"
-                  :model-value="linkedAccountId ?? ''"
-                  :options="accountOptions"
-                  :placeholder="t('projectDetail.selectAccountPlaceholder')"
-                  @update:model-value="handleSelectAccount"
-                />
-                <p class="text-[11px] text-muted-foreground">{{ t('projectDetail.defaultGithubAccountHint') }}</p>
-                <div v-if="linkedAccount" class="text-[11px] text-muted-foreground">
-                  <span v-if="linkedAccount.username">@{{ linkedAccount.username }}</span>
-                  <span v-if="linkedAccount.scopes.length"> · {{ linkedAccount.scopes.join(', ') }}</span>
-                </div>
-              </div>
-
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.reviewerGithubAccount') }}</label>
-                <AppSelect
-                  size="sm"
-                  :model-value="reviewerAccountId ?? ''"
-                  :options="reviewerAccountOptions"
-                  @update:model-value="handleSelectReviewerAccount"
-                />
-                <p class="text-[11px] text-muted-foreground">{{ t('projectDetail.reviewerGithubAccountHint') }}</p>
-                <div v-if="reviewerAccount" class="text-[11px] text-muted-foreground">
-                  <span v-if="reviewerAccount.username">@{{ reviewerAccount.username }}</span>
-                  <span v-if="reviewerAccount.scopes.length"> · {{ reviewerAccount.scopes.join(', ') }}</span>
-                </div>
-                <div
-                  v-if="reviewerAccountId && reviewerAccountId === linkedAccountId"
-                  class="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded p-2.5"
-                >
-                  {{ t('projectDetail.reviewerSameAccountWarning') }}
-                </div>
-              </div>
-            </template>
-          </Card>
+          <ProjectGitAccounts
+            provider="github"
+            :accounts="githubAccountRows"
+            :enabled-ids="project?.github_account_ids ?? []"
+            :default-id="project?.github_account_id ?? null"
+            :busy="busyGitAccountId"
+            @toggle="(a, on) => handleToggleGitAccount('github', a, on)"
+            @make-default="(a) => handleMakeDefaultGitAccount('github', a)"
+          />
         </div>
 
         <!-- GitHub Project (V2 board) tab -->
@@ -1550,35 +1494,15 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 
         <!-- GitLab tab -->
         <div v-if="activeTab === 'gitlab'" class="max-w-lg space-y-4">
-          <Card body-class="p-4 space-y-4">
-            <template #header>
-              <Gitlab class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-              <span class="text-xs font-semibold">{{ t('projectDetail.linkedGitlabAccount') }}</span>
-            </template>
-            <p class="text-[11px] text-muted-foreground leading-relaxed">
-              {{ t('projectDetail.gitlabAccountHint') }}
-              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.settings') }}</RouterLink>.
-            </p>
-
-            <div v-if="glStore.accounts.length === 0" class="text-[11px] text-muted-foreground">
-              {{ t('projectDetail.noGitlabAccounts') }}
-              <RouterLink to="/settings" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
-              {{ t('projectDetail.toLinkHere') }}
-            </div>
-            <AppSelect
-              size="sm"
-              v-else
-              :model-value="linkedGitlabAccountId ?? ''"
-              :options="gitlabAccountOptions"
-              :placeholder="t('projectDetail.selectAccountPlaceholder')"
-              @update:model-value="handleSelectGitlabAccount"
-            />
-
-            <div v-if="linkedGitlabAccount" class="text-[11px] text-muted-foreground">
-              <span v-if="linkedGitlabAccount.username">@{{ linkedGitlabAccount.username }}</span>
-              <span v-if="linkedGitlabAccount.host"> · {{ linkedGitlabAccount.host }}</span>
-            </div>
-          </Card>
+          <ProjectGitAccounts
+            provider="gitlab"
+            :accounts="gitlabAccountRows"
+            :enabled-ids="project?.gitlab_account_ids ?? []"
+            :default-id="project?.gitlab_account_id ?? null"
+            :busy="busyGitAccountId"
+            @toggle="(a, on) => handleToggleGitAccount('gitlab', a, on)"
+            @make-default="(a) => handleMakeDefaultGitAccount('gitlab', a)"
+          />
         </div>
 
         <!-- AWS tab -->
