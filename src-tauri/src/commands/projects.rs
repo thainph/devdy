@@ -708,7 +708,15 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
 }
 
 #[tauri::command]
-pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
+pub async fn add_project(webview: tauri::Webview, db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
+    // A registered project becomes a writable root of the remote desktop: it
+    // may only register folders it already reaches (HOME, volumes, projects).
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    if let Some(policy) = &policy {
+        for path in std::iter::once(&payload.path).chain(payload.repos.iter().flatten().map(|r| &r.path)) {
+            policy.read(Path::new(path))?;
+        }
+    }
     if !Path::new(&payload.path).exists() {
         return Err("Project path does not exist".to_string());
     }
@@ -932,6 +940,7 @@ pub async fn list_repos(db: State<'_, Db>, project_id: String) -> Result<Vec<Rep
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_repo(
+    webview: tauri::Webview,
     db: State<'_, Db>,
     project_id: String,
     name: String,
@@ -942,6 +951,9 @@ pub async fn add_repo(
     gitlab_project_path: Option<String>,
     gitlab_project_id: Option<i64>,
 ) -> Result<Repo, String> {
+    // As in `add_project`: a remote desktop registers only what it reaches.
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?;
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let provider = provider

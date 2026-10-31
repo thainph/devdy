@@ -1513,8 +1513,11 @@ pub async fn export_settings_backup(
             .map_err(|e| e.to_string())??;
         bundle.secrets = Some(sealed);
     }
+    // A remote desktop writes only where it may (never `~/.devdy`, app data…).
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::write(policy.as_ref(), std::path::Path::new(&path))?;
     let json = serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string())?;
-    write_private_file(&path, &json)?;
+    write_private_file(&path.to_string_lossy(), &json)?;
     Ok(bundle.info())
 }
 
@@ -1547,7 +1550,9 @@ pub async fn import_settings_backup(
     password: Option<String>,
     create_missing_dirs: Option<bool>,
 ) -> Result<ImportReport, String> {
-    let bundle = read_bundle(&path)?;
+    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
+    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
+    let bundle = read_bundle(&path.to_string_lossy())?;
     let password = password.filter(|p| !p.is_empty());
     let mut report = ImportReport::default();
 

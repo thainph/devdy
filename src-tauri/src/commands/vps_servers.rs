@@ -226,6 +226,28 @@ fn key_filename_from_source(source: &Path) -> String {
         .unwrap_or_else(|| "id_key".to_string())
 }
 
+/// A remote desktop names only key files it may read: never one in a
+/// credential store (`~/.ssh/id_rsa`), which would let it import B's key and
+/// export it again. The server's current key path may be sent back unchanged.
+async fn remote_key_paths(
+    webview: &tauri::Webview,
+    db: &Db,
+    key_path: &Option<String>,
+    source_path: &Option<String>,
+    current: Option<&str>,
+) -> Result<(), String> {
+    let Some(policy) = crate::remote::fs_policy::RemoteFs::for_caller(webview, db).await? else {
+        return Ok(());
+    };
+    if let Some(source) = trimmed_optional(source_path) {
+        policy.read(Path::new(&source))?;
+    }
+    if let Some(key) = trimmed_optional(key_path).filter(|k| Some(k.as_str()) != current.map(str::trim)) {
+        policy.read(Path::new(&key))?;
+    }
+    Ok(())
+}
+
 fn import_private_key_file(
     app: &AppHandle,
     server_id: &str,
@@ -369,9 +391,11 @@ pub async fn list_vps_servers(db: State<'_, Db>) -> Result<Vec<VpsServer>, Strin
 #[tauri::command]
 pub async fn create_vps_server(
     app: AppHandle,
+    webview: tauri::Webview,
     db: State<'_, Db>,
     payload: CreateServerPayload,
 ) -> Result<VpsServer, String> {
+    remote_key_paths(&webview, db.inner(), &payload.private_key_path, &payload.private_key_source_path, None).await?;
     // Validate BEFORE any DB write (BR-001..003).
     let fields = validate_payload(
         &payload.label,
@@ -434,6 +458,7 @@ pub async fn create_vps_server(
 #[tauri::command]
 pub async fn update_vps_server(
     app: AppHandle,
+    webview: tauri::Webview,
     db: State<'_, Db>,
     payload: UpdateServerPayload,
 ) -> Result<VpsServer, String> {
@@ -445,6 +470,14 @@ pub async fn update_vps_server(
         .await
         .map_err(|e| format!("Server not found: {}", e))?;
     let existing_private_key_path: Option<String> = existing.get("private_key_path");
+    remote_key_paths(
+        &webview,
+        db.inner(),
+        &payload.private_key_path,
+        &payload.private_key_source_path,
+        existing_private_key_path.as_deref(),
+    )
+    .await?;
     let effective_private_key_path = trimmed_optional(&payload.private_key_path)
         .or_else(|| trimmed_optional(&existing_private_key_path));
 
