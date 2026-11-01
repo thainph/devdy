@@ -120,21 +120,6 @@ const newSessionLabel = computed(() =>
   <div class="flex shrink-0 items-center gap-3 border-b border-border/60 px-5 py-2.5">
     <div class="min-w-[6rem] flex-1">
       <div class="flex min-w-0 items-center gap-1.5">
-        <!-- Todo: its checkbox leads the line. -->
-        <button
-          v-if="todo"
-          type="button"
-          class="flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-[5px] border transition-colors"
-          :class="todo.done
-            ? 'border-primary bg-primary text-primary-foreground'
-            : 'border-muted-foreground/40 hover:border-primary'"
-          :aria-pressed="todo.done"
-          :title="todo.done ? t('item.markNotDone') : t('item.markDone')"
-          :aria-label="todo.done ? t('item.markNotDone') : t('item.markDone')"
-          @click="emit('toggleDone')"
-        >
-          <Check v-if="todo.done" class="h-2.5 w-2.5" :stroke-width="3" />
-        </button>
         <InlineRenameInput
           v-if="renaming && note"
           class="w-full text-[15px] font-bold leading-snug"
