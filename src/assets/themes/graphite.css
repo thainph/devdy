@@ -142,17 +142,17 @@
   box-shadow: 0 0 0 0.5px hsl(0 0% 0% / 0.8), 0 10px 28px hsl(0 0% 0% / 0.45);
 }
 /* Menu rows (DropdownItem): graphite highlight with white text on hover. */
-[data-theme='graphite'] .ui-popover button.w-full.text-left {
+[data-theme='graphite'] .ui-popover .ui-menu-item {
   border-radius: 4px;
 }
-[data-theme='graphite'] .ui-popover button.w-full.text-left:not(:disabled):hover {
+[data-theme='graphite'] .ui-popover .ui-menu-item:not(:disabled):hover {
   background-color: hsl(var(--gr-fill));
   color: hsl(0 0% 100%);
 }
-[data-theme='graphite'] .ui-popover button.w-full.text-left.text-destructive:not(:disabled):hover {
+[data-theme='graphite'] .ui-popover .ui-menu-item.text-destructive:not(:disabled):hover {
   background-color: hsl(357 72% 45%);
 }
-[data-theme='graphite'] .ui-popover button.w-full.text-left:not(:disabled):hover * {
+[data-theme='graphite'] .ui-popover .ui-menu-item:not(:disabled):hover * {
   color: inherit;
 }
 

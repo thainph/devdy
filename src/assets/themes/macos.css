@@ -132,17 +132,17 @@
 }
 /* Menu items (DropdownItem / ContextMenu rows are direct-child buttons):
  * 4px rounded rows, highlighted with the accent and white text on hover. */
-[data-theme='macos'] .ui-popover > button {
+[data-theme='macos'] .ui-popover .ui-menu-item {
   border-radius: 4px;
   padding-top: 0.25rem;
   padding-bottom: 0.25rem;
   transition: none;
 }
-[data-theme='macos'] .ui-popover > button:not(:disabled):hover {
+[data-theme='macos'] .ui-popover .ui-menu-item:not(:disabled):hover {
   background-color: hsl(var(--primary));
   color: hsl(var(--primary-foreground));
 }
-[data-theme='macos'] .ui-popover > button:not(:disabled):hover * {
+[data-theme='macos'] .ui-popover .ui-menu-item:not(:disabled):hover * {
   color: inherit;
 }
 
