@@ -4,7 +4,7 @@
 //
 //   note  title (click → inline rename) / updated · N characters
 //   todo  text's first line (click → edit) / created · from <session> · due
-//   right [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy markdown ·
+//   right [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy ID (not in ⋯) ·
 //         ⋯ (New session from this … · Copy ID · Delete)
 //
 // The project (and a todo's deadline) are edited in the body (ItemFields).
@@ -14,10 +14,9 @@
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, LockKeyhole, Pencil } from 'lucide-vue-next'
+import { Check, Copy, LockKeyhole, Pencil } from 'lucide-vue-next'
 import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
-import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
 import DetailActionsMenu from '@/components/sessions/DetailActionsMenu.vue'
 import { useSessionText } from '@/composables/useSessionText'
@@ -200,12 +199,23 @@ const newSessionLabel = computed(() =>
         >
           <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-        <CopyMarkdownButton v-if="note" icon-only class="shrink-0" :text="note.content" />
+        <Button
+          v-if="note"
+          variant="outline"
+          size="icon"
+          class="shrink-0"
+          :title="t('item.copyId')"
+          :aria-label="t('item.copyId')"
+          @click="emit('copyId')"
+        >
+          <component :is="copiedId ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
         <DetailActionsMenu
           :new-session-label="newSessionLabel"
           :new-session-hint="item.project_id ? t('item.newSessionHint') : t('item.needProject')"
           :can-new-session="!!item.project_id"
           :copied-id="copiedId"
+          :show-copy-id="!note"
           @new-session="emit('newSession')"
           @copy-id="emit('copyId')"
           @delete="emit('delete')"
