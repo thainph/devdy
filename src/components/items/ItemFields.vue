@@ -1,13 +1,21 @@
 <script setup lang="ts">
-// A todo's properties at the top of the detail body: its project and its
-// deadline (× clears it). Same label-over-field look as TodoMetaFields.
+// An item's properties at the top of the Notes / Todos detail body: its project
+// and, for a todo, its deadline (× clears it). Same label-over-field look as
+// TodoMetaFields.
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'
 import { DatePicker } from '@/components/ui'
 import ProjectSelect from '@/components/ProjectSelect.vue'
+import type { Note } from '@/stores/notes'
 import type { Todo } from '@/stores/todos'
 
-defineProps<{ todo: Todo }>()
+const props = defineProps<{
+  kind: 'note' | 'todo'
+  item: Note | Todo
+}>()
+
+const todo = computed(() => (props.kind === 'todo' ? (props.item as Todo) : null))
 
 const emit = defineEmits<{
   setProject: [projectId: string | null]
@@ -23,13 +31,13 @@ const { t } = useI18n()
       <div class="min-w-0 space-y-1">
         <label class="block text-[11px] font-medium text-muted-foreground">{{ t('item.fieldProject') }}</label>
         <ProjectSelect
-          :model-value="todo.project_id"
+          :model-value="item.project_id"
           variant="outline"
           size="sm"
           @update:model-value="emit('setProject', $event)"
         />
       </div>
-      <div class="min-w-0 space-y-1">
+      <div v-if="todo" class="min-w-0 space-y-1">
         <label class="block text-[11px] font-medium text-muted-foreground">{{ t('item.fieldDue') }}</label>
         <div class="flex items-center">
           <DatePicker

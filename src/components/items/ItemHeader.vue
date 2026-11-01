@@ -4,10 +4,10 @@
 //
 //   note  title (click → inline rename) / updated · N characters
 //   todo  text's first line (click → edit) / created · from <session> · due
-//   right (note) [Project ▾] [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy
-//         markdown · ⋯ (New session from this … · Copy ID · Delete)
+//   right [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy markdown ·
+//         ⋯ (New session from this … · Copy ID · Delete)
 //
-// A todo's project and deadline are edited in the body (TodoFields).
+// The project (and a todo's deadline) are edited in the body (ItemFields).
 //
 // While editing, the actions give way to Cancel · Save (⌘/Ctrl+Enter / Esc do
 // the same inside the fields). Narrow pane: the title gives way first, then the
@@ -17,7 +17,6 @@ import { useI18n } from 'vue-i18n'
 import { Check, LockKeyhole, Pencil } from 'lucide-vue-next'
 import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
-import ProjectSelect from '@/components/ProjectSelect.vue'
 import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
 import DetailActionsMenu from '@/components/sessions/DetailActionsMenu.vue'
@@ -52,7 +51,6 @@ const emit = defineEmits<{
   cancelEdit: []
   save: []
   toggleDone: []
-  setProject: [projectId: string | null]
   openRun: [link: SessionLink]
   unlinkRun: [link: SessionLink]
   linkRun: [runId: string]
@@ -153,16 +151,7 @@ const newSessionLabel = computed(() =>
     </div>
 
     <div class="flex min-w-0 items-center gap-1.5">
-      <!-- A note's project (a todo's lives in TodoFields, in the body) and the
-           item's sessions: linking depends on the project. -->
-      <div v-if="note" class="w-[11rem] min-w-[5.5rem] shrink">
-        <ProjectSelect
-          :model-value="item.project_id"
-          variant="outline"
-          size="sm"
-          @update:model-value="emit('setProject', $event)"
-        />
-      </div>
+      <!-- The project (edited in ItemFields, in the body) decides what can be linked. -->
       <LinkedSessionsMenu
         class="shrink-0"
         :project-id="item.project_id"

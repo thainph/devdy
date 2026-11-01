@@ -30,7 +30,7 @@ import { ConfirmModal, ToastHost } from '@/components/ui'
 import ItemSidebar from '@/components/items/ItemSidebar.vue'
 import ItemHeader from '@/components/items/ItemHeader.vue'
 import ItemBody from '@/components/items/ItemBody.vue'
-import TodoFields from '@/components/items/TodoFields.vue'
+import ItemFields from '@/components/items/ItemFields.vue'
 import { noteRow, todoRow, type ItemRow } from '@/components/items/itemRow'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -586,7 +586,6 @@ onBeforeUnmount(() => {
         @cancel-edit="cancelEdit"
         @save="bodyRef?.save()"
         @toggle-done="toggleDone(item.id)"
-        @set-project="setProject"
         @open-run="openRun"
         @unlink-run="unlinkRun"
         @link-run="linkRun"
@@ -595,9 +594,9 @@ onBeforeUnmount(() => {
         @make-secret="makeSecret"
         @delete="remove"
       />
-      <TodoFields
-        v-if="kind === 'todo'"
-        :todo="item as Todo"
+      <ItemFields
+        :kind="kind"
+        :item="item"
         @set-project="setProject"
         @set-due-date="setDueDate"
       />
