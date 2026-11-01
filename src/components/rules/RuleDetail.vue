@@ -267,12 +267,12 @@ defineExpose({ dirty, save })
         <span :title="metaTitle">{{ meta }}</span>
       </template>
       <template #actions>
-        <Button size="xs" :disabled="!canSave" :title="t('rules.detail.saveHint')" @click="save">
+        <Button size="sm" :disabled="!canSave" :title="t('rules.detail.saveHint')" @click="save">
           {{ saving ? t('rules.editor.saving') : t('common.save') }}
         </Button>
         <DropdownMenu align="right">
           <template #trigger>
-            <Button variant="outline" size="icon-sm" :title="t('rules.detail.moreActions')" :aria-label="t('rules.detail.moreActions')">
+            <Button variant="outline" size="icon" :title="t('rules.detail.moreActions')" :aria-label="t('rules.detail.moreActions')">
               <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>

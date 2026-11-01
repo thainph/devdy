@@ -284,12 +284,12 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
     <DetailHeader :title="label" :placeholder="t('servers.detail.newTitle')">
       <template #meta>{{ meta }}</template>
       <template #actions>
-        <Button size="xs" :disabled="!canSave" :title="t('servers.detail.saveHint')" @click="handleSave">
+        <Button size="sm" :disabled="!canSave" :title="t('servers.detail.saveHint')" @click="handleSave">
           {{ saving ? t('servers.editor.saving') : t('common.save') }}
         </Button>
         <DropdownMenu v-if="server" align="right">
           <template #trigger>
-            <Button variant="outline" size="icon-sm" :title="t('servers.detail.moreActions')" :aria-label="t('servers.detail.moreActions')">
+            <Button variant="outline" size="icon" :title="t('servers.detail.moreActions')" :aria-label="t('servers.detail.moreActions')">
               <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>

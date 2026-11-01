@@ -84,7 +84,7 @@ Always `<Button>`; a raw `<button>` is only for non-button-looking hit areas
 | `PageHeader` actions | `sm` / `icon` | `outline` (primary action `primary`) |
 | List sidebar toolbar (next to search) | `icon` | `outline` (`primary` when toggled on, e.g. pin) |
 | List sidebar "+ New" | `sm` | `primary` |
-| `DetailHeader` actions (Save, More ⋯, Edit, Done) | `xs` / `icon-sm` | Save `primary`, others `outline` |
+| Detail-pane header (`DetailHeader`, Note/Todo/Secret/Slack headers): Save, Cancel, More ⋯, Edit, Done, plus the project select / due date / Sessions in that row | `sm` / `icon` (32px — same as the list sidebar toolbar beside it) | Save `primary`, others `outline` |
 | `DetailSection` actions (Add, Test…) | `xs` | `outline` |
 | Inline row actions (remove a row, clear a field) | `icon-sm` | `destructive-ghost` / `ghost` |
 | Dense spots (banner retry, chip ×, folder-header actions, h-8 sub-toolbars) | `icon-xs` | `ghost` / `destructive-ghost` |

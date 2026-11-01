@@ -213,12 +213,12 @@ defineExpose({ dirty })
         </template>
       </template>
       <template #actions>
-        <Button size="xs" :disabled="!dirty || saving" :title="t('mcp.detail.saveHint')" @click="save">
+        <Button size="sm" :disabled="!dirty || saving" :title="t('mcp.detail.saveHint')" @click="save">
           {{ saving ? t('mcp.editor.saving') : t('common.save') }}
         </Button>
         <DropdownMenu v-if="server" align="right">
           <template #trigger>
-            <Button variant="outline" size="icon-sm" :title="t('mcp.detail.moreActions')" :aria-label="t('mcp.detail.moreActions')">
+            <Button variant="outline" size="icon" :title="t('mcp.detail.moreActions')" :aria-label="t('mcp.detail.moreActions')">
               <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>

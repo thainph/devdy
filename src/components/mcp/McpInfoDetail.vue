@@ -44,13 +44,13 @@ const meta = computed(() =>
       <template #meta>{{ meta }}</template>
       <template #actions>
         <template v-if="isBuiltin">
-          <Button v-if="configurable" variant="outline" size="xs" @click="emit('settings')">
-            <Settings2 class="h-3 w-3" :stroke-width="1.75" />
+          <Button v-if="configurable" variant="outline" size="sm" @click="emit('settings')">
+            <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t('mcp.list.builtin.settings') }}
           </Button>
         </template>
-        <Button v-else size="xs" :disabled="adding" @click="emit('add')">
-          <Plus class="h-3 w-3" :stroke-width="2" />
+        <Button v-else size="sm" :disabled="adding" @click="emit('add')">
+          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ adding ? t('mcp.list.adding') : t('common.add') }}
         </Button>
       </template>

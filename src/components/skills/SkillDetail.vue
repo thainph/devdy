@@ -312,12 +312,12 @@ defineExpose({ dirty, save })
         </template>
       </template>
       <template #actions>
-        <Button size="xs" :disabled="!canSave" :title="t('skills.editor.save')" @click="save">
+        <Button size="sm" :disabled="!canSave" :title="t('skills.editor.save')" @click="save">
           {{ saving ? t('skills.editor.saving') : t('common.save') }}
         </Button>
         <DropdownMenu align="right">
           <template #trigger>
-            <Button variant="outline" size="icon-sm" :title="t('skills.detail.more')" :aria-label="t('skills.detail.more')">
+            <Button variant="outline" size="icon" :title="t('skills.detail.more')" :aria-label="t('skills.detail.more')">
               <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>

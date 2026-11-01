@@ -171,7 +171,7 @@ const newSessionLabel = computed(() =>
       <div v-if="todo" class="flex shrink-0 items-center">
         <DatePicker
           :model-value="todo.due_date ?? ''"
-          size="xs"
+          size="sm"
           :placeholder="t('item.setDueDate')"
           :class="todo.due_date ? 'rounded-r-none' : ''"
           @update:model-value="emit('setDueDate', $event || null)"
@@ -179,7 +179,7 @@ const newSessionLabel = computed(() =>
         <button
           v-if="todo.due_date"
           type="button"
-          class="flex h-7 w-6 cursor-pointer items-center justify-center rounded-r-md border border-l-0 border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          class="flex h-8 w-7 cursor-pointer items-center justify-center rounded-r-md border border-l-0 border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
           :title="t('item.clearDueDate')"
           :aria-label="t('item.clearDueDate')"
           @click="emit('setDueDate', null)"
@@ -192,7 +192,7 @@ const newSessionLabel = computed(() =>
         <ProjectSelect
           :model-value="item.project_id"
           variant="outline"
-          size="xs"
+          size="sm"
           @update:model-value="emit('setProject', $event)"
         />
       </div>
@@ -207,12 +207,12 @@ const newSessionLabel = computed(() =>
       <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
 
       <template v-if="editing">
-        <Button variant="outline" size="xs" class="shrink-0" @click="emit('cancelEdit')">
+        <Button variant="outline" size="sm" class="shrink-0" @click="emit('cancelEdit')">
           {{ t('common.cancel') }}
         </Button>
         <Button
           variant="primary"
-          size="xs"
+          size="sm"
           class="shrink-0"
           :disabled="!canSave || saving"
           :title="'⌘/Ctrl+Enter'"
@@ -225,7 +225,7 @@ const newSessionLabel = computed(() =>
         <Button
           v-if="todo"
           :variant="todo.done ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :aria-pressed="todo.done"
           :title="todo.done ? t('item.markNotDone') : t('item.markDone')"
@@ -236,7 +236,7 @@ const newSessionLabel = computed(() =>
         </Button>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :title="t('item.editTitle')"
           :aria-label="t('item.edit')"
