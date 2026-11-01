@@ -21,7 +21,7 @@ export const COLOR_THEME_DEFS: readonly ColorThemeDef[] = [
   { id: 'macos', group: 'macos', systemAccent: true },
   { id: 'tahoe', group: 'macos', systemAccent: true },
   { id: 'graphite', group: 'macos' },
-  { id: 'catppuccin', group: 'dev' },
+  { id: 'monokai', group: 'dev' },
   { id: 'tokyonight', group: 'dev' },
   { id: 'nord', group: 'dev' },
   { id: 'crt', group: 'dev' },

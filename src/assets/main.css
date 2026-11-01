@@ -1,7 +1,7 @@
 @import "tailwindcss";
 /* Named color themes kept one file each (same shape as the blocks below);
  * ids are listed in src/lib/colorThemes.ts. */
-@import "./themes/catppuccin.css";
+@import "./themes/monokai.css";
 @import "./themes/tokyonight.css";
 @import "./themes/nord.css";
 @import "./themes/contrast.css";
