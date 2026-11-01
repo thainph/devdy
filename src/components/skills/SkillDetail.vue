@@ -12,7 +12,7 @@ import { useI18n } from 'vue-i18n'
 import { readDir, readTextFile, stat } from '@tauri-apps/plugin-fs'
 import {
   AlertCircle, Columns2, Download, Eye, FileText, FolderCheck, FolderOpen, LayoutTemplate,
-  MoreHorizontal, Pencil, RefreshCw, Save, Trash2,
+  MoreHorizontal, Pencil, RefreshCw, Trash2,
 } from 'lucide-vue-next'
 import { AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
@@ -312,14 +312,13 @@ defineExpose({ dirty, save })
         </template>
       </template>
       <template #actions>
-        <Button size="sm" :disabled="!canSave" :title="t('skills.editor.save')" @click="save">
-          <Save class="h-3.5 w-3.5" :stroke-width="2" />
+        <Button size="xs" :disabled="!canSave" :title="t('skills.editor.save')" @click="save">
           {{ saving ? t('skills.editor.saving') : t('common.save') }}
         </Button>
-        <DropdownMenu>
+        <DropdownMenu align="right">
           <template #trigger>
-            <Button variant="ghost" size="icon-sm" :title="t('skills.detail.more')" :aria-label="t('skills.detail.more')">
-              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
+            <Button variant="outline" size="icon-sm" :title="t('skills.detail.more')" :aria-label="t('skills.detail.more')">
+              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>
           <DropdownItem :disabled="loading" @click="insertTemplate">

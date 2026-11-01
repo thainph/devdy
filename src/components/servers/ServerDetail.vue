@@ -10,7 +10,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open } from '@tauri-apps/plugin-dialog'
 import {
-  AlertCircle, CheckCircle2, Copy, CopyPlus, KeyRound, MoreHorizontal, Plug, Save, Trash2, Upload, X, XCircle,
+  AlertCircle, CheckCircle2, Copy, CopyPlus, KeyRound, Loader2, MoreHorizontal, Plug, Trash2, Upload, X, XCircle,
 } from 'lucide-vue-next'
 import { Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
@@ -284,39 +284,28 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
     <DetailHeader :title="label" :placeholder="t('servers.detail.newTitle')">
       <template #meta>{{ meta }}</template>
       <template #actions>
-        <Button size="sm" :disabled="!canSave" :title="t('servers.detail.saveHint')" @click="handleSave">
-          <Save class="h-3.5 w-3.5" :stroke-width="2" />
+        <Button size="xs" :disabled="!canSave" :title="t('servers.detail.saveHint')" @click="handleSave">
           {{ saving ? t('servers.editor.saving') : t('common.save') }}
         </Button>
-        <DropdownMenu align="right">
+        <DropdownMenu v-if="server" align="right">
           <template #trigger>
-            <Button variant="ghost" size="icon-sm" :title="t('servers.detail.moreActions')" :aria-label="t('servers.detail.moreActions')">
-              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
+            <Button variant="outline" size="icon-sm" :title="t('servers.detail.moreActions')" :aria-label="t('servers.detail.moreActions')">
+              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>
-          <DropdownItem
-            :disabled="isNew || testing"
-            :title="isNew ? t('servers.editor.saveFirst') : t('servers.list.testTitle')"
-            @click="emit('test')"
-          >
-            <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ testing ? t('servers.editor.testing') : t('servers.detail.test') }}
+          <DropdownItem @click="copySsh">
+            <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('servers.detail.copySsh') }}
           </DropdownItem>
-          <template v-if="server">
-            <DropdownItem @click="copySsh">
-              <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('servers.detail.copySsh') }}
-            </DropdownItem>
-            <DropdownItem @click="emit('duplicate')">
-              <CopyPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('servers.detail.duplicate') }}
-            </DropdownItem>
-            <DropdownSeparator />
-            <DropdownItem variant="destructive" :disabled="deleting" @click="emit('delete')">
-              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('common.delete') }}
-            </DropdownItem>
-          </template>
+          <DropdownItem @click="emit('duplicate')">
+            <CopyPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('servers.detail.duplicate') }}
+          </DropdownItem>
+          <DropdownSeparator />
+          <DropdownItem variant="destructive" :disabled="deleting" @click="emit('delete')">
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('common.delete') }}
+          </DropdownItem>
         </DropdownMenu>
       </template>
     </DetailHeader>
@@ -454,11 +443,31 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
           </div>
         </DetailSection>
 
-        <!-- Last test result -->
-        <DetailSection :title="t('servers.detail.lastTest')">
-          <p v-if="isNew" class="text-[11px] text-muted-foreground">{{ t('servers.editor.saveFirstThenTest') }}</p>
+        <!-- Test connection (same row layout as the MCP detail's Status section):
+             tests the saved server, so a draft has to be saved first. -->
+        <DetailSection :title="t('servers.list.testTitle')">
+          <div class="flex items-center gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-medium">{{ t('servers.detail.lastTest') }}</div>
+              <p class="text-[11px] text-muted-foreground">
+                {{ isNew ? t('servers.editor.saveFirstThenTest') : testing ? t('servers.editor.testing') : testResult ? t('servers.detail.testHint') : t('servers.detail.notTested') }}
+              </p>
+            </div>
+            <Button
+              variant="outline"
+              size="xs"
+              class="shrink-0"
+              :disabled="isNew || testing"
+              :title="isNew ? t('servers.editor.saveFirst') : t('servers.list.testTitle')"
+              @click="emit('test')"
+            >
+              <Loader2 v-if="testing" class="h-3 w-3 animate-spin" :stroke-width="2" />
+              <Plug v-else class="h-3 w-3" :stroke-width="1.75" />
+              {{ testing ? t('servers.editor.testing') : t('servers.detail.test') }}
+            </Button>
+          </div>
           <div
-            v-else-if="testResult"
+            v-if="!isNew && testResult"
             class="flex items-start gap-1.5 rounded-md border p-3 text-xs"
             :class="testResult.ok
               ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
@@ -468,9 +477,6 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
             <XCircle v-else class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
             <span class="min-w-0 break-words">{{ testResult.message }}</span>
           </div>
-          <p v-else class="text-[11px] text-muted-foreground">
-            {{ testing ? t('servers.editor.testing') : t('servers.detail.notTested') }}
-          </p>
         </DetailSection>
       </div>
     </div>
