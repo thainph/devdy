@@ -1,0 +1,63 @@
+/* Neon — near-black blue-violet with an electric cyan accent and a magenta/lime aurora */
+@layer base {
+  [data-theme='neon']:not(.dark) {
+    --background: 230 30% 98%;
+    --foreground: 245 40% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 245 40% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 245 40% 10%;
+    --primary: 262 85% 50%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 235 30% 94%;
+    --secondary-foreground: 245 40% 20%;
+    --muted: 235 25% 94%;
+    --muted-foreground: 240 12% 40%;
+    --accent: 262 70% 94%;
+    --accent-foreground: 262 70% 32%;
+    --destructive: 345 80% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 235 22% 87%;
+    --input: 235 22% 87%;
+    --ring: 262 85% 50%;
+    --sidebar: 232 30% 96%;
+    --aurora-1: 300 90% 62%;
+    --aurora-2: 186 95% 50%;
+    --success: 160 90% 26%;
+    --success-foreground: 0 0% 100%;
+    --warning: 28 95% 36%;
+    --warning-foreground: 0 0% 100%;
+    --info: 200 95% 34%;
+    --info-foreground: 0 0% 100%;
+  }
+  [data-theme='neon'].dark {
+    --background: 240 35% 6%;
+    --foreground: 220 40% 97%;
+    --card: 242 30% 10%;
+    --card-foreground: 220 40% 97%;
+    --popover: 242 32% 9%;
+    --popover-foreground: 220 40% 97%;
+    --primary: 186 100% 55%;
+    --primary-foreground: 240 50% 6%;
+    --secondary: 242 24% 16%;
+    --secondary-foreground: 220 40% 97%;
+    --muted: 242 22% 15%;
+    --muted-foreground: 228 20% 76%;
+    --accent: 250 35% 22%;
+    --accent-foreground: 186 100% 85%;
+    --destructive: 345 90% 62%;
+    --destructive-foreground: 345 60% 8%;
+    --border: 242 24% 22%;
+    --input: 242 24% 22%;
+    --ring: 186 100% 55%;
+    --sidebar: 240 40% 4%;
+    --aurora-1: 310 95% 60%;
+    --aurora-2: 95 90% 55%;
+    --success: 150 90% 50%;
+    --success-foreground: 155 70% 8%;
+    --warning: 45 100% 58%;
+    --warning-foreground: 30 80% 10%;
+    --info: 200 100% 62%;
+    --info-foreground: 210 80% 10%;
+  }
+}

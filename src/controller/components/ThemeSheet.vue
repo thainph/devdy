@@ -9,14 +9,12 @@ import { useI18n } from 'vue-i18n'
 import { Button } from '@/components/ui'
 import { Check } from 'lucide-vue-next'
 import { COLOR_THEMES, FOLLOW_HOST, THEME_MODES } from '@/lib/controllerAppearance'
+import { colorThemeLabelKey } from '@/lib/colorThemes'
 import { appearanceOverride, hostAppearance, setAppearanceOverride } from '../appearance'
 
 const emit = defineEmits<{ close: [] }>()
 
 const { t } = useI18n()
-
-/** Default (indigo) has no `data-theme` rule; this is its :root `--primary`. */
-const DEFAULT_PRIMARY = 'hsl(243 76% 59%)'
 
 function modeLabel(mode: string): string {
   const key = { light: 'themeLight', dark: 'themeDark', system: 'themeSystem' }[mode]
@@ -24,7 +22,7 @@ function modeLabel(mode: string): string {
 }
 
 function paletteLabel(palette: string): string {
-  return t(`settings.general.color${palette.charAt(0).toUpperCase()}${palette.slice(1)}`)
+  return t(colorThemeLabelKey(palette))
 }
 
 /** "Same as desktop (Dark)" once the Host's value is known. */
@@ -99,8 +97,7 @@ function setPalette(color_theme: string): void {
             <span
               v-if="o.value !== FOLLOW_HOST"
               :data-theme="o.value === 'default' ? undefined : o.value"
-              class="h-4 w-4 shrink-0 rounded-full border border-black/10 bg-primary"
-              :style="o.value === 'default' ? { background: DEFAULT_PRIMARY } : undefined"
+              class="theme-scope h-4 w-4 shrink-0 rounded-full border border-black/10 bg-primary"
             />
             <span class="min-w-0 flex-1 truncate">{{ o.label }}</span>
             <Check

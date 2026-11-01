@@ -1,0 +1,63 @@
+/* Dracula — purple-accented dark theme; light mode is Alucard, the official Dracula light variant (draculatheme.com/spec) */
+@layer base {
+  [data-theme='dracula']:not(.dark) {
+    --background: 48 100% 96%;
+    --foreground: 0 0% 12%;
+    --card: 48 100% 98%;
+    --card-foreground: 0 0% 12%;
+    --popover: 48 100% 98%;
+    --popover-foreground: 0 0% 12%;
+    --primary: 252 54% 54%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 48 38% 90%;
+    --secondary-foreground: 0 0% 12%;
+    --muted: 48 38% 90%;
+    --muted-foreground: 246 24% 48%;
+    --accent: 256 59% 92%;
+    --accent-foreground: 252 54% 54%;
+    --destructive: 6 66% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 19% 84%;
+    --input: 240 19% 84%;
+    --ring: 252 54% 54%;
+    --sidebar: 48 50% 92%;
+    --success: 114 84% 24%;
+    --success-foreground: 0 0% 100%;
+    --warning: 48 73% 30%;
+    --warning-foreground: 0 0% 100%;
+    --info: 198 96% 30%;
+    --info-foreground: 0 0% 100%;
+    --aurora-1: 336 78% 36%;
+    --aurora-2: 198 96% 30%;
+  }
+  [data-theme='dracula'].dark {
+    --background: 231 15% 18%;
+    --foreground: 60 30% 96%;
+    --card: 230 15% 24%;
+    --card-foreground: 60 30% 96%;
+    --popover: 230 15% 24%;
+    --popover-foreground: 60 30% 96%;
+    --primary: 265 89% 78%;
+    --primary-foreground: 231 15% 18%;
+    --secondary: 233 14% 25%;
+    --secondary-foreground: 60 30% 96%;
+    --muted: 233 14% 25%;
+    --muted-foreground: 225 27% 72%;
+    --accent: 265 30% 30%;
+    --accent-foreground: 60 30% 96%;
+    --destructive: 0 100% 67%;
+    --destructive-foreground: 231 15% 18%;
+    --border: 232 14% 31%;
+    --input: 232 14% 31%;
+    --ring: 265 89% 78%;
+    --sidebar: 235 14% 15%;
+    --success: 135 94% 65%;
+    --success-foreground: 231 15% 18%;
+    --warning: 65 92% 76%;
+    --warning-foreground: 231 15% 18%;
+    --info: 191 97% 77%;
+    --info-foreground: 231 15% 18%;
+    --aurora-1: 326 100% 74%;
+    --aurora-2: 191 97% 77%;
+  }
+}

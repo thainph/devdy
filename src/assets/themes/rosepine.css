@@ -1,0 +1,59 @@
+/* Rosé Pine — soho vibes: Dawn (light) / Moon (dark), from rosepinetheme.com */
+@layer base {
+  [data-theme='rosepine']:not(.dark) {
+    --background: 32 57% 95%;
+    --foreground: 248 24% 32%;
+    --card: 35 100% 98%;
+    --card-foreground: 248 24% 32%;
+    --popover: 35 100% 98%;
+    --popover-foreground: 248 24% 32%;
+    --primary: 268 24% 46%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 28 40% 92%;
+    --secondary-foreground: 248 24% 32%;
+    --muted: 28 40% 92%;
+    --muted-foreground: 248 14% 42%;
+    --accent: 268 32% 90%;
+    --accent-foreground: 268 30% 32%;
+    --destructive: 343 38% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 10 9% 86%;
+    --input: 10 9% 86%;
+    --ring: 268 24% 46%;
+    --sidebar: 25 35% 93%;
+    --aurora-1: 3 53% 67%;
+    --aurora-2: 189 30% 48%;
+    --warning: 35 81% 56%;
+    --warning-foreground: 28 70% 14%;
+    --info: 197 53% 34%;
+    --info-foreground: 0 0% 100%;
+  }
+  [data-theme='rosepine'].dark {
+    --background: 246 24% 17%;
+    --foreground: 245 50% 91%;
+    --card: 248 24% 20%;
+    --card-foreground: 245 50% 91%;
+    --popover: 248 24% 20%;
+    --popover-foreground: 245 50% 91%;
+    --primary: 267 57% 78%;
+    --primary-foreground: 246 24% 17%;
+    --secondary: 248 21% 26%;
+    --secondary-foreground: 245 50% 91%;
+    --muted: 248 21% 26%;
+    --muted-foreground: 248 18% 70%;
+    --accent: 262 22% 30%;
+    --accent-foreground: 245 50% 91%;
+    --destructive: 343 76% 68%;
+    --destructive-foreground: 246 24% 17%;
+    --border: 247 16% 30%;
+    --input: 247 16% 30%;
+    --ring: 267 57% 78%;
+    --sidebar: 246 25% 15%;
+    --aurora-1: 2 66% 75%;
+    --aurora-2: 189 43% 73%;
+    --warning: 35 88% 72%;
+    --warning-foreground: 246 24% 17%;
+    --info: 189 43% 73%;
+    --info-foreground: 246 24% 17%;
+  }
+}

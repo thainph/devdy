@@ -16,8 +16,7 @@ pub struct AppSettings {
     pub theme: String,
     /// UI language: "en" (default) | "vi".
     pub language: String,
-    /// Named color palette: "default" | "ocean" | "forest" | "sunset" | "rose"
-    /// | "midautumn".
+    /// Named color palette: "default" or an id from `src/lib/colorThemes.ts`.
     pub color_theme: String,
     /// Enable the animated decorative background for scenic themes (e.g. the
     /// Full Moon night scene). "true" (default) | "false".

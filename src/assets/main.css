@@ -1,4 +1,18 @@
 @import "tailwindcss";
+/* Named color themes kept one file each (same shape as the blocks below);
+ * ids are listed in src/lib/colorThemes.ts. */
+@import "./themes/catppuccin.css";
+@import "./themes/tokyonight.css";
+@import "./themes/rosepine.css";
+@import "./themes/nord.css";
+@import "./themes/dracula.css";
+@import "./themes/gruvbox.css";
+@import "./themes/kanagawa.css";
+@import "./themes/neon.css";
+@import "./themes/sand.css";
+@import "./themes/contrast.css";
+@import "./themes/christmas.css";
+@import "./themes/tet.css";
 
 /* Inter variable — self-hosted so it works offline. One file covers all weights
  * (100–900) via the variable `wght` axis; a separate file for true italics. */
@@ -58,8 +72,11 @@
    * Surfaces are kept as HSL tokens; the frosted look comes from the primitives
    * (Card/Modal use a translucent fill + backdrop-blur) layered over the aurora
    * background (see `body::before` below). Larger --radius softens panels.
+   * `.theme-scope` re-declares the tokens on an element so a theme preview tile
+   * (with its own `data-theme` / `.dark`) doesn't inherit the active palette.
    * ------------------------------------------------------------------------- */
-  :root {
+  :root,
+  .theme-scope {
     --background: 240 40% 98%;
     --foreground: 235 42% 11%;
     --card: 0 0% 100%;
@@ -81,12 +98,15 @@
     --ring: 243 76% 59%;
     --radius: 0.625rem;
     --sidebar: 240 30% 96%;
-    --success: 161 94% 30%; /* emerald-600 */
-    --warning: 32 95% 44%; /* amber-600 */
-    --info: 200 98% 39%; /* sky-600 */
+    --success: 161 94% 27%; /* emerald-600, darkened for AA on white text */
+    --warning: 32 95% 36%; /* amber-600, darkened for AA */
+    --info: 200 98% 37%; /* sky-600, darkened for AA */
     --success-foreground: 0 0% 100%;
     --warning-foreground: 0 0% 100%;
     --info-foreground: 0 0% 100%;
+    /* Non-primary tints of the aurora background; themes may override. */
+    --aurora-1: 280 85% 60%;
+    --aurora-2: 200 90% 60%;
   }
 
   .dark {
@@ -105,7 +125,7 @@
     --accent: 243 42% 28%;
     --accent-foreground: 220 32% 98%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 235 28% 26%;
     --input: 235 28% 26%;
     --ring: 243 92% 76%;
@@ -117,6 +137,8 @@
     --success-foreground: 164 86% 10%;
     --warning-foreground: 26 83% 14%;
     --info-foreground: 204 80% 12%;
+    --aurora-1: 280 90% 62%;
+    --aurora-2: 200 90% 60%;
   }
 
   /* ---------------------------------------------------------------------------
@@ -135,7 +157,7 @@
     --card-foreground: 205 45% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 205 45% 10%;
-    --primary: 192 82% 40%;
+    --primary: 192 82% 34%;
     --primary-foreground: 0 0% 100%;
     --secondary: 200 30% 92%;
     --secondary-foreground: 205 45% 20%;
@@ -147,7 +169,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 200 25% 85%;
     --input: 200 25% 85%;
-    --ring: 192 82% 40%;
+    --ring: 192 82% 34%;
     --sidebar: 200 35% 95%;
   }
   [data-theme='ocean'].dark {
@@ -166,7 +188,7 @@
     --accent: 205 28% 23%;
     --accent-foreground: 200 30% 99%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 205 24% 26%;
     --input: 205 24% 26%;
     --ring: 190 90% 55%;
@@ -181,7 +203,7 @@
     --card-foreground: 158 40% 9%;
     --popover: 0 0% 100%;
     --popover-foreground: 158 40% 9%;
-    --primary: 152 60% 36%;
+    --primary: 152 60% 32%;
     --primary-foreground: 0 0% 100%;
     --secondary: 150 22% 91%;
     --secondary-foreground: 158 40% 18%;
@@ -193,7 +215,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 150 20% 84%;
     --input: 150 20% 84%;
-    --ring: 152 60% 36%;
+    --ring: 152 60% 32%;
     --sidebar: 150 25% 95%;
   }
   [data-theme='forest'].dark {
@@ -212,7 +234,7 @@
     --accent: 158 16% 23%;
     --accent-foreground: 150 20% 99%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 158 14% 26%;
     --input: 158 14% 26%;
     --ring: 152 65% 50%;
@@ -227,7 +249,7 @@
     --card-foreground: 285 35% 12%;
     --popover: 0 0% 100%;
     --popover-foreground: 285 35% 12%;
-    --primary: 20 85% 48%;
+    --primary: 20 85% 43%;
     --primary-foreground: 0 0% 100%;
     --secondary: 28 35% 92%;
     --secondary-foreground: 285 35% 22%;
@@ -239,7 +261,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 28 30% 85%;
     --input: 28 30% 85%;
-    --ring: 20 85% 48%;
+    --ring: 20 85% 43%;
     --sidebar: 30 40% 96%;
   }
   [data-theme='sunset'].dark {
@@ -258,7 +280,7 @@
     --accent: 282 15% 24%;
     --accent-foreground: 30 30% 99%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 282 14% 27%;
     --input: 282 14% 27%;
     --ring: 22 90% 60%;
@@ -296,7 +318,7 @@
     --popover: 290 20% 13%;
     --popover-foreground: 330 25% 97%;
     --primary: 340 85% 65%;
-    --primary-foreground: 0 0% 100%;
+    --primary-foreground: 340 60% 10%;
     --secondary: 292 16% 19%;
     --secondary-foreground: 330 25% 97%;
     --muted: 292 16% 19%;
@@ -304,7 +326,7 @@
     --accent: 292 16% 24%;
     --accent-foreground: 330 25% 99%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 292 15% 27%;
     --input: 292 15% 27%;
     --ring: 340 85% 65%;
@@ -319,19 +341,19 @@
     --card-foreground: 185 45% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 185 45% 10%;
-    --primary: 178 70% 36%;
+    --primary: 178 70% 30%;
     --primary-foreground: 0 0% 100%;
     --secondary: 180 25% 92%;
     --secondary-foreground: 185 45% 20%;
     --muted: 180 25% 92%;
-    --muted-foreground: 183 14% 40%;
+    --muted-foreground: 183 14% 39%;
     --accent: 180 30% 87%;
     --accent-foreground: 185 45% 20%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
     --border: 180 22% 84%;
     --input: 180 22% 84%;
-    --ring: 178 70% 36%;
+    --ring: 178 70% 30%;
     --sidebar: 180 30% 95%;
   }
   [data-theme='teal'].dark {
@@ -350,7 +372,7 @@
     --accent: 186 22% 23%;
     --accent-foreground: 180 25% 99%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 186 20% 26%;
     --input: 186 20% 26%;
     --ring: 174 75% 46%;
@@ -365,7 +387,7 @@
     --card-foreground: 194 48% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 194 48% 10%;
-    --primary: 186 80% 38%;
+    --primary: 186 80% 31%;
     --primary-foreground: 0 0% 100%;
     --secondary: 190 32% 92%;
     --secondary-foreground: 194 48% 20%;
@@ -377,7 +399,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 190 26% 84%;
     --input: 190 26% 84%;
-    --ring: 186 80% 38%;
+    --ring: 186 80% 31%;
     --sidebar: 190 36% 95%;
   }
   [data-theme='lagoon'].dark {
@@ -396,7 +418,7 @@
     --accent: 194 28% 22%;
     --accent-foreground: 190 30% 99%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 194 24% 25%;
     --input: 194 24% 25%;
     --ring: 184 85% 52%;
@@ -411,19 +433,19 @@
     --card-foreground: 170 42% 10%;
     --popover: 0 0% 100%;
     --popover-foreground: 170 42% 10%;
-    --primary: 168 65% 38%;
+    --primary: 168 65% 31%;
     --primary-foreground: 0 0% 100%;
     --secondary: 165 28% 91%;
     --secondary-foreground: 170 42% 19%;
     --muted: 165 28% 91%;
-    --muted-foreground: 168 14% 39%;
+    --muted-foreground: 168 14% 38%;
     --accent: 165 32% 86%;
     --accent-foreground: 170 42% 19%;
     --destructive: 0 72% 51%;
     --destructive-foreground: 0 0% 100%;
     --border: 165 24% 83%;
     --input: 165 24% 83%;
-    --ring: 168 65% 38%;
+    --ring: 168 65% 31%;
     --sidebar: 165 32% 95%;
   }
   [data-theme='mint'].dark {
@@ -442,7 +464,7 @@
     --accent: 170 18% 23%;
     --accent-foreground: 165 24% 99%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 170 16% 26%;
     --input: 170 16% 26%;
     --ring: 162 70% 48%;
@@ -462,7 +484,7 @@
     --card-foreground: 350 40% 14%;
     --popover: 0 0% 100%;
     --popover-foreground: 350 40% 14%;
-    --primary: 36 90% 46%;
+    --primary: 36 90% 34%;
     --primary-foreground: 0 0% 100%;
     --secondary: 30 45% 93%;
     --secondary-foreground: 350 40% 24%;
@@ -474,7 +496,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 32 34% 87%;
     --input: 32 34% 87%;
-    --ring: 36 90% 46%;
+    --ring: 36 90% 34%;
     --sidebar: 34 46% 96%;
   }
   [data-theme='midautumn'].dark {
@@ -493,7 +515,7 @@
     --accent: 352 46% 30%;
     --accent-foreground: 44 45% 96%;
     --destructive: 6 82% 60%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 6 70% 8%;
     --border: 350 24% 26%;
     --input: 350 24% 26%;
     --ring: 44 94% 62%;
@@ -562,7 +584,7 @@
     background:
       radial-gradient(45% 45% at 12% 8%, hsl(var(--primary) / 0.14), transparent 70%),
       radial-gradient(40% 40% at 92% 6%, hsl(var(--ring) / 0.12), transparent 70%),
-      radial-gradient(48% 48% at 78% 96%, hsl(280 85% 60% / 0.10), transparent 72%),
+      radial-gradient(48% 48% at 78% 96%, hsl(var(--aurora-1) / 0.10), transparent 72%),
       radial-gradient(42% 42% at 22% 100%, hsl(var(--primary) / 0.08), transparent 72%);
     animation: aurora-drift 26s ease-in-out infinite alternate;
   }
@@ -570,8 +592,8 @@
     background:
       radial-gradient(45% 45% at 12% 8%, hsl(var(--primary) / 0.24), transparent 70%),
       radial-gradient(40% 40% at 92% 6%, hsl(var(--ring) / 0.20), transparent 70%),
-      radial-gradient(48% 48% at 78% 96%, hsl(280 90% 62% / 0.18), transparent 72%),
-      radial-gradient(42% 42% at 22% 100%, hsl(200 90% 60% / 0.12), transparent 72%);
+      radial-gradient(48% 48% at 78% 96%, hsl(var(--aurora-1) / 0.18), transparent 72%),
+      radial-gradient(42% 42% at 22% 100%, hsl(var(--aurora-2) / 0.12), transparent 72%);
   }
   /* Frosted glass surface — translucent fill + blur so the aurora shows through.
    * Use on floating panels/cards; pair with a border for the lit glass edge. */

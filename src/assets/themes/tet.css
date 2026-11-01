@@ -1,0 +1,51 @@
+/* Tết — Lunar New Year: lucky red + gold with peach-blossom pink and mai-apricot yellow */
+@layer base {
+  [data-theme='tet']:not(.dark) {
+    --background: 20 70% 97%;
+    --foreground: 355 50% 13%;
+    --card: 0 0% 100%;
+    --card-foreground: 355 50% 13%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 355 50% 13%;
+    --primary: 358 82% 44%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 45 85% 90%;
+    --secondary-foreground: 30 70% 22%;
+    --muted: 22 45% 93%;
+    --muted-foreground: 355 18% 38%;
+    --accent: 340 75% 93%;
+    --accent-foreground: 340 60% 32%;
+    --destructive: 20 92% 38%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 15 40% 88%;
+    --input: 15 40% 88%;
+    --ring: 358 82% 44%;
+    --sidebar: 18 60% 95%;
+    --aurora-1: 340 85% 70%;
+    --aurora-2: 46 95% 55%;
+  }
+  [data-theme='tet'].dark {
+    --background: 0 55% 8%;
+    --foreground: 45 50% 95%;
+    --card: 0 45% 13%;
+    --card-foreground: 45 50% 95%;
+    --popover: 0 46% 12%;
+    --popover-foreground: 45 50% 95%;
+    --primary: 46 92% 58%;
+    --primary-foreground: 0 60% 10%;
+    --secondary: 0 35% 19%;
+    --secondary-foreground: 45 50% 95%;
+    --muted: 0 32% 18%;
+    --muted-foreground: 30 30% 80%;
+    --accent: 338 45% 30%;
+    --accent-foreground: 340 60% 96%;
+    --destructive: 14 88% 60%;
+    --destructive-foreground: 10 70% 9%;
+    --border: 0 30% 25%;
+    --input: 0 30% 25%;
+    --ring: 46 92% 58%;
+    --sidebar: 0 60% 5%;
+    --aurora-1: 338 85% 65%;
+    --aurora-2: 48 95% 55%;
+  }
+}

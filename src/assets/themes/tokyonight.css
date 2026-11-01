@@ -1,0 +1,63 @@
+/* Tokyo Night — neon-on-midnight; Tokyo Night Day (light) / Tokyo Night Night (dark) from folke/tokyonight.nvim */
+@layer base {
+  [data-theme='tokyonight']:not(.dark) {
+    --background: 230 11% 89%;
+    --foreground: 222 55% 30%;
+    --card: 240 10% 92%;
+    --card-foreground: 222 55% 30%;
+    --popover: 240 10% 92%;
+    --popover-foreground: 222 55% 30%;
+    --primary: 215 81% 51%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 229 23% 81%;
+    --secondary-foreground: 222 55% 40%;
+    --muted: 229 23% 81%;
+    --muted-foreground: 227 33% 39%;
+    --accent: 217 55% 87%;
+    --accent-foreground: 222 55% 45%;
+    --destructive: 343 91% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 230 25% 73%;
+    --input: 230 25% 73%;
+    --ring: 215 81% 51%;
+    --sidebar: 224 25% 85%;
+    --success: 89 34% 34%;
+    --success-foreground: 0 0% 100%;
+    --warning: 35 39% 40%;
+    --warning-foreground: 0 0% 100%;
+    --info: 195 100% 30%;
+    --info-foreground: 0 0% 100%;
+    --aurora-1: 266 85% 64%;
+    --aurora-2: 195 100% 30%;
+  }
+  [data-theme='tokyonight'].dark {
+    --background: 235 19% 13%;
+    --foreground: 229 73% 86%;
+    --card: 240 15% 10%;
+    --card-foreground: 229 73% 86%;
+    --popover: 240 15% 10%;
+    --popover-foreground: 229 73% 86%;
+    --primary: 221 89% 72%;
+    --primary-foreground: 240 15% 10%;
+    --secondary: 228 23% 21%;
+    --secondary-foreground: 229 73% 86%;
+    --muted: 228 23% 21%;
+    --muted-foreground: 229 35% 75%;
+    --accent: 220 33% 33%;
+    --accent-foreground: 229 73% 86%;
+    --destructive: 349 89% 72%;
+    --destructive-foreground: 240 15% 10%;
+    --border: 229 24% 31%;
+    --input: 229 24% 31%;
+    --ring: 221 89% 72%;
+    --sidebar: 225 25% 6%;
+    --success: 89 51% 61%;
+    --success-foreground: 240 15% 10%;
+    --warning: 36 66% 64%;
+    --warning-foreground: 240 15% 10%;
+    --info: 202 100% 75%;
+    --info-foreground: 240 15% 10%;
+    --aurora-1: 261 85% 79%;
+    --aurora-2: 202 100% 75%;
+  }
+}

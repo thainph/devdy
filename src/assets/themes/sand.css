@@ -1,0 +1,51 @@
+/* Sand — warm neutral mocha: ivory/espresso with terracotta, brown-charcoal/cream with caramel */
+@layer base {
+  [data-theme='sand']:not(.dark) {
+    --background: 38 40% 96%;
+    --foreground: 25 35% 12%;
+    --card: 40 45% 99%;
+    --card-foreground: 25 35% 12%;
+    --popover: 40 45% 99%;
+    --popover-foreground: 25 35% 12%;
+    --primary: 18 55% 38%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 35 28% 90%;
+    --secondary-foreground: 25 35% 20%;
+    --muted: 35 25% 91%;
+    --muted-foreground: 25 18% 36%;
+    --accent: 24 45% 88%;
+    --accent-foreground: 18 55% 26%;
+    --destructive: 0 68% 42%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 33 22% 82%;
+    --input: 33 22% 82%;
+    --ring: 18 55% 38%;
+    --sidebar: 36 34% 93%;
+    --aurora-1: 20 60% 65%;
+    --aurora-2: 40 55% 65%;
+  }
+  [data-theme='sand'].dark {
+    --background: 25 18% 8%;
+    --foreground: 38 40% 92%;
+    --card: 25 16% 11%;
+    --card-foreground: 38 40% 92%;
+    --popover: 25 17% 10%;
+    --popover-foreground: 38 40% 92%;
+    --primary: 32 65% 60%;
+    --primary-foreground: 25 40% 8%;
+    --secondary: 25 14% 17%;
+    --secondary-foreground: 38 40% 92%;
+    --muted: 25 14% 16%;
+    --muted-foreground: 35 18% 72%;
+    --accent: 24 22% 22%;
+    --accent-foreground: 38 50% 92%;
+    --destructive: 4 70% 62%;
+    --destructive-foreground: 0 0% 6%;
+    --border: 25 12% 24%;
+    --input: 25 12% 24%;
+    --ring: 32 65% 60%;
+    --sidebar: 25 20% 6%;
+    --aurora-1: 18 55% 50%;
+    --aurora-2: 38 50% 50%;
+  }
+}
