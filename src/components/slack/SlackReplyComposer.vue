@@ -23,7 +23,7 @@ const drafts = new Map<string, Draft>()
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Languages, Loader2, SendHorizontal } from 'lucide-vue-next'
-import { Button, Textarea } from '@/components/ui'
+import { Button, Textarea, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { errorCode, useSlackThreadsStore } from '@/stores/slackThreads'
 import { useSlackText } from './useSlackText'
@@ -209,25 +209,10 @@ function onKeydown(e: KeyboardEvent) {
 
     <div class="mt-2 flex items-center justify-between gap-2">
       <div class="flex min-w-0 items-center gap-3">
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="autoTranslate"
-          class="flex shrink-0 items-center gap-1.5 rounded-md text-[11px] text-muted-foreground cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          :disabled="sending"
-          @click="toggleAutoTranslate"
-        >
-          <span
-            class="relative inline-flex h-4 w-7 shrink-0 items-center rounded-full transition-colors"
-            :class="autoTranslate ? 'bg-primary' : 'bg-muted'"
-          >
-            <span
-              class="inline-block h-3 w-3 rounded-full bg-white shadow transition-transform"
-              :class="autoTranslate ? 'translate-x-3.5' : 'translate-x-0.5'"
-            />
-          </span>
+        <label class="flex shrink-0 cursor-pointer items-center gap-1.5 text-[11px] text-muted-foreground">
+          <ToggleSwitch :checked="autoTranslate" :disabled="sending" @toggle="toggleAutoTranslate" />
           {{ t('slackThread.reply.autoTranslate') }}
-        </button>
+        </label>
         <span class="truncate text-[11px] text-muted-foreground">
           {{ autoTranslate ? t('slackThread.reply.hint') : t('slackThread.reply.hintRaw') }}
         </span>

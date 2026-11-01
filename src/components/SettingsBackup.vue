@@ -7,7 +7,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { ArchiveRestore, Download, FileUp, KeyRound, Loader2, Upload } from 'lucide-vue-next'
-import { Button, Card, Input } from '@/components/ui'
+import { Button, Card, Input, ToggleSwitch } from '@/components/ui'
 import BackupContents from '@/components/BackupContents.vue'
 import BackupImportReport from '@/components/BackupImportReport.vue'
 import { useToast } from '@/composables/useToast'
@@ -130,20 +130,12 @@ function cancelImport() {
           <p class="text-sm font-medium text-foreground">{{ t('settings.backup.export.includeSecrets') }}</p>
           <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('settings.backup.export.includeSecretsHint') }}</p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="includeSecrets"
-          :aria-label="t('settings.backup.export.includeSecrets')"
-          class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-          :class="includeSecrets ? 'bg-primary' : 'bg-muted'"
-          @click="includeSecrets = !includeSecrets"
-        >
-          <span
-            class="inline-block h-4 w-4 transform rounded-full bg-white shadow transition-transform"
-            :class="includeSecrets ? 'translate-x-6' : 'translate-x-1'"
-          />
-        </button>
+        <ToggleSwitch
+          size="md"
+          :checked="includeSecrets"
+          :label="t('settings.backup.export.includeSecrets')"
+          @toggle="includeSecrets = !includeSecrets"
+        />
       </div>
 
       <div v-if="includeSecrets" class="space-y-2">

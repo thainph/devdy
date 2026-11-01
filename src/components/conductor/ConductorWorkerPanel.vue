@@ -18,6 +18,7 @@ import { computed, onBeforeUnmount, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useElementSize, useNow } from '@vueuse/core'
 import { ChevronLeft, ChevronRight, ShieldQuestion } from 'lucide-vue-next'
+import { Button } from '@/components/ui'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useRunsStore, runActivityAt, type RunRecord } from '@/stores/runs'
@@ -221,16 +222,17 @@ onBeforeUnmount(onDragEnd)
        permission answer); click opens that worker in-place. Scrolls when the
        workers outgrow the rail. -->
   <div v-if="collapsed" class="flex-1 min-h-0 flex flex-col items-center overflow-y-auto py-1.5 gap-1">
-    <button
+    <Button
       v-if="viewingWorker"
-      type="button"
-      class="flex items-center justify-center h-6 w-6 shrink-0 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+      variant="ghost"
+      size="icon-xs"
+      class="shrink-0"
       :title="t('conductor.backToConductor')"
       :aria-label="t('conductor.backToConductor')"
       @click="emit('backToConductor')"
     >
       <ChevronLeft class="h-3.5 w-3.5" :stroke-width="2" />
-    </button>
+    </Button>
     <button
       v-for="w in workers"
       :key="w.worker_id"

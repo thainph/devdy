@@ -85,7 +85,7 @@ function open(id: string) {
   <DropdownMenu v-if="kind !== 'slack' || count" align="right">
     <template #trigger>
       <Button variant="outline" size="icon" class="relative" :title="buttonTitle" :aria-label="buttonTitle">
-        <component :is="ICONS[kind]" class="h-4 w-4" :stroke-width="2" />
+        <component :is="ICONS[kind]" class="h-3.5 w-3.5" :stroke-width="1.75" />
         <span
           v-if="count"
           class="absolute -right-1 -top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full bg-primary px-0.5 text-[9px] font-semibold leading-none text-primary-foreground"

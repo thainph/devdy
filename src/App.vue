@@ -976,7 +976,7 @@ onMounted(async () => {
                 </span>
                 <span
                   v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
-                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none"
+                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none"
                 >
                   {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
                 </span>

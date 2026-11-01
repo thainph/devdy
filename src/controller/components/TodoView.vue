@@ -13,7 +13,7 @@
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, X } from 'lucide-vue-next'
-import { Button } from '@/components/ui'
+import { Banner, Button } from '@/components/ui'
 import { localYmd } from '@/lib/todoDue'
 import {
   countTodos,
@@ -119,15 +119,23 @@ const CHIP_TONES: Record<string, string> = {
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
 
-    <div
+    <Banner
       v-if="error"
-      class="shrink-0 flex items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      tone="destructive"
+      class="shrink-0 gap-2 rounded-none border-x-0 border-t-0 px-3 py-2 text-xs"
     >
-      <span class="flex-1">{{ error }}</span>
-      <button class="shrink-0 cursor-pointer" :title="t('controller.data.dismiss')" @click="emit('clear-error')">
-        <X class="h-3.5 w-3.5" :stroke-width="2" />
-      </button>
-    </div>
+      {{ error }}
+      <template #actions>
+        <button
+          class="shrink-0 cursor-pointer text-destructive"
+          :title="t('controller.data.dismiss')"
+          :aria-label="t('controller.data.dismiss')"
+          @click="emit('clear-error')"
+        >
+          <X class="h-3.5 w-3.5" :stroke-width="2" />
+        </button>
+      </template>
+    </Banner>
 
     <SearchField
       v-model="query"
@@ -227,7 +235,7 @@ const CHIP_TONES: Record<string, string> = {
           @click="emit('open', todo)"
         >
           <button
-            class="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 border-success bg-success text-[11px] font-black text-black cursor-pointer"
+            class="mt-0.5 grid h-5 w-5 shrink-0 place-items-center rounded-full border-2 border-success bg-success text-[11px] font-black text-success-foreground cursor-pointer"
             :title="t('controller.todo.markOpen')"
             :aria-label="t('controller.todo.markOpen')"
             @click.stop="emit('toggle', todo.id)"

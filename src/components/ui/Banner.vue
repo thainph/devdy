@@ -3,17 +3,20 @@
 // tone icon, the message, and optional trailing actions (retry, dismiss…).
 // Replaces the hand-copied `border-<tone>/30 bg-<tone>/10 …` blocks.
 import { computed, type Component } from 'vue'
-import { AlertCircle, AlertTriangle, CheckCircle2, Info } from 'lucide-vue-next'
+import { AlertCircle, AlertTriangle, CheckCircle2, Info, Loader2 } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 
 const props = withDefaults(defineProps<{
   tone?: 'destructive' | 'warning' | 'success' | 'info'
   /** Override the tone's default icon; `null` hides it. */
   icon?: Component | null
+  /** Spinner instead of the icon while something is in progress. */
+  loading?: boolean
   class?: string
 }>(), {
   tone: 'warning',
   icon: undefined,
+  loading: false,
   class: undefined,
 })
 
@@ -30,7 +33,9 @@ const TONE = {
   info: { box: 'border-info/30 bg-info/10', icon: 'text-info', glyph: Info },
 } as const
 
-const glyph = computed(() => (props.icon === undefined ? TONE[props.tone].glyph : props.icon))
+const glyph = computed(() =>
+  props.loading ? Loader2 : props.icon === undefined ? TONE[props.tone].glyph : props.icon,
+)
 </script>
 
 <template>
@@ -38,7 +43,7 @@ const glyph = computed(() => (props.icon === undefined ? TONE[props.tone].glyph 
     :class="cn('flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-[11px] text-foreground', TONE[tone].box, props.class)"
     :role="tone === 'destructive' ? 'alert' : 'status'"
   >
-    <component :is="glyph" v-if="glyph" class="mt-px h-3.5 w-3.5 shrink-0" :class="TONE[tone].icon" :stroke-width="2" />
+    <component :is="glyph" v-if="glyph" class="mt-px h-3.5 w-3.5 shrink-0" :class="[TONE[tone].icon, loading && 'animate-spin']" :stroke-width="2" />
     <div class="min-w-0 flex-1 break-words">
       <slot />
     </div>

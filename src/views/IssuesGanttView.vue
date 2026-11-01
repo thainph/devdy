@@ -5,9 +5,9 @@ import { useRoute } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
 import { useProjectIssuesStore, type MilestoneGroup } from '@/stores/projectIssues'
-import { Button, Card, AppSelect, Skeleton, Input, PageHeader, SegmentedControl } from '@/components/ui'
+import { Button, Card, AppSelect, Skeleton, Input, PageHeader, SegmentedControl, Banner } from '@/components/ui'
 import GanttChart from '@/components/GanttChart.vue'
-import { RefreshCw, CircleDot, AlertTriangle, Info, FolderOpen } from 'lucide-vue-next'
+import { RefreshCw, CircleDot, GanttChartSquare, FolderOpen } from 'lucide-vue-next'
 
 const route = useRoute()
 const projectsStore = useProjectsStore()
@@ -262,6 +262,9 @@ function relativeTime(iso: string | null): string {
   <div class="flex flex-col h-full">
     <!-- Header -->
     <PageHeader :title="t('gantt.title')">
+      <template #leading>
+        <GanttChartSquare class="h-4 w-4 text-primary shrink-0" :stroke-width="2" />
+      </template>
       <template #meta>
         <span class="text-muted-foreground/40 shrink-0">/</span>
         <AppSelect
@@ -342,36 +345,24 @@ function relativeTime(iso: string | null): string {
       </div>
 
       <!-- Error -->
-      <div v-else-if="store.error" class="m-6 p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
+      <Banner v-else-if="store.error" tone="destructive" class="m-6">
         {{ store.error }}
-      </div>
+      </Banner>
 
       <div v-else-if="store.board" class="flex-1 flex flex-col min-h-0">
         <!-- Fixed region: banners, summary cards, repo filter -->
         <div class="shrink-0 p-6 pb-4 space-y-4">
         <!-- Banners -->
-        <div
-          v-if="!store.board.boardLinked"
-          class="flex items-center gap-2 p-3 rounded-lg text-xs bg-primary/10 border border-primary/20 text-foreground"
-        >
-          <Info class="h-4 w-4 text-primary shrink-0" />
+        <Banner v-if="!store.board.boardLinked" tone="info">
           {{ t('gantt.bannerNoBoardPrefix') }}
           <RouterLink :to="`/projects/${selectedProjectId}/settings`" class="text-primary hover:underline font-medium">{{ t('gantt.bannerNoBoardLink') }}</RouterLink>.
-        </div>
-        <div
-          v-if="store.board.skippedNonGithub"
-          class="flex items-center gap-2 p-3 rounded-lg text-xs bg-warning/10 border border-warning/20"
-        >
-          <AlertTriangle class="h-4 w-4 text-warning shrink-0" />
+        </Banner>
+        <Banner v-if="store.board.skippedNonGithub" tone="warning">
           {{ t('gantt.bannerSkippedNonGithub') }}
-        </div>
-        <div
-          v-if="store.board.truncated"
-          class="flex items-center gap-2 p-3 rounded-lg text-xs bg-warning/10 border border-warning/20"
-        >
-          <AlertTriangle class="h-4 w-4 text-warning shrink-0" />
+        </Banner>
+        <Banner v-if="store.board.truncated" tone="warning">
           {{ t('gantt.bannerTruncated') }}
-        </div>
+        </Banner>
 
         <!-- Summary cards -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 animate-fade-rise">

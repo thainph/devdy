@@ -3594,7 +3594,7 @@ function handleRefInput(val: string) {
               :title="t('run.moreActions')"
               :aria-label="t('run.moreActions')"
             >
-              <MoreHorizontal class="h-4 w-4" :stroke-width="2" />
+              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>
           <div class="min-w-[15rem]">
@@ -3811,15 +3811,17 @@ function handleRefInput(val: string) {
                   :placeholder="t('run.searchSessionsPlaceholder')"
                   class="pl-8 pr-8"
                 />
-                <button
+                <Button
                   v-if="sessionSearch"
-                  type="button"
-                  class="absolute right-2 top-1/2 -translate-y-1/2 text-muted-foreground hover:text-foreground cursor-pointer"
+                  variant="ghost"
+                  size="icon-xs"
+                  class="absolute right-1 top-1/2 -translate-y-1/2"
                   :title="t('run.clearSearch')"
+                  :aria-label="t('run.clearSearch')"
                   @click="sessionSearch = ''"
                 >
                   <X class="h-3.5 w-3.5" :stroke-width="2" />
-                </button>
+                </Button>
               </div>
             </div>
             <div class="flex items-center justify-between px-4 py-1.5">
@@ -4030,15 +4032,14 @@ function handleRefInput(val: string) {
                   @update:open="(o) => (actionsMenuRunId = o ? run.id : null)"
                 >
                   <template #trigger>
-                    <button
-                      type="button"
-                      class="flex items-center justify-center rounded-md text-muted-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-                      :class="historyDensity === 'comfortable' ? 'h-6 w-6' : 'h-5 w-5'"
+                    <Button
+                      variant="ghost"
+                      size="icon-xs"
                       :aria-label="t('run.moreActions')"
                       :title="t('run.moreActions')"
                     >
                       <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    </button>
+                    </Button>
                   </template>
 
                   <RunActionItems v-bind="runActionProps(run)" section="actions" v-on="runActionHandlers(run)" />
@@ -4549,7 +4550,7 @@ function handleRefInput(val: string) {
                   :aria-label="t('run.attachFile')"
                   @click="onPickFiles"
                 >
-                  <Paperclip class="h-4 w-4" :stroke-width="2" />
+                  <Paperclip class="h-3.5 w-3.5" :stroke-width="1.75" />
                 </Button>
                 <SavedPromptPicker
                   v-if="savedPrompts.length"
@@ -4571,7 +4572,7 @@ function handleRefInput(val: string) {
                   :aria-label="composerExpanded ? t('run.collapseComposer') : t('run.expandComposer')"
                   @click="toggleComposerExpand"
                 >
-                  <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
+                  <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
                 </Button>
                 <div
                   ref="runSettingsRoot"
@@ -4722,14 +4723,15 @@ function handleRefInput(val: string) {
         :class="workerPanelOpen ? 'w-80' : 'w-9'"
       >
         <div class="flex items-center gap-1.5 px-2 h-8 border-b border-border/60 shrink-0">
-          <button
-            type="button"
-            class="flex items-center justify-center h-6 w-6 rounded text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+          <Button
+            variant="ghost"
+            size="icon-xs"
             :title="workerPanelOpen ? t('conductor.collapse') : t('conductor.expand')"
+            :aria-label="workerPanelOpen ? t('conductor.collapse') : t('conductor.expand')"
             @click="setWorkerPanelOpen(!workerPanelOpen)"
           >
             <component :is="workerPanelOpen ? ChevronRight : ChevronLeft" class="h-3.5 w-3.5" :stroke-width="2" />
-          </button>
+          </Button>
           <template v-if="workerPanelOpen">
             <Network class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.75" />
             <span class="text-xs font-medium text-foreground/90 truncate">{{ t('conductor.workers') }}</span>

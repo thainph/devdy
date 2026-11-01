@@ -12,7 +12,7 @@ import {
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
-import { Button, Input, Textarea, Card, AppSelect, PageHeader } from '@/components/ui'
+import { Banner, Button, Input, Textarea, Card, AppSelect, PageHeader, ToggleSwitch } from '@/components/ui'
 import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
@@ -1810,12 +1810,11 @@ watch(() => settings.value.language, (v) => {
             {{ t('settings.google.intro') }}
           </p>
 
-          <div class="p-2.5 bg-warning/10 border border-warning/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-            <ShieldAlert class="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" :stroke-width="1.75" />
+          <Banner :icon="ShieldAlert" class="leading-relaxed">
             <span class="text-muted-foreground">
               {{ t('settings.google.credsWarning') }}
             </span>
-          </div>
+          </Banner>
 
           <!-- Connected accounts list -->
           <div v-if="googleAccounts.length" class="space-y-2">
@@ -1864,32 +1863,27 @@ watch(() => settings.value.language, (v) => {
                     </Button>
                   </div>
                 </div>
-                <div
+                <Banner
                   v-if="googleValidations[acc.id] && !googleValidations[acc.id].missing_scopes?.length"
-                  class="p-2 bg-success/10 border border-success/20 rounded-md text-[11px]"
+                  tone="success"
                 >
-                  <div class="flex items-center gap-1.5 text-success font-medium">
-                    <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                    {{ t('settings.google.valid') }}
-                  </div>
+                  <div class="font-medium text-success">{{ t('settings.google.valid') }}</div>
                   <p v-if="googleValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
                     {{ googleValidations[acc.id].email }}
                   </p>
-                </div>
-                <div
+                </Banner>
+                <Banner
                   v-else-if="googleValidations[acc.id]?.missing_scopes?.length"
-                  class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
+                  tone="warning"
                 >
-                  <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                   <span>{{ t('settings.google.missingScopes', { scopes: googleValidations[acc.id].missing_scopes.map(scopeLabel).join(', ') }) }}</span>
-                </div>
-                <div
+                </Banner>
+                <Banner
                   v-if="googleLoginNeeded[acc.id]"
-                  class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
+                  tone="warning"
                 >
-                  <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                   <span>{{ googleBusyAccount === acc.id ? t('settings.google.loggingIn') : t('settings.google.loginExpired') }}</span>
-                </div>
+                </Banner>
                 <p v-if="googleAccountError[acc.id]" class="text-[11px] text-destructive">{{ googleAccountError[acc.id] }}</p>
               </template>
               <template v-else>
@@ -1980,12 +1974,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.github.intro') }}
             </p>
 
-            <div class="p-2.5 bg-warning/10 border border-warning/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.github.isolationWarning') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="ghStore.accounts.length" class="space-y-2">
@@ -2034,20 +2027,17 @@ watch(() => settings.value.language, (v) => {
                       </Button>
                     </div>
                   </div>
-                  <div
+                  <Banner
                     v-if="validations[acc.id]"
-                    class="p-2 bg-success/10 border border-success/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-success font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.github.valid') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.github.valid') }}</div>
                     <p v-if="validations[acc.id].username" class="text-muted-foreground mt-1 truncate">@{{ validations[acc.id].username }}</p>
                     <p v-if="!validations[acc.id].has_repo_scope" class="text-warning mt-1 flex items-center gap-1">
                       <AlertTriangle class="h-3 w-3" :stroke-width="1.75" />
                       {{ t('settings.github.missingRepoScope') }}
                     </p>
-                  </div>
+                  </Banner>
                 </template>
 
                 <!-- Edit mode -->
@@ -2123,12 +2113,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.gitlab.intro') }}
             </p>
 
-            <div class="p-2.5 bg-warning/10 border border-warning/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.gitlab.isolationWarning') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="glStore.accounts.length" class="space-y-2">
@@ -2178,19 +2167,16 @@ watch(() => settings.value.language, (v) => {
                       </Button>
                     </div>
                   </div>
-                  <div
+                  <Banner
                     v-if="glValidations[acc.id]"
-                    class="p-2 bg-success/10 border border-success/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-success font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.gitlab.valid') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.gitlab.valid') }}</div>
                     <p v-if="glValidations[acc.id].username || glValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
                       <template v-if="glValidations[acc.id].username">@{{ glValidations[acc.id].username }}</template>
                       <template v-if="glValidations[acc.id].email"> · {{ glValidations[acc.id].email }}</template>
                     </p>
-                  </div>
+                  </Banner>
                 </template>
 
                 <!-- Edit mode -->
@@ -2286,12 +2272,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.aws.intro') }}
             </p>
 
-            <div class="p-2.5 bg-warning/10 border border-warning/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.aws.isolationWarning') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="awsStore.accounts.length" class="space-y-2">
@@ -2349,24 +2334,20 @@ watch(() => settings.value.language, (v) => {
                       </Button>
                     </div>
                   </div>
-                  <div
+                  <Banner
                     v-if="awsValidations[acc.id]"
-                    class="p-2 bg-success/10 border border-success/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-success font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.aws.valid') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.aws.valid') }}</div>
                     <p v-if="awsValidations[acc.id].account_id" class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].account_id }}</p>
                     <p class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].arn }}</p>
-                  </div>
-                  <div
+                  </Banner>
+                  <Banner
                     v-if="awsSsoLoginNeeded[acc.id]"
-                    class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
+                    tone="warning"
                   >
-                    <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                     <span>{{ awsBusyAccount === acc.id ? t('settings.aws.ssoLoggingIn') : t('settings.aws.ssoExpired') }}</span>
-                  </div>
+                  </Banner>
                 </template>
 
                 <template v-else>
@@ -2448,12 +2429,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.claude.intro') }}
             </p>
 
-            <div class="p-2.5 bg-warning/10 border border-warning/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.claude.securityNote') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="claudeStore.accounts.length" class="space-y-2">
@@ -2583,25 +2563,21 @@ watch(() => settings.value.language, (v) => {
                       </div>
                     </template>
                   </div>
-                  <div
+                  <Banner
                     v-else-if="claudeValidations[acc.id]?.logged_in"
-                    class="p-2 bg-success/10 border border-success/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-success font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.claude.validReady') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.claude.validReady') }}</div>
                     <p v-if="claudeValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
                       {{ claudeValidations[acc.id].email }}
                     </p>
-                  </div>
-                  <div
+                  </Banner>
+                  <Banner
                     v-else-if="claudeValidations[acc.id]"
-                    class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
+                    tone="warning"
                   >
-                    <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                     <span>{{ t('settings.claude.validNeedsLogin') }}</span>
-                  </div>
+                  </Banner>
                 </template>
 
                 <template v-else>
@@ -2633,20 +2609,12 @@ watch(() => settings.value.language, (v) => {
                   <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.claude.balance.title') }}</div>
                   <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">{{ t('settings.claude.balance.hint') }}</p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  :aria-checked="settings.claude_auto_balance !== 'false'"
-                  :aria-label="t('settings.claude.balance.title')"
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                  :class="settings.claude_auto_balance !== 'false' ? 'bg-primary' : 'bg-muted'"
-                  @click="settings.claude_auto_balance = settings.claude_auto_balance === 'false' ? 'true' : 'false'"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 transform rounded-full bg-white shadow transition-transform"
-                    :class="settings.claude_auto_balance !== 'false' ? 'translate-x-6' : 'translate-x-1'"
-                  />
-                </button>
+                <ToggleSwitch
+                  size="md"
+                  :checked="settings.claude_auto_balance !== 'false'"
+                  :label="t('settings.claude.balance.title')"
+                  @toggle="settings.claude_auto_balance = settings.claude_auto_balance === 'false' ? 'true' : 'false'"
+                />
               </div>
 
               <div v-if="settings.claude_auto_balance !== 'false'" class="grid grid-cols-2 gap-3">
@@ -2660,22 +2628,18 @@ watch(() => settings.value.language, (v) => {
                 </div>
               </div>
 
-              <div
-                v-if="showBalanceSuggestion"
-                class="p-2 bg-info/10 border border-info/20 rounded-md text-[11px] text-info flex items-center gap-1.5"
-              >
-                <ArrowRightLeft class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                <span>{{ t('settings.claude.balance.suggest', { account: balanceRecommendedLabel }) }}</span>
-                <Button
-                  v-if="settings.claude_auto_balance === 'false'"
-                  size="xs"
-                  variant="outline"
-                  class="ml-auto"
-                  @click="handleSetDefaultClaude(claudeStore.balance!.recommended_id!)"
-                >
-                  {{ t('settings.claude.setDefault') }}
-                </Button>
-              </div>
+              <Banner v-if="showBalanceSuggestion" tone="info" :icon="ArrowRightLeft">
+                {{ t('settings.claude.balance.suggest', { account: balanceRecommendedLabel }) }}
+                <template v-if="settings.claude_auto_balance === 'false'" #actions>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    @click="handleSetDefaultClaude(claudeStore.balance!.recommended_id!)"
+                  >
+                    {{ t('settings.claude.setDefault') }}
+                  </Button>
+                </template>
+              </Banner>
             </div>
 
             <!-- Add account -->

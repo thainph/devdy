@@ -5,7 +5,7 @@
 // (RemoteIndicator → RemoteSessionModal).
 import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Card, Badge } from '@/components/ui'
+import { Button, Card, Badge, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
@@ -156,26 +156,14 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
               <template v-else>{{ t('remote.settings.state.off') }}</template>
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            :aria-checked="enabled"
-            :disabled="togglingEnabled || !canToggle"
-            class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-            :class="enabled ? 'bg-primary' : 'bg-muted'"
-            @click="toggleEnabled"
-          >
-            <span
-              class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-              :class="enabled ? 'translate-x-6' : 'translate-x-1'"
-            >
-              <Loader2
-                v-if="togglingEnabled"
-                class="h-3 w-3 animate-spin text-primary"
-                :stroke-width="2.5"
-              />
-            </span>
-          </button>
+          <ToggleSwitch
+            size="md"
+            :checked="enabled"
+            :label="t('remote.settings.enable')"
+            :disabled="!canToggle"
+            :loading="togglingEnabled"
+            @toggle="toggleEnabled"
+          />
         </div>
 
         <p class="text-[11px] text-muted-foreground/70 border-t border-border/50 pt-3">

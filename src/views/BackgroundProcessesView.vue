@@ -9,7 +9,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ChevronRight, Cpu, RefreshCw, Trash2 } from 'lucide-vue-next'
-import { Button, Card, PageHeader } from '@/components/ui'
+import { Button, Card, PageHeader, Banner } from '@/components/ui'
 import ProcessEntryRow from '@/components/processes/ProcessEntryRow.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -192,12 +192,12 @@ const sections = computed(() => [
       </div>
 
       <!-- Error with nothing to show -->
-      <div
+      <Banner
         v-else-if="store.error && !store.snapshot"
-        class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20"
+        tone="destructive"
       >
         {{ store.error }}
-      </div>
+      </Banner>
 
       <!-- Empty state -->
       <div v-else-if="entries.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">

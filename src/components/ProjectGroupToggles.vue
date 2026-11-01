@@ -3,8 +3,8 @@
 // bundles that are only partly applied. Used by both tabs, so it takes the states as a prop.
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
-import { Badge, Card } from '@/components/ui'
-import { Layers, Loader2 } from 'lucide-vue-next'
+import { Badge, Card, ToggleSwitch } from '@/components/ui'
+import { Layers } from 'lucide-vue-next'
 import type { GroupKind, ProjectGroupState } from '@/stores/groups'
 
 defineProps<{
@@ -64,35 +64,13 @@ const { t } = useI18n()
           </p>
         </div>
 
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="group.state === 'on'"
+        <ToggleSwitch
+          :checked="group.state === 'mixed' ? 'mixed' : group.state === 'on'"
           :disabled="toggling === group.group_id || group.member_count === 0"
-          class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-          :class="{
-            'bg-primary': group.state === 'on',
-            'bg-primary/40': group.state === 'mixed',
-            'bg-muted': group.state === 'off',
-          }"
-          :title="group.state === 'off' ? t('groups.enableGroup') : t('groups.disableGroup')"
-          @click="emit('toggle', group)"
-        >
-          <span
-            class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-            :class="{
-              'translate-x-6': group.state === 'on',
-              'translate-x-3.5': group.state === 'mixed',
-              'translate-x-1': group.state === 'off',
-            }"
-          >
-            <Loader2
-              v-if="toggling === group.group_id"
-              class="h-3 w-3 animate-spin text-primary"
-              :stroke-width="2.5"
-            />
-          </span>
-        </button>
+          :loading="toggling === group.group_id"
+          :label="group.state === 'off' ? t('groups.enableGroup') : t('groups.disableGroup')"
+          @toggle="emit('toggle', group)"
+        />
       </div>
     </div>
   </Card>

@@ -14,7 +14,7 @@ import {
   AlertCircle, AlertTriangle, CheckCircle2, Copy, Download, Loader2, MoreHorizontal, Plug, Plus, Trash2, X, XCircle,
 } from 'lucide-vue-next'
 import {
-  AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, ToggleSwitch, Textarea,
+  AppSelect, Badge, Banner, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, ToggleSwitch, Textarea,
 } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -239,13 +239,14 @@ defineExpose({ dirty })
       </template>
     </DetailHeader>
 
-    <div
+    <Banner
       v-if="validationError"
-      class="flex shrink-0 items-center gap-1.5 border-b border-warning/20 bg-warning/10 px-3 py-1.5 text-xs text-warning"
+      tone="warning"
+      :icon="AlertCircle"
+      class="shrink-0 rounded-none border-x-0 border-t-0 px-3 text-xs"
     >
-      <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-      <span class="min-w-0 truncate" :title="validationError">{{ validationError }}</span>
-    </div>
+      <p class="truncate" :title="validationError">{{ validationError }}</p>
+    </Banner>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-5">
       <div class="max-w-xl">
@@ -276,26 +277,24 @@ defineExpose({ dirty })
             </Button>
           </div>
           <!-- Test connection result -->
-          <div
+          <Banner
             v-if="testResult"
-            class="flex items-start gap-1.5 rounded-md border p-3 text-xs"
-            :class="testResult.ok
-              ? 'border-success/20 bg-success/10 text-success'
-              : 'border-destructive/20 bg-destructive/10 text-destructive'"
+            :tone="testResult.ok ? 'success' : 'destructive'"
+            :icon="testResult.ok ? CheckCircle2 : XCircle"
           >
-            <CheckCircle2 v-if="testResult.ok" class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-            <XCircle v-else class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-            <span class="min-w-0 flex-1 break-words">{{ testResult.message }}</span>
-            <button
-              type="button"
-              class="shrink-0 cursor-pointer opacity-70 hover:opacity-100"
-              :title="t('mcp.detail.dismiss')"
-              :aria-label="t('mcp.detail.dismiss')"
-              @click="testResult = null"
-            >
-              <X class="h-3.5 w-3.5" :stroke-width="2" />
-            </button>
-          </div>
+            {{ testResult.message }}
+            <template #actions>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                :title="t('mcp.detail.dismiss')"
+                :aria-label="t('mcp.detail.dismiss')"
+                @click="testResult = null"
+              >
+                <X class="h-3 w-3" :stroke-width="2" />
+              </Button>
+            </template>
+          </Banner>
         </DetailSection>
 
         <DetailSection :title="t('mcp.editor.general')" :hint="t('mcp.detail.generalHint')">

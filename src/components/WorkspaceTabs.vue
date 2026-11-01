@@ -146,7 +146,7 @@ function onTabClick(projectId: string) {
       <!-- pending-permission badge (summed across the project's runs) -->
       <span
         v-if="stateOf(tab.projectId).pending > 0"
-        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none shrink-0"
+        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none shrink-0"
       >{{ stateOf(tab.projectId).pending }}</span>
 
       <!-- close -->

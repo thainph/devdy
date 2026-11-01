@@ -354,28 +354,28 @@ const inputPreview = computed(() => {
     <!-- AskUserQuestion submits `answers` (with allow_once). Other tools: an
          explicit scope on every decision (AC-17 / BR-016 v1.2). -->
     <div v-if="isQuestions" class="border-t border-border shrink-0 flex flex-col gap-2 sm:flex-row sm:justify-end" :class="inbox ? 'px-3 py-2.5' : 'px-4 py-3'">
-      <Button variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
-        <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.cancel') }}
+      <Button size="md" variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
+        <X class="h-4 w-4" :stroke-width="2" /> {{ t('permission.controller.cancel') }}
       </Button>
-      <Button variant="primary" :disabled="!canSubmit" class="w-full sm:w-auto" @click="submitAnswers">
-        <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.submit') }}
+      <Button size="md" variant="primary" :disabled="!canSubmit" class="w-full sm:w-auto" @click="submitAnswers">
+        <Check class="h-4 w-4" :stroke-width="2" /> {{ t('permission.submit') }}
       </Button>
     </div>
 
     <!-- Inbox: the whole decision set at a glance. -->
     <div v-else-if="inbox" class="px-3 py-2.5 border-t border-border shrink-0 grid grid-cols-2 gap-2">
-      <Button variant="destructive" class="w-full" @click="emit('decide', 'deny_once')">
-        <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.deny') }}
+      <Button size="md" variant="destructive" class="w-full" @click="emit('decide', 'deny_once')">
+        <X class="h-4 w-4" :stroke-width="2" /> {{ t('permission.deny') }}
       </Button>
-      <Button variant="primary" class="w-full" @click="emit('decide', 'allow_once')">
-        <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.allow') }}
+      <Button size="md" variant="primary" class="w-full" @click="emit('decide', 'allow_once')">
+        <Check class="h-4 w-4" :stroke-width="2" /> {{ t('permission.allow') }}
       </Button>
       <template v-if="canRemember">
-        <Button variant="outline" class="w-full" :title="t('permission.denyAlwaysTitle')" @click="emit('decide', 'deny_always')">
-          <Ban class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.denyAlways') }}
+        <Button size="md" variant="outline" class="w-full" :title="t('permission.denyAlwaysTitle')" @click="emit('decide', 'deny_always')">
+          <Ban class="h-4 w-4" :stroke-width="2" /> {{ t('permission.denyAlways') }}
         </Button>
-        <Button variant="outline" class="w-full" :title="t('permission.allowAlwaysTitle')" @click="emit('decide', 'allow_always')">
-          <CheckCheck class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.controller.allowAlways') }}
+        <Button size="md" variant="outline" class="w-full" :title="t('permission.allowAlwaysTitle')" @click="emit('decide', 'allow_always')">
+          <CheckCheck class="h-4 w-4" :stroke-width="2" /> {{ t('permission.controller.allowAlways') }}
         </Button>
       </template>
     </div>
@@ -384,21 +384,22 @@ const inputPreview = computed(() => {
          never hit by accident. -->
     <div v-else class="px-4 py-3 border-t border-border shrink-0 flex flex-col gap-2">
       <div class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
-        <Button variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
-          <X class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.deny') }}
+        <Button size="md" variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
+          <X class="h-4 w-4" :stroke-width="2" /> {{ t('permission.deny') }}
         </Button>
-        <Button variant="primary" class="w-full sm:w-auto" @click="emit('decide', 'allow_once')">
-          <Check class="h-3.5 w-3.5" :stroke-width="2" /> {{ t('permission.allow') }}
+        <Button size="md" variant="primary" class="w-full sm:w-auto" @click="emit('decide', 'allow_once')">
+          <Check class="h-4 w-4" :stroke-width="2" /> {{ t('permission.allow') }}
         </Button>
       </div>
       <Button
         v-if="canRemember"
+        size="md"
         variant="outline"
         class="w-full min-w-0"
         :title="t('permission.allowAlwaysTitle')"
         @click="emit('decide', 'allow_always')"
       >
-        <CheckCheck class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+        <CheckCheck class="h-4 w-4 shrink-0" :stroke-width="2" />
         <span class="truncate">{{ t('permission.controller.allowAlwaysFor', { tool: request.tool_name }) }}</span>
       </Button>
     </div>

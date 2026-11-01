@@ -11,7 +11,7 @@ import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CalendarClock, ChevronDown, ChevronRight, Gauge, RefreshCw, Target, TriangleAlert } from 'lucide-vue-next'
 import { invoke } from '@/lib/tauri'
-import { AppSelect, Button, Card, PageHeader, SegmentedControl, Skeleton } from '@/components/ui'
+import { AppSelect, Banner, Button, Card, PageHeader, SegmentedControl, Skeleton } from '@/components/ui'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import FocusDialogs from '@/components/focus/FocusDialogs.vue'
 import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
@@ -281,10 +281,12 @@ onBeforeUnmount(() => {
 
     <!-- Error before anything loaded -->
     <div v-else-if="store.error && !store.loaded" class="p-6">
-      <Card class="border-destructive/30" body-class="flex items-center gap-3 p-4">
-        <p class="flex-1 text-sm text-destructive">{{ t('focus.loadError') }}: {{ store.error }}</p>
-        <Button variant="outline" size="sm" @click="store.load()">{{ t('focus.retry') }}</Button>
-      </Card>
+      <Banner tone="destructive" class="items-center px-4 py-3 text-sm">
+        {{ t('focus.loadError') }}: {{ store.error }}
+        <template #actions>
+          <Button variant="outline" size="sm" @click="store.load()">{{ t('focus.retry') }}</Button>
+        </template>
+      </Banner>
     </div>
 
     <!-- Empty -->

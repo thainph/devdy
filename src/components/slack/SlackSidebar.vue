@@ -10,7 +10,6 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertCircle,
   ChevronDown,
   ChevronRight,
   Folder,
@@ -23,7 +22,7 @@ import {
   Search,
   X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, Input, SegmentedControl } from '@/components/ui'
+import { AppSelect, Banner, Button, Input, SegmentedControl } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { formatFullDate, groupThreads } from '@/lib/slackThreadUtils'
 import type { SlackThreadProgress, SlackThreadSummary } from '@/stores/slackThreads'
@@ -170,22 +169,20 @@ function rowAgeTitle(th: SlackThreadSummary): string {
 
     <!-- Tree -->
     <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-      <div
-        v-if="error"
-        class="mb-2 flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[11px] text-foreground"
-      >
-        <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="2" />
-        <span class="min-w-0 flex-1 break-words">{{ error }}</span>
-        <button
-          type="button"
-          class="shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          :title="t('slackThread.banner.retry')"
-          :aria-label="t('slackThread.banner.retry')"
-          @click="emit('retry')"
-        >
-          <RotateCw class="h-3 w-3" :stroke-width="2" />
-        </button>
-      </div>
+      <Banner v-if="error" tone="destructive" class="mb-2">
+        {{ error }}
+        <template #actions>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :title="t('slackThread.banner.retry')"
+            :aria-label="t('slackThread.banner.retry')"
+            @click="emit('retry')"
+          >
+            <RotateCw class="h-3 w-3" :stroke-width="2" />
+          </Button>
+        </template>
+      </Banner>
       <div v-if="emptyStore && !error" class="px-3 py-8 text-center">
         <p class="text-xs text-muted-foreground">{{ t('slackThread.sidebar.empty') }}</p>
         <p class="mt-1 text-[11px] text-muted-foreground/70">{{ t('slackThread.sidebar.emptyHint') }}</p>

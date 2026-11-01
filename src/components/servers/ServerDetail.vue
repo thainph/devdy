@@ -12,7 +12,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import {
   AlertCircle, CheckCircle2, Copy, CopyPlus, KeyRound, Loader2, MoreHorizontal, Plug, Trash2, Upload, X, XCircle,
 } from 'lucide-vue-next'
-import { Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
+import { Banner, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
 import { useToast } from '@/composables/useToast'
@@ -452,17 +452,13 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
               {{ testing ? t('servers.editor.testing') : t('servers.detail.test') }}
             </Button>
           </div>
-          <div
+          <Banner
             v-if="!isNew && testResult"
-            class="flex items-start gap-1.5 rounded-md border p-3 text-xs"
-            :class="testResult.ok
-              ? 'bg-success/10 border-success/20 text-success'
-              : 'bg-destructive/10 border-destructive/20 text-destructive'"
+            :tone="testResult.ok ? 'success' : 'destructive'"
+            :icon="testResult.ok ? CheckCircle2 : XCircle"
           >
-            <CheckCircle2 v-if="testResult.ok" class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-            <XCircle v-else class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-            <span class="min-w-0 break-words">{{ testResult.message }}</span>
-          </div>
+            {{ testResult.message }}
+          </Banner>
         </DetailSection>
       </div>
     </div>

@@ -244,7 +244,7 @@ onBeforeUnmount(() => {
       <div class="flex items-center gap-0.5 shrink-0">
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           :title="t('files.tree.newFile')"
           :aria-label="t('files.tree.newFile')"
           @click="promptCreate('file', '')"
@@ -253,7 +253,7 @@ onBeforeUnmount(() => {
         </Button>
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           :title="t('files.tree.newFolder')"
           :aria-label="t('files.tree.newFolder')"
           @click="promptCreate('folder', '')"
@@ -262,7 +262,7 @@ onBeforeUnmount(() => {
         </Button>
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           :title="t('files.tree.collapseAll')"
           :aria-label="t('files.tree.collapseAll')"
           @click="store.collapseAll(projectPath)"
@@ -271,7 +271,7 @@ onBeforeUnmount(() => {
         </Button>
         <Button
           variant="ghost"
-          size="icon-sm"
+          size="icon-xs"
           :title="t('files.tree.reload')"
           :aria-label="t('files.tree.reload')"
           :class="reloading && 'opacity-50 pointer-events-none'"

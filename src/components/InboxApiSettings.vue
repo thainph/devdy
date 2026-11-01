@@ -7,7 +7,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, Copy, Eye, EyeOff, Inbox, Loader2, RefreshCw } from 'lucide-vue-next'
-import { Button, Card } from '@/components/ui'
+import { Button, Card, ToggleSwitch } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useInboxApiStore, type InboxApiInfo } from '@/stores/inboxApi'
@@ -122,23 +122,13 @@ onMounted(load)
           <p class="text-sm font-medium text-foreground">{{ t('settings.inboxApi.enable') }}</p>
           <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('settings.inboxApi.enableHint') }}</p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="info.enabled"
-          :aria-label="t('settings.inboxApi.enable')"
-          :disabled="toggling"
-          class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-          :class="info.enabled ? 'bg-primary' : 'bg-muted'"
-          @click="toggleEnabled"
-        >
-          <span
-            class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-            :class="info.enabled ? 'translate-x-6' : 'translate-x-1'"
-          >
-            <Loader2 v-if="toggling" class="h-3 w-3 animate-spin text-primary" :stroke-width="2.5" />
-          </span>
-        </button>
+        <ToggleSwitch
+          size="md"
+          :checked="info.enabled"
+          :label="t('settings.inboxApi.enable')"
+          :loading="toggling"
+          @toggle="toggleEnabled"
+        />
       </div>
 
       <!-- Status -->

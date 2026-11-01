@@ -5,7 +5,7 @@ import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import {
-  ChevronLeft, ChevronRight, Loader2, CalendarDays, AlertTriangle,
+  ChevronLeft, ChevronRight, Loader2, CalendarDays,
   ExternalLink, MapPin, Clock, CalendarRange, User, Timer,
   Video, Paperclip, AlignLeft, Settings2, Check, Languages, Bell, Moon,
   Plus, Pencil, Trash2, Pin, PinOff,
@@ -16,7 +16,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import { translateText } from '@/lib/translate'
-import { Button, Badge, Drawer, AppSelect, Modal, PageHeader, SegmentedControl } from '@/components/ui'
+import { Button, Badge, Drawer, AppSelect, Modal, PageHeader, SegmentedControl, Banner } from '@/components/ui'
 import { useGoogleCalendarStore, type CalEvent, type ViewMode } from '@/stores/googleCalendar'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useConfirm } from '@/composables/useConfirm'
@@ -617,10 +617,9 @@ function openForAccount(url: string) {
     <!-- Warnings: accounts missing calendar WRITE scope / per-account fetch errors -->
     <div
       v-if="store.accountsMissingWrite.length || store.errors.length"
-      class="flex items-start gap-2 px-6 py-2 border-b border-border/60 bg-warning/10 text-xs text-warning shrink-0"
+      class="px-6 py-2 border-b border-border/60 shrink-0"
     >
-      <AlertTriangle class="h-4 w-4 shrink-0 mt-0.5" :stroke-width="1.75" />
-      <div class="flex-1">
+      <Banner tone="warning">
         <template v-if="store.accountsMissingWrite.length">
           {{ t('calendar.missingWriteWarning') }}
           <b>{{ store.accountsMissingWrite.map(a => a.label).join(', ') }}</b>.
@@ -629,8 +628,10 @@ function openForAccount(url: string) {
         <template v-for="err in store.errors" :key="err.account_id">
           <div>{{ err.account_label }}: {{ err.message }}</div>
         </template>
-      </div>
-      <Button variant="outline" size="xs" @click="goSettings">{{ t('calendar.reconnect') }}</Button>
+        <template #actions>
+          <Button variant="outline" size="xs" @click="goSettings">{{ t('calendar.reconnect') }}</Button>
+        </template>
+      </Banner>
     </div>
 
     <!-- Empty state -->

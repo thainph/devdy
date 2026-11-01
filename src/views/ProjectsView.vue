@@ -13,7 +13,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
 import { parseRepoUrl, repoKey } from '@/lib/repoUrl'
 import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, GanttChartSquare, GripVertical } from 'lucide-vue-next'
-import { Button, Input, Badge, Modal, Card, PageHeader } from '@/components/ui'
+import { Button, Input, Badge, Modal, Card, PageHeader, Banner } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
@@ -303,9 +303,9 @@ async function handleOpenInFolder(project: { path: string }) {
         <div v-for="i in 8" :key="i" class="h-32 rounded-xl border border-border bg-card animate-pulse" />
       </div>
 
-      <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
+      <Banner v-else-if="store.error" tone="destructive">
         {{ store.error }}
-      </div>
+      </Banner>
 
       <div v-else-if="store.projects.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">

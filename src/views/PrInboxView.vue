@@ -13,7 +13,7 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { resolvePermissionMode } from '@/lib/engineOptions'
 import {
-  Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator, PageHeader,
+  Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, Banner,
 } from '@/components/ui'
 import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
 import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
@@ -48,7 +48,7 @@ import { useRunStatusEvents } from '@/composables/useRunStatusEvents'
 import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
-  GitPullRequest, RefreshCw, Sparkles, User, AlertTriangle, Bot, ChevronRight, Folder, BookMarked,
+  GitPullRequest, RefreshCw, Sparkles, User, Bot, ChevronRight, Folder, BookMarked,
   CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, Pin, PinOff,
 } from 'lucide-vue-next'
 
@@ -500,22 +500,24 @@ async function reviewAll(group: PrGroup) {
       <!-- Partial-failure warning: some accounts failed to load (rate limit,
            network, bad PAT). Shown above the list so a missing PR reads as
            "some accounts failed, try refresh" rather than "no PRs". -->
-      <div
-        v-if="store.warnings.length > 0"
-        class="mb-4 flex items-start gap-2.5 rounded-lg border border-warning/25 bg-warning/10 p-3 text-xs text-warning"
-      >
-        <AlertTriangle class="h-4 w-4 shrink-0 mt-px" :stroke-width="2" />
-        <div class="min-w-0 flex-1">
-          <p class="font-medium">{{ t('prInbox.partialFailTitle', store.warnings.length) }}</p>
-          <p class="mt-0.5 text-warning/80">
-            {{ store.warnings.map(w => w.account_label).join(', ') }} — {{ t('prInbox.partialFailBody') }}
-          </p>
-        </div>
-        <Button variant="ghost" size="xs" :disabled="store.loading || bulk !== null" @click="store.refresh()">
-          <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
-          {{ t('common.refresh') }}
-        </Button>
-      </div>
+      <Banner v-if="store.warnings.length > 0" tone="warning" class="mb-4">
+        <p class="font-medium text-warning">{{ t('prInbox.partialFailTitle', store.warnings.length) }}</p>
+        <p class="mt-0.5 text-muted-foreground">
+          {{ store.warnings.map(w => w.account_label).join(', ') }} — {{ t('prInbox.partialFailBody') }}
+        </p>
+        <template #actions>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :disabled="store.loading || bulk !== null"
+            :title="t('common.refresh')"
+            :aria-label="t('common.refresh')"
+            @click="store.refresh()"
+          >
+            <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
+          </Button>
+        </template>
+      </Banner>
 
       <!-- Loading skeleton — mirrors the PR card layout so the wait reads as
            "content incoming". Rows cascade in with a small stagger. -->
@@ -539,9 +541,9 @@ async function reviewAll(group: PrGroup) {
       </div>
 
       <!-- Error -->
-      <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
+      <Banner v-else-if="store.error" tone="destructive">
         {{ store.error }}
-      </div>
+      </Banner>
 
       <!-- Empty state -->
       <div v-else-if="store.items.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">

@@ -7,9 +7,9 @@
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertTriangle, CheckCircle2, CloudCog, Loader2, LogIn, Pencil, Plus, ShieldAlert, Trash2,
+  CloudCog, Loader2, LogIn, Pencil, Plus, ShieldAlert, Trash2,
 } from 'lucide-vue-next'
-import { AppSelect, Button, Card, Input } from '@/components/ui'
+import { AppSelect, Banner, Button, Card, Input } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import {
@@ -214,12 +214,11 @@ onMounted(() => {
       {{ t('settings.azure.intro') }}
     </p>
 
-    <div class="p-2.5 bg-warning/10 border border-warning/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-      <ShieldAlert class="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" :stroke-width="1.75" />
+    <Banner :icon="ShieldAlert" class="leading-relaxed">
       <span class="text-muted-foreground">
         {{ t('settings.azure.isolationWarning') }}
       </span>
-    </div>
+    </Banner>
 
     <p v-if="store.error" class="text-[11px] text-destructive">{{ store.error }}</p>
 
@@ -289,14 +288,11 @@ onMounted(() => {
               </Button>
             </div>
           </div>
-          <div
+          <Banner
             v-if="validations[acc.id]"
-            class="p-2 bg-success/10 border border-success/20 rounded-md text-[11px]"
+            tone="success"
           >
-            <div class="flex items-center gap-1.5 text-success font-medium">
-              <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-              {{ t('settings.azure.valid') }}
-            </div>
+            <div class="font-medium text-success">{{ t('settings.azure.valid') }}</div>
             <p class="text-muted-foreground mt-1 truncate">
               {{ validations[acc.id].subscription_name }}
               <span class="font-mono"> · {{ validations[acc.id].subscription_id }}</span>
@@ -305,15 +301,14 @@ onMounted(() => {
               {{ validations[acc.id].user_name }}
               <span class="font-mono"> · {{ validations[acc.id].tenant_id }}</span>
             </p>
-          </div>
-          <div
+          </Banner>
+          <Banner
             v-if="loggingIn[acc.id] || needsLogin(acc)"
-            class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
+            tone="warning"
+            :loading="loggingIn[acc.id]"
           >
-            <Loader2 v-if="loggingIn[acc.id]" class="h-3 w-3 shrink-0 mt-0.5 animate-spin" :stroke-width="1.75" />
-            <AlertTriangle v-else class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
-            <span>{{ loggingIn[acc.id] ? t('settings.azure.loggingIn') : t('settings.azure.loginExpired') }}</span>
-          </div>
+            {{ loggingIn[acc.id] ? t('settings.azure.loggingIn') : t('settings.azure.loginExpired') }}
+          </Banner>
         </template>
 
         <template v-else>
@@ -366,13 +361,9 @@ onMounted(() => {
       <Input v-model="newTenant" size="sm" :disabled="adding" :placeholder="t('settings.azure.tenantPlaceholder')" class="font-mono" />
       <Input v-model="newSubscription" size="sm" :disabled="adding" :placeholder="t('settings.azure.subscriptionPlaceholder')" class="font-mono" />
       <Input v-model="newTags" size="sm" :disabled="adding" :placeholder="t('settings.azure.tagsPlaceholder')" />
-      <div
-        v-if="adding"
-        class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
-      >
-        <Loader2 class="h-3 w-3 shrink-0 mt-0.5 animate-spin" :stroke-width="1.75" />
-        <span>{{ t('settings.azure.addWaiting') }}</span>
-      </div>
+      <Banner v-if="adding" tone="warning" loading>
+        {{ t('settings.azure.addWaiting') }}
+      </Banner>
       <div class="flex justify-end">
         <Button :disabled="!newLabel.trim() || adding" @click="handleAdd">
           <Loader2 v-if="adding" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />

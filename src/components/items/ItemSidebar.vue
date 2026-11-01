@@ -13,7 +13,6 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertCircle,
   CalendarDays,
   Check,
   ChevronDown,
@@ -28,7 +27,7 @@ import {
   Trash2,
   X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, Input, SegmentedControl } from '@/components/ui'
+import { AppSelect, Banner, Button, Input, SegmentedControl } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { formatDate, ymdToDate } from '@/lib/dateValue'
 import { dueStatus, localYmd } from '@/lib/todoDue'
@@ -219,22 +218,20 @@ const groups = computed(() => {
 
     <!-- Groups -->
     <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-      <div
-        v-if="error"
-        class="mb-2 flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[11px] text-foreground"
-      >
-        <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="2" />
-        <span class="min-w-0 flex-1 break-words">{{ error }}</span>
-        <button
-          type="button"
-          class="shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          :title="t('item.reload')"
-          :aria-label="t('item.reload')"
-          @click="emit('retry')"
-        >
-          <RotateCw class="h-3 w-3" :stroke-width="2" />
-        </button>
-      </div>
+      <Banner v-if="error" tone="destructive" class="mb-2">
+        {{ error }}
+        <template #actions>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :title="t('item.reload')"
+            :aria-label="t('item.reload')"
+            @click="emit('retry')"
+          >
+            <RotateCw class="h-3 w-3" :stroke-width="2" />
+          </Button>
+        </template>
+      </Banner>
       <div v-if="emptyStore && !error" class="px-3 py-8 text-center">
         <p class="text-xs text-muted-foreground">
           {{ kind === 'note' ? t('item.emptyNote') : t('item.emptyTodo') }}
@@ -266,15 +263,16 @@ const groups = computed(() => {
               {{ g.rows.length }}
             </span>
           </button>
-          <button
-            type="button"
-            class="mr-1 shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground opacity-0 transition-opacity hover:bg-destructive/15 hover:text-destructive focus-visible:opacity-100 group-hover/folder:opacity-100"
+          <Button
+            variant="destructive-ghost"
+            size="icon-xs"
+            class="mr-1 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/folder:opacity-100"
             :title="t('item.deleteFolder')"
             :aria-label="t('item.deleteFolder')"
             @click="emit('deleteGroup', g.key === NONE ? null : g.key, g.label)"
           >
             <Trash2 class="h-3 w-3" :stroke-width="1.75" />
-          </button>
+          </Button>
         </div>
 
         <ul v-if="!collapsed.has(g.key)" :class="rowListClass">

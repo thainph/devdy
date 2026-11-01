@@ -13,7 +13,7 @@ import {
   AlertCircle, Columns2, Download, Eye, FileText, FolderCheck, FolderOpen, LayoutTemplate,
   MoreHorizontal, Pencil, RefreshCw, Trash2, X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
+import { AppSelect, Banner, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import SkillEditor from '@/components/SkillEditor.vue'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -391,13 +391,14 @@ defineExpose({ dirty, save })
         />
       </div>
 
-      <div
+      <Banner
         v-if="validationError"
-        class="flex shrink-0 items-center gap-1.5 border-b border-warning/20 bg-warning/10 px-3 py-1.5 text-xs text-warning"
+        tone="warning"
+        :icon="AlertCircle"
+        class="shrink-0 rounded-none border-x-0 border-t-0 px-3 text-xs"
       >
-        <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-        <span class="min-w-0 truncate" :title="validationError">{{ validationError }}</span>
-      </div>
+        <p class="truncate" :title="validationError">{{ validationError }}</p>
+      </Banner>
 
       <div class="flex min-h-0 flex-1">
         <div

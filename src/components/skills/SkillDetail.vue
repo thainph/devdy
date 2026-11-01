@@ -14,7 +14,7 @@ import {
   AlertCircle, Columns2, Download, Eye, FileText, FolderCheck, FolderOpen, LayoutTemplate,
   MoreHorizontal, Pencil, RefreshCw, Trash2,
 } from 'lucide-vue-next'
-import { AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
+import { AppSelect, Badge, Banner, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
 import SkillEditor from '@/components/SkillEditor.vue'
@@ -414,13 +414,14 @@ defineExpose({ dirty, save })
         />
       </div>
 
-      <div
+      <Banner
         v-if="validation && activeFile === SKILL_MD"
-        class="flex shrink-0 items-center gap-1.5 border-b border-warning/20 bg-warning/10 px-3 py-1.5 text-xs text-warning"
+        tone="warning"
+        :icon="AlertCircle"
+        class="shrink-0 rounded-none border-x-0 border-t-0 px-3 text-xs"
       >
-        <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-        <span class="min-w-0 truncate" :title="validationText">{{ validationText }}</span>
-      </div>
+        <p class="truncate" :title="validationText">{{ validationText }}</p>
+      </Banner>
 
       <!-- SKILL.md: kept mounted while another file is shown so its undo history survives. -->
       <div v-show="activeFile === SKILL_MD" class="flex min-h-0 flex-1">

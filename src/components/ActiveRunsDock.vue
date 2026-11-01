@@ -231,11 +231,11 @@ function open(row: DockRow) {
       </span>
       <span
         v-if="waitingCount > 0"
-        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-white leading-none"
+        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none"
       >{{ waitingCount }}</span>
       <span
         v-else-if="doneCount > 0"
-        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-success px-1 text-[10px] font-medium text-white leading-none"
+        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-success px-1 text-[10px] font-medium text-success-foreground leading-none"
       >{{ doneCount }}</span>
     </div>
 

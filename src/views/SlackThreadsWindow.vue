@@ -31,8 +31,8 @@ import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { AlertCircle, RotateCw, Slack } from 'lucide-vue-next'
-import { Button, ConfirmModal, ToastHost } from '@/components/ui'
+import { RotateCw, Slack } from 'lucide-vue-next'
+import { Banner, Button, ConfirmModal, ToastHost } from '@/components/ui'
 import SlackSidebar from '@/components/slack/SlackSidebar.vue'
 import SlackThreadPane from '@/components/slack/SlackThreadPane.vue'
 import SlackAddDialog from '@/components/slack/SlackAddDialog.vue'
@@ -448,17 +448,19 @@ onBeforeUnmount(() => {
 <template>
   <div class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
     <!-- Reloading the open thread failed: its last good copy stays on screen. -->
-    <div
+    <Banner
       v-if="view && store.viewError"
-      class="flex shrink-0 items-center gap-2 border-b border-destructive/30 bg-destructive/10 px-4 py-1.5 text-xs text-foreground"
+      tone="destructive"
+      class="shrink-0 items-center rounded-none border-x-0 border-t-0 px-4 text-xs"
     >
-      <AlertCircle class="h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="2" />
-      <span class="min-w-0 flex-1 truncate" :title="store.viewError">{{ errorLine(store.viewError) }}</span>
-      <Button variant="outline" size="xs" @click="store.reloadView()">
-        <RotateCw class="h-3 w-3" :stroke-width="1.75" />
-        {{ t('slackThread.banner.retry') }}
-      </Button>
-    </div>
+      <p class="truncate" :title="store.viewError">{{ errorLine(store.viewError) }}</p>
+      <template #actions>
+        <Button variant="outline" size="xs" @click="store.reloadView()">
+          <RotateCw class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('slackThread.banner.retry') }}
+        </Button>
+      </template>
+    </Banner>
 
     <div class="flex min-h-0 flex-1">
       <SlackSidebar

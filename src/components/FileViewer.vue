@@ -1146,7 +1146,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       </span>
       <Button
         variant="ghost"
-        size="icon-sm"
+        size="icon-xs"
         class="shrink-0"
         :title="t('files.viewer.previousMatch')"
         :aria-label="t('files.viewer.previousMatch')"
@@ -1157,7 +1157,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       </Button>
       <Button
         variant="ghost"
-        size="icon-sm"
+        size="icon-xs"
         class="shrink-0"
         :title="t('files.viewer.nextMatch')"
         :aria-label="t('files.viewer.nextMatch')"
@@ -1168,7 +1168,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       </Button>
       <Button
         variant="ghost"
-        size="icon-sm"
+        size="icon-xs"
         class="shrink-0"
         :title="t('files.viewer.closeSearch')"
         :aria-label="t('files.viewer.closeSearch')"

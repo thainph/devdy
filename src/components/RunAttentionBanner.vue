@@ -6,7 +6,8 @@
 // can tell a long job from a stuck one — so this offers the stop action and
 // otherwise stays out of the way. Notices clear themselves when things move.
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, Square } from 'lucide-vue-next'
+import { Square } from 'lucide-vue-next'
+import { Banner } from '@/components/ui'
 import type { RunAttention } from '@/stores/liveRuns'
 
 defineProps<{ notices: RunAttention[] }>()
@@ -29,23 +30,20 @@ function text(n: RunAttention): string {
 </script>
 
 <template>
-  <div
-    v-if="notices.length"
-    class="mb-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-[11px] text-warning"
-    role="status"
-  >
-    <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-    <div class="min-w-0 flex-1 space-y-0.5">
+  <Banner v-if="notices.length" tone="warning" class="mb-2">
+    <div class="space-y-0.5">
       <p v-for="n in notices" :key="n.key">{{ text(n) }}</p>
     </div>
-    <button
-      type="button"
-      class="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 font-medium hover:bg-warning/20 cursor-pointer"
-      :title="t('run.cancelRunningTurn')"
-      @click="emit('stop')"
-    >
-      <Square class="h-3 w-3" :stroke-width="2" fill="currentColor" />
-      {{ t('run.attentionStop') }}
-    </button>
-  </div>
+    <template #actions>
+      <button
+        type="button"
+        class="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 font-medium text-warning hover:bg-warning/20 cursor-pointer"
+        :title="t('run.cancelRunningTurn')"
+        @click="emit('stop')"
+      >
+        <Square class="h-3 w-3" :stroke-width="2" fill="currentColor" />
+        {{ t('run.attentionStop') }}
+      </button>
+    </template>
+  </Banner>
 </template>

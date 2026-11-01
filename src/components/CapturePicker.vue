@@ -19,7 +19,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Check, Inbox, ListTodo, Search, Slack, StickyNote } from 'lucide-vue-next'
-import { DropdownMenu, SegmentedControl } from '@/components/ui'
+import { Button, DropdownMenu, SegmentedControl, type SegmentedOption } from '@/components/ui'
 import { linkReference, type LinkTarget } from '@/lib/sessionLinks'
 import SlackStatusIcon from '@/components/slack/SlackStatusIcon.vue'
 import { firstLine, relativeAge } from '@/lib/itemText'
@@ -87,7 +87,7 @@ const todos = useTodosStore()
 const open = ref(false)
 const query = ref('')
 const filter = ref<Filter>(loadFilter())
-const filterOptions = computed(() =>
+const filterOptions = computed<SegmentedOption<Filter>[]>(() =>
   FILTERS.map((f) => ({ value: f, label: t(`capture.picker.${f}`), icon: f === 'all' ? undefined : KIND_ICON[f] })),
 )
 /** Todos: open ones only unless this is on. */
@@ -298,14 +298,16 @@ onBeforeUnmount(() => {
 <template>
   <DropdownMenu align="left" class="shrink-0" @update:open="onOpenChange">
     <template #trigger>
-      <button
-        class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+      <Button
+        variant="ghost"
+        size="icon"
+        class="shrink-0"
         :disabled="disabled"
         :title="t('capture.picker.title')"
         :aria-label="t('capture.picker.title')"
       >
-        <Inbox class="h-4 w-4" :stroke-width="2" />
-      </button>
+        <Inbox class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </Button>
     </template>
 
     <div class="w-[22rem]">
