@@ -269,8 +269,8 @@ async function handleDelete(server: VpsServer) {
     >
       <template #toolbar>
         <Button
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="icon"
           class="shrink-0"
           :disabled="testingAll || store.items.length === 0"
           :title="t('servers.list.testAll')"

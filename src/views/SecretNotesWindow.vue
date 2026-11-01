@@ -621,8 +621,8 @@ onBeforeUnmount(() => {
 
       <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
         <div class="text-center">
-          <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-            <ShieldCheck class="h-5 w-5 text-muted-foreground" :stroke-width="1.5" />
+          <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+            <ShieldCheck class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
           </div>
           <p class="max-w-xs text-xs text-muted-foreground">{{ t('secretNotes.noSelection') }}</p>
         </div>

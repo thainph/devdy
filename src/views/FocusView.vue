@@ -11,7 +11,7 @@ import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { CalendarClock, ChevronDown, ChevronRight, Gauge, RefreshCw, Target, TriangleAlert } from 'lucide-vue-next'
 import { invoke } from '@/lib/tauri'
-import { AppSelect, Button, Card, Skeleton } from '@/components/ui'
+import { AppSelect, Banner, Button, Card, PageHeader, SegmentedControl, Skeleton } from '@/components/ui'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import FocusDialogs from '@/components/focus/FocusDialogs.vue'
 import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
@@ -56,6 +56,7 @@ const FILTER_KEY = 'devdy:focusFilter'
 const VIEWS: FocusViewMode[] = ['time', 'project', 'week']
 const view = ref<FocusViewMode>(VIEWS.find((v) => v === localStorage.getItem(VIEW_KEY)) ?? 'time')
 watch(view, (v) => localStorage.setItem(VIEW_KEY, v))
+const viewOptions = computed(() => VIEWS.map((v) => ({ value: v, label: t(`focus.views.${v}`) })))
 
 function readJson<T>(key: string, fallback: T): T {
   try {
@@ -195,36 +196,28 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex h-full flex-col">
-    <!-- Header -->
-    <div class="flex h-13 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-6">
-      <div class="flex min-w-0 items-center gap-2">
-        <h1 class="shrink-0 text-sm font-semibold">{{ t('focus.title') }}</h1>
-        <span
-          v-if="store.loaded && openCount > 0"
-          class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-        >
-          {{ openCount }}
-        </span>
+    <PageHeader :title="t('focus.title')" :count="store.loaded && openCount > 0 ? openCount : null">
+      <template #meta>
         <span v-if="calibration" class="flex min-w-0 items-center gap-1 truncate text-[11px] text-muted-foreground">
           <Gauge class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
           <span class="truncate">
             {{ calibration > 1 ? t('focus.calibration.slower', { factor: calibration }) : t('focus.calibration.faster', { factor: calibration }) }}
           </span>
         </span>
-      </div>
-      <div class="flex shrink-0 items-center gap-2">
+      </template>
+      <template #actions>
         <FocusDayPlan @open="openId = $event" />
         <AddTodoButton button-variant="primary" size="sm" />
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Today's load (BR-08) — only once the backend has Calendar data -->
     <div v-if="capacity" class="flex shrink-0 items-center gap-3 border-b border-border/60 px-6 py-2 text-xs">
       <span class="shrink-0">{{ t('focus.capacity.summary', { need: formatEstimate(capacity.need_min), free: formatEstimate(Math.max(0, capacity.free_min)) }) }}</span>
       <div class="h-1.5 min-w-24 flex-1 overflow-hidden rounded-full bg-muted">
-        <div class="h-full rounded-full" :class="overloadMin > 0 ? 'bg-red-500' : 'bg-emerald-500'" :style="{ width: `${capacityPct}%` }" />
+        <div class="h-full rounded-full" :class="overloadMin > 0 ? 'bg-destructive' : 'bg-success'" :style="{ width: `${capacityPct}%` }" />
       </div>
-      <span v-if="overloadMin > 0" class="flex shrink-0 items-center gap-1 font-medium text-red-600 dark:text-red-400">
+      <span v-if="overloadMin > 0" class="flex shrink-0 items-center gap-1 font-medium text-destructive">
         <TriangleAlert class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('focus.capacity.overloaded', { over: formatEstimate(overloadMin) }) }}
       </span>
@@ -264,20 +257,12 @@ onBeforeUnmount(() => {
 
     <!-- Toolbar: view switcher + filters -->
     <div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border/60 px-6 py-2">
-      <div class="flex h-7 overflow-hidden rounded-md border border-border" role="tablist" :aria-label="t('focus.views.label')">
-        <button
-          v-for="v in VIEWS"
-          :key="v"
-          type="button"
-          role="tab"
-          :aria-selected="view === v"
-          class="cursor-pointer px-3 text-xs transition-colors not-first:border-l not-first:border-border"
-          :class="view === v ? 'bg-accent font-medium text-foreground' : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'"
-          @click="view = v"
-        >
-          {{ t(`focus.views.${v}`) }}
-        </button>
-      </div>
+      <SegmentedControl
+        v-model="view"
+        :options="viewOptions"
+        :stretch="false"
+        :aria-label="t('focus.views.label')"
+      />
       <div class="ml-auto flex items-center gap-2">
         <div class="w-44">
           <AppSelect v-model="filter.projectId" :options="projectOptions" size="xs" variant="outline" />
@@ -296,10 +281,12 @@ onBeforeUnmount(() => {
 
     <!-- Error before anything loaded -->
     <div v-else-if="store.error && !store.loaded" class="p-6">
-      <Card class="border-destructive/30" body-class="flex items-center gap-3 p-4">
-        <p class="flex-1 text-sm text-destructive">{{ t('focus.loadError') }}: {{ store.error }}</p>
-        <Button variant="outline" size="sm" @click="store.load()">{{ t('focus.retry') }}</Button>
-      </Card>
+      <Banner tone="destructive" class="items-center px-4 py-3 text-sm">
+        {{ t('focus.loadError') }}: {{ store.error }}
+        <template #actions>
+          <Button variant="outline" size="sm" @click="store.load()">{{ t('focus.retry') }}</Button>
+        </template>
+      </Banner>
     </div>
 
     <!-- Empty -->
@@ -336,7 +323,7 @@ onBeforeUnmount(() => {
         <button
           type="button"
           class="flex w-full cursor-pointer items-center gap-1.5 rounded px-1 py-1 text-left text-xs font-semibold transition-colors hover:bg-accent/40"
-          :class="g.bucket === 'overdue' ? 'text-red-600 dark:text-red-400' : 'text-foreground'"
+          :class="g.bucket === 'overdue' ? 'text-destructive' : 'text-foreground'"
           :aria-expanded="openBuckets.has(g.bucket)"
           @click="toggleBucket(g.bucket)"
         >
@@ -364,7 +351,7 @@ onBeforeUnmount(() => {
           <span v-if="col.projectId" class="h-2.5 w-2.5 shrink-0 rounded-full" :style="chipStyle(col.projectId)" />
           <span class="min-w-0 flex-1 truncate text-xs font-semibold">{{ projectName(col.projectId) }}</span>
           <span class="shrink-0 text-[11px] tabular-nums text-muted-foreground">~{{ formatEstimate(col.estimateMin) }}</span>
-          <span v-if="col.overdue" class="shrink-0 text-[11px] font-medium text-red-600 dark:text-red-400">
+          <span v-if="col.overdue" class="shrink-0 text-[11px] font-medium text-destructive">
             {{ t('focus.columns.overdue', { n: col.overdue }) }}
           </span>
         </div>
@@ -392,7 +379,7 @@ onBeforeUnmount(() => {
           :key="col.date"
           class="flex min-w-0 flex-col rounded-lg border"
           :class="[
-            dayOverloaded(col.date) ? 'border-red-500/50 bg-red-500/5' : 'border-border/60 bg-muted/20',
+            dayOverloaded(col.date) ? 'border-destructive/50 bg-destructive/5' : 'border-border/60 bg-muted/20',
             col.date === today ? 'ring-1 ring-primary/40' : '',
           ]"
         >
@@ -402,7 +389,7 @@ onBeforeUnmount(() => {
               ~{{ formatEstimate(col.estimateMin) }}
             </span>
           </div>
-          <p v-if="dayOverloaded(col.date)" class="px-2 pt-1 text-[10px] font-medium text-red-600 dark:text-red-400">
+          <p v-if="dayOverloaded(col.date)" class="px-2 pt-1 text-[10px] font-medium text-destructive">
             {{ t('focus.week.overloaded') }} · {{ span(overloadMin) }}
           </p>
           <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-1.5">

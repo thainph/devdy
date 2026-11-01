@@ -205,7 +205,7 @@ function relativeTime(iso: string): string {
              signal worth the space. sr-only text so it isn't colour-only. -->
         <span
           class="shrink-0"
-          :class="stale ? 'text-amber-600 dark:text-amber-400' : 'hidden @[38rem]/list:inline text-muted-foreground/60'"
+          :class="stale ? 'text-warning' : 'hidden @[38rem]/list:inline text-muted-foreground/60'"
           :title="stale ? t('prInbox.staleTitle', { days: STALE_AFTER_DAYS }) : undefined"
         >
           {{ relativeTime(item.updated_at) }}
@@ -336,7 +336,7 @@ function relativeTime(iso: string): string {
         :aria-label="t('prInbox.moreActions')"
         @click="openMenuFromButton"
       >
-        <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
+        <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
       </Button>
     </div>
   </Card>

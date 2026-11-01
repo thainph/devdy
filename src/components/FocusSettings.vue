@@ -8,7 +8,7 @@
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Bell, CalendarClock, Gauge, Target } from 'lucide-vue-next'
-import { AppSelect, Button, Card, Input } from '@/components/ui'
+import { AppSelect, Button, Card, Input, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
 import { useFocusStore } from '@/stores/focus'
@@ -192,21 +192,13 @@ async function save() {
           </p>
           <p class="mt-0.5 text-[11px] leading-relaxed text-muted-foreground">{{ t('focus.settings.reminders.hint') }}</p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="form.notify_enabled"
-          :aria-label="t('focus.settings.reminders.title')"
+        <ToggleSwitch
+          size="md"
+          :checked="form.notify_enabled"
+          :label="t('focus.settings.reminders.title')"
           :disabled="loading"
-          class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-          :class="form.notify_enabled ? 'bg-primary' : 'bg-muted'"
-          @click="form.notify_enabled = !form.notify_enabled"
-        >
-          <span
-            class="inline-flex h-4 w-4 transform rounded-full bg-white shadow transition-transform"
-            :class="form.notify_enabled ? 'translate-x-6' : 'translate-x-1'"
-          />
-        </button>
+          @toggle="form.notify_enabled = !form.notify_enabled"
+        />
       </div>
       <div v-if="form.notify_enabled" class="space-y-2 pl-5">
         <div class="grid grid-cols-1 gap-1.5 sm:grid-cols-2">

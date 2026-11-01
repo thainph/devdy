@@ -132,11 +132,11 @@ watch(
     <template #trigger>
       <Button
         variant="outline"
-        size="xs"
+        size="sm"
         class="relative"
         :title="t('sessionLink.buttonTitle', links.length)"
       >
-        <Link2 class="h-3 w-3" :stroke-width="1.75" />
+        <Link2 class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('sessionLink.button') }}
         <span
           class="absolute -right-1 -top-1 flex h-3.5 min-w-[14px] items-center justify-center rounded-full px-0.5 text-[9px] font-semibold leading-none"

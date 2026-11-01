@@ -15,6 +15,7 @@
 import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, X } from 'lucide-vue-next'
+import { Banner, Button } from '@/components/ui'
 import type { ClaudeAccountToggle, ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
 
 const props = defineProps<{
@@ -102,15 +103,23 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
 
-    <div
+    <Banner
       v-if="error"
-      class="shrink-0 flex items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      tone="destructive"
+      class="shrink-0 gap-2 rounded-none border-x-0 border-t-0 px-3 py-2 text-xs"
     >
-      <span class="flex-1">{{ error }}</span>
-      <button class="shrink-0 cursor-pointer" :title="t('controller.data.dismiss')" @click="emit('clear-error')">
-        <X class="h-3.5 w-3.5" :stroke-width="2" />
-      </button>
-    </div>
+      {{ error }}
+      <template #actions>
+        <button
+          class="shrink-0 cursor-pointer text-destructive"
+          :title="t('controller.data.dismiss')"
+          :aria-label="t('controller.data.dismiss')"
+          @click="emit('clear-error')"
+        >
+          <X class="h-3.5 w-3.5" :stroke-width="2" />
+        </button>
+      </template>
+    </Banner>
 
     <main class="flex-1 min-h-0 overflow-auto px-3 py-3">
       <p v-if="!projects.length" class="py-10 text-center text-sm text-foreground/50">
@@ -119,12 +128,12 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
       <template v-else>
         <div v-if="!current && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
           {{ t('controller.data.loadFailed') }}
-          <button
-            class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
+          <Button
+            variant="outline"
             @click="projectId && emit('select', projectId)"
           >
             {{ t('controller.data.retry') }}
-          </button>
+          </Button>
         </div>
         <p v-else-if="!current" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
           <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
@@ -161,7 +170,7 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
                       : t('controller.projectToggles.enable', { name: t('controller.projectToggles.builtin') })
                   "
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                  :class="current.builtin_devdy.enabled ? 'bg-emerald-500' : 'bg-muted'"
+                  :class="current.builtin_devdy.enabled ? 'bg-success' : 'bg-muted'"
                   @click="emit('set', 'builtin_mcp', null, !current.builtin_devdy.enabled)"
                 >
                   <span
@@ -199,7 +208,7 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
                       : t('controller.projectToggles.enable', { name: item.name })
                   "
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                  :class="item.enabled ? 'bg-emerald-500' : 'bg-muted'"
+                  :class="item.enabled ? 'bg-success' : 'bg-muted'"
                   @click="emit('set', s.kind, item.id, !item.enabled)"
                 >
                   <span

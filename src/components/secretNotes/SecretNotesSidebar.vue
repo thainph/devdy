@@ -21,7 +21,7 @@ import {
   Search,
   X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, Input } from '@/components/ui'
+import { AppSelect, Banner, Button, Input } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { formatFullDate } from '@/lib/slackThreadUtils'
 import type { SecretNoteMeta } from '@/lib/secretVault'
@@ -128,7 +128,7 @@ const groups = computed(() => {
         </div>
         <Button
           :variant="pinned ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :aria-pressed="pinned"
           :title="pinned ? t('item.unpin') : t('item.pin')"
@@ -139,7 +139,7 @@ const groups = computed(() => {
         </Button>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :title="t('secretNotes.lock')"
           :aria-label="t('secretNotes.lock')"
@@ -166,28 +166,23 @@ const groups = computed(() => {
     <!-- Groups -->
     <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
       <!-- Notes of another vault (backup import): merge with its password. -->
-      <form
-        v-if="legacyCount"
-        class="mb-2 space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5"
-        @submit.prevent="emit('merge')"
-      >
-        <p class="flex items-start gap-1.5 text-[11px] text-foreground">
-          <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" :stroke-width="2" />
-          <span class="min-w-0 flex-1 break-words">{{ t('secretNotes.merge.help', { n: legacyCount }) }}</span>
-        </p>
-        <div class="flex items-center gap-1.5">
-          <Input
-            v-model="mergePassword"
-            type="password"
-            autocomplete="off"
-            class="h-7"
-            :placeholder="t('secretNotes.merge.password')"
-          />
-          <Button type="submit" size="xs" class="shrink-0" :disabled="merging || !mergePassword">
-            <Loader2 v-if="merging" class="h-3 w-3 animate-spin" :stroke-width="1.75" />
-            {{ t('secretNotes.merge.button') }}
-          </Button>
-        </div>
+      <form v-if="legacyCount" class="mb-2" @submit.prevent="emit('merge')">
+        <Banner tone="warning" :icon="AlertCircle">
+          <p>{{ t('secretNotes.merge.help', { n: legacyCount }) }}</p>
+          <div class="mt-1.5 flex items-center gap-1.5">
+            <Input
+              v-model="mergePassword"
+              type="password"
+              autocomplete="off"
+              size="xs"
+              :placeholder="t('secretNotes.merge.password')"
+            />
+            <Button type="submit" size="xs" class="shrink-0" :disabled="merging || !mergePassword">
+              <Loader2 v-if="merging" class="h-3 w-3 animate-spin" :stroke-width="1.75" />
+              {{ t('secretNotes.merge.button') }}
+            </Button>
+          </div>
+        </Banner>
       </form>
       <p v-if="pendingCount" class="mb-2 px-1.5 text-[11px] text-muted-foreground">
         {{ t('secretNotes.pending', { n: pendingCount }) }}

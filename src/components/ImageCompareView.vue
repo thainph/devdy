@@ -6,6 +6,7 @@ import { ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ZoomIn, ZoomOut, ArrowLeftRight, X } from 'lucide-vue-next'
 import { convertFileSrc } from '@tauri-apps/api/core'
+import { Button } from '@/components/ui'
 
 const props = defineProps<{
   projectPath: string
@@ -117,7 +118,7 @@ function onDblClick() {
       <!-- Zoom controls (shared) -->
       <div class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
         <button
-          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          class="flex items-center justify-center h-7 w-7 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.zoomOut')"
           :disabled="zoom <= ZOOM_MIN"
           @click="zoomOut"
@@ -125,12 +126,12 @@ function onDblClick() {
           <ZoomOut class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>
         <button
-          class="px-1.5 h-6 text-[10px] tabular-nums text-foreground/60 hover:text-foreground border-x border-border select-none cursor-pointer min-w-[3rem]"
+          class="px-1.5 h-7 text-[10px] tabular-nums text-foreground/60 hover:text-foreground border-x border-border select-none cursor-pointer min-w-[3rem]"
           :title="t('files.viewer.resetZoom')"
           @click="resetZoom"
         >{{ Math.round(zoom * 100) }}%</button>
         <button
-          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          class="flex items-center justify-center h-7 w-7 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.zoomIn')"
           :disabled="zoom >= ZOOM_MAX"
           @click="zoomIn"
@@ -140,21 +141,27 @@ function onDblClick() {
       </div>
 
       <!-- Swap sides -->
-      <button
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('files.compare.swap')"
+        :aria-label="t('files.compare.swap')"
         @click="emit('swap')"
       >
         <ArrowLeftRight class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
+      </Button>
       <!-- Close -->
-      <button
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('common.close')"
+        :aria-label="t('common.close')"
         @click="emit('close')"
       >
-        <X class="h-4 w-4" :stroke-width="1.75" />
-      </button>
+        <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </Button>
     </div>
 
     <!-- Panes -->

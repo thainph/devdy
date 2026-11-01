@@ -10,9 +10,11 @@
  */
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2, Plus, X } from 'lucide-vue-next'
+import { Loader2, X } from 'lucide-vue-next'
+import { Banner, Button } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { noteDisplayTitle, noteListPreview } from '@/lib/remoteTodos'
+import FabButton from './FabButton.vue'
 import SearchField from './SearchField.vue'
 import type { NoteSummary, ProjectInfo } from '../protocol'
 
@@ -63,15 +65,23 @@ function previewOf(note: NoteSummary): string {
 <template>
   <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
 
-    <div
+    <Banner
       v-if="error"
-      class="shrink-0 flex items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-3 py-2 text-xs text-destructive"
+      tone="destructive"
+      class="shrink-0 gap-2 rounded-none border-x-0 border-t-0 px-3 py-2 text-xs"
     >
-      <span class="flex-1">{{ error }}</span>
-      <button class="shrink-0 cursor-pointer" :title="t('controller.data.dismiss')" @click="emit('clear-error')">
-        <X class="h-3.5 w-3.5" :stroke-width="2" />
-      </button>
-    </div>
+      {{ error }}
+      <template #actions>
+        <button
+          class="shrink-0 cursor-pointer text-destructive"
+          :title="t('controller.data.dismiss')"
+          :aria-label="t('controller.data.dismiss')"
+          @click="emit('clear-error')"
+        >
+          <X class="h-3.5 w-3.5" :stroke-width="2" />
+        </button>
+      </template>
+    </Banner>
 
     <SearchField
       v-model="search"
@@ -82,12 +92,12 @@ function previewOf(note: NoteSummary): string {
     <main class="flex-1 min-h-0 overflow-auto px-3 pt-3 pb-24">
       <div v-if="notes === null && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
         {{ t('controller.data.loadFailed') }}
-        <button
-          class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
+        <Button
+          variant="outline"
           @click="emit('filter', projectId, search)"
         >
           {{ t('controller.data.retry') }}
-        </button>
+        </Button>
       </div>
       <p v-else-if="notes === null" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
         <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
@@ -121,13 +131,9 @@ function previewOf(note: NoteSummary): string {
       </div>
     </main>
 
-    <button
-      class="absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer"
-      :title="t('controller.notes.add')"
-      :aria-label="t('controller.notes.add')"
+    <FabButton
+      :label="t('controller.notes.add')"
       @click="emit('new')"
-    >
-      <Plus class="h-6 w-6" :stroke-width="2.25" />
-    </button>
+    />
   </div>
 </template>

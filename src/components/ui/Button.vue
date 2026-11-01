@@ -26,6 +26,8 @@ const button = cva(
         md: 'h-9 gap-2 px-4 text-sm',
         icon: 'h-8 w-8',
         'icon-sm': 'h-7 w-7',
+        /** Dense spots only (banner retry, chip ×, folder-header actions inside a h-8 bar). */
+        'icon-xs': 'h-6 w-6 rounded',
         'icon-lg': 'h-9 w-9',
       },
     },

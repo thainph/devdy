@@ -30,6 +30,7 @@ import { ConfirmModal, ToastHost } from '@/components/ui'
 import ItemSidebar from '@/components/items/ItemSidebar.vue'
 import ItemHeader from '@/components/items/ItemHeader.vue'
 import ItemBody from '@/components/items/ItemBody.vue'
+import ItemFields from '@/components/items/ItemFields.vue'
 import { noteRow, todoRow, type ItemRow } from '@/components/items/itemRow'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -585,8 +586,6 @@ onBeforeUnmount(() => {
         @cancel-edit="cancelEdit"
         @save="bodyRef?.save()"
         @toggle-done="toggleDone(item.id)"
-        @set-project="setProject"
-        @set-due-date="setDueDate"
         @open-run="openRun"
         @unlink-run="unlinkRun"
         @link-run="linkRun"
@@ -594,6 +593,12 @@ onBeforeUnmount(() => {
         @copy-id="copyId"
         @make-secret="makeSecret"
         @delete="remove"
+      />
+      <ItemFields
+        :kind="kind"
+        :item="item"
+        @set-project="setProject"
+        @set-due-date="setDueDate"
       />
       <ItemBody
         ref="bodyRef"
@@ -606,10 +611,10 @@ onBeforeUnmount(() => {
     </section>
     <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
       <div class="text-center">
-        <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
+        <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
           <component
             :is="kind === 'note' ? StickyNote : ListTodo"
-            class="h-5 w-5 text-muted-foreground"
+            class="h-6 w-6 text-muted-foreground"
             :stroke-width="1.5"
           />
         </div>

@@ -11,7 +11,7 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Pin, PinOff } from 'lucide-vue-next'
 import { FILE_DELETED_EVENT, FILE_MOVED_EVENT } from '@/lib/fileEvents'
 import FileViewer from '@/components/FileViewer.vue'
-import { ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
+import { Button, ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
 import { openFileWindow } from '@/lib/fileWindow'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 
@@ -103,16 +103,18 @@ function closeWindow() {
     >
       <!-- Pin: keep this viewer above other apps even after it loses focus. -->
       <template #actions>
-        <button
-          class="flex items-center justify-center h-6 w-6 rounded-md transition-colors cursor-pointer shrink-0"
-          :class="pinned
-            ? 'bg-primary/15 text-primary hover:bg-primary/25'
-            : 'text-foreground/60 hover:text-foreground hover:bg-accent'"
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
+          :class="pinned && 'bg-primary/15 text-primary hover:bg-primary/25 hover:text-primary'"
           :title="pinned ? t('files.viewer.unpin') : t('files.viewer.pin')"
+          :aria-label="pinned ? t('files.viewer.unpin') : t('files.viewer.pin')"
+          :aria-pressed="pinned"
           @click="togglePin"
         >
           <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
+        </Button>
       </template>
     </FileViewer>
 

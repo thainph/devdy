@@ -8,13 +8,25 @@
 
 /** Horizontal/vertical padding + font per control size. */
 export const controlSize = {
-  /** Same height / font as Button `xs` (compact controls in a row of xs buttons). */
-  xs: 'h-7 px-2.5 py-1 text-[10px]',
+  /** Same font as Button `xs` (compact controls in a row of xs buttons). */
+  xs: 'px-2.5 py-1 text-[10px]',
   sm: 'px-3 py-1.5 text-xs',
   md: 'px-3 py-2 text-sm',
 } as const
 
 export type ControlSize = keyof typeof controlSize
+
+/**
+ * Fixed height per control size — the same scale as Button (xs 28 / sm 32 /
+ * md 36px), so a search field, a select and a button sitting in one row line
+ * up exactly. Applied to single-line controls only (Input, AppSelect trigger,
+ * date-picker trigger) — never to Textarea or dropdown options.
+ */
+export const controlHeight = {
+  xs: 'h-7',
+  sm: 'h-8',
+  md: 'h-9',
+} as const
 
 /**
  * Base look for bordered text fields (Input, Textarea): background, border,

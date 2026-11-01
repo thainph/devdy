@@ -3,7 +3,7 @@
 import { computed, useAttrs } from 'vue'
 import { cva, type VariantProps } from 'class-variance-authority'
 import { cn } from '@/lib/utils'
-import { controlSize, fieldBase } from './controlStyles'
+import { controlHeight, controlSize, fieldBase } from './controlStyles'
 
 defineOptions({ inheritAttrs: false })
 
@@ -27,7 +27,9 @@ const props = withDefaults(defineProps<{
 const emit = defineEmits<{ 'update:modelValue': [value: string] }>()
 
 const attrs = useAttrs()
-const classes = computed(() => cn(input({ size: props.size }), attrs.class as string | undefined))
+const classes = computed(() =>
+  cn(input({ size: props.size }), controlHeight[props.size ?? 'sm'], attrs.class as string | undefined),
+)
 </script>
 
 <template>

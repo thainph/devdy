@@ -2,7 +2,7 @@
 import { onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Globe } from 'lucide-vue-next'
-import { Badge } from '@/components/ui'
+import { Badge, PageHeader } from '@/components/ui'
 import { getVersion } from '@tauri-apps/api/app'
 
 const { t } = useI18n()
@@ -20,9 +20,7 @@ onMounted(async () => {
 
 <template>
   <div class="flex flex-col h-full">
-    <div class="flex items-center px-6 h-13 border-b border-border/60 shrink-0">
-      <h1 class="text-sm font-semibold">{{ t('about.title') }}</h1>
-    </div>
+    <PageHeader :title="t('about.title')" />
 
     <div class="flex-1 flex items-center justify-center p-6">
       <div class="flex flex-col items-center text-center max-w-xs">

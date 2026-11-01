@@ -21,7 +21,7 @@ import {
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Settings,
   Rocket, ShieldCheck, Loader2, KanbanSquare, ExternalLink, UserCircle
 } from 'lucide-vue-next'
-import { Button, Input, Card, Badge, AppSelect } from '@/components/ui'
+import { Button, Input, Card, Badge, AppSelect, ToggleSwitch, PageHeader, Banner } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
 import ProjectGroupToggles from '@/components/ProjectGroupToggles.vue'
 import ProjectAccountsList, { type AccountRow } from '@/components/ProjectAccountsList.vue'
@@ -831,18 +831,19 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2 min-w-0">
+    <PageHeader :title="project?.name ?? t('projectDetail.projectFallback')" truncate>
+      <template #leading>
         <BackToRunButton />
         <span class="text-muted-foreground/40">/</span>
-        <h1 class="text-sm font-semibold truncate">{{ project?.name ?? t('projectDetail.projectFallback') }}</h1>
+      </template>
+      <template #meta>
         <span
           v-if="project"
           class="text-[11px] text-muted-foreground font-mono truncate hidden md:inline"
           :title="project.path"
         >{{ project.path }}</span>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <div v-if="!project" class="flex-1 flex items-center justify-center text-muted-foreground text-sm">
       {{ t('projectDetail.projectNotFound') }}
@@ -867,8 +868,8 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
           v-if="totalConflicts > 0"
           class="w-full flex items-center gap-2.5 px-2.5 py-2 mb-0.5 text-xs rounded-md transition-colors cursor-pointer text-left"
           :class="activeTab === 'conflicts'
-            ? 'bg-amber-500/15 text-amber-600 dark:text-amber-400 font-medium'
-            : 'text-amber-500 hover:bg-amber-500/10'"
+            ? 'bg-warning/15 text-warning font-medium'
+            : 'text-warning hover:bg-warning/10'"
           @click="activeTab = 'conflicts'"
         >
           <GitMerge class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
@@ -880,26 +881,24 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
       <!-- Active section panel -->
       <div class="flex-1 overflow-auto min-w-0">
         <!-- Conflict banner -->
-        <div
+        <Banner
           v-if="totalConflicts > 0 && activeTab !== 'conflicts'"
-          class="flex items-center justify-between gap-3 mx-6 mt-4 px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-lg"
+          tone="warning"
+          class="mx-6 mt-4"
         >
-          <div class="flex items-center gap-2.5">
-            <AlertTriangle class="h-4 w-4 text-amber-500 shrink-0" :stroke-width="1.75" />
-            <div>
-              <p class="text-xs font-medium text-amber-600 dark:text-amber-400">{{ t('projectDetail.conflictBannerTitle') }}</p>
-              <p class="text-[10px] text-amber-500/80 mt-0.5">
-                {{ t('projectDetail.conflictBannerBody', { count: totalConflicts }) }}
-              </p>
-            </div>
-          </div>
-          <button
-            class="text-xs font-medium text-amber-600 dark:text-amber-400 hover:underline cursor-pointer shrink-0"
-            @click="activeTab = 'conflicts'"
-          >
-            {{ t('projectDetail.resolve') }}
-          </button>
-        </div>
+          <p class="text-xs font-medium text-warning">{{ t('projectDetail.conflictBannerTitle') }}</p>
+          <p class="mt-0.5 text-muted-foreground">
+            {{ t('projectDetail.conflictBannerBody', { count: totalConflicts }) }}
+          </p>
+          <template #actions>
+            <button
+              class="text-xs font-medium text-warning hover:underline cursor-pointer"
+              @click="activeTab = 'conflicts'"
+            >
+              {{ t('projectDetail.resolve') }}
+            </button>
+          </template>
+        </Banner>
 
         <div class="p-6">
 
@@ -968,7 +967,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                 <span class="font-mono text-muted-foreground truncate">
                   {{ newRepoProvider === 'gitlab' ? newRepoGitlabPath : `${newRepoOwner}/${newRepoRepo}` }}
                 </span>
-                <span v-if="isDuplicateRepo" class="flex items-center gap-1 text-amber-500 font-medium">
+                <span v-if="isDuplicateRepo" class="flex items-center gap-1 text-warning font-medium">
                   <AlertTriangle class="h-2.5 w-2.5" :stroke-width="2" />
                   {{ t('projectDetail.alreadyAdded') }}
                 </span>
@@ -1021,7 +1020,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                   :title="t('projectDetail.removeRepo')"
                   @click="handleRemoveRepo(repo.id)"
                 >
-                  <Trash2 class="h-3 w-3" :stroke-width="1.75" />
+                  <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                 </Button>
               </div>
             </div>
@@ -1038,20 +1037,14 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             @toggle="handleToggleGroup('skill', $event)"
             @reapply="handleReapplyGroup('skill', $event)"
           />
-          <div
-            v-if="instructionWarnings.length > 0"
-            class="px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-lg space-y-1.5"
-          >
-            <div class="flex items-center gap-2">
-              <AlertTriangle class="h-3.5 w-3.5 text-amber-500 shrink-0" :stroke-width="1.75" />
-              <p class="text-xs font-medium text-amber-600 dark:text-amber-400">{{ t('projectDetail.instructionWarningsTitle') }}</p>
-            </div>
+          <Banner v-if="instructionWarnings.length > 0" tone="warning">
+            <p class="font-medium text-warning">{{ t('projectDetail.instructionWarningsTitle') }}</p>
             <p
               v-for="(w, i) in instructionWarnings"
               :key="i"
-              class="text-[11px] text-amber-600/90 dark:text-amber-400/90 leading-relaxed"
+              class="mt-1 leading-relaxed"
             >{{ instructionWarningText(w) }}</p>
-          </div>
+          </Banner>
           <Card>
             <template #header>
               <Puzzle class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
@@ -1104,37 +1097,15 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                   <p v-if="skill.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ skill.description }}</p>
                 </div>
                 <!-- Controls the direct link; a skill a group provides stays applied either way. -->
-                <button
-                  type="button"
-                  role="switch"
-                  :aria-checked="skill.manual"
+                <ToggleSwitch
+                  :checked="skill.manual ? true : skill.from_group ? 'mixed' : false"
                   :disabled="togglingSkillId === skill.id"
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  :class="{
-                    'bg-primary': skill.manual,
-                    'bg-primary/40': !skill.manual && skill.from_group,
-                    'bg-muted': !skill.manual && !skill.from_group,
-                  }"
-                  :title="skill.manual
+                  :loading="togglingSkillId === skill.id"
+                  :label="skill.manual
                     ? t('projectDetail.disableForProject')
                     : skill.from_group ? t('groups.viaGroupHint') : t('projectDetail.enableForProject')"
-                  @click="handleToggleSkill(skill)"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-                    :class="{
-                      'translate-x-6': skill.manual,
-                      'translate-x-3.5': !skill.manual && skill.from_group,
-                      'translate-x-1': !skill.manual && !skill.from_group,
-                    }"
-                  >
-                    <Loader2
-                      v-if="togglingSkillId === skill.id"
-                      class="h-3 w-3 animate-spin text-primary"
-                      :stroke-width="2.5"
-                    />
-                  </span>
-                </button>
+                  @toggle="handleToggleSkill(skill)"
+                />
               </div>
             </div>
           </Card>
@@ -1149,20 +1120,14 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             @toggle="handleToggleGroup('rule', $event)"
             @reapply="handleReapplyGroup('rule', $event)"
           />
-          <div
-            v-if="instructionWarnings.length > 0"
-            class="px-4 py-3 bg-amber-500/10 border border-amber-500/20 rounded-lg space-y-1.5"
-          >
-            <div class="flex items-center gap-2">
-              <AlertTriangle class="h-3.5 w-3.5 text-amber-500 shrink-0" :stroke-width="1.75" />
-              <p class="text-xs font-medium text-amber-600 dark:text-amber-400">{{ t('projectDetail.instructionWarningsTitle') }}</p>
-            </div>
+          <Banner v-if="instructionWarnings.length > 0" tone="warning">
+            <p class="font-medium text-warning">{{ t('projectDetail.instructionWarningsTitle') }}</p>
             <p
               v-for="(w, i) in instructionWarnings"
               :key="i"
-              class="text-[11px] text-amber-600/90 dark:text-amber-400/90 leading-relaxed"
+              class="mt-1 leading-relaxed"
             >{{ instructionWarningText(w) }}</p>
-          </div>
+          </Banner>
           <Card>
             <template #header>
               <ScrollText class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
@@ -1215,37 +1180,15 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                   <p v-if="rule.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ rule.description }}</p>
                 </div>
                 <!-- Controls the direct link; a rule a group provides stays applied either way. -->
-                <button
-                  type="button"
-                  role="switch"
-                  :aria-checked="rule.manual"
+                <ToggleSwitch
+                  :checked="rule.manual ? true : rule.from_group ? 'mixed' : false"
                   :disabled="togglingRuleId === rule.id"
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  :class="{
-                    'bg-primary': rule.manual,
-                    'bg-primary/40': !rule.manual && rule.from_group,
-                    'bg-muted': !rule.manual && !rule.from_group,
-                  }"
-                  :title="rule.manual
+                  :loading="togglingRuleId === rule.id"
+                  :label="rule.manual
                     ? t('projectDetail.disableForProject')
                     : rule.from_group ? t('groups.viaGroupHint') : t('projectDetail.enableForProject')"
-                  @click="handleToggleRule(rule)"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-                    :class="{
-                      'translate-x-6': rule.manual,
-                      'translate-x-3.5': !rule.manual && rule.from_group,
-                      'translate-x-1': !rule.manual && !rule.from_group,
-                    }"
-                  >
-                    <Loader2
-                      v-if="togglingRuleId === rule.id"
-                      class="h-3 w-3 animate-spin text-primary"
-                      :stroke-width="2.5"
-                    />
-                  </span>
-                </button>
+                  @toggle="handleToggleRule(rule)"
+                />
               </div>
             </div>
           </Card>
@@ -1265,15 +1208,13 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             </template>
 
             <!-- Codex warning banner -->
-            <div
+            <Banner
               v-if="defaultIsCodex && mcpServers.some(s => s.transport === 'sse' && s.enabled_for_project)"
-              class="mx-4 mt-4 flex items-start gap-2 px-3 py-2 bg-amber-500/10 border border-amber-500/20 rounded-md"
+              tone="warning"
+              class="mx-4 mt-4 leading-relaxed"
             >
-              <AlertTriangle class="h-3.5 w-3.5 text-amber-500 mt-0.5 shrink-0" :stroke-width="1.75" />
-              <p class="text-[11px] text-amber-600 dark:text-amber-400 leading-relaxed">
-                {{ t('projectDetail.codexWarning') }}
-              </p>
-            </div>
+              {{ t('projectDetail.codexWarning') }}
+            </Banner>
 
             <!-- Built-in servers (on by default; off per project) -->
             <div v-if="!loadingMcp && builtinMcp.length" class="divide-y divide-border/50 border-b border-border/50">
@@ -1296,27 +1237,13 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                   </div>
                   <p class="text-[10px] text-muted-foreground truncate mt-0.5">mcp__{{ item.name }}__*</p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  :aria-checked="item.enabled_for_project"
+                <ToggleSwitch
+                  :checked="item.enabled_for_project"
                   :disabled="togglingBuiltin !== null"
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  :class="item.enabled_for_project ? 'bg-primary' : 'bg-muted'"
-                  :title="item.enabled_for_project ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
-                  @click="handleToggleBuiltinMcp(item)"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-                    :class="item.enabled_for_project ? 'translate-x-6' : 'translate-x-1'"
-                  >
-                    <Loader2
-                      v-if="togglingBuiltin === item.name"
-                      class="h-3 w-3 animate-spin text-primary"
-                      :stroke-width="2.5"
-                    />
-                  </span>
-                </button>
+                  :loading="togglingBuiltin === item.name"
+                  :label="item.enabled_for_project ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
+                  @toggle="handleToggleBuiltinMcp(item)"
+                />
               </div>
             </div>
 
@@ -1363,27 +1290,13 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                   </div>
                   <p v-if="server.description" class="text-[10px] text-muted-foreground truncate mt-0.5">{{ server.description }}</p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  :aria-checked="server.enabled_for_project"
+                <ToggleSwitch
+                  :checked="server.enabled_for_project"
                   :disabled="savingMcp"
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  :class="server.enabled_for_project ? 'bg-primary' : 'bg-muted'"
-                  :title="server.enabled_for_project ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
-                  @click="handleToggleMcpServer(server)"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-                    :class="server.enabled_for_project ? 'translate-x-6' : 'translate-x-1'"
-                  >
-                    <Loader2
-                      v-if="togglingMcpId === server.id"
-                      class="h-3 w-3 animate-spin text-primary"
-                      :stroke-width="2.5"
-                    />
-                  </span>
-                </button>
+                  :loading="togglingMcpId === server.id"
+                  :label="server.enabled_for_project ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
+                  @toggle="handleToggleMcpServer(server)"
+                />
               </div>
             </div>
           </Card>
@@ -1445,27 +1358,13 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                     {{ server.username }}@{{ server.host }}:{{ server.port }}
                   </p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  :aria-checked="enabledServerIds.has(server.id)"
+                <ToggleSwitch
+                  :checked="enabledServerIds.has(server.id)"
                   :disabled="togglingServerId !== null"
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-                  :class="enabledServerIds.has(server.id) ? 'bg-primary' : 'bg-muted'"
-                  :title="enabledServerIds.has(server.id) ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
-                  @click="handleToggleDeployServer(server)"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-                    :class="enabledServerIds.has(server.id) ? 'translate-x-6' : 'translate-x-1'"
-                  >
-                    <Loader2
-                      v-if="togglingServerId === server.id"
-                      class="h-3 w-3 animate-spin text-primary"
-                      :stroke-width="2.5"
-                    />
-                  </span>
-                </button>
+                  :loading="togglingServerId === server.id"
+                  :label="enabledServerIds.has(server.id) ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
+                  @toggle="handleToggleDeployServer(server)"
+                />
               </div>
             </div>
           </Card>
@@ -1496,9 +1395,9 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
               <code class="text-primary">read:project</code>{{ t('projectDetail.boardIntroScope') }}
             </p>
 
-            <div v-if="!linkedAccount" class="text-[11px] text-amber-500 bg-amber-500/10 border border-amber-500/20 rounded p-2.5">
+            <Banner v-if="!linkedAccount" tone="warning">
               {{ t('projectDetail.linkGithubFirst', { tab: t('projectDetail.githubTab') }) }}
-            </div>
+            </Banner>
 
             <template v-else>
               <div class="space-y-1.5">
@@ -1519,9 +1418,9 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
                 </div>
               </div>
 
-              <div v-if="boardError" class="text-[11px] text-destructive bg-destructive/10 border border-destructive/20 rounded p-2.5">
+              <Banner v-if="boardError" tone="destructive">
                 {{ boardError }}
-              </div>
+              </Banner>
 
               <div v-if="boardInfo" class="space-y-3">
                 <div class="text-[11px] text-muted-foreground">
@@ -1654,7 +1553,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             <!-- Allow always -->
             <div class="px-4 py-3">
               <div class="flex items-center gap-2 mb-2">
-                <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
+                <CheckCircle2 class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
                 <span class="text-[11px] font-semibold">{{ t('projectDetail.allowAlways') }}</span>
                 <span class="text-[10px] text-muted-foreground tabular-nums">{{ allowTools.length }}</span>
               </div>
@@ -1678,7 +1577,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             <!-- Deny always -->
             <div class="px-4 py-3">
               <div class="flex items-center gap-2 mb-2">
-                <XCircle class="h-3.5 w-3.5 text-red-500" :stroke-width="1.75" />
+                <XCircle class="h-3.5 w-3.5 text-destructive" :stroke-width="1.75" />
                 <span class="text-[11px] font-semibold">{{ t('projectDetail.denyAlways') }}</span>
                 <span class="text-[10px] text-muted-foreground tabular-nums">{{ denyTools.length }}</span>
               </div>
@@ -1707,11 +1606,11 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
           <Card
             v-for="conflict in projectConflicts"
             :key="conflict.id"
-            class="border-amber-500/20"
+            class="border-warning/20"
             bodyClass="p-4"
           >
             <div class="flex items-start gap-3 mb-3">
-              <GitMerge class="h-4 w-4 text-amber-500 mt-0.5 shrink-0" :stroke-width="1.75" />
+              <GitMerge class="h-4 w-4 text-warning mt-0.5 shrink-0" :stroke-width="1.75" />
               <div>
                 <div class="flex items-center gap-1.5">
                   <p class="text-sm font-mono font-medium">{{ conflict.skill_name }}</p>
@@ -1745,11 +1644,11 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
           <Card
             v-for="conflict in projectRuleConflicts"
             :key="conflict.id"
-            class="border-amber-500/20"
+            class="border-warning/20"
             bodyClass="p-4"
           >
             <div class="flex items-start gap-3 mb-3">
-              <GitMerge class="h-4 w-4 text-amber-500 mt-0.5 shrink-0" :stroke-width="1.75" />
+              <GitMerge class="h-4 w-4 text-warning mt-0.5 shrink-0" :stroke-width="1.75" />
               <div>
                 <div class="flex items-center gap-1.5">
                   <p class="text-sm font-mono font-medium">{{ conflict.rule_name }}</p>

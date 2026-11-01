@@ -7,7 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { Check, Copy, MoreHorizontal, Plus, Trash2 } from 'lucide-vue-next'
 import { Button, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
 
-defineProps<{
+withDefaults(defineProps<{
   /** "New session from this thread / note / todo". */
   newSessionLabel: string
   /** Its tooltip; with no project, the "pick a project first" hint instead. */
@@ -16,7 +16,9 @@ defineProps<{
   canNewSession: boolean
   /** Copy ID just fired: its icon becomes a tick. */
   copiedId: boolean
-}>()
+  /** false when the host already shows Copy ID as its own button. */
+  showCopyId?: boolean
+}>(), { showCopyId: true })
 
 const emit = defineEmits<{ newSession: []; copyId: []; delete: [] }>()
 
@@ -28,7 +30,7 @@ const { t } = useI18n()
     <template #trigger>
       <Button
         variant="outline"
-        size="icon-sm"
+        size="icon"
         :title="t('item.moreActions')"
         :aria-label="t('item.moreActions')"
       >
@@ -40,7 +42,7 @@ const { t } = useI18n()
       {{ newSessionLabel }}
     </DropdownItem>
     <!-- Label stays put: the tick and the toast carry the feedback. -->
-    <DropdownItem @click="emit('copyId')">
+    <DropdownItem v-if="showCopyId" @click="emit('copyId')">
       <component :is="copiedId ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
       {{ t('item.copyId') }}
     </DropdownItem>

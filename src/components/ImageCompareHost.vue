@@ -8,7 +8,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Images, X, Search } from 'lucide-vue-next'
-import { Modal } from '@/components/ui'
+import { Button, Modal } from '@/components/ui'
 import ImageCompareView from '@/components/ImageCompareView.vue'
 import { useImageCompareStore } from '@/stores/imageCompare'
 import { FILE_COMPARE_EVENT } from '@/lib/fileEvents'
@@ -80,19 +80,19 @@ const bannerVisible = computed(
       <span class="text-xs text-foreground/80">
         {{ t('files.compare.pendingBanner', { name: store.pendingName }) }}
       </span>
-      <button
-        class="flex items-center gap-1.5 h-7 px-2.5 rounded-md text-[11px] font-medium bg-primary/15 text-primary hover:bg-primary/25 transition-colors cursor-pointer shrink-0"
-        @click="store.openPicker()"
-      >
-        <Search class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('files.compare.chooseFromList') }}
-      </button>
-      <button
-        class="flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+      <Button variant="primary" size="xs" class="shrink-0" @click="store.openPicker()">
+        <Search class="h-3 w-3" :stroke-width="2" /> {{ t('files.compare.chooseFromList') }}
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('common.cancel')"
+        :aria-label="t('common.cancel')"
         @click="store.cancelPending()"
       >
-        <X class="h-4 w-4" :stroke-width="1.75" />
-      </button>
+        <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </Button>
     </div>
   </Transition>
 

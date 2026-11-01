@@ -127,13 +127,13 @@ const rows = computed<Row[]>(() => {
 const show = computed(() => rows.value.some((r) => r.hasPlan))
 
 const FILL: Record<Row['tone'], string> = {
-  over: 'bg-red-500',
-  warning: 'bg-amber-500',
-  ok: 'bg-indigo-500',
+  over: 'bg-destructive',
+  warning: 'bg-warning',
+  ok: 'bg-info',
 }
 const TEXT: Record<Row['tone'], string> = {
-  over: 'text-red-500',
-  warning: 'text-amber-500',
+  over: 'text-destructive',
+  warning: 'text-warning',
   ok: 'text-foreground',
 }
 </script>
@@ -152,7 +152,7 @@ const TEXT: Record<Row['tone'], string> = {
            never competes with the warning/over tones. -->
       <Dot
         class="h-3 w-3 shrink-0"
-        :class="r.active ? 'text-emerald-500' : 'text-transparent'"
+        :class="r.active ? 'text-success' : 'text-transparent'"
         :stroke-width="6"
       />
       <span

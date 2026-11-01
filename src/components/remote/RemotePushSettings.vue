@@ -5,7 +5,7 @@
 // Inbox; here they can only be removed.
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Card } from '@/components/ui'
+import { Button, Card, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
 import { BellRing, Loader2, Send, Smartphone, Trash2 } from 'lucide-vue-next'
@@ -121,21 +121,13 @@ function fmtTime(ts: string | null): string {
             <p class="text-xs font-medium text-foreground">{{ t(`remote.push.kinds.${k}`) }}</p>
             <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t(`remote.push.kindHints.${k}`) }}</p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            :aria-checked="events[k]"
-            :aria-label="t(`remote.push.kinds.${k}`)"
+          <ToggleSwitch
+            size="md"
+            :checked="events[k]"
+            :label="t(`remote.push.kinds.${k}`)"
             :disabled="!loaded"
-            class="relative inline-flex h-6 w-11 shrink-0 cursor-pointer items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-            :class="events[k] ? 'bg-primary' : 'bg-muted'"
-            @click="toggleKind(k)"
-          >
-            <span
-              class="inline-flex h-4 w-4 transform rounded-full bg-white shadow transition-transform"
-              :class="events[k] ? 'translate-x-6' : 'translate-x-1'"
-            />
-          </button>
+            @toggle="toggleKind(k)"
+          />
         </div>
       </div>
 
@@ -154,23 +146,27 @@ function fmtTime(ts: string | null): string {
                 {{ t('remote.push.lastOk', { at: fmtTime(d.last_ok_at) }) }}
               </p>
             </div>
-            <button
-              class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
+            <Button
+              variant="ghost"
+              size="icon-sm"
               :title="t('remote.push.test')"
+              :aria-label="t('remote.push.test')"
               :disabled="busyId === d.id"
               @click="test(d)"
             >
               <Loader2 v-if="busyId === d.id" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
               <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
-            <button
-              class="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40"
+            </Button>
+            <Button
+              variant="destructive-ghost"
+              size="icon-sm"
               :title="t('remote.push.remove')"
+              :aria-label="t('remote.push.remove')"
               :disabled="busyId === d.id"
               @click="remove(d)"
             >
               <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
+            </Button>
           </li>
         </ul>
       </div>

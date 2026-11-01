@@ -5,7 +5,7 @@ import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
 import {
-  ChevronLeft, ChevronRight, Loader2, CalendarDays, AlertTriangle,
+  ChevronLeft, ChevronRight, Loader2, CalendarDays,
   ExternalLink, MapPin, Clock, CalendarRange, User, Timer,
   Video, Paperclip, AlignLeft, Settings2, Check, Languages, Bell, Moon,
   Plus, Pencil, Trash2, Pin, PinOff,
@@ -16,8 +16,8 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import { translateText } from '@/lib/translate'
-import { Button, Badge, Drawer, AppSelect, Modal } from '@/components/ui'
-import { useGoogleCalendarStore, type CalEvent } from '@/stores/googleCalendar'
+import { Button, Badge, Drawer, AppSelect, Modal, PageHeader, SegmentedControl, Banner } from '@/components/ui'
+import { useGoogleCalendarStore, type CalEvent, type ViewMode } from '@/stores/googleCalendar'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -93,6 +93,11 @@ const editorOpen = ref(false)
 const editorMode = ref<'create' | 'edit'>('create')
 const editorEvent = ref<CalEvent | null>(null)
 const editorDefaultStart = ref<Date | null>(null)
+
+const viewModeOptions = computed<{ value: ViewMode, label: string }[]>(() => [
+  { value: 'week', label: t('calendar.view.week') },
+  { value: 'month', label: t('calendar.view.month') },
+])
 
 const hasWritableCalendar = computed(() => store.writableCalendars.length > 0)
 
@@ -404,21 +409,13 @@ function openForAccount(url: string) {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header: title + current range (left), settings popover (right) -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0 gap-3">
-      <div class="flex items-center gap-2 min-w-0">
-        <h1 class="text-sm font-semibold shrink-0">{{ t('calendar.title') }}</h1>
-        <span
-          v-if="store.accounts.length"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground shrink-0"
-        >
-          {{ visibleCount }}
-        </span>
+    <PageHeader :title="t('calendar.title')" :count="store.accounts.length ? visibleCount : null">
+      <template #meta>
         <span v-if="store.accounts.length" class="text-sm font-medium text-foreground truncate">
           {{ rangeLabel }}
         </span>
-      </div>
-
-      <div class="flex items-center gap-2 shrink-0">
+      </template>
+      <template #actions>
         <Loader2 v-if="store.loading" class="h-4 w-4 animate-spin text-muted-foreground" />
 
         <!-- Create event -->
@@ -428,14 +425,14 @@ function openForAccount(url: string) {
           size="sm"
           @click="openCreate()"
         >
-          <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ t('calendar.createEvent') }}
+          <Plus class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('calendar.createEvent') }}
         </Button>
 
         <!-- Standalone window: pin on top (same control as the PR Inbox window) -->
         <Button
           v-if="floating"
           :variant="floating.pinned.value ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           :aria-pressed="floating.pinned.value"
           :title="floating.pinned.value ? t('item.unpin') : t('item.pin')"
           :aria-label="floating.pinned.value ? t('item.unpin') : t('item.pin')"
@@ -447,14 +444,14 @@ function openForAccount(url: string) {
         <!-- Settings popover -->
         <div v-if="store.accounts.length" ref="settingsWrap" class="relative">
           <Button
-            variant="ghost"
-            size="icon-sm"
+            variant="outline"
+            size="icon"
             :aria-label="t('calendar.view.displayOptions')"
             :title="t('calendar.view.displayOptions')"
             :class="settingsOpen ? 'bg-accent text-foreground' : ''"
             @click="settingsOpen = !settingsOpen"
           >
-            <Settings2 class="h-4 w-4" :stroke-width="1.75" />
+            <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
           </Button>
 
           <div
@@ -464,19 +461,12 @@ function openForAccount(url: string) {
             <!-- View mode -->
             <div class="mb-3">
               <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.viewLabel') }}</div>
-              <div class="flex items-center rounded-lg border border-border/60 p-0.5 bg-muted/30" role="group" :aria-label="t('calendar.view.viewMode')">
-                <button
-                  v-for="opt in [{ v: 'week', l: t('calendar.view.week') }, { v: 'month', l: t('calendar.view.month') }]"
-                  :key="opt.v"
-                  type="button"
-                  class="flex-1 px-3 py-1 text-xs font-medium rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-                  :class="store.viewMode === opt.v
-                    ? 'bg-background text-foreground shadow-sm'
-                    : 'text-muted-foreground hover:text-foreground'"
-                  :aria-pressed="store.viewMode === opt.v"
-                  @click="store.setViewMode(opt.v as any)"
-                >{{ opt.l }}</button>
-              </div>
+              <SegmentedControl
+                :model-value="store.viewMode"
+                :options="viewModeOptions"
+                :aria-label="t('calendar.view.viewMode')"
+                @update:model-value="store.setViewMode"
+              />
             </div>
 
             <!-- Lunar calendar -->
@@ -511,12 +501,12 @@ function openForAccount(url: string) {
             <div class="mb-3">
               <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('calendar.view.navigation') }}</div>
               <div class="flex items-center gap-1">
-                <Button variant="outline" size="icon-sm" :aria-label="t('calendar.view.previous')" :title="t('calendar.view.previous')" @click="store.step(-1)">
-                  <ChevronLeft class="h-4 w-4" :stroke-width="1.75" />
+                <Button variant="outline" size="icon" :aria-label="t('calendar.view.previous')" :title="t('calendar.view.previous')" @click="store.step(-1)">
+                  <ChevronLeft class="h-3.5 w-3.5" :stroke-width="1.75" />
                 </Button>
                 <Button variant="outline" size="sm" class="flex-1" @click="store.today()">{{ t('calendar.view.today') }}</Button>
-                <Button variant="outline" size="icon-sm" :aria-label="t('calendar.view.next')" :title="t('calendar.view.next')" @click="store.step(1)">
-                  <ChevronRight class="h-4 w-4" :stroke-width="1.75" />
+                <Button variant="outline" size="icon" :aria-label="t('calendar.view.next')" :title="t('calendar.view.next')" @click="store.step(1)">
+                  <ChevronRight class="h-3.5 w-3.5" :stroke-width="1.75" />
                 </Button>
               </div>
             </div>
@@ -621,16 +611,15 @@ function openForAccount(url: string) {
             </div>
           </div>
         </div>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Warnings: accounts missing calendar WRITE scope / per-account fetch errors -->
     <div
       v-if="store.accountsMissingWrite.length || store.errors.length"
-      class="flex items-start gap-2 px-6 py-2 border-b border-border/60 bg-amber-500/10 text-xs text-amber-600 dark:text-amber-400 shrink-0"
+      class="px-6 py-2 border-b border-border/60 shrink-0"
     >
-      <AlertTriangle class="h-4 w-4 shrink-0 mt-0.5" :stroke-width="1.75" />
-      <div class="flex-1">
+      <Banner tone="warning">
         <template v-if="store.accountsMissingWrite.length">
           {{ t('calendar.missingWriteWarning') }}
           <b>{{ store.accountsMissingWrite.map(a => a.label).join(', ') }}</b>.
@@ -639,8 +628,10 @@ function openForAccount(url: string) {
         <template v-for="err in store.errors" :key="err.account_id">
           <div>{{ err.account_label }}: {{ err.message }}</div>
         </template>
-      </div>
-      <Button variant="outline" size="xs" @click="goSettings">{{ t('calendar.reconnect') }}</Button>
+        <template #actions>
+          <Button variant="outline" size="xs" @click="goSettings">{{ t('calendar.reconnect') }}</Button>
+        </template>
+      </Banner>
     </div>
 
     <!-- Empty state -->
@@ -650,7 +641,7 @@ function openForAccount(url: string) {
     >
       <CalendarDays class="h-10 w-10 opacity-40" :stroke-width="1.5" />
       <p class="text-sm">{{ t('calendar.noAccount') }}</p>
-      <Button variant="outline" size="sm" @click="goSettings">{{ t('calendar.connectInSettings') }}</Button>
+      <Button size="sm" @click="goSettings">{{ t('calendar.connectInSettings') }}</Button>
     </div>
 
     <!-- Grid -->
@@ -709,7 +700,7 @@ function openForAccount(url: string) {
         <!-- Google Meet (prominent) -->
         <div v-if="selected.meet_link" class="px-3 pt-3">
           <Button variant="primary" size="sm" class="w-full" @click="openForAccount(selected.meet_link)">
-            <Video class="h-4 w-4" :stroke-width="1.75" />
+            <Video class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t('calendar.view.joinMeet') }}
           </Button>
         </div>
@@ -830,10 +821,10 @@ function openForAccount(url: string) {
         <div class="flex w-full flex-col gap-2">
           <div v-if="canEditSelected" class="flex gap-2">
             <Button variant="outline" size="sm" class="flex-1" @click="openEdit">
-              <Pencil class="h-4 w-4" :stroke-width="1.75" /> {{ t('common.edit') }}
+              <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('common.edit') }}
             </Button>
             <Button variant="destructive" size="sm" class="flex-1" @click="confirmDelete">
-              <Trash2 class="h-4 w-4" :stroke-width="1.75" /> {{ t('common.delete') }}
+              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('common.delete') }}
             </Button>
           </div>
           <Button
@@ -843,7 +834,7 @@ function openForAccount(url: string) {
             class="w-full"
             @click="openForAccount(selected.html_link)"
           >
-            <ExternalLink class="h-4 w-4" :stroke-width="1.75" />
+            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t('calendar.view.openInGoogleCalendar') }}
           </Button>
         </div>

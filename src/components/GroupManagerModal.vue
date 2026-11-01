@@ -192,7 +192,7 @@ const emptyItemsLabel = computed(() => t(props.kind === 'skill' ? 'groups.noItem
             class="flex-1 min-w-0"
             @keydown.enter="handleCreate"
           />
-          <Button variant="outline" size="icon-sm" :disabled="creating || !creatingName.trim()" :title="t('groups.newGroup')" @click="handleCreate">
+          <Button variant="outline" size="icon" :disabled="creating || !creatingName.trim()" :title="t('groups.newGroup')" :aria-label="t('groups.newGroup')" @click="handleCreate">
             <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           </Button>
         </div>
@@ -302,7 +302,7 @@ const emptyItemsLabel = computed(() => t(props.kind === 'skill' ? 'groups.noItem
           >
             <span
               class="flex h-4 w-4 shrink-0 items-center justify-center rounded border transition-colors"
-              :class="memberIds.includes(item.id) ? 'bg-primary border-primary text-white' : 'border-border'"
+              :class="memberIds.includes(item.id) ? 'bg-primary border-primary text-primary-foreground' : 'border-border'"
             >
               <Check v-if="memberIds.includes(item.id)" class="h-3 w-3" :stroke-width="3" />
             </span>

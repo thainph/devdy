@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // Body of the Notes / Todos window's detail pane: the item as it reads (its
 // markdown) or, while `editing`, its inline editor — a note's title + body, a
-// todo's text — plus the save itself. The project lives in the header.
+// todo's text — plus the save itself. The project (and a todo's deadline) live
+// in ItemFields above this body.
 //
 // ⌘/Ctrl+Enter saves, Esc cancels (both only inside the fields). The host
 // drives it through `editing` and the exposed `save()` / `reset()` / `focus()`.

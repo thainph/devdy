@@ -7,7 +7,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, Copy, Eye, EyeOff, Inbox, Loader2, RefreshCw } from 'lucide-vue-next'
-import { Button, Card } from '@/components/ui'
+import { Button, Card, ToggleSwitch } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useInboxApiStore, type InboxApiInfo } from '@/stores/inboxApi'
@@ -122,23 +122,13 @@ onMounted(load)
           <p class="text-sm font-medium text-foreground">{{ t('settings.inboxApi.enable') }}</p>
           <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('settings.inboxApi.enableHint') }}</p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="info.enabled"
-          :aria-label="t('settings.inboxApi.enable')"
-          :disabled="toggling"
-          class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-          :class="info.enabled ? 'bg-primary' : 'bg-muted'"
-          @click="toggleEnabled"
-        >
-          <span
-            class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-            :class="info.enabled ? 'translate-x-6' : 'translate-x-1'"
-          >
-            <Loader2 v-if="toggling" class="h-3 w-3 animate-spin text-primary" :stroke-width="2.5" />
-          </span>
-        </button>
+        <ToggleSwitch
+          size="md"
+          :checked="info.enabled"
+          :label="t('settings.inboxApi.enable')"
+          :loading="toggling"
+          @toggle="toggleEnabled"
+        />
       </div>
 
       <!-- Status -->
@@ -149,7 +139,7 @@ onMounted(load)
         <div class="flex items-center gap-2 text-xs">
           <span
             class="h-2 w-2 shrink-0 rounded-full"
-            :class="info.running ? 'bg-emerald-500' : info.enabled ? 'bg-red-500' : 'bg-muted-foreground/50'"
+            :class="info.running ? 'bg-success' : info.enabled ? 'bg-destructive' : 'bg-muted-foreground/50'"
           />
           <span>
             {{
@@ -160,14 +150,16 @@ onMounted(load)
                   : t('settings.inboxApi.disabled')
             }}
           </span>
-          <button
-            type="button"
-            class="ml-auto cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="ml-auto"
             :title="t('settings.inboxApi.refresh')"
+            :aria-label="t('settings.inboxApi.refresh')"
             @click="load"
           >
             <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -186,6 +178,7 @@ onMounted(load)
               size="icon-sm"
               :disabled="!info.baseUrl"
               :title="t('settings.inboxApi.copy')"
+              :aria-label="t('settings.inboxApi.copy')"
               @click="copy('url')"
             >
               <component :is="copied === 'url' ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -207,6 +200,7 @@ onMounted(load)
               size="icon-sm"
               :disabled="!info.token"
               :title="revealed ? t('settings.inboxApi.hide') : t('settings.inboxApi.reveal')"
+              :aria-label="revealed ? t('settings.inboxApi.hide') : t('settings.inboxApi.reveal')"
               @click="revealed = !revealed"
             >
               <component :is="revealed ? EyeOff : Eye" class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -216,6 +210,7 @@ onMounted(load)
               size="icon-sm"
               :disabled="!info.token"
               :title="t('settings.inboxApi.copy')"
+              :aria-label="t('settings.inboxApi.copy')"
               @click="copy('token')"
             >
               <component :is="copied === 'token' ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />

@@ -92,7 +92,7 @@ function set<K extends keyof TodoDraft>(key: K, value: TodoDraft[K]) {
             :title="t(`focus.priority.${p}`)"
             class="flex-1 cursor-pointer text-xs font-medium transition-colors not-first:border-l not-first:border-border"
             :class="draft.priority === p
-              ? p === 1 ? 'bg-red-600 text-white' : 'bg-primary text-primary-foreground'
+              ? p === 1 ? 'bg-destructive text-destructive-foreground' : 'bg-primary text-primary-foreground'
               : 'bg-background text-muted-foreground hover:bg-accent hover:text-foreground'"
             @click="set('priority', p)"
           >

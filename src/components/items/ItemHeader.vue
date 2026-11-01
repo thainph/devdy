@@ -3,20 +3,20 @@
 // SlackThreadHeader, same layout and controls:
 //
 //   note  title (click → inline rename) / updated · N characters
-//   todo  ☐ text's first line (click → edit) / created · from <session> · due
-//   right (todo) [📅 deadline ×] [Project ▾][Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy
-//         markdown · ⋯ (New session from this … · Copy ID · Delete)
+//   todo  text's first line (click → edit) / created · from <session> · due
+//   right [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy ID (not in ⋯) ·
+//         ⋯ (New session from this … · Copy ID · Delete)
+//
+// The project (and a todo's deadline) are edited in the body (ItemFields).
 //
 // While editing, the actions give way to Cancel · Save (⌘/Ctrl+Enter / Esc do
 // the same inside the fields). Narrow pane: the title gives way first, then the
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, LockKeyhole, Pencil, X } from 'lucide-vue-next'
-import { Button, DatePicker, DropdownItem } from '@/components/ui'
+import { Check, Copy, LockKeyhole, Pencil } from 'lucide-vue-next'
+import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
-import ProjectSelect from '@/components/ProjectSelect.vue'
-import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
 import DetailActionsMenu from '@/components/sessions/DetailActionsMenu.vue'
 import { useSessionText } from '@/composables/useSessionText'
@@ -50,8 +50,6 @@ const emit = defineEmits<{
   cancelEdit: []
   save: []
   toggleDone: []
-  setProject: [projectId: string | null]
-  setDueDate: [dueDate: string | null]
   openRun: [link: SessionLink]
   unlinkRun: [link: SessionLink]
   linkRun: [runId: string]
@@ -120,21 +118,6 @@ const newSessionLabel = computed(() =>
   <div class="flex shrink-0 items-center gap-3 border-b border-border/60 px-5 py-2.5">
     <div class="min-w-[6rem] flex-1">
       <div class="flex min-w-0 items-center gap-1.5">
-        <!-- Todo: its checkbox leads the line. -->
-        <button
-          v-if="todo"
-          type="button"
-          class="flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded-[5px] border transition-colors"
-          :class="todo.done
-            ? 'border-primary bg-primary text-primary-foreground'
-            : 'border-muted-foreground/40 hover:border-primary'"
-          :aria-pressed="todo.done"
-          :title="todo.done ? t('item.markNotDone') : t('item.markDone')"
-          :aria-label="todo.done ? t('item.markNotDone') : t('item.markDone')"
-          @click="emit('toggleDone')"
-        >
-          <Check v-if="todo.done" class="h-2.5 w-2.5" :stroke-width="3" />
-        </button>
         <InlineRenameInput
           v-if="renaming && note"
           class="w-full text-[15px] font-bold leading-snug"
@@ -159,7 +142,7 @@ const newSessionLabel = computed(() =>
           <span
             :class="{
               'font-medium text-destructive': due.status === 'overdue',
-              'font-medium text-amber-600 dark:text-amber-400': due.status === 'today' || due.status === 'soon',
+              'font-medium text-warning': due.status === 'today' || due.status === 'soon',
             }"
           >{{ due.label }}</span>
         </template>
@@ -167,35 +150,7 @@ const newSessionLabel = computed(() =>
     </div>
 
     <div class="flex min-w-0 items-center gap-1.5">
-      <!-- Todo: its deadline (× clears it). -->
-      <div v-if="todo" class="flex shrink-0 items-center">
-        <DatePicker
-          :model-value="todo.due_date ?? ''"
-          size="xs"
-          :placeholder="t('item.setDueDate')"
-          :class="todo.due_date ? 'rounded-r-none' : ''"
-          @update:model-value="emit('setDueDate', $event || null)"
-        />
-        <button
-          v-if="todo.due_date"
-          type="button"
-          class="flex h-7 w-6 cursor-pointer items-center justify-center rounded-r-md border border-l-0 border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          :title="t('item.clearDueDate')"
-          :aria-label="t('item.clearDueDate')"
-          @click="emit('setDueDate', null)"
-        >
-          <X class="h-3 w-3" :stroke-width="2" />
-        </button>
-      </div>
-      <!-- The item's project and its sessions: linking depends on the project. -->
-      <div class="w-[11rem] min-w-[5.5rem] shrink">
-        <ProjectSelect
-          :model-value="item.project_id"
-          variant="outline"
-          size="xs"
-          @update:model-value="emit('setProject', $event)"
-        />
-      </div>
+      <!-- The project (edited in ItemFields, in the body) decides what can be linked. -->
       <LinkedSessionsMenu
         class="shrink-0"
         :project-id="item.project_id"
@@ -207,12 +162,12 @@ const newSessionLabel = computed(() =>
       <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
 
       <template v-if="editing">
-        <Button variant="outline" size="xs" class="shrink-0" @click="emit('cancelEdit')">
+        <Button variant="outline" size="sm" class="shrink-0" @click="emit('cancelEdit')">
           {{ t('common.cancel') }}
         </Button>
         <Button
           variant="primary"
-          size="xs"
+          size="sm"
           class="shrink-0"
           :disabled="!canSave || saving"
           :title="'⌘/Ctrl+Enter'"
@@ -225,7 +180,7 @@ const newSessionLabel = computed(() =>
         <Button
           v-if="todo"
           :variant="todo.done ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :aria-pressed="todo.done"
           :title="todo.done ? t('item.markNotDone') : t('item.markDone')"
@@ -236,7 +191,7 @@ const newSessionLabel = computed(() =>
         </Button>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :title="t('item.editTitle')"
           :aria-label="t('item.edit')"
@@ -244,12 +199,23 @@ const newSessionLabel = computed(() =>
         >
           <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-        <CopyMarkdownButton v-if="note" icon-only class="shrink-0" :text="note.content" />
+        <Button
+          v-if="note"
+          variant="outline"
+          size="icon"
+          class="shrink-0"
+          :title="t('item.copyId')"
+          :aria-label="t('item.copyId')"
+          @click="emit('copyId')"
+        >
+          <component :is="copiedId ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
         <DetailActionsMenu
           :new-session-label="newSessionLabel"
           :new-session-hint="item.project_id ? t('item.newSessionHint') : t('item.needProject')"
           :can-new-session="!!item.project_id"
           :copied-id="copiedId"
+          :show-copy-id="!note"
           @new-session="emit('newSession')"
           @copy-id="emit('copyId')"
           @delete="emit('delete')"

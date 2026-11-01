@@ -114,7 +114,7 @@ const metaTitle = computed(() =>
         <ProjectSelect
           :model-value="thread.projectId"
           variant="outline"
-          size="xs"
+          size="sm"
           @update:model-value="emit('setProject', $event)"
         />
       </div>
@@ -130,7 +130,7 @@ const metaTitle = computed(() =>
       <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <Button
         :variant="showOriginal ? 'primary' : 'outline'"
-        size="icon-sm"
+        size="icon"
         class="shrink-0"
         :aria-pressed="showOriginal"
         :title="t('slackThread.header.showOriginal')"
@@ -141,7 +141,7 @@ const metaTitle = computed(() =>
       </Button>
       <Button
         variant="outline"
-        size="icon-sm"
+        size="icon"
         class="shrink-0"
         :disabled="busy"
         :title="t('slackThread.header.refresh')"
@@ -153,7 +153,7 @@ const metaTitle = computed(() =>
       <Button
         v-if="thread.threadUrl"
         variant="outline"
-        size="icon-sm"
+        size="icon"
         class="shrink-0"
         :title="t('slackThread.header.openInSlack')"
         :aria-label="t('slackThread.header.openInSlack')"

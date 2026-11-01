@@ -22,7 +22,7 @@ import { Bar, Doughnut } from 'vue-chartjs'
 import {
   Coins, DollarSign, Play, Repeat, RefreshCw, Trash2, Loader2, Info, AlertTriangle, HardDrive, Gauge,
 } from 'lucide-vue-next'
-import { Button, Input, Card, AppSelect } from '@/components/ui'
+import { Button, Input, Card, AppSelect, PageHeader } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import {
@@ -399,9 +399,8 @@ async function loadStorage() {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <h1 class="text-sm font-semibold">{{ t('stats.title') }}</h1>
-      <div class="flex items-center gap-2">
+    <PageHeader :title="t('stats.title')">
+      <template #actions>
         <Button
           variant="outline"
           :disabled="backfilling"
@@ -420,8 +419,8 @@ async function loadStorage() {
           <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('stats.reset') }}
         </Button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Body -->
     <div class="flex-1 overflow-auto p-6 space-y-5">
@@ -437,7 +436,7 @@ async function loadStorage() {
       </div>
 
       <p v-if="actionMsg" class="text-xs text-muted-foreground">{{ actionMsg }}</p>
-      <p v-if="error" class="text-xs text-red-500">{{ error }}</p>
+      <p v-if="error" class="text-xs text-destructive">{{ error }}</p>
 
       <!-- Real subscription plan usage (independent of token stats) -->
       <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
@@ -469,7 +468,7 @@ async function loadStorage() {
                 <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                   <div
                     class="h-full rounded-full transition-all"
-                    :class="row.utilization! >= 100 ? 'bg-red-500' : row.utilization! >= 80 ? 'bg-amber-500' : 'bg-indigo-500'"
+                    :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-info'"
                     :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
                   />
                 </div>
@@ -507,7 +506,7 @@ async function loadStorage() {
               <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                 <div
                   class="h-full rounded-full transition-all"
-                  :class="row.utilization! >= 100 ? 'bg-red-500' : row.utilization! >= 80 ? 'bg-amber-500' : 'bg-indigo-500'"
+                  :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-info'"
                   :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
                 />
               </div>
@@ -739,14 +738,14 @@ async function loadStorage() {
       @click.self="showReset = false"
     >
       <div class="w-[420px] rounded-lg border border-border bg-card p-5 shadow-xl">
-        <div class="flex items-center gap-2 text-red-500 mb-3">
+        <div class="flex items-center gap-2 text-destructive mb-3">
           <AlertTriangle class="h-5 w-5" />
           <h2 class="text-sm font-semibold">{{ t('stats.resetModal.title') }}</h2>
         </div>
         <p class="text-xs text-muted-foreground leading-relaxed mb-1">
           {{ t('stats.resetModal.line1') }}
         </p>
-        <p class="text-xs text-red-500/90 mb-4">{{ t('stats.resetModal.irreversible') }}</p>
+        <p class="text-xs text-destructive/90 mb-4">{{ t('stats.resetModal.irreversible') }}</p>
         <label class="block text-xs text-muted-foreground mb-1.5">{{ t('stats.resetModal.typeToConfirm', { word: 'RESET' }) }}</label>
         <Input
           v-model="resetConfirm"
@@ -758,7 +757,7 @@ async function loadStorage() {
         />
         <div class="flex justify-end gap-2">
           <Button
-            variant="outline"
+            variant="ghost"
             @click="showReset = false"
           >
             {{ t('common.cancel') }}

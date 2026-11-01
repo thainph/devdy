@@ -5,8 +5,8 @@
 // warns (and links to the MCP settings) but still lets the thread be added.
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, Server } from 'lucide-vue-next'
-import { Button, Input, Modal } from '@/components/ui'
+import { Server } from 'lucide-vue-next'
+import { Banner, Button, Input, Modal } from '@/components/ui'
 import ProjectSelect from '@/components/ProjectSelect.vue'
 import { checkThreadLink } from '@/lib/slackThreadUtils'
 import {
@@ -112,19 +112,15 @@ function onKeydown(e: KeyboardEvent) {
         <ProjectSelect v-model="projectId" variant="default" />
       </div>
 
-      <div
-        v-if="noToken"
-        class="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-foreground"
-      >
-        <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" :stroke-width="2" />
-        <div class="min-w-0 flex-1 space-y-1.5">
+      <Banner v-if="noToken" tone="warning" class="text-xs">
+        <div class="space-y-1.5">
           <p>{{ t('slackThread.add.noToken') }}</p>
           <Button variant="outline" size="xs" @click="emit('openMcp')">
             <Server class="h-3 w-3" :stroke-width="1.75" />
             {{ t('slackThread.banner.openMcp') }}
           </Button>
         </div>
-      </div>
+      </Banner>
     </div>
 
     <template #footer>

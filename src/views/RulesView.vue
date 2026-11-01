@@ -338,8 +338,8 @@ async function handleExport(rule: Rule) {
     >
       <template #toolbar>
         <Button
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="icon"
           class="shrink-0"
           :title="t('groups.manageRuleGroups')"
           :aria-label="t('groups.manageRuleGroups')"
@@ -348,8 +348,8 @@ async function handleExport(rule: Rule) {
           <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
         <Button
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="icon"
           class="shrink-0"
           :disabled="reapplyingId !== null || store.rules.length === 0"
           :title="reapplyingId === 'all' ? t('rules.list.reapplying') : `${t('rules.list.reapplyAll')} — ${t('rules.list.reapplyAllHint')}`"
@@ -359,8 +359,8 @@ async function handleExport(rule: Rule) {
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
         </Button>
         <Button
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="icon"
           class="shrink-0"
           :disabled="importing"
           :title="importing ? t('rules.list.importing') : t('rules.list.importMd')"

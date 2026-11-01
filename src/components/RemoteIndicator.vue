@@ -117,7 +117,7 @@ onBeforeUnmount(() => stopWatch?.())
         class="flex items-center gap-1.5 rounded px-1 text-[10px] text-muted-foreground/70 hover:text-foreground"
         :class="floating && [
           'fixed bottom-3 left-3 z-[90] border bg-background/95 p-1.5 shadow-lg backdrop-blur',
-          tone === 'desktop' ? 'border-amber-500/40' : 'border-emerald-500/40',
+          tone === 'desktop' ? 'border-warning/40' : 'border-success/40',
         ]"
         :title="tooltip"
         :aria-label="tooltip"
@@ -145,16 +145,16 @@ onBeforeUnmount(() => stopWatch?.())
           <span class="text-muted-foreground">·</span>
           <span
             class="min-w-0 truncate text-[11px]"
-            :class="tone === 'error' ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'"
+            :class="tone === 'error' ? 'text-destructive' :'text-muted-foreground'"
           >{{ relayLine }}</span>
         </p>
 
         <div class="space-y-1 text-[11px]">
-          <p v-if="status?.desktop_controlled" class="flex items-center gap-1.5 text-amber-600 dark:text-amber-400">
+          <p v-if="status?.desktop_controlled" class="flex items-center gap-1.5 text-warning">
             <MonitorSmartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
             {{ t('misc.remoteIndicator.desktopSince', { time: desktopSince }) }}
           </p>
-          <p v-if="phoneControlled(status)" class="flex items-center gap-1.5 text-emerald-600 dark:text-emerald-400">
+          <p v-if="phoneControlled(status)" class="flex items-center gap-1.5 text-success">
             <Smartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
             {{ t('misc.remoteIndicator.controller') }}
           </p>

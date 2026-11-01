@@ -13,7 +13,7 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { resolvePermissionMode } from '@/lib/engineOptions'
 import {
-  Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator,
+  Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, Banner,
 } from '@/components/ui'
 import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
 import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
@@ -48,7 +48,7 @@ import { useRunStatusEvents } from '@/composables/useRunStatusEvents'
 import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
-  GitPullRequest, RefreshCw, Sparkles, User, AlertTriangle, Bot, ChevronRight, Folder, BookMarked,
+  GitPullRequest, RefreshCw, Sparkles, User, Bot, ChevronRight, Folder, BookMarked,
   CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, Pin, PinOff,
 } from 'lucide-vue-next'
 
@@ -387,23 +387,19 @@ async function reviewAll(group: PrGroup) {
 <template>
   <div class="flex flex-col h-full">
     <!-- Page header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">{{ t('prInbox.title') }}</h1>
-        <span
-          v-if="!store.loading && store.items.length > 0"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-          :title="grouped.visibleCount < store.items.length ? t('prInbox.visibleOfTotal', { visible: grouped.visibleCount, total: store.items.length }) : undefined"
-        >
-          {{ grouped.visibleCount < store.items.length ? `${grouped.visibleCount} / ${store.items.length}` : store.items.length }}
-        </span>
-      </div>
-      <div class="flex items-center gap-2">
+    <PageHeader
+      :title="t('prInbox.title')"
+      :count="!store.loading && store.items.length > 0
+        ? (grouped.visibleCount < store.items.length ? `${grouped.visibleCount} / ${store.items.length}` : store.items.length)
+        : null"
+      :count-title="grouped.visibleCount < store.items.length ? t('prInbox.visibleOfTotal', { visible: grouped.visibleCount, total: store.items.length }) : undefined"
+    >
+      <template #actions>
         <!-- Standalone window: pin on top (same control as the Slack window) -->
         <Button
           v-if="floating"
           :variant="floating.pinned.value ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           :aria-pressed="floating.pinned.value"
           :title="floating.pinned.value ? t('item.unpin') : t('item.pin')"
           :aria-label="floating.pinned.value ? t('item.unpin') : t('item.pin')"
@@ -411,12 +407,12 @@ async function reviewAll(group: PrGroup) {
         >
           <component :is="floating.pinned.value ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-        <Button variant="ghost" :disabled="store.loading || bulk !== null" @click="store.refresh()">
-          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
+        <Button variant="outline" :disabled="store.loading || bulk !== null" @click="store.refresh()">
+          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
           {{ t('common.refresh') }}
         </Button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Toolbar: search + Filters / Display popovers (patterned on
          CalendarView's display-options popover). A size container so the
@@ -504,22 +500,24 @@ async function reviewAll(group: PrGroup) {
       <!-- Partial-failure warning: some accounts failed to load (rate limit,
            network, bad PAT). Shown above the list so a missing PR reads as
            "some accounts failed, try refresh" rather than "no PRs". -->
-      <div
-        v-if="store.warnings.length > 0"
-        class="mb-4 flex items-start gap-2.5 rounded-lg border border-amber-500/25 bg-amber-500/10 p-3 text-xs text-amber-600 dark:text-amber-400"
-      >
-        <AlertTriangle class="h-4 w-4 shrink-0 mt-px" :stroke-width="2" />
-        <div class="min-w-0 flex-1">
-          <p class="font-medium">{{ t('prInbox.partialFailTitle', store.warnings.length) }}</p>
-          <p class="mt-0.5 text-amber-600/80 dark:text-amber-400/80">
-            {{ store.warnings.map(w => w.account_label).join(', ') }} — {{ t('prInbox.partialFailBody') }}
-          </p>
-        </div>
-        <Button variant="ghost" size="xs" :disabled="store.loading || bulk !== null" @click="store.refresh()">
-          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
-          {{ t('common.refresh') }}
-        </Button>
-      </div>
+      <Banner v-if="store.warnings.length > 0" tone="warning" class="mb-4">
+        <p class="font-medium text-warning">{{ t('prInbox.partialFailTitle', store.warnings.length) }}</p>
+        <p class="mt-0.5 text-muted-foreground">
+          {{ store.warnings.map(w => w.account_label).join(', ') }} — {{ t('prInbox.partialFailBody') }}
+        </p>
+        <template #actions>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :disabled="store.loading || bulk !== null"
+            :title="t('common.refresh')"
+            :aria-label="t('common.refresh')"
+            @click="store.refresh()"
+          >
+            <RefreshCw class="h-3 w-3" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
+          </Button>
+        </template>
+      </Banner>
 
       <!-- Loading skeleton — mirrors the PR card layout so the wait reads as
            "content incoming". Rows cascade in with a small stagger. -->
@@ -543,9 +541,9 @@ async function reviewAll(group: PrGroup) {
       </div>
 
       <!-- Error -->
-      <div v-else-if="store.error" class="p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
+      <Banner v-else-if="store.error" tone="destructive">
         {{ store.error }}
-      </div>
+      </Banner>
 
       <!-- Empty state -->
       <div v-else-if="store.items.length === 0" class="flex flex-col items-center justify-center h-full min-h-80 text-center">
@@ -556,7 +554,7 @@ async function reviewAll(group: PrGroup) {
         <p class="text-xs text-muted-foreground mt-1 max-w-64">
           {{ t('prInbox.emptyBody') }}
         </p>
-        <Button class="mt-4" variant="ghost" @click="store.refresh()">
+        <Button class="mt-4" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="2" />
           {{ t('common.refresh') }}
         </Button>
@@ -620,7 +618,7 @@ async function reviewAll(group: PrGroup) {
               <span class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">
                 {{ group.items.length }}
               </span>
-              <span v-if="group.unreviewedCount > 0" class="hidden @[36rem]/list:inline shrink-0 text-[10px] text-amber-600 dark:text-amber-400">
+              <span v-if="group.unreviewedCount > 0" class="hidden @[36rem]/list:inline shrink-0 text-[10px] text-warning">
                 {{ t('prInbox.unreviewed', group.unreviewedCount) }}
               </span>
             </button>
@@ -649,7 +647,7 @@ async function reviewAll(group: PrGroup) {
                 disabled
                 :title="t('prInbox.bulk.progress', { done: bulk.done, total: bulk.total })"
               >
-                <RefreshCw class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+                <RefreshCw class="h-3 w-3 animate-spin" :stroke-width="2" />
                 <span class="hidden @[44rem]/list:inline">{{ t('prInbox.bulk.progress', { done: bulk.done, total: bulk.total }) }}</span>
                 <span class="tabular-nums @[44rem]/list:hidden">{{ bulk.done }}/{{ bulk.total }}</span>
               </Button>
@@ -662,7 +660,7 @@ async function reviewAll(group: PrGroup) {
                 :aria-label="t('prInbox.bulk.action', { count: Math.min(bulkCandidates(group).total, BULK_REVIEW_CAP) })"
                 @click="reviewAll(group)"
               >
-                <Sparkles class="h-3.5 w-3.5" :stroke-width="2" />
+                <Sparkles class="h-3 w-3" :stroke-width="2" />
                 <span class="hidden @[44rem]/list:inline">
                   {{ t('prInbox.bulk.action', { count: Math.min(bulkCandidates(group).total, BULK_REVIEW_CAP) }) }}
                 </span>

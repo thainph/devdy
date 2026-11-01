@@ -121,8 +121,8 @@ async function submit(): Promise<void> {
           />
         </div>
         <Button type="submit" variant="primary" class="w-full" :disabled="loggingIn || loadingRelay">
-          <Loader2 v-if="loggingIn" class="h-4 w-4 animate-spin" :stroke-width="2" />
-          <KeyRound v-else class="h-4 w-4" :stroke-width="2" />
+          <Loader2 v-if="loggingIn" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+          <KeyRound v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ loggingIn ? t('remote.desktop.login.working') : t('remote.desktop.login.submit') }}
         </Button>
       </form>

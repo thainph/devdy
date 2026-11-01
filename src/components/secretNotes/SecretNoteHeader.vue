@@ -80,32 +80,32 @@ const metaTitle = computed(() => {
         <ProjectSelect
           :model-value="projectId"
           variant="outline"
-          size="xs"
+          size="sm"
           @update:model-value="emit('setProject', $event)"
         />
       </div>
       <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
 
       <template v-if="editing">
-        <Button variant="outline" size="xs" class="shrink-0" @click="emit('cancelEdit')">
+        <Button variant="outline" size="sm" class="shrink-0" @click="emit('cancelEdit')">
           {{ t('common.cancel') }}
         </Button>
         <Button
           variant="primary"
-          size="xs"
+          size="sm"
           class="shrink-0"
           :disabled="!canSave || saving"
           :title="'⌘/Ctrl+Enter'"
           @click="emit('save')"
         >
-          <Loader2 v-if="saving" class="h-3 w-3 animate-spin" :stroke-width="1.75" />
+          <Loader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
           {{ t('common.save') }}
         </Button>
       </template>
       <template v-else-if="note">
         <Button
           :variant="revealed ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :aria-pressed="revealed"
           :disabled="revealing"
@@ -118,7 +118,7 @@ const metaTitle = computed(() => {
         </Button>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :title="t('secretNotes.copy')"
           :aria-label="t('secretNotes.copy')"
@@ -128,7 +128,7 @@ const metaTitle = computed(() => {
         </Button>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :title="t('item.editTitle')"
           :aria-label="t('item.edit')"
@@ -140,7 +140,7 @@ const metaTitle = computed(() => {
           <template #trigger>
             <Button
               variant="outline"
-              size="icon-sm"
+              size="icon"
               :title="t('item.moreActions')"
               :aria-label="t('item.moreActions')"
             >

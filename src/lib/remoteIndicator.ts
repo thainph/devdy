@@ -32,11 +32,11 @@ export function remoteTone(s: RemoteDotStatus | null | undefined): RemoteTone {
 /** Dot colour per tone; `desktop` / `phone` also pulse. */
 export const REMOTE_DOT_CLASS: Record<RemoteTone, string> = {
   off: 'bg-muted-foreground/40',
-  error: 'bg-red-500',
+  error: 'bg-destructive',
   offline: 'bg-muted-foreground/40',
-  online: 'bg-emerald-500',
-  phone: 'bg-emerald-500',
-  desktop: 'bg-amber-500',
+  online: 'bg-success',
+  phone: 'bg-success',
+  desktop: 'bg-warning',
 }
 
 export function isControlled(tone: RemoteTone): boolean {
@@ -78,8 +78,8 @@ export function desktopLinkTone(s: DesktopLinkState): DesktopLinkTone {
 }
 
 export const DESKTOP_LINK_DOT_CLASS: Record<DesktopLinkTone, string> = {
-  connected: 'bg-emerald-500',
-  connecting: 'bg-amber-500 animate-pulse',
+  connected: 'bg-success',
+  connecting: 'bg-warning animate-pulse',
   failed: 'bg-destructive',
   superseded: 'bg-muted-foreground',
 }

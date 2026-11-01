@@ -432,7 +432,7 @@ const isEdit = computed(() => props.mode === 'edit')
             {{ email }}
             <button
               type="button"
-              class="ml-0.5 cursor-pointer hover:text-red-300"
+              class="ml-0.5 cursor-pointer hover:text-destructive"
               :aria-label="t('common.delete')"
               @click="removeAttendee(email)"
             >
@@ -451,7 +451,7 @@ const isEdit = computed(() => props.mode === 'edit')
             @blur="addAttendee"
           />
           <Button variant="outline" size="sm" @click="addAttendee">
-            <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ t('calendar.editor.addAttendee') }}
+            <Plus class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('calendar.editor.addAttendee') }}
           </Button>
         </div>
       </div>
@@ -478,13 +478,13 @@ const isEdit = computed(() => props.mode === 'edit')
             @update:model-value="v => (r.minutes = Number(v))"
           />
           <span class="text-xs text-muted-foreground">{{ t('calendar.editor.minutesBefore') }}</span>
-          <Button variant="destructive-ghost" size="icon-sm" :aria-label="t('common.delete')" @click="removeReminder(i)">
-            <X class="h-4 w-4" :stroke-width="1.75" />
+          <Button variant="destructive-ghost" size="icon" :title="t('common.delete')" :aria-label="t('common.delete')" @click="removeReminder(i)">
+            <X class="h-3.5 w-3.5" :stroke-width="1.75" />
           </Button>
         </div>
         <div>
           <Button variant="outline" size="sm" @click="addReminder">
-            <Plus class="h-4 w-4" :stroke-width="1.75" /> {{ t('calendar.editor.addReminder') }}
+            <Plus class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('calendar.editor.addReminder') }}
           </Button>
         </div>
       </div>
@@ -532,8 +532,8 @@ const isEdit = computed(() => props.mode === 'edit')
     </div>
 
     <template #footer>
-      <span v-if="firstError" class="mr-auto text-xs text-red-500 dark:text-red-400">{{ firstError }}</span>
-      <Button variant="outline" size="sm" :disabled="submitting" @click="emit('close')">{{ t('common.cancel') }}</Button>
+      <span v-if="firstError" class="mr-auto text-xs text-destructive">{{ firstError }}</span>
+      <Button variant="ghost" size="sm" :disabled="submitting" @click="emit('close')">{{ t('common.cancel') }}</Button>
       <Button variant="primary" size="sm" :disabled="!canSubmit" @click="submit">
         {{ mode === 'create' ? t('calendar.editor.create') : t('calendar.editor.save') }}
       </Button>

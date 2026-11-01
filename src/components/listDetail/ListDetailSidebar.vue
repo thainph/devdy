@@ -10,8 +10,8 @@
 // row's selection chrome and the folder headers.
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, ChevronDown, ChevronRight, Folder, Plus, RotateCw, Search, X } from 'lucide-vue-next'
-import { Button, Input } from '@/components/ui'
+import { ChevronDown, ChevronRight, Folder, Plus, RotateCw, Search, X } from 'lucide-vue-next'
+import { Banner, Button, Input, SegmentedControl } from '@/components/ui'
 import { parseCollapsed, type RowGroup } from '@/lib/listGroups'
 import { groupClass, groupHeaderClass, rowClass, rowListClass } from './rowStyles'
 
@@ -131,44 +131,24 @@ function showHeaders(): boolean {
           {{ newLabel || t('common.new') }}
         </Button>
       </div>
-      <div
-        v-if="filters.length > 0"
-        class="flex rounded-md bg-muted p-0.5 text-[11px] font-medium"
-        role="group"
-      >
-        <button
-          v-for="f in filters"
-          :key="f.value"
-          type="button"
-          class="flex flex-1 cursor-pointer items-center justify-center rounded px-2 py-1 transition-colors"
-          :class="filter === f.value
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground hover:text-foreground'"
-          :aria-pressed="filter === f.value"
-          @click="filter = f.value"
-        >
-          {{ f.label }}
-        </button>
-      </div>
+      <SegmentedControl v-if="filters.length > 0" v-model="filter" :options="filters" />
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-      <div
-        v-if="error"
-        class="mb-2 flex items-start gap-1.5 rounded-md border border-destructive/30 bg-destructive/10 px-2 py-1.5 text-[11px] text-foreground"
-      >
-        <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="2" />
-        <span class="min-w-0 flex-1 break-words">{{ error }}</span>
-        <button
-          type="button"
-          class="shrink-0 cursor-pointer rounded p-0.5 text-muted-foreground hover:bg-accent hover:text-foreground"
-          :title="t('common.refresh')"
-          :aria-label="t('common.refresh')"
-          @click="emit('retry')"
-        >
-          <RotateCw class="h-3 w-3" :stroke-width="2" />
-        </button>
-      </div>
+      <Banner v-if="error" tone="destructive" class="mb-2">
+        {{ error }}
+        <template #actions>
+          <Button
+            variant="ghost"
+            size="icon-xs"
+            :title="t('common.refresh')"
+            :aria-label="t('common.refresh')"
+            @click="emit('retry')"
+          >
+            <RotateCw class="h-3 w-3" :stroke-width="2" />
+          </Button>
+        </template>
+      </Banner>
 
       <div v-if="loading && groups.length === 0" class="space-y-1 px-1">
         <div v-for="i in 5" :key="i" class="h-10 animate-pulse rounded-md bg-muted/60" />

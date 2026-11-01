@@ -18,7 +18,8 @@
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, ChevronRight, FolderGit2, Plus } from 'lucide-vue-next'
+import { AlertTriangle, ChevronRight, FolderGit2 } from 'lucide-vue-next'
+import FabButton from './FabButton.vue'
 import SearchField from './SearchField.vue'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, RunInfo } from '../protocol'
@@ -124,7 +125,7 @@ const RUNNING_STATUSES = new Set(['running', 'streaming'])
 const FAILED_STATUSES = new Set(['failed', 'error', 'cancelled'])
 
 function statusDotClass(run: RunInfo): string {
-  if (RUNNING_STATUSES.has(run.status)) return 'bg-emerald-500 animate-pulse'
+  if (RUNNING_STATUSES.has(run.status)) return 'bg-success animate-pulse'
   if (FAILED_STATUSES.has(run.status)) return 'bg-destructive'
   return 'bg-foreground/25'
 }
@@ -162,7 +163,7 @@ function statusDotClass(run: RunInfo): string {
           </span>
           <span
             v-if="p.pending"
-            class="shrink-0 inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+            class="shrink-0 inline-flex items-center gap-1 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning"
             :title="t('controller.browser.needsApproval')"
           >
             <AlertTriangle class="h-3 w-3" :stroke-width="2" /> {{ p.pending }}
@@ -197,7 +198,7 @@ function statusDotClass(run: RunInfo): string {
           </span>
           <span
             v-if="pending.has(run.id)"
-            class="shrink-0 inline-flex items-center gap-1 rounded-md bg-amber-500/15 px-1.5 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400"
+            class="shrink-0 inline-flex items-center gap-1 rounded-md bg-warning/15 px-1.5 py-0.5 text-[10px] font-medium text-warning"
             :title="t('controller.browser.needsApproval')"
           >
             <AlertTriangle class="h-3 w-3" :stroke-width="2" />
@@ -207,15 +208,11 @@ function statusDotClass(run: RunInfo): string {
       </template>
     </main>
 
-    <button
+    <FabButton
       v-if="selectedProject && !searching"
-      class="absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
-      :title="t('controller.browser.newSession')"
-      :aria-label="t('controller.browser.newSession')"
+      :label="t('controller.browser.newSession')"
       :disabled="!isActive"
       @click="emit('new-session', selectedProject.id)"
-    >
-      <Plus class="h-6 w-6" :stroke-width="2.25" />
-    </button>
+    />
   </div>
 </template>

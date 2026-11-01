@@ -8,8 +8,8 @@
 //   • legacy snapshot not re-fetched yet → neutral banner.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, AlertTriangle, Archive, Loader2, RotateCw, Server } from 'lucide-vue-next'
-import { Button } from '@/components/ui'
+import { Archive, Loader2, RotateCw, Server } from 'lucide-vue-next'
+import { Banner, Button } from '@/components/ui'
 import { isBusy, type SlackThreadProgress, type SlackThreadSummary } from '@/stores/slackThreads'
 import { useSlackText } from './useSlackText'
 
@@ -61,48 +61,46 @@ const errorDetail = computed(() => {
       </div>
     </div>
 
-    <div
+    <Banner
       v-else-if="thread.fetchStatus === 'error'"
-      class="flex items-start gap-2 border-b border-destructive/30 bg-destructive/10 px-5 py-2 text-xs text-foreground"
+      tone="destructive"
+      class="rounded-none border-x-0 border-t-0 px-5 py-2 text-xs"
     >
-      <AlertCircle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="2" />
-      <div class="min-w-0 flex-1">
-        <p>{{ errorMessage }}</p>
-        <p v-if="errorDetail" class="mt-0.5 break-words font-mono text-[10px] text-muted-foreground">
-          {{ errorDetail }}
-        </p>
-      </div>
-      <Button
-        v-if="errorCodeShown && TOKEN_CODES.has(errorCodeShown)"
-        variant="outline"
-        size="xs"
-        class="shrink-0"
-        @click="emit('openMcp')"
-      >
-        <Server class="h-3 w-3" :stroke-width="1.75" />
-        {{ t('slackThread.banner.openMcp') }}
-      </Button>
-      <Button
-        v-if="!errorCodeShown || !NO_RETRY.has(errorCodeShown)"
-        variant="outline"
-        size="xs"
-        class="shrink-0"
-        @click="emit('retry')"
-      >
-        <RotateCw class="h-3 w-3" :stroke-width="1.75" />
-        {{ t('slackThread.banner.retry') }}
-      </Button>
-    </div>
+      <p>{{ errorMessage }}</p>
+      <p v-if="errorDetail" class="mt-0.5 break-words font-mono text-[10px] text-muted-foreground">
+        {{ errorDetail }}
+      </p>
+      <template #actions>
+        <Button
+          v-if="errorCodeShown && TOKEN_CODES.has(errorCodeShown)"
+          variant="outline"
+          size="xs"
+          @click="emit('openMcp')"
+        >
+          <Server class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('slackThread.banner.openMcp') }}
+        </Button>
+        <Button
+          v-if="!errorCodeShown || !NO_RETRY.has(errorCodeShown)"
+          variant="outline"
+          size="xs"
+          @click="emit('retry')"
+        >
+          <RotateCw class="h-3 w-3" :stroke-width="1.75" />
+          {{ t('slackThread.banner.retry') }}
+        </Button>
+      </template>
+    </Banner>
 
-    <div
+    <Banner
       v-if="!busy && thread.fetchStatus === 'ready' && thread.warnings.length"
-      class="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs text-foreground"
+      tone="warning"
+      class="rounded-none border-x-0 border-t-0 px-5 py-2 text-xs"
     >
-      <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" :stroke-width="2" />
-      <ul class="min-w-0 flex-1 space-y-0.5">
+      <ul class="space-y-0.5">
         <li v-for="w in thread.warnings" :key="w">{{ warningText(w) }}</li>
       </ul>
-    </div>
+    </Banner>
 
     <div
       v-if="thread.legacy"

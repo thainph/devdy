@@ -167,8 +167,8 @@ function tone(v: ProviderView): 'over' | 'warning' | 'stale' | 'ok' | 'neutral' 
 // Tone → colour classes. Only warning/over tint the whole row (to draw the eye);
 // ok/neutral stay quiet and let the dot + bar carry the state.
 const TONE_ROW: Record<string, string> = {
-  over: 'border-red-500/40 bg-red-500/10 text-red-600 dark:text-red-400',
-  warning: 'border-amber-500/40 bg-amber-500/10 text-amber-600 dark:text-amber-400',
+  over: 'border-destructive/40 bg-destructive/10 text-destructive',
+  warning: 'border-warning/40 bg-warning/10 text-warning',
   // Stale reads like ok/neutral (quiet) — freshness is conveyed by the tooltip
   // and the refresh button, not by an alarming colour.
   stale: 'border-border/60 bg-muted/30 text-muted-foreground',
@@ -178,10 +178,10 @@ const TONE_ROW: Record<string, string> = {
 // Leading dot for the quiet tones. Warning/over swap it for an alert icon, so
 // severity survives even where the tint is hard to spot (small chip, light bg).
 const TONE_DOT: Record<string, string> = {
-  over: 'bg-red-500',
-  warning: 'bg-amber-500',
+  over: 'bg-destructive',
+  warning: 'bg-warning',
   stale: 'bg-muted-foreground/40',
-  ok: 'bg-emerald-500',
+  ok: 'bg-success',
   neutral: 'bg-muted-foreground/30',
 }
 /** True when we have a real usage % to render as number. */

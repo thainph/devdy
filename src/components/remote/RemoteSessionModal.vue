@@ -329,12 +329,12 @@ watch(() => props.runId, () => {
           @expired="createLink"
         />
         <div v-else class="space-y-2">
-          <p class="text-xs text-amber-500">
+          <p class="text-xs text-warning">
             {{ t('remote.session.cannotDeriveController') }}
           </p>
           <pre class="rounded-md bg-muted/40 p-2 text-[11px] font-mono whitespace-pre-wrap break-all">{{ rawFields }}</pre>
           <Button variant="outline" size="sm" @click="copyLinkOrFields">
-            <Check v-if="copied" class="h-3.5 w-3.5 text-emerald-500" :stroke-width="2" />
+            <Check v-if="copied" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
             <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ copied ? t('remote.session.copied') : t('remote.session.copyFields') }}
           </Button>
@@ -361,11 +361,11 @@ watch(() => props.runId, () => {
       <!-- connected -->
       <div v-else-if="phase === 'connected'" class="flex flex-col items-center gap-4 py-6">
         <span class="relative flex h-3 w-3">
-          <span class="absolute inline-flex h-full w-full rounded-full bg-emerald-500 opacity-75 animate-ping" />
-          <span class="relative inline-flex h-3 w-3 rounded-full bg-emerald-500" />
+          <span class="absolute inline-flex h-full w-full rounded-full bg-success opacity-75 animate-ping" />
+          <span class="relative inline-flex h-3 w-3 rounded-full bg-success" />
         </span>
-        <ShieldCheck class="h-8 w-8 text-emerald-500" :stroke-width="1.75" />
-        <p class="text-sm font-medium text-emerald-500">{{ t('remote.session.connectedLive') }}</p>
+        <ShieldCheck class="h-8 w-8 text-success" :stroke-width="1.75" />
+        <p class="text-sm font-medium text-success">{{ t('remote.session.connectedLive') }}</p>
         <p class="text-center text-xs text-muted-foreground">
           {{ t('remote.session.phoneControlling') }}
         </p>
@@ -390,7 +390,7 @@ watch(() => props.runId, () => {
 
       <!-- disabled: Remote Control is off — offer to enable it here -->
       <div v-else-if="phase === 'disabled'" class="flex flex-col items-center gap-4 py-6">
-        <ShieldAlert class="h-8 w-8 text-amber-500" :stroke-width="1.75" />
+        <ShieldAlert class="h-8 w-8 text-warning" :stroke-width="1.75" />
         <p class="text-sm font-medium text-foreground">{{ t('remote.session.disabledTitle') }}</p>
         <p class="text-center text-xs text-muted-foreground">
           {{ canEnableHere ? t('remote.session.disabledDesc') : t('remote.session.disabledNoRelay') }}
@@ -407,7 +407,7 @@ watch(() => props.runId, () => {
 
       <!-- expired / error -->
       <div v-else class="flex flex-col items-center gap-4 py-6">
-        <ShieldAlert class="h-8 w-8 text-amber-500" :stroke-width="1.75" />
+        <ShieldAlert class="h-8 w-8 text-warning" :stroke-width="1.75" />
         <p class="text-sm font-medium text-foreground">
           {{ phase === 'expired' ? t('remote.session.expired') : t('remote.session.errorOccurred') }}
         </p>
@@ -419,7 +419,7 @@ watch(() => props.runId, () => {
     </div>
 
     <template #footer>
-      <Button variant="outline" @click="onClose">{{ t('common.close') }}</Button>
+      <Button variant="ghost" @click="onClose">{{ t('common.close') }}</Button>
     </template>
   </Modal>
 </template>

@@ -60,7 +60,7 @@ function run(action: () => void) {
           </p>
           <p
             class="flex items-center gap-1.5 text-[11px]"
-            :class="tone === 'failed' ? 'text-red-600 dark:text-red-400' : 'text-muted-foreground'"
+            :class="tone === 'failed' ? 'text-destructive' : 'text-muted-foreground'"
           >
             <span class="inline-flex h-2 w-2 shrink-0 rounded-full" :class="dotClass" />
             {{ stateText }}

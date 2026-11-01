@@ -10,12 +10,15 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertTriangle, ArrowDown, ChevronLeft, Loader2, ShieldCheck, Wifi, WifiOff, X,
+  AlertTriangle, ArrowDown, ChevronLeft, X,
 } from 'lucide-vue-next'
 import StreamLog from '@/components/StreamLog.vue'
 import type { StreamEntry } from '@/lib/streamEvents'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
+import ConnectionBadge from './ConnectionBadge.vue'
+import ControllerHeader from './ControllerHeader.vue'
 import ControllerPermissionPrompt from './ControllerPermissionPrompt.vue'
+import HeaderButton from './HeaderButton.vue'
 import SessionComposer, { type ComposerTurn } from './SessionComposer.vue'
 import SessionUsageBar from './SessionUsageBar.vue'
 import SessionPlanUsageBar from './SessionPlanUsageBar.vue'
@@ -114,8 +117,6 @@ const statusLabel = computed(() => {
       return t('controller.session.idle')
   }
 })
-
-const shortFp = computed(() => (props.hostFingerprint ? props.hostFingerprint.slice(0, 12) : ''))
 
 // ── auto-scroll ─────────────────────────────────────────────────────────────
 const mainEl = ref<HTMLElement | null>(null)
@@ -227,52 +228,26 @@ onUnmounted(() => {
 
 <template>
   <div class="flex h-dvh min-h-0 flex-col bg-background text-foreground">
-    <!-- Top bar -->
-    <header class="shrink-0 flex items-center gap-2 px-3 py-2 border-b border-border">
-      <button
-        class="inline-flex items-center justify-center h-7 w-7 -ml-1 shrink-0 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-        :title="t('controller.browser.backToRuns')"
-        @click="emit('back')"
-      >
-        <ChevronLeft class="h-4 w-4" :stroke-width="2" />
-      </button>
+    <ControllerHeader :title="title">
+      <template #leading>
+        <HeaderButton class="-ml-1.5" :label="t('controller.browser.backToRuns')" @click="emit('back')">
+          <ChevronLeft class="h-4 w-4" :stroke-width="2" />
+        </HeaderButton>
+      </template>
+      <template #badge>
+        <ConnectionBadge :status="status" :live="live" :status-label="statusLabel" :host-fingerprint="hostFingerprint" />
+      </template>
       <span
-        class="inline-flex items-center gap-1.5 text-xs font-medium min-w-0"
-        :class="isActive && live ? 'text-emerald-500' : status === 'error' ? 'text-destructive' : 'text-amber-500'"
+        v-if="decodeErrors > 0"
+        class="inline-flex items-center gap-1 text-[10px] text-warning"
+        :title="t('controller.session.decodeErrorsTitle')"
       >
-        <Loader2
-          v-if="status === 'joining' || status === 'handshaking' || status === 'reconnecting' || (isActive && !live)"
-          class="h-3.5 w-3.5 animate-spin"
-          :stroke-width="2"
-        />
-        <Wifi v-else-if="isActive" class="h-3.5 w-3.5" :stroke-width="2" />
-        <WifiOff v-else class="h-3.5 w-3.5" :stroke-width="2" />
-        <span class="truncate">{{ statusLabel }}</span>
+        <AlertTriangle class="h-3 w-3" :stroke-width="2" /> {{ decodeErrors }}
       </span>
-      <span
-        v-if="shortFp"
-        class="inline-flex items-center gap-1 text-[10px] font-mono text-foreground/45"
-        :title="t('controller.session.verifiedFingerprint', { fp: hostFingerprint })"
-      >
-        <ShieldCheck class="h-3 w-3 text-emerald-500" :stroke-width="2" /> {{ shortFp }}…
-      </span>
-      <div class="ml-auto flex items-center gap-1.5">
-        <span
-          v-if="decodeErrors > 0"
-          class="inline-flex items-center gap-1 text-[10px] text-amber-500"
-          :title="t('controller.session.decodeErrorsTitle')"
-        >
-          <AlertTriangle class="h-3 w-3" :stroke-width="2" /> {{ decodeErrors }}
-        </span>
-        <button
-          class="inline-flex items-center justify-center h-7 w-7 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
-          :title="t('controller.session.disconnect')"
-          @click="emit('disconnect')"
-        >
-          <X class="h-4 w-4" :stroke-width="2" />
-        </button>
-      </div>
-    </header>
+      <HeaderButton :label="t('controller.session.disconnect')" @click="emit('disconnect')">
+        <X class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
+    </ControllerHeader>
 
     <!-- Subscription usage (Claude + Codex), mirror of the desktop BudgetBadge.
          Kept above the run title so plan utilization is the first thing seen. -->
@@ -283,15 +258,10 @@ onUnmounted(() => {
       :claude-accounts="claudeAccounts"
     />
 
-    <!-- Run title -->
-    <div class="shrink-0 px-3 py-1.5 border-b border-border/60">
-      <p class="text-xs font-medium truncate">{{ title }}</p>
-    </div>
-
     <!-- Another run is blocked waiting for a decision. One tap to go answer it. -->
     <button
       v-if="pendingElsewhere.length"
-      class="shrink-0 w-full px-3 py-1.5 text-xs flex items-center justify-center gap-2 bg-amber-500/15 text-amber-600 dark:text-amber-400 hover:bg-amber-500/25 transition-colors cursor-pointer"
+      class="shrink-0 w-full px-3 py-1.5 text-xs flex items-center justify-center gap-2 bg-warning/15 text-warning hover:bg-warning/25 transition-colors cursor-pointer"
       @click="emit('openInbox')"
     >
       <AlertTriangle class="h-3.5 w-3.5" :stroke-width="2" />
@@ -302,7 +272,7 @@ onUnmounted(() => {
     <div
       v-if="lastError && status !== 'connected'"
       class="shrink-0 px-3 py-1.5 text-xs text-center"
-      :class="status === 'error' ? 'bg-destructive/15 text-destructive' : 'bg-amber-500/15 text-amber-600 dark:text-amber-400'"
+      :class="status === 'error' ? 'bg-destructive/15 text-destructive' : 'bg-warning/15 text-warning'"
     >
       {{ lastError }}
     </div>

@@ -378,7 +378,7 @@ function onKeydown(e: KeyboardEvent) {
     ref="rootEl"
     tabindex="-1"
     class="prompt-attention flex h-full min-h-0 flex-col border-t-2 bg-card outline-none"
-    :class="isQuestions || isPlan ? 'border-t-indigo-500/70' : 'border-t-amber-400/70'"
+    :class="isQuestions || isPlan ? 'border-t-info/70' : 'border-t-warning/70'"
     role="dialog"
     :aria-label="headerTitle"
     @keydown="onKeydown"
@@ -392,7 +392,7 @@ function onKeydown(e: KeyboardEvent) {
         <component
           :is="isQuestions ? HelpCircle : isPlan ? ClipboardList : hasDiff ? FileEdit : ShieldAlert"
           class="shrink-0"
-          :class="[isQuestions ? 'h-4 w-4' : 'h-5 w-5 mt-0.5', isQuestions || isPlan ? 'text-indigo-400' : 'text-amber-400']"
+          :class="[isQuestions ? 'h-4 w-4' : 'h-5 w-5 mt-0.5', isQuestions || isPlan ? 'text-info' : 'text-warning']"
           :stroke-width="1.75"
         />
         <div class="flex-1 min-w-0">
@@ -416,7 +416,7 @@ function onKeydown(e: KeyboardEvent) {
           <div class="flex items-center gap-2 flex-wrap">
             <span
               v-if="currentQuestion.header"
-              class="text-[10px] uppercase tracking-wider rounded bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 px-1.5 py-0.5"
+              class="text-[10px] uppercase tracking-wider rounded bg-info/15 text-info px-1.5 py-0.5"
             >{{ currentQuestion.header }}</span>
             <span class="text-[10px] uppercase tracking-wider text-foreground/40">
               {{ currentQuestion.multiSelect ? t('permission.selectAll') : t('permission.selectOne') }}
@@ -434,9 +434,9 @@ function onKeydown(e: KeyboardEvent) {
             class="w-full text-left rounded-md border px-3 py-2 transition-colors"
             :class="[
               isSelected(opt.label)
-                ? 'border-indigo-500 bg-indigo-500/10'
+                ? 'border-primary bg-primary/10'
                 : 'border-border bg-foreground/5 hover:bg-foreground/10',
-              isFocused(oi) ? 'ring-2 ring-indigo-400/60 ring-offset-1 ring-offset-card' : '',
+              isFocused(oi) ? 'ring-2 ring-primary/60 ring-offset-1 ring-offset-card' : '',
             ]"
             @click="toggleOption(opt.label)"
           >
@@ -446,7 +446,7 @@ function onKeydown(e: KeyboardEvent) {
                 :class="[
                   currentQuestion.multiSelect ? 'rounded' : 'rounded-full',
                   isSelected(opt.label)
-                    ? 'border-indigo-500 bg-indigo-500 text-white'
+                    ? 'border-primary bg-primary text-primary-foreground'
                     : 'border-foreground/30',
                 ]"
               >
@@ -469,8 +469,8 @@ function onKeydown(e: KeyboardEvent) {
             type="text"
             :data-flat="otherIndex"
             :placeholder="t('permission.otherPlaceholder')"
-            class="w-full rounded-md border border-border bg-foreground/5 px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-indigo-500 focus:outline-none"
-            :class="isOtherFocused() ? 'ring-2 ring-indigo-400/60 ring-offset-1 ring-offset-card' : ''"
+            class="w-full rounded-md border border-border bg-foreground/5 px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-primary focus:outline-none"
+            :class="isOtherFocused() ? 'ring-2 ring-primary/60 ring-offset-1 ring-offset-card' : ''"
             @focus="focusedIndex = otherIndex"
           />
         </div>
@@ -493,7 +493,7 @@ function onKeydown(e: KeyboardEvent) {
       <div v-else class="flex-1 min-h-0 px-5 py-4 space-y-3 overflow-auto">
         <div class="flex items-center gap-2 flex-wrap">
           <span class="text-[10px] uppercase tracking-wider text-foreground/40">{{ t('permission.tool') }}</span>
-          <span class="font-mono text-sm text-indigo-600 dark:text-indigo-300">{{ request.display_name || request.tool_name }}</span>
+          <span class="font-mono text-sm text-primary">{{ request.display_name || request.tool_name }}</span>
           <span v-if="filePath" class="font-mono text-xs text-foreground/50 truncate">{{ filePath }}</span>
         </div>
 
@@ -545,7 +545,7 @@ function onKeydown(e: KeyboardEvent) {
       <div class="@container/footer px-5 py-3 border-t border-border shrink-0">
         <div
           v-if="broadRememberWarning"
-          class="flex items-start gap-2 mb-2 text-[11px] leading-snug text-amber-600 dark:text-amber-400/90"
+          class="flex items-start gap-2 mb-2 text-[11px] leading-snug text-warning"
         >
           <AlertTriangle class="h-3 w-3 mt-0.5 shrink-0" :stroke-width="1.75" />
           <span>{{ t('permission.broadScopeWarning') }}</span>
@@ -656,7 +656,7 @@ function onKeydown(e: KeyboardEvent) {
     opacity: 0;
   }
   40% {
-    box-shadow: inset 2px 0 0 0 rgba(99, 102, 241, 0.45);
+    box-shadow: inset 2px 0 0 0 hsl(var(--info) / 0.45);
   }
   100% {
     transform: translateX(0);

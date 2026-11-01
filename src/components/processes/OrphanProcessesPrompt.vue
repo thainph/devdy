@@ -54,7 +54,7 @@ function viewDetails() {
 <template>
   <Modal :open="open" size="md" @close="open = false">
     <template #header>
-      <AlertTriangle class="h-4 w-4 shrink-0 text-amber-500" :stroke-width="1.75" />
+      <AlertTriangle class="h-4 w-4 shrink-0 text-warning" :stroke-width="1.75" />
       <h3 class="text-sm font-semibold flex-1">
         {{ t('processes.orphanPrompt.title', { n: processCount }, processCount) }}
       </h3>

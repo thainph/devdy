@@ -12,7 +12,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import {
   AlertCircle, CheckCircle2, Copy, CopyPlus, KeyRound, Loader2, MoreHorizontal, Plug, Trash2, Upload, X, XCircle,
 } from 'lucide-vue-next'
-import { Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
+import { Banner, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
 import { useToast } from '@/composables/useToast'
@@ -284,12 +284,12 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
     <DetailHeader :title="label" :placeholder="t('servers.detail.newTitle')">
       <template #meta>{{ meta }}</template>
       <template #actions>
-        <Button size="xs" :disabled="!canSave" :title="t('servers.detail.saveHint')" @click="handleSave">
+        <Button size="sm" :disabled="!canSave" :title="t('servers.detail.saveHint')" @click="handleSave">
           {{ saving ? t('servers.editor.saving') : t('common.save') }}
         </Button>
         <DropdownMenu v-if="server" align="right">
           <template #trigger>
-            <Button variant="outline" size="icon-sm" :title="t('servers.detail.moreActions')" :aria-label="t('servers.detail.moreActions')">
+            <Button variant="outline" size="icon" :title="t('servers.detail.moreActions')" :aria-label="t('servers.detail.moreActions')">
               <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>
@@ -341,21 +341,7 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
         <!-- Authentication -->
         <DetailSection :title="t('servers.editor.authentication')">
           <div class="space-y-1.5">
-            <div class="flex max-w-md rounded-md bg-muted p-0.5 text-[11px] font-medium" role="group">
-              <button
-                v-for="opt in authOptions"
-                :key="opt.value"
-                type="button"
-                class="flex flex-1 cursor-pointer items-center justify-center rounded px-2 py-1 transition-colors"
-                :class="authMethod === opt.value
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'"
-                :aria-pressed="authMethod === opt.value"
-                @click="authMethod = opt.value"
-              >
-                {{ opt.label }}
-              </button>
-            </div>
+            <SegmentedControl v-model="authMethod" :options="authOptions" class="max-w-md" />
             <p v-if="!isKey" class="flex items-center gap-1 text-[10px] text-muted-foreground">
               <AlertCircle class="h-3 w-3 shrink-0" :stroke-width="1.75" />
               {{ t('servers.editor.agentHint') }}
@@ -466,17 +452,13 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
               {{ testing ? t('servers.editor.testing') : t('servers.detail.test') }}
             </Button>
           </div>
-          <div
+          <Banner
             v-if="!isNew && testResult"
-            class="flex items-start gap-1.5 rounded-md border p-3 text-xs"
-            :class="testResult.ok
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
-              : 'bg-destructive/10 border-destructive/20 text-destructive'"
+            :tone="testResult.ok ? 'success' : 'destructive'"
+            :icon="testResult.ok ? CheckCircle2 : XCircle"
           >
-            <CheckCircle2 v-if="testResult.ok" class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-            <XCircle v-else class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-            <span class="min-w-0 break-words">{{ testResult.message }}</span>
-          </div>
+            {{ testResult.message }}
+          </Banner>
         </DetailSection>
       </div>
     </div>

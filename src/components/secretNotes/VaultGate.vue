@@ -104,8 +104,8 @@ function toggleRecovery() {
 
     <!-- Recovery key, once (only while unlocked: it waits out a lock) -->
     <div v-else-if="recoveryKey && status.unlocked" class="w-full max-w-md text-center">
-      <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-        <KeyRound class="h-5 w-5 text-primary" :stroke-width="1.5" />
+      <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+        <KeyRound class="h-6 w-6 text-primary" :stroke-width="1.5" />
       </div>
       <h2 class="text-sm font-semibold">{{ t('secretNotes.recovery.title') }}</h2>
       <p class="mt-1 text-xs text-muted-foreground">{{ t('secretNotes.recovery.help') }}</p>
@@ -114,18 +114,18 @@ function toggleRecovery() {
       >
         {{ recoveryKey }}
       </p>
-      <p class="mt-2 text-[11px] text-amber-600 dark:text-amber-400">{{ t('secretNotes.recovery.warning') }}</p>
+      <p class="mt-2 text-[11px] text-warning">{{ t('secretNotes.recovery.warning') }}</p>
       <Button size="sm" class="mt-4" @click="emit('ackRecovery')">{{ t('secretNotes.recovery.done') }}</Button>
     </div>
 
     <!-- No vault yet -->
     <form v-else-if="!status.exists" class="w-full max-w-sm text-center" @submit.prevent="setup">
-      <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-        <ShieldCheck class="h-5 w-5 text-muted-foreground" :stroke-width="1.5" />
+      <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+        <ShieldCheck class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
       </div>
       <h2 class="text-sm font-semibold">{{ t('secretNotes.setup.title') }}</h2>
       <p class="mt-1 text-xs text-muted-foreground">{{ t('secretNotes.setup.help') }}</p>
-      <p v-if="status.pending_count" class="mt-2 text-[11px] text-amber-600 dark:text-amber-400">
+      <p v-if="status.pending_count" class="mt-2 text-[11px] text-warning">
         {{ t('secretNotes.pending', { n: status.pending_count }) }}
       </p>
       <div class="mt-4 space-y-2 text-left">
@@ -146,8 +146,8 @@ function toggleRecovery() {
 
     <!-- Locked -->
     <form v-else class="w-full max-w-sm text-center" @submit.prevent="unlock">
-      <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-        <LockKeyhole class="h-5 w-5 text-muted-foreground" :stroke-width="1.5" />
+      <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+        <LockKeyhole class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
       </div>
       <h2 class="text-sm font-semibold">{{ t('secretNotes.unlock.title') }}</h2>
       <p class="mt-1 text-xs text-muted-foreground">

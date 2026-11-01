@@ -12,7 +12,7 @@ import {
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
-import { Button, Input, Textarea, Card, AppSelect } from '@/components/ui'
+import { Banner, Button, Input, Textarea, Card, AppSelect, PageHeader, ToggleSwitch } from '@/components/ui'
 import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
@@ -998,8 +998,8 @@ const claudeValidations = ref<Record<string, ClaudeValidation>>({})
 
 function claudeStatusTone(status: string): string {
   switch (status) {
-    case 'ready': return 'text-emerald-500'
-    case 'needs_login': return 'text-amber-500'
+    case 'ready': return 'text-success'
+    case 'needs_login': return 'text-warning'
     case 'error': return 'text-destructive'
     default: return 'text-muted-foreground'
   }
@@ -1334,9 +1334,7 @@ watch(() => settings.value.language, (v) => {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="flex items-center px-6 h-13 border-b border-border/60 shrink-0">
-      <h1 class="text-sm font-semibold">{{ t('settings.title') }}</h1>
-    </div>
+    <PageHeader :title="t('settings.title')" />
 
     <!-- Content -->
     <div class="flex-1 flex min-h-0">
@@ -1812,12 +1810,11 @@ watch(() => settings.value.language, (v) => {
             {{ t('settings.google.intro') }}
           </p>
 
-          <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-            <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+          <Banner :icon="ShieldAlert" class="leading-relaxed">
             <span class="text-muted-foreground">
               {{ t('settings.google.credsWarning') }}
             </span>
-          </div>
+          </Banner>
 
           <!-- Connected accounts list -->
           <div v-if="googleAccounts.length" class="space-y-2">
@@ -1830,9 +1827,9 @@ watch(() => settings.value.language, (v) => {
                 <div class="flex items-center justify-between gap-2">
                   <div class="min-w-0">
                     <div class="text-sm font-medium truncate flex items-center gap-1.5">
-                      <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
+                      <CheckCircle2 class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
                       {{ acc.label }}
-                      <span v-if="acc.is_default" class="text-[10px] font-medium text-indigo-400 border border-indigo-400/40 rounded px-1">{{ t('settings.google.default') }}</span>
+                      <span v-if="acc.is_default" class="text-[10px] font-medium text-primary border border-primary/40 rounded px-1">{{ t('settings.google.default') }}</span>
                     </div>
                     <div class="text-[11px] text-muted-foreground truncate">{{ acc.email || t('settings.google.driveGmail') }}</div>
                   </div>
@@ -1852,46 +1849,41 @@ watch(() => settings.value.language, (v) => {
                       :disabled="googleBusyAccount === acc.id"
                       @click="handleGoogleReauth(acc.id)"
                     >
-                      <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                      <LogIn class="h-3 w-3" :stroke-width="1.75" />
                       {{ t('settings.google.login') }}
                     </Button>
-                    <Button v-if="!acc.is_default" size="icon-sm" variant="ghost" :title="t('settings.google.setAsDefault')" @click="makeGoogleDefault(acc)">
+                    <Button v-if="!acc.is_default" size="icon-sm" variant="ghost" :title="t('settings.google.setAsDefault')" :aria-label="t('settings.google.setAsDefault')" @click="makeGoogleDefault(acc)">
                       <Star class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
-                    <Button size="icon-sm" variant="ghost" :title="t('settings.google.rename')" @click="googleEditing = acc.id; googleEditLabel = acc.label">
+                    <Button size="icon-sm" variant="ghost" :title="t('settings.google.rename')" :aria-label="t('settings.google.rename')" @click="googleEditing = acc.id; googleEditLabel = acc.label">
                       <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
-                    <Button size="icon-sm" variant="destructive-ghost" :title="t('common.remove')" @click="removeGoogleAccount(acc)">
+                    <Button size="icon-sm" variant="destructive-ghost" :title="t('common.remove')" :aria-label="t('common.remove')" @click="removeGoogleAccount(acc)">
                       <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                     </Button>
                   </div>
                 </div>
-                <div
+                <Banner
                   v-if="googleValidations[acc.id] && !googleValidations[acc.id].missing_scopes?.length"
-                  class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                  tone="success"
                 >
-                  <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
-                    <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                    {{ t('settings.google.valid') }}
-                  </div>
+                  <div class="font-medium text-success">{{ t('settings.google.valid') }}</div>
                   <p v-if="googleValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
                     {{ googleValidations[acc.id].email }}
                   </p>
-                </div>
-                <div
+                </Banner>
+                <Banner
                   v-else-if="googleValidations[acc.id]?.missing_scopes?.length"
-                  class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                  tone="warning"
                 >
-                  <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                   <span>{{ t('settings.google.missingScopes', { scopes: googleValidations[acc.id].missing_scopes.map(scopeLabel).join(', ') }) }}</span>
-                </div>
-                <div
+                </Banner>
+                <Banner
                   v-if="googleLoginNeeded[acc.id]"
-                  class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                  tone="warning"
                 >
-                  <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                   <span>{{ googleBusyAccount === acc.id ? t('settings.google.loggingIn') : t('settings.google.loginExpired') }}</span>
-                </div>
+                </Banner>
                 <p v-if="googleAccountError[acc.id]" class="text-[11px] text-destructive">{{ googleAccountError[acc.id] }}</p>
               </template>
               <template v-else>
@@ -1911,7 +1903,7 @@ watch(() => settings.value.language, (v) => {
             </div>
 
             <div v-if="googleHasClient && !showGoogleClientForm" class="text-[11px] text-muted-foreground flex items-center gap-1.5">
-              <CheckCircle2 class="h-3.5 w-3.5 text-emerald-500" :stroke-width="1.75" />
+              <CheckCircle2 class="h-3.5 w-3.5 text-success" :stroke-width="1.75" />
               {{ t('settings.google.credsSaved') }}
             </div>
 
@@ -1932,7 +1924,7 @@ watch(() => settings.value.language, (v) => {
               <Input v-model="googleNewLabel" size="sm" :placeholder="t('settings.google.labelPlaceholder')" @keyup.enter="addGoogleAccount" />
             </div>
 
-            <div v-if="googleError" class="text-[11px] text-red-500 flex items-start gap-1.5">
+            <div v-if="googleError" class="text-[11px] text-destructive flex items-start gap-1.5">
               <AlertTriangle class="h-3.5 w-3.5 shrink-0 mt-0.5" :stroke-width="1.75" />
               <span>{{ googleError }}</span>
             </div>
@@ -1982,12 +1974,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.github.intro') }}
             </p>
 
-            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.github.isolationWarning') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="ghStore.accounts.length" class="space-y-2">
@@ -2020,6 +2011,7 @@ watch(() => settings.value.language, (v) => {
                         variant="ghost"
                         size="icon-sm"
                         :title="t('common.edit')"
+                        :aria-label="t('common.edit')"
                         @click="startEdit(acc.id, acc.label)"
                       >
                         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2028,26 +2020,24 @@ watch(() => settings.value.language, (v) => {
                         variant="destructive-ghost"
                         size="icon-sm"
                         :title="t('common.delete')"
+                        :aria-label="t('common.delete')"
                         @click="handleDeleteAccount(acc.id)"
                       >
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                       </Button>
                     </div>
                   </div>
-                  <div
+                  <Banner
                     v-if="validations[acc.id]"
-                    class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.github.valid') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.github.valid') }}</div>
                     <p v-if="validations[acc.id].username" class="text-muted-foreground mt-1 truncate">@{{ validations[acc.id].username }}</p>
-                    <p v-if="!validations[acc.id].has_repo_scope" class="text-amber-500 mt-1 flex items-center gap-1">
+                    <p v-if="!validations[acc.id].has_repo_scope" class="text-warning mt-1 flex items-center gap-1">
                       <AlertTriangle class="h-3 w-3" :stroke-width="1.75" />
                       {{ t('settings.github.missingRepoScope') }}
                     </p>
-                  </div>
+                  </Banner>
                 </template>
 
                 <!-- Edit mode -->
@@ -2123,12 +2113,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.gitlab.intro') }}
             </p>
 
-            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.gitlab.isolationWarning') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="glStore.accounts.length" class="space-y-2">
@@ -2162,6 +2151,7 @@ watch(() => settings.value.language, (v) => {
                         variant="ghost"
                         size="icon-sm"
                         :title="t('common.edit')"
+                        :aria-label="t('common.edit')"
                         @click="startGitlabEdit(acc.id, acc.label, acc.host, acc.email)"
                       >
                         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2170,25 +2160,23 @@ watch(() => settings.value.language, (v) => {
                         variant="destructive-ghost"
                         size="icon-sm"
                         :title="t('common.delete')"
+                        :aria-label="t('common.delete')"
                         @click="handleDeleteGitlabAccount(acc.id)"
                       >
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                       </Button>
                     </div>
                   </div>
-                  <div
+                  <Banner
                     v-if="glValidations[acc.id]"
-                    class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.gitlab.valid') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.gitlab.valid') }}</div>
                     <p v-if="glValidations[acc.id].username || glValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
                       <template v-if="glValidations[acc.id].username">@{{ glValidations[acc.id].username }}</template>
                       <template v-if="glValidations[acc.id].email"> · {{ glValidations[acc.id].email }}</template>
                     </p>
-                  </div>
+                  </Banner>
                 </template>
 
                 <!-- Edit mode -->
@@ -2284,12 +2272,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.aws.intro') }}
             </p>
 
-            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.aws.isolationWarning') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="awsStore.accounts.length" class="space-y-2">
@@ -2324,13 +2311,14 @@ watch(() => settings.value.language, (v) => {
                         :disabled="awsBusyAccount === acc.id"
                         @click="handleAwsSsoLogin(acc.id)"
                       >
-                        <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        <LogIn class="h-3 w-3" :stroke-width="1.75" />
                         {{ t('settings.aws.ssoLogin') }}
                       </Button>
                       <Button
                         variant="ghost"
                         size="icon-sm"
                         :title="t('common.edit')"
+                        :aria-label="t('common.edit')"
                         @click="startAwsEdit(acc)"
                       >
                         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2339,30 +2327,27 @@ watch(() => settings.value.language, (v) => {
                         variant="destructive-ghost"
                         size="icon-sm"
                         :title="t('common.delete')"
+                        :aria-label="t('common.delete')"
                         @click="handleDeleteAwsAccount(acc.id)"
                       >
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                       </Button>
                     </div>
                   </div>
-                  <div
+                  <Banner
                     v-if="awsValidations[acc.id]"
-                    class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.aws.valid') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.aws.valid') }}</div>
                     <p v-if="awsValidations[acc.id].account_id" class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].account_id }}</p>
                     <p class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].arn }}</p>
-                  </div>
-                  <div
+                  </Banner>
+                  <Banner
                     v-if="awsSsoLoginNeeded[acc.id]"
-                    class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                    tone="warning"
                   >
-                    <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                     <span>{{ awsBusyAccount === acc.id ? t('settings.aws.ssoLoggingIn') : t('settings.aws.ssoExpired') }}</span>
-                  </div>
+                  </Banner>
                 </template>
 
                 <template v-else>
@@ -2392,7 +2377,7 @@ watch(() => settings.value.language, (v) => {
             <div class="border-t border-border/60 pt-3 space-y-2">
               <div class="flex items-center justify-between">
                 <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.aws.addFromProfile') }}</div>
-                <Button variant="ghost" size="icon-sm" :title="t('common.refresh')" :disabled="awsProfilesLoading" @click="loadAwsProfiles">
+                <Button variant="ghost" size="icon-sm" :title="t('common.refresh')" :aria-label="t('common.refresh')" :disabled="awsProfilesLoading" @click="loadAwsProfiles">
                   <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': awsProfilesLoading }" :stroke-width="1.75" />
                 </Button>
               </div>
@@ -2414,7 +2399,7 @@ watch(() => settings.value.language, (v) => {
                   :disabled="awsAddingProfile === p.name"
                   @click="handleQuickAddSsoLogin(p)"
                 >
-                  <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  <LogIn class="h-3 w-3" :stroke-width="1.75" />
                   {{ awsAddingProfile === p.name ? t('settings.aws.ssoLoggingIn') : t('settings.aws.ssoLogin') }}
                 </Button>
                 <Button
@@ -2423,7 +2408,7 @@ watch(() => settings.value.language, (v) => {
                   :disabled="awsAddingProfile === p.name"
                   @click="handleQuickAddProfile(p)"
                 >
-                  <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+                  <Plus class="h-3 w-3" :stroke-width="2" />
                   {{ awsAddingProfile === p.name ? t('settings.aws.adding') : t('common.add') }}
                 </Button>
               </div>
@@ -2444,12 +2429,11 @@ watch(() => settings.value.language, (v) => {
               {{ t('settings.claude.intro') }}
             </p>
 
-            <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-              <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+            <Banner :icon="ShieldAlert" class="leading-relaxed">
               <span class="text-muted-foreground">
                 {{ t('settings.claude.securityNote') }}
               </span>
-            </div>
+            </Banner>
 
             <!-- Account list -->
             <div v-if="claudeStore.accounts.length" class="space-y-2">
@@ -2480,7 +2464,7 @@ watch(() => settings.value.language, (v) => {
                           v-if="claudeStore.budgets[acc.id]?.source === 'plan'"
                           class="text-muted-foreground"
                           :class="{
-                            'text-amber-500': claudeStore.budgets[acc.id]?.is_warning,
+                            'text-warning': claudeStore.budgets[acc.id]?.is_warning,
                             'text-destructive': claudeStore.budgets[acc.id]?.is_over,
                           }"
                         >
@@ -2514,7 +2498,7 @@ watch(() => settings.value.language, (v) => {
                         size="xs"
                         @click="handleClaudeLogin(acc.id)"
                       >
-                        <LogIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+                        <LogIn class="h-3 w-3" :stroke-width="1.75" />
                         {{ t('settings.claude.login') }}
                       </Button>
                       <Button
@@ -2522,6 +2506,7 @@ watch(() => settings.value.language, (v) => {
                         variant="ghost"
                         size="icon-sm"
                         :title="t('settings.claude.setDefault')"
+                        :aria-label="t('settings.claude.setDefault')"
                         @click="handleSetDefaultClaude(acc.id)"
                       >
                         <Star class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2530,6 +2515,7 @@ watch(() => settings.value.language, (v) => {
                         variant="ghost"
                         size="icon-sm"
                         :title="t('common.edit')"
+                        :aria-label="t('common.edit')"
                         @click="startClaudeEdit(acc)"
                       >
                         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2538,6 +2524,7 @@ watch(() => settings.value.language, (v) => {
                         variant="destructive-ghost"
                         size="icon-sm"
                         :title="t('common.delete')"
+                        :aria-label="t('common.delete')"
                         @click="handleDeleteClaudeAccount(acc.id)"
                       >
                         <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -2567,7 +2554,7 @@ watch(() => settings.value.language, (v) => {
                         />
                         <Button
                           variant="outline"
-                          size="xs"
+                          size="sm"
                           :disabled="!claudeLoginCode[acc.id]?.trim()"
                           @click="handleSubmitClaudeCode(acc.id)"
                         >
@@ -2576,25 +2563,21 @@ watch(() => settings.value.language, (v) => {
                       </div>
                     </template>
                   </div>
-                  <div
+                  <Banner
                     v-else-if="claudeValidations[acc.id]?.logged_in"
-                    class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+                    tone="success"
                   >
-                    <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
-                      <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
-                      {{ t('settings.claude.validReady') }}
-                    </div>
+                    <div class="font-medium text-success">{{ t('settings.claude.validReady') }}</div>
                     <p v-if="claudeValidations[acc.id].email" class="text-muted-foreground mt-1 truncate">
                       {{ claudeValidations[acc.id].email }}
                     </p>
-                  </div>
-                  <div
+                  </Banner>
+                  <Banner
                     v-else-if="claudeValidations[acc.id]"
-                    class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+                    tone="warning"
                   >
-                    <AlertTriangle class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
                     <span>{{ t('settings.claude.validNeedsLogin') }}</span>
-                  </div>
+                  </Banner>
                 </template>
 
                 <template v-else>
@@ -2626,20 +2609,12 @@ watch(() => settings.value.language, (v) => {
                   <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.claude.balance.title') }}</div>
                   <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">{{ t('settings.claude.balance.hint') }}</p>
                 </div>
-                <button
-                  type="button"
-                  role="switch"
-                  :aria-checked="settings.claude_auto_balance !== 'false'"
-                  :aria-label="t('settings.claude.balance.title')"
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                  :class="settings.claude_auto_balance !== 'false' ? 'bg-primary' : 'bg-muted'"
-                  @click="settings.claude_auto_balance = settings.claude_auto_balance === 'false' ? 'true' : 'false'"
-                >
-                  <span
-                    class="inline-flex h-4 w-4 transform rounded-full bg-white shadow transition-transform"
-                    :class="settings.claude_auto_balance !== 'false' ? 'translate-x-6' : 'translate-x-1'"
-                  />
-                </button>
+                <ToggleSwitch
+                  size="md"
+                  :checked="settings.claude_auto_balance !== 'false'"
+                  :label="t('settings.claude.balance.title')"
+                  @toggle="settings.claude_auto_balance = settings.claude_auto_balance === 'false' ? 'true' : 'false'"
+                />
               </div>
 
               <div v-if="settings.claude_auto_balance !== 'false'" class="grid grid-cols-2 gap-3">
@@ -2653,22 +2628,18 @@ watch(() => settings.value.language, (v) => {
                 </div>
               </div>
 
-              <div
-                v-if="showBalanceSuggestion"
-                class="p-2 bg-indigo-500/10 border border-indigo-500/20 rounded-md text-[11px] text-indigo-400 flex items-center gap-1.5"
-              >
-                <ArrowRightLeft class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                <span>{{ t('settings.claude.balance.suggest', { account: balanceRecommendedLabel }) }}</span>
-                <Button
-                  v-if="settings.claude_auto_balance === 'false'"
-                  size="xs"
-                  variant="outline"
-                  class="ml-auto"
-                  @click="handleSetDefaultClaude(claudeStore.balance!.recommended_id!)"
-                >
-                  {{ t('settings.claude.setDefault') }}
-                </Button>
-              </div>
+              <Banner v-if="showBalanceSuggestion" tone="info" :icon="ArrowRightLeft">
+                {{ t('settings.claude.balance.suggest', { account: balanceRecommendedLabel }) }}
+                <template v-if="settings.claude_auto_balance === 'false'" #actions>
+                  <Button
+                    size="xs"
+                    variant="outline"
+                    @click="handleSetDefaultClaude(claudeStore.balance!.recommended_id!)"
+                  >
+                    {{ t('settings.claude.setDefault') }}
+                  </Button>
+                </template>
+              </Banner>
             </div>
 
             <!-- Add account -->
@@ -2770,9 +2741,9 @@ watch(() => settings.value.language, (v) => {
                   </button>
                 </div>
                 <AppSelect size="sm" v-model="settings.claude_model" :options="claudeModelOptions" />
-                <p v-if="modelCatalog.validationError" class="text-[11px] text-amber-500">{{ t('settings.ai.validateError') }}</p>
+                <p v-if="modelCatalog.validationError" class="text-[11px] text-warning">{{ t('settings.ai.validateError') }}</p>
                 <p v-else-if="modelCatalog.validating" class="text-[11px] text-muted-foreground">{{ t('settings.ai.validateRunning') }}</p>
-                <p v-else-if="modelCatalog.unsupportedModels.length" class="text-[11px] text-amber-500">{{ t('settings.ai.validateSomeFailed', { models: modelCatalog.unsupportedModels.join(', '), when: fmtRefreshed(modelCatalog.validationCheckedAt) }) }}</p>
+                <p v-else-if="modelCatalog.unsupportedModels.length" class="text-[11px] text-warning">{{ t('settings.ai.validateSomeFailed', { models: modelCatalog.unsupportedModels.join(', '), when: fmtRefreshed(modelCatalog.validationCheckedAt) }) }}</p>
                 <p v-else-if="modelCatalog.validationCheckedAt" class="text-[11px] text-muted-foreground">{{ t('settings.ai.validateAllOk', { when: fmtRefreshed(modelCatalog.validationCheckedAt) }) }}</p>
                 <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.ai.validateHint') }}</p>
               </div>
@@ -2790,7 +2761,7 @@ watch(() => settings.value.language, (v) => {
                   </button>
                 </div>
                 <AppSelect size="sm" v-model="settings.codex_model" :options="codexModelOptions" />
-                <p v-if="modelCatalog.codexError" class="text-[11px] text-amber-500">{{ t('settings.ai.modelsRefreshError') }}</p>
+                <p v-if="modelCatalog.codexError" class="text-[11px] text-warning">{{ t('settings.ai.modelsRefreshError') }}</p>
                 <p v-else-if="modelCatalog.codexRefreshedAt" class="text-[11px] text-muted-foreground">{{ t('settings.ai.modelsCached', { count: modelCatalog.codexModels.length, when: fmtRefreshed(modelCatalog.codexRefreshedAt) }) }}</p>
                 <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.ai.codexRefreshHint') }}</p>
               </div>

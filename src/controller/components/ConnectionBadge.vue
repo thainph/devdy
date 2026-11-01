@@ -23,7 +23,7 @@ const connected = computed(() => props.status === 'connected')
 const busy = computed(() => ['joining', 'handshaking', 'reconnecting'].includes(props.status))
 const healthy = computed(() => connected.value && props.live)
 const tone = computed(() =>
-  connected.value && props.live ? 'text-emerald-500' : props.status === 'error' ? 'text-destructive' : 'text-amber-500',
+  connected.value && props.live ? 'text-success' : props.status === 'error' ? 'text-destructive' : 'text-warning',
 )
 </script>
 
@@ -35,7 +35,7 @@ const tone = computed(() =>
     <span v-if="!healthy" class="truncate">{{ statusLabel }}</span>
     <span
       v-if="hostFingerprint"
-      class="inline-flex shrink-0 text-emerald-500"
+      class="inline-flex shrink-0 text-success"
       :title="t('controller.session.verifiedFingerprint', { fp: hostFingerprint })"
     >
       <ShieldCheck class="h-3.5 w-3.5" :stroke-width="2" />

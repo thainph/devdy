@@ -34,7 +34,7 @@ const open = ref(false)
     :aria-label="t('focus.addTodoHint')"
     @click.stop="open = true"
   >
-    <ListPlus class="h-4 w-4" :stroke-width="1.75" />
+    <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
   </Button>
   <Button
     v-else
@@ -44,7 +44,7 @@ const open = ref(false)
     :title="t('focus.addTodoHint')"
     @click.stop="open = true"
   >
-    <ListPlus class="h-3 w-3" :stroke-width="1.75" />
+    <ListPlus :class="size === 'sm' ? 'h-3.5 w-3.5' : 'h-3 w-3'" :stroke-width="1.75" />
     {{ t('focus.addTodo') }}
   </Button>
   <TodoCaptureModal :open="open" :prefill="prefill" @close="open = false" />

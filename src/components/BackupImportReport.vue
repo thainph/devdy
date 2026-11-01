@@ -46,7 +46,7 @@ function reloadApp() {
       {{ report.secretsImported ? t('settings.backup.report.secretsImported') : t('settings.backup.report.secretsNotImported') }}
     </p>
     <p class="text-[11px] text-muted-foreground">{{ t('settings.backup.report.reloginHint') }}</p>
-    <ul v-if="report.warnings.length" class="space-y-1 text-[11px] text-amber-600 dark:text-amber-400">
+    <ul v-if="report.warnings.length" class="space-y-1 text-[11px] text-warning">
       <li v-for="(w, i) in report.warnings" :key="i" class="flex items-start gap-1.5">
         <AlertTriangle class="mt-px h-3 w-3 shrink-0" :stroke-width="1.75" />
         <span class="break-all">{{ w }}</span>

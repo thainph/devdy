@@ -19,7 +19,7 @@ import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { Check, Inbox, ListTodo, Search, Slack, StickyNote } from 'lucide-vue-next'
-import { DropdownMenu } from '@/components/ui'
+import { Button, DropdownMenu, SegmentedControl, type SegmentedOption } from '@/components/ui'
 import { linkReference, type LinkTarget } from '@/lib/sessionLinks'
 import SlackStatusIcon from '@/components/slack/SlackStatusIcon.vue'
 import { firstLine, relativeAge } from '@/lib/itemText'
@@ -87,6 +87,9 @@ const todos = useTodosStore()
 const open = ref(false)
 const query = ref('')
 const filter = ref<Filter>(loadFilter())
+const filterOptions = computed<SegmentedOption<Filter>[]>(() =>
+  FILTERS.map((f) => ({ value: f, label: t(`capture.picker.${f}`), icon: f === 'all' ? undefined : KIND_ICON[f] })),
+)
 /** Todos: open ones only unless this is on. */
 const showDone = ref(false)
 const active = ref(0)
@@ -295,35 +298,22 @@ onBeforeUnmount(() => {
 <template>
   <DropdownMenu align="left" class="shrink-0" @update:open="onOpenChange">
     <template #trigger>
-      <button
-        class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+      <Button
+        variant="ghost"
+        size="icon"
+        class="shrink-0"
         :disabled="disabled"
         :title="t('capture.picker.title')"
         :aria-label="t('capture.picker.title')"
       >
-        <Inbox class="h-4 w-4" :stroke-width="2" />
-      </button>
+        <Inbox class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </Button>
     </template>
 
     <div class="w-[22rem]">
       <!-- Kind filter + search. Clicks stop here so they don't close the menu. -->
       <div class="mb-1 space-y-1" @click.stop>
-        <div class="flex rounded-md bg-muted p-0.5 text-[11px] font-medium">
-          <button
-            v-for="f in FILTERS"
-            :key="f"
-            type="button"
-            class="flex flex-1 cursor-pointer items-center justify-center gap-1 rounded px-2 py-1 transition-colors"
-            :class="filter === f
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'"
-            :aria-pressed="filter === f"
-            @click="setFilter(f)"
-          >
-            <component :is="KIND_ICON[f]" v-if="f !== 'all'" class="h-3 w-3" :stroke-width="2" />
-            {{ t(`capture.picker.${f}`) }}
-          </button>
-        </div>
+        <SegmentedControl :model-value="filter" :options="filterOptions" @update:model-value="setFilter" />
         <div class="relative">
           <Search
             class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"

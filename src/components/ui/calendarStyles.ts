@@ -1,7 +1,7 @@
 // Shared look for DatePicker + DateRangePicker so both popovers stay in sync.
 // radix-vue Calendar parts expose state via data-* attributes (data-selected,
 // data-today, data-outside-view, data-disabled, …) — style through those.
-import { controlSize } from './controlStyles'
+import { controlHeight, controlSize } from './controlStyles'
 
 /** Trigger button: same box as AppSelect's default variant. */
 export const pickerTrigger = (size: keyof typeof controlSize) => [
@@ -9,6 +9,7 @@ export const pickerTrigger = (size: keyof typeof controlSize) => [
   'hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
   'disabled:opacity-50 disabled:cursor-not-allowed data-[state=open]:border-ring data-[state=open]:ring-1 data-[state=open]:ring-ring',
   controlSize[size],
+  controlHeight[size],
 ]
 
 export const popoverContent =

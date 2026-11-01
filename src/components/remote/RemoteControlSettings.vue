@@ -5,7 +5,7 @@
 // (RemoteIndicator → RemoteSessionModal).
 import { onMounted, onUnmounted, ref, computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Button, Card, Badge } from '@/components/ui'
+import { Button, Card, Badge, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
@@ -156,26 +156,14 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
               <template v-else>{{ t('remote.settings.state.off') }}</template>
             </p>
           </div>
-          <button
-            type="button"
-            role="switch"
-            :aria-checked="enabled"
-            :disabled="togglingEnabled || !canToggle"
-            class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-            :class="enabled ? 'bg-primary' : 'bg-muted'"
-            @click="toggleEnabled"
-          >
-            <span
-              class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-              :class="enabled ? 'translate-x-6' : 'translate-x-1'"
-            >
-              <Loader2
-                v-if="togglingEnabled"
-                class="h-3 w-3 animate-spin text-primary"
-                :stroke-width="2.5"
-              />
-            </span>
-          </button>
+          <ToggleSwitch
+            size="md"
+            :checked="enabled"
+            :label="t('remote.settings.enable')"
+            :disabled="!canToggle"
+            :loading="togglingEnabled"
+            @toggle="toggleEnabled"
+          />
         </div>
 
         <p class="text-[11px] text-muted-foreground/70 border-t border-border/50 pt-3">
@@ -199,7 +187,7 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
             <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('remote.settings.controlOtherHint') }}</p>
           </div>
           <Button variant="outline" class="shrink-0" @click="openRemoteDesktop">
-            <MonitorSmartphone class="h-4 w-4" :stroke-width="1.75" />
+            <MonitorSmartphone class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t('remote.settings.controlOtherOpen') }}
           </Button>
         </div>
@@ -215,22 +203,26 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
         <ShieldCheck class="h-4 w-4 text-primary" :stroke-width="1.75" />
         <h3 class="text-sm font-semibold flex-1">{{ t('remote.settings.auditLog') }}</h3>
         <div class="flex items-center gap-1">
-          <button
-            class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          <Button
+            variant="ghost"
+            size="icon-sm"
             :title="t('common.refresh')"
+            :aria-label="t('common.refresh')"
             @click="store.refreshAudit().catch(() => {})"
           >
             <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-          <button
-            class="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          </Button>
+          <Button
+            variant="destructive-ghost"
+            size="icon-sm"
             :title="t('remote.settings.clearLog')"
+            :aria-label="t('remote.settings.clearLog')"
             :disabled="clearingAudit || !store.audit.length"
             @click="clearAudit"
           >
             <Loader2 v-if="clearingAudit" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
             <Trash2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
+          </Button>
         </div>
       </template>
       <div v-if="store.audit.length" class="max-h-80 overflow-auto">

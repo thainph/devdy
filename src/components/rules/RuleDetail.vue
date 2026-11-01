@@ -13,7 +13,7 @@ import {
   AlertCircle, Columns2, Download, Eye, FileText, FolderCheck, FolderOpen, LayoutTemplate,
   MoreHorizontal, Pencil, RefreshCw, Trash2, X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
+import { AppSelect, Banner, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import SkillEditor from '@/components/SkillEditor.vue'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -267,12 +267,12 @@ defineExpose({ dirty, save })
         <span :title="metaTitle">{{ meta }}</span>
       </template>
       <template #actions>
-        <Button size="xs" :disabled="!canSave" :title="t('rules.detail.saveHint')" @click="save">
+        <Button size="sm" :disabled="!canSave" :title="t('rules.detail.saveHint')" @click="save">
           {{ saving ? t('rules.editor.saving') : t('common.save') }}
         </Button>
         <DropdownMenu align="right">
           <template #trigger>
-            <Button variant="outline" size="icon-sm" :title="t('rules.detail.moreActions')" :aria-label="t('rules.detail.moreActions')">
+            <Button variant="outline" size="icon" :title="t('rules.detail.moreActions')" :aria-label="t('rules.detail.moreActions')">
               <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>
@@ -382,32 +382,23 @@ defineExpose({ dirty, save })
             <span v-if="dirty" class="h-1.5 w-1.5 rounded-full bg-primary" />
           </span>
         </div>
-        <div class="flex shrink-0 rounded-md bg-muted p-0.5" role="group">
-          <button
-            v-for="m in viewModes"
-            :key="m.value"
-            type="button"
-            class="flex cursor-pointer items-center rounded p-1 transition-colors"
-            :class="viewMode === m.value
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'"
-            :title="m.label"
-            :aria-label="m.label"
-            :aria-pressed="viewMode === m.value"
-            @click="setViewMode(m.value)"
-          >
-            <component :is="m.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-        </div>
+        <SegmentedControl
+          :model-value="viewMode"
+          :options="viewModes"
+          :stretch="false"
+          icon-only
+          @update:model-value="setViewMode"
+        />
       </div>
 
-      <div
+      <Banner
         v-if="validationError"
-        class="flex shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-500"
+        tone="warning"
+        :icon="AlertCircle"
+        class="shrink-0 rounded-none border-x-0 border-t-0 px-3 text-xs"
       >
-        <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-        <span class="min-w-0 truncate" :title="validationError">{{ validationError }}</span>
-      </div>
+        <p class="truncate" :title="validationError">{{ validationError }}</p>
+      </Banner>
 
       <div class="flex min-h-0 flex-1">
         <div

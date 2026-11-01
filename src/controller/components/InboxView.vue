@@ -150,7 +150,7 @@ const sinceLabel = computed(() =>
           class="shrink-0 h-4 w-4 text-destructive"
           :stroke-width="2"
         />
-        <CheckCircle2 v-else class="shrink-0 h-4 w-4 text-emerald-500" :stroke-width="2" />
+        <CheckCircle2 v-else class="shrink-0 h-4 w-4 text-success" :stroke-width="2" />
         <span class="min-w-0 flex-1">
           <span class="block text-sm truncate">{{ runTitle(run, run.id) }}</span>
           <span class="block text-[10px] text-foreground/45 truncate">{{ finishedLabel(run) }}</span>

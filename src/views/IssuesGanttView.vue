@@ -5,9 +5,9 @@ import { useRoute } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
 import { useProjectIssuesStore, type MilestoneGroup } from '@/stores/projectIssues'
-import { Button, Card, AppSelect, Skeleton } from '@/components/ui'
+import { Button, Card, AppSelect, Skeleton, Input, PageHeader, SegmentedControl, Banner } from '@/components/ui'
 import GanttChart from '@/components/GanttChart.vue'
-import { RefreshCw, CircleDot, AlertTriangle, Info, GanttChartSquare, FolderOpen } from 'lucide-vue-next'
+import { RefreshCw, CircleDot, GanttChartSquare, FolderOpen } from 'lucide-vue-next'
 
 const route = useRoute()
 const projectsStore = useProjectsStore()
@@ -175,6 +175,14 @@ function setGroupMode(mode: GroupMode) {
 function setSortMode(mode: SortMode) {
   sortMode.value = mode
 }
+const groupModeOptions = computed<{ value: GroupMode, label: string }[]>(() => [
+  { value: 'milestone', label: t('gantt.groupMilestone') },
+  { value: 'assignee', label: t('gantt.groupAssignee') },
+])
+const sortModeOptions = computed<{ value: SortMode, label: string }[]>(() => [
+  { value: 'start', label: t('gantt.sortStart') },
+  { value: 'assignee', label: t('gantt.groupAssignee') },
+])
 
 // ── Milestone sorting (overdue → at-risk → on-track → none) ───────────────────
 type MsStatus = 'overdue' | 'at-risk' | 'ontrack' | 'none'
@@ -253,10 +261,11 @@ function relativeTime(iso: string | null): string {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0 gap-4">
-      <div class="flex items-center gap-2 min-w-0">
+    <PageHeader :title="t('gantt.title')">
+      <template #leading>
         <GanttChartSquare class="h-4 w-4 text-primary shrink-0" :stroke-width="2" />
-        <h1 class="text-sm font-semibold shrink-0">{{ t('gantt.title') }}</h1>
+      </template>
+      <template #meta>
         <span class="text-muted-foreground/40 shrink-0">/</span>
         <AppSelect
           v-model="selectedProjectId"
@@ -265,23 +274,24 @@ function relativeTime(iso: string | null): string {
           :options="projectOptions"
           :placeholder="t('gantt.selectProject')"
         />
-      </div>
-      <div class="flex items-center gap-2 shrink-0">
+      </template>
+      <template #actions>
         <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
           {{ t('gantt.stalledLabel') }}
-          <input
+          <Input
             v-model.number="store.staleDays"
             type="number"
-            class="w-14 rounded border border-border/60 bg-transparent px-1.5 py-0.5 text-[11px]"
+            size="sm"
+            class="w-16"
           />
           {{ t('gantt.days') }}
         </label>
-        <Button variant="ghost" :disabled="store.loading || !selectedProjectId" @click="store.refresh(selectedProjectId, { force: true })">
-          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="2" />
+        <Button variant="outline" :disabled="store.loading || !selectedProjectId" @click="store.refresh(selectedProjectId, { force: true })">
+          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
           {{ t('common.refresh') }}
         </Button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Content -->
     <div class="flex-1 flex flex-col min-h-0 overflow-hidden">
@@ -335,36 +345,24 @@ function relativeTime(iso: string | null): string {
       </div>
 
       <!-- Error -->
-      <div v-else-if="store.error" class="m-6 p-4 bg-destructive/10 text-destructive rounded-lg text-sm border border-destructive/20">
+      <Banner v-else-if="store.error" tone="destructive" class="m-6">
         {{ store.error }}
-      </div>
+      </Banner>
 
       <div v-else-if="store.board" class="flex-1 flex flex-col min-h-0">
         <!-- Fixed region: banners, summary cards, repo filter -->
         <div class="shrink-0 p-6 pb-4 space-y-4">
         <!-- Banners -->
-        <div
-          v-if="!store.board.boardLinked"
-          class="flex items-center gap-2 p-3 rounded-lg text-[12px] bg-primary/10 border border-primary/20 text-foreground"
-        >
-          <Info class="h-4 w-4 text-primary shrink-0" />
+        <Banner v-if="!store.board.boardLinked" tone="info">
           {{ t('gantt.bannerNoBoardPrefix') }}
           <RouterLink :to="`/projects/${selectedProjectId}/settings`" class="text-primary hover:underline font-medium">{{ t('gantt.bannerNoBoardLink') }}</RouterLink>.
-        </div>
-        <div
-          v-if="store.board.skippedNonGithub"
-          class="flex items-center gap-2 p-3 rounded-lg text-[12px] bg-amber-500/10 border border-amber-500/20"
-        >
-          <AlertTriangle class="h-4 w-4 text-amber-500 shrink-0" />
+        </Banner>
+        <Banner v-if="store.board.skippedNonGithub" tone="warning">
           {{ t('gantt.bannerSkippedNonGithub') }}
-        </div>
-        <div
-          v-if="store.board.truncated"
-          class="flex items-center gap-2 p-3 rounded-lg text-[12px] bg-amber-500/10 border border-amber-500/20"
-        >
-          <AlertTriangle class="h-4 w-4 text-amber-500 shrink-0" />
+        </Banner>
+        <Banner v-if="store.board.truncated" tone="warning">
           {{ t('gantt.bannerTruncated') }}
-        </div>
+        </Banner>
 
         <!-- Summary cards -->
         <div class="grid grid-cols-2 md:grid-cols-4 gap-3 animate-fade-rise">
@@ -374,11 +372,11 @@ function relativeTime(iso: string | null): string {
           </Card>
           <Card body-class="p-3">
             <div class="text-[11px] text-muted-foreground">{{ t('gantt.summaryOverdue') }}</div>
-            <div class="text-xl font-semibold mt-0.5" :class="store.summary.overdue > 0 ? 'text-red-500' : ''">{{ store.summary.overdue }}</div>
+            <div class="text-xl font-semibold mt-0.5" :class="store.summary.overdue > 0 ? 'text-destructive' : ''">{{ store.summary.overdue }}</div>
           </Card>
           <Card body-class="p-3">
             <div class="text-[11px] text-muted-foreground">{{ t('gantt.summaryAtRisk') }}</div>
-            <div class="text-xl font-semibold mt-0.5" :class="store.summary.atRisk > 0 ? 'text-amber-500' : ''">{{ store.summary.atRisk }}</div>
+            <div class="text-xl font-semibold mt-0.5" :class="store.summary.atRisk > 0 ? 'text-warning' : ''">{{ store.summary.atRisk }}</div>
           </Card>
           <Card body-class="p-3">
             <div class="text-[11px] text-muted-foreground">{{ t('gantt.summaryStalled') }}</div>
@@ -405,42 +403,22 @@ function relativeTime(iso: string | null): string {
         <div class="flex items-center gap-x-4 gap-y-2 flex-wrap">
           <div class="flex items-center gap-1.5">
             <span class="text-[11px] text-muted-foreground mr-0.5">{{ t('gantt.groupBy') }}</span>
-            <div class="inline-flex rounded-md border border-border/60 p-0.5">
-              <button
-                class="rounded px-2 py-0.5 text-[11px] transition-colors"
-                :class="groupMode === 'milestone' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
-                @click="setGroupMode('milestone')"
-              >
-                {{ t('gantt.groupMilestone') }}
-              </button>
-              <button
-                class="rounded px-2 py-0.5 text-[11px] transition-colors"
-                :class="groupMode === 'assignee' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
-                @click="setGroupMode('assignee')"
-              >
-                {{ t('gantt.groupAssignee') }}
-              </button>
-            </div>
+            <SegmentedControl
+              :model-value="groupMode"
+              :options="groupModeOptions"
+              :stretch="false"
+              @update:model-value="setGroupMode"
+            />
           </div>
 
           <div class="flex items-center gap-1.5">
             <span class="text-[11px] text-muted-foreground mr-0.5">{{ t('gantt.sortBy') }}</span>
-            <div class="inline-flex rounded-md border border-border/60 p-0.5">
-              <button
-                class="rounded px-2 py-0.5 text-[11px] transition-colors"
-                :class="sortMode === 'start' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
-                @click="setSortMode('start')"
-              >
-                {{ t('gantt.sortStart') }}
-              </button>
-              <button
-                class="rounded px-2 py-0.5 text-[11px] transition-colors"
-                :class="sortMode === 'assignee' ? 'bg-primary/10 text-primary' : 'text-muted-foreground hover:text-foreground'"
-                @click="setSortMode('assignee')"
-              >
-                {{ t('gantt.groupAssignee') }}
-              </button>
-            </div>
+            <SegmentedControl
+              :model-value="sortMode"
+              :options="sortModeOptions"
+              :stretch="false"
+              @update:model-value="setSortMode"
+            />
           </div>
 
           <div v-if="allAssignees.length > 0 || hasUnassigned" class="flex items-center gap-1.5 flex-wrap">

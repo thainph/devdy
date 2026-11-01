@@ -187,7 +187,7 @@ watch(() => props.text, () => runTranslate())
           <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
           {{ t('misc.translate.translating') }}
         </div>
-        <div v-else-if="phase === 'error'" class="text-xs text-red-500 dark:text-red-400 space-y-2">
+        <div v-else-if="phase === 'error'" class="text-xs text-destructive space-y-2">
           <p class="whitespace-pre-wrap break-words">{{ errorMsg }}</p>
           <button
             class="inline-flex items-center gap-1 text-[11px] text-primary hover:underline cursor-pointer"

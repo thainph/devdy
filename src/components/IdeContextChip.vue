@@ -43,7 +43,7 @@ function baseName(path: string): string {
       }}</span>
       <span
         v-if="item.path"
-        class="font-mono truncate decoration-dotted underline-offset-2 group-hover:underline group-hover:text-sky-500 dark:group-hover:text-sky-400 transition-colors"
+        class="font-mono truncate decoration-dotted underline-offset-2 group-hover:underline group-hover:text-info transition-colors"
         :class="variant === 'inside' ? 'text-foreground/80' : 'text-foreground/70'"
       >{{ baseName(item.path) }}</span>
       <span v-if="item.detail" class="font-mono opacity-70">{{ item.detail }}</span>
