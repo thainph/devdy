@@ -49,7 +49,7 @@ const props = withDefaults(defineProps<{
 
 const attrs = useAttrs()
 const classes = computed(() =>
-  cn(button({ variant: props.variant, size: props.size }), attrs.class as string | undefined),
+  cn('ui-btn', `ui-btn-${props.variant ?? 'primary'}`, button({ variant: props.variant, size: props.size }), attrs.class as string | undefined),
 )
 </script>
 

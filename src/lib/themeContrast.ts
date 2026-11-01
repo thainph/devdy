@@ -34,6 +34,13 @@ export const CONTRAST_PAIRS: [string, string, number][] = [
   ['success-foreground', 'success', 4.5],
   ['warning-foreground', 'warning', 4.5],
   ['info-foreground', 'info', 4.5],
+  // Colored text straight on the page (`text-primary` links, `text-success` /
+  // `text-warning` / `text-destructive` status lines): WCAG's 3:1 floor for UI text.
+  ['primary', 'background', 3],
+  ['destructive', 'background', 3],
+  ['success', 'background', 3],
+  ['warning', 'background', 3],
+  ['info', 'background', 3],
 ]
 
 /** Tokens every named-theme block must define itself (the rest may fall back to base). */

@@ -33,4 +33,4 @@ export const controlHeight = {
  * radius, focus ring, disabled + placeholder styling. Size is applied on top.
  */
 export const fieldBase =
-  'w-full bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-ring transition-colors disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-muted-foreground'
+  'ui-field w-full bg-background border border-border rounded-md focus:outline-none focus:ring-1 focus:ring-ring transition-colors disabled:opacity-50 disabled:cursor-not-allowed placeholder:text-muted-foreground'

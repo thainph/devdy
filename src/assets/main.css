@@ -13,6 +13,11 @@
 @import "./themes/contrast.css";
 @import "./themes/christmas.css";
 @import "./themes/tet.css";
+@import "./themes/crt.css";
+@import "./themes/synthwave.css";
+@import "./themes/brutal.css";
+/* Aurora reacting to html[data-agent-state] (running / waiting / error / done). */
+@import "./agent-ambient.css";
 
 /* Inter variable — self-hosted so it works offline. One file covers all weights
  * (100–900) via the variable `wght` axis; a separate file for true italics. */
@@ -107,6 +112,8 @@
     /* Non-primary tints of the aurora background; themes may override. */
     --aurora-1: 280 85% 60%;
     --aurora-2: 200 90% 60%;
+    /* UI font stack; skins may swap it (see DESIGN_SYSTEM.md → Skins). */
+    --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
   .dark {
@@ -548,7 +555,7 @@
     position: relative;
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-ui);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11"; /* friendlier 1/4/6/9/a/l glyphs */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;

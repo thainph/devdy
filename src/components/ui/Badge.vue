@@ -11,7 +11,7 @@ defineOptions({ inheritAttrs: false })
 // contrast and cleaner than the old translucent /15 + -400 text (which was
 // low-contrast at these 9-10px sizes). One rule for every chip, app-wide.
 const badge = cva(
-  'inline-flex items-center gap-1 rounded border font-semibold whitespace-nowrap',
+  'ui-badge inline-flex items-center gap-1 rounded border font-semibold whitespace-nowrap',
   {
     variants: {
       tone: {
@@ -40,7 +40,7 @@ const props = withDefaults(defineProps<{
 }>(), {})
 
 const attrs = useAttrs()
-const classes = computed(() => cn(badge({ tone: props.tone, size: props.size }), attrs.class as string | undefined))
+const classes = computed(() => cn(`ui-badge-${props.tone ?? 'neutral'}`, badge({ tone: props.tone, size: props.size }), attrs.class as string | undefined))
 </script>
 
 <template>

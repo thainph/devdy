@@ -131,7 +131,29 @@ desktop `xs`/`icon-sm` sizes here.
 Touch targets: ≥ 32px in dense toolbars, ≥ 36px (`Button size="md"`) for decision
 buttons, ≥ 44px for a standalone primary action.
 
-## 6. Checklist for a new screen
+## 6. Themes and skins
+
+Palettes live one per file in `src/assets/themes/<id>.css` (imported at the top of `main.css`) and are registered in `src/lib/colorThemes.ts`. Every file defines a `[data-theme='<id>']:not(.dark)` and a `[data-theme='<id>'].dark` block with the full token set plus `--aurora-1/2`; `src/lib/__tests__/themeContrast.test.mjs` enforces WCAG AA on every pair.
+
+A **skin** (group `skin`) also changes shape, material and motion, not just color. Skin rules go in the same file, **outside `@layer`** (unlayered rules beat Tailwind utilities), always scoped under `[data-theme='<id>']`. Hooks a skin may restyle:
+
+| Hook | Element |
+|---|---|
+| `--radius` | every `rounded-sm/md/lg` (and primitives) |
+| `--font-ui` | body font stack (`font-mono` follows Tailwind's `--font-mono`) |
+| `.ui-card` `.ui-modal` `.ui-drawer` `.ui-popover` `.ui-toast` | surfaces (Card, Modal, Drawer, Dropdown/ContextMenu, toasts) |
+| `.ui-btn` + `.ui-btn-<variant>` | Button (`primary`, `outline`, `ghost`, `destructive`, `destructive-ghost`, `subtle`) |
+| `.ui-field` | Input / Textarea / AppSelect trigger |
+| `.ui-badge` + `.ui-badge-<tone>` | Badge (`neutral`, `running`, `success`, `error`, `warning`, `info`, `primary`) |
+| `.ui-backdrop` | Modal / Drawer scrim |
+| `.app-shell` · `.app-titlebar` · `.app-sidebar` | window root (opaque `bg-background` — it hides `body::before` unless a skin makes it translucent) · title bar · navigation sidebar |
+| `.app-sidebar .is-active` · `.app-nav-indicator` | active nav link · its 2px primary bar |
+| `body::before` / `body::after` | full-window background layers (aurora by default) |
+| `html[data-agent-state]` | `idle` · `running` · `waiting` · `error` · `done` — the app-wide agent state (see `src/assets/agent-ambient.css`) |
+
+Skin rules: keep text readable (the contrast test still runs on the tokens), put any animation behind `@media (prefers-reduced-motion: no-preference)` and under `html:not([data-animated-bg='false'])`, and never animate layout properties — the stream log must stay smooth.
+
+## 7. Checklist for a new screen
 
 1. Layout from §4, primitives from `@/components/ui`.
 2. Buttons and controls follow §2–§3; same-row controls share one size.

@@ -3,9 +3,9 @@
 // src/assets/themes/<id>.css; `default` has no attribute (the :root / .dark
 // tokens). Pure data, shared by the desktop picker and the phone Controller.
 
-export type ColorThemeGroup = 'classic' | 'editor' | 'trend' | 'seasonal'
+export type ColorThemeGroup = 'skin' | 'classic' | 'editor' | 'trend' | 'seasonal'
 
-export const COLOR_THEME_GROUPS: readonly ColorThemeGroup[] = ['classic', 'editor', 'trend', 'seasonal']
+export const COLOR_THEME_GROUPS: readonly ColorThemeGroup[] = ['skin', 'classic', 'editor', 'trend', 'seasonal']
 
 export interface ColorThemeDef {
   id: string
@@ -31,6 +31,9 @@ export const COLOR_THEME_DEFS: readonly ColorThemeDef[] = [
   { id: 'neon', group: 'trend' },
   { id: 'sand', group: 'trend' },
   { id: 'contrast', group: 'trend' },
+  { id: 'crt', group: 'skin' },
+  { id: 'synthwave', group: 'skin' },
+  { id: 'brutal', group: 'skin' },
   { id: 'midautumn', group: 'seasonal' },
   { id: 'christmas', group: 'seasonal' },
   { id: 'tet', group: 'seasonal' },

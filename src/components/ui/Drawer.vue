@@ -28,7 +28,7 @@ const slots = useSlots()
 const SIZES = { sm: 'max-w-sm', md: 'max-w-md', lg: 'max-w-xl', xl: 'max-w-3xl' }
 const panelClass = computed(() =>
   cn(
-    'drawer-panel relative flex h-full w-full flex-col bg-popover shadow-2xl shadow-black/40',
+    'ui-drawer drawer-panel relative flex h-full w-full flex-col bg-popover shadow-2xl shadow-black/40',
     SIZES[props.size],
     props.side === 'left' ? 'border-r border-border/70' : 'border-l border-border/70',
   ),
@@ -64,7 +64,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
     <Transition name="drawer">
       <div
         v-if="open"
-        class="fixed inset-0 z-40 flex bg-black/60"
+        class="ui-backdrop fixed inset-0 z-40 flex bg-black/60"
         :class="[side === 'left' ? 'justify-start side-left' : 'justify-end side-right']"
         @click.self="onOverlayClick"
       >

@@ -23,8 +23,8 @@
     --sidebar: 25 35% 93%;
     --aurora-1: 3 53% 67%;
     --aurora-2: 189 30% 48%;
-    --warning: 35 81% 56%;
-    --warning-foreground: 28 70% 14%;
+    --warning: 35 81% 34%;
+    --warning-foreground: 0 0% 100%;
     --info: 197 53% 34%;
     --info-foreground: 0 0% 100%;
   }

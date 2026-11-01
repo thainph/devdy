@@ -34,7 +34,7 @@ const slots = useSlots()
 const SIZES = { sm: 'max-w-md', md: 'max-w-lg', lg: 'max-w-2xl', xl: 'max-w-3xl', full: 'max-w-[96vw]' }
 const panelClass = computed(() =>
   cn(
-    'w-full rounded-lg border border-border/70 bg-popover shadow-2xl shadow-black/30',
+    'ui-modal w-full rounded-lg border border-border/70 bg-popover shadow-2xl shadow-black/30',
     SIZES[props.size],
     props.scrollBody &&
       (props.size === 'full'
@@ -71,7 +71,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 <template>
   <div
     v-if="open"
-    class="fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
+    class="ui-backdrop fixed inset-0 z-50 flex items-center justify-center bg-black/60 p-4"
     @click.self="onOverlayClick"
   >
     <div :class="panelClass">

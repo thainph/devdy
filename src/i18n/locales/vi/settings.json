@@ -49,7 +49,11 @@
     "colorContrast": "Tương phản cao",
     "colorChristmas": "Giáng sinh 🎄",
     "colorTet": "Tết 🧧",
+    "colorCrt": "Terminal CRT",
+    "colorSynthwave": "Synthwave '84",
+    "colorBrutal": "Neo-brutalism",
     "colorGroup": {
+      "skin": "Skin (đổi cả giao diện)",
       "classic": "Cổ điển",
       "editor": "Theme editor phổ biến",
       "trend": "Xu hướng",

@@ -23,12 +23,12 @@
     --sidebar: 219 27% 91%;
     --aurora-1: 311 20% 63%;
     --aurora-2: 179 25% 65%;
-    --success: 92 28% 65%;
-    --success-foreground: 220 16% 22%;
-    --warning: 40 71% 73%;
-    --warning-foreground: 220 16% 22%;
-    --info: 210 36% 66%;
-    --info-foreground: 220 16% 22%;
+    --success: 92 28% 37%;
+    --success-foreground: 0 0% 100%;
+    --warning: 40 71% 34%;
+    --warning-foreground: 0 0% 100%;
+    --info: 210 36% 46%;
+    --info-foreground: 0 0% 100%;
   }
   [data-theme='nord'].dark {
     --background: 220 16% 22%;
