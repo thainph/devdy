@@ -39,9 +39,10 @@
     "colorTahoe": "macOS Tahoe (Liquid Glass)",
     "colorGraphite": "macOS Graphite",
     "colorGroup": {
-      "macos": "macOS native",
-      "editor": "Theme editor phổ biến",
-      "other": "Khác"
+      "basic": "Cơ bản",
+      "macos": "macOS",
+      "dev": "Lập trình",
+      "seasonal": "Theo mùa"
     },
     "colorThemeHint": "Hoạt động với cả chế độ sáng và tối.",
     "animatedBackground": "Nền động",

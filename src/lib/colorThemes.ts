@@ -3,9 +3,9 @@
 // src/assets/themes/<id>.css; `default` has no attribute (the :root / .dark
 // tokens). Pure data, shared by the desktop picker and the phone Controller.
 
-export type ColorThemeGroup = 'macos' | 'editor' | 'other'
+export type ColorThemeGroup = 'basic' | 'macos' | 'dev' | 'seasonal'
 
-export const COLOR_THEME_GROUPS: readonly ColorThemeGroup[] = ['macos', 'editor', 'other']
+export const COLOR_THEME_GROUPS: readonly ColorThemeGroup[] = ['basic', 'macos', 'dev', 'seasonal']
 
 export interface ColorThemeDef {
   id: string
@@ -16,16 +16,16 @@ export interface ColorThemeDef {
 }
 
 export const COLOR_THEME_DEFS: readonly ColorThemeDef[] = [
-  { id: 'default', group: 'other' },
+  { id: 'default', group: 'basic' },
+  { id: 'contrast', group: 'basic' },
   { id: 'macos', group: 'macos', systemAccent: true },
   { id: 'tahoe', group: 'macos', systemAccent: true },
   { id: 'graphite', group: 'macos' },
-  { id: 'catppuccin', group: 'editor' },
-  { id: 'tokyonight', group: 'editor' },
-  { id: 'nord', group: 'editor' },
-  { id: 'crt', group: 'other' },
-  { id: 'contrast', group: 'other' },
-  { id: 'midautumn', group: 'other' },
+  { id: 'catppuccin', group: 'dev' },
+  { id: 'tokyonight', group: 'dev' },
+  { id: 'nord', group: 'dev' },
+  { id: 'crt', group: 'dev' },
+  { id: 'midautumn', group: 'seasonal' },
 ]
 
 export const COLOR_THEMES: readonly string[] = COLOR_THEME_DEFS.map((d) => d.id)

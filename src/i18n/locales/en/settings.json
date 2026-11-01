@@ -39,9 +39,10 @@
     "colorTahoe": "macOS Tahoe (Liquid Glass)",
     "colorGraphite": "macOS Graphite",
     "colorGroup": {
-      "macos": "macOS native",
-      "editor": "Editor favorites",
-      "other": "Other"
+      "basic": "Basic",
+      "macos": "macOS",
+      "dev": "Developer",
+      "seasonal": "Seasonal"
     },
     "colorThemeHint": "Works with both light and dark mode.",
     "animatedBackground": "Animated Background",
