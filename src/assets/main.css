@@ -42,8 +42,11 @@
   /* Semantic status colors — use these instead of raw emerald/amber/sky/red.
    * Theme-independent (only light vs dark), see the :root / .dark blocks. */
   --color-success: hsl(var(--success));
+  --color-success-foreground: hsl(var(--success-foreground));
   --color-warning: hsl(var(--warning));
+  --color-warning-foreground: hsl(var(--warning-foreground));
   --color-info: hsl(var(--info));
+  --color-info-foreground: hsl(var(--info-foreground));
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 4px);
@@ -81,6 +84,9 @@
     --success: 161 94% 30%; /* emerald-600 */
     --warning: 32 95% 44%; /* amber-600 */
     --info: 200 98% 39%; /* sky-600 */
+    --success-foreground: 0 0% 100%;
+    --warning-foreground: 0 0% 100%;
+    --info-foreground: 0 0% 100%;
   }
 
   .dark {
@@ -107,6 +113,10 @@
     --success: 158 64% 52%; /* emerald-400 */
     --warning: 43 96% 56%; /* amber-400 */
     --info: 198 93% 60%; /* sky-400 */
+    /* Light fills in dark mode → dark text on solid success/warning/info. */
+    --success-foreground: 164 86% 10%;
+    --warning-foreground: 26 83% 14%;
+    --info-foreground: 204 80% 12%;
   }
 
   /* ---------------------------------------------------------------------------

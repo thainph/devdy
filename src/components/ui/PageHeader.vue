@@ -14,6 +14,8 @@ withDefaults(defineProps<{
 })
 
 defineSlots<{
+  /** Before the title (back button, page icon). */
+  leading?: () => unknown
   meta?: () => unknown
   actions?: () => unknown
 }>()
@@ -22,6 +24,7 @@ defineSlots<{
 <template>
   <div class="flex h-13 shrink-0 items-center justify-between gap-3 border-b border-border/60 px-6">
     <div class="flex min-w-0 items-center gap-2">
+      <slot name="leading" />
       <h1 class="shrink-0 text-sm font-semibold">{{ title }}</h1>
       <span
         v-if="count !== null && count !== undefined"

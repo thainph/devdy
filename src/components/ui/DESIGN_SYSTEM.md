@@ -24,6 +24,10 @@ Use the semantic utilities — they follow light/dark mode and the color themes.
 | Info / neutral highlight | `info` | `sky-*`, `blue-*` |
 
 Tinted surfaces use opacity on the same token: `bg-warning/10 border-warning/20 text-warning`.
+Solid fills pair with their foreground: `bg-success text-success-foreground`,
+`bg-warning text-warning-foreground`, `bg-info text-info-foreground`,
+`bg-destructive text-destructive-foreground` (never `text-white` / `text-black`).
+Question / plan prompts use `primary`.
 
 Exceptions (raw palette is OK): `Badge` solid tones, charts/Gantt series colors,
 calendar event colors, mascot/decorations — data-driven palettes, not UI state.
@@ -61,6 +65,7 @@ cards & floating toolbars · `rounded-full` dots, count pills, avatars.
 
 | Size | Height | Button | Input / AppSelect / DatePicker | Icon button |
 |---|---|---|---|---|
+| — | 24px `h-6` | — | — | `size="icon-xs"` (dense spots only) |
 | `xs` | 28px `h-7` | `size="xs"` (10px text) | `size="xs"` | `size="icon-sm"` |
 | `sm` | 32px `h-8` | `size="sm"` (default) | `size="sm"` (default) | `size="icon"` |
 | `md` | 36px `h-9` | `size="md"` | `size="md"` | `size="icon-lg"` |
@@ -82,6 +87,7 @@ Always `<Button>`; a raw `<button>` is only for non-button-looking hit areas
 | `DetailHeader` actions (Save, More ⋯, Edit, Done) | `xs` / `icon-sm` | Save `primary`, others `outline` |
 | `DetailSection` actions (Add, Test…) | `xs` | `outline` |
 | Inline row actions (remove a row, clear a field) | `icon-sm` | `destructive-ghost` / `ghost` |
+| Dense spots (banner retry, chip ×, folder-header actions, h-8 sub-toolbars) | `icon-xs` | `ghost` / `destructive-ghost` |
 | Card hover toolbars | `icon-sm` | `ghost` / `destructive-ghost` |
 | Modal / Drawer footer | `sm` | Cancel `ghost`, confirm `primary`, delete `destructive` |
 | Empty state CTA | `sm` | `primary` (+ secondary `outline`) |
@@ -100,10 +106,32 @@ Every icon-only button needs `:title` and `:aria-label`.
 - **Switchers** (filters, view modes, auth method): `SegmentedControl`.
 - **Dropdowns**: `AppSelect` for values, `DropdownMenu` + `DropdownItem` for actions.
 - **Dialogs**: `Modal`, `ConfirmModal`, `PromptModal`, `Drawer` — never a custom overlay.
-- **Status pill**: `Badge` / `StatusBadge`; count pill: the one in `PageHeader`.
-- **Banners** (error/warning inline): `rounded-md border border-<tone>/30 bg-<tone>/10 px-2 py-1.5 text-[11px]`.
+- **On/off**: `ToggleSwitch` — `size="sm"` in list rows/cards, `size="md"` in
+  settings rows; `:checked="'mixed'"` for partially-enabled groups.
+- **Status pill**: `Badge` / `StatusBadge`; count pill: the one in `PageHeader`
+  (`#leading` slot for a back button or page icon).
+- **Inline messages**: `Banner tone="destructive|warning|success|info"` (+ `#actions`
+  slot for retry/dismiss) — never a hand-copied tinted box.
 
-## 5. Checklist for a new screen
+## 5. Remote controller (`src/controller/`, phones)
+
+Same tokens (§1), touch-first layout — don't use `PageHeader` / list-detail or
+desktop `xs`/`icon-sm` sizes here.
+
+| Piece | Size | Use |
+|---|---|---|
+| `ControllerHeader` | h-12, px-3, title `text-base font-semibold` | header of every tab/editor |
+| `HeaderButton` | 32px, icon `h-4 w-4` | back / refresh / disconnect, plain icon buttons in the composer |
+| `FabButton` | 56px round, bottom-right | "+ new" on list tabs |
+| `BottomTabBar` | icon `h-5`, label `text-[10px]` | tab navigation |
+| `SearchField` | full width | top of list tabs |
+| Sheets (`ThemeSheet`, `PushSheet`) | scrim `bg-black/50`, `rounded-t-xl` panel | secondary settings |
+| List rows | `px-3 py-2.5`, whole row tappable, `border-b border-border/40` | inbox / runs / notes |
+
+Touch targets: ≥ 32px in dense toolbars, ≥ 36px (`Button size="md"`) for decision
+buttons, ≥ 44px for a standalone primary action.
+
+## 6. Checklist for a new screen
 
 1. Layout from §4, primitives from `@/components/ui`.
 2. Buttons and controls follow §2–§3; same-row controls share one size.
