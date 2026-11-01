@@ -27,7 +27,7 @@ Tinted surfaces use opacity on the same token: `bg-warning/10 border-warning/20 
 Solid fills pair with their foreground: `bg-success text-success-foreground`,
 `bg-warning text-warning-foreground`, `bg-info text-info-foreground`,
 `bg-destructive text-destructive-foreground` (never `text-white` / `text-black`).
-Question / plan prompts use `primary`.
+Question / plan prompts and the "ok" segment of usage meters use `info` (fixed hue — `primary` changes per color theme and can collide with warning/destructive).
 
 Exceptions (raw palette is OK): `Badge` solid tones, charts/Gantt series colors,
 calendar event colors, mascot/decorations — data-driven palettes, not UI state.
