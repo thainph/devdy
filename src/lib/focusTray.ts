@@ -5,12 +5,9 @@
 export const TRAY_FOCUS_ID = 'tray:focus'
 
 /**
- * Text beside the menu-bar glyph: the running-session count, then `⏰N` for
- * overdue todos (`''` = icon only). E.g. `2`, `⏰3`, `2 ⏰3`.
+ * Text beside the menu-bar glyph: the running-session count (`''` = icon only).
+ * Overdue todos are only shown on the tray's Focus row, not beside the glyph.
  */
-export function trayBadge(running: number, overdue: number): string {
-  const parts: string[] = []
-  if (running > 0) parts.push(String(running))
-  if (overdue > 0) parts.push(`⏰${overdue}`)
-  return parts.join(' ')
+export function trayBadge(running: number): string {
+  return running > 0 ? String(running) : ''
 }

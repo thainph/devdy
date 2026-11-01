@@ -113,6 +113,11 @@
       "message": "MCP server này có thay đổi chưa lưu. Bỏ các thay đổi đó?",
       "confirm": "Bỏ"
     },
+    "status": "Trạng thái",
+    "enabledHint": "Áp dụng ngay; tắt để không đưa vào các run mới.",
+    "enabledHintDraft": "Server có được bật sẵn sau khi lưu hay không.",
+    "test": "Kiểm tra",
+    "testHint": "Kiểm tra server với cấu hình hiện tại — không cần lưu trước.",
     "saveHint": "Lưu (⌘/Ctrl+S)"
   }
 }

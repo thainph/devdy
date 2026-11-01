@@ -74,7 +74,7 @@ use commands::google::{
 use commands::groups::{
     apply_group_to_all_projects, create_group, delete_group, disable_group_for_project,
     enable_group_for_project, get_group_members, get_item_groups, get_project_groups, list_groups,
-    set_group_members, update_group,
+    reorder_groups, set_group_members, update_group,
 };
 use commands::notifications::{
     show_calendar_reminder, show_permission_notification, show_run_finished_notification,
@@ -487,6 +487,7 @@ pub fn run() {
             create_group,
             update_group,
             delete_group,
+            reorder_groups,
             get_group_members,
             get_item_groups,
             set_group_members,

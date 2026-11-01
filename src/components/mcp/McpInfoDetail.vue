@@ -5,8 +5,8 @@
 // a stub to finish here).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Plus, Power, PowerOff, Settings2 } from 'lucide-vue-next'
-import { Badge, Button } from '@/components/ui'
+import { Plus, Settings2 } from 'lucide-vue-next'
+import { Badge, Button, ToggleSwitch } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
 import type { CatalogEntry, McpRow } from '@/lib/mcpRows'
@@ -44,16 +44,12 @@ const meta = computed(() =>
       <template #meta>{{ meta }}</template>
       <template #actions>
         <template v-if="isBuiltin">
-          <Button v-if="configurable" variant="outline" size="sm" @click="emit('settings')">
+          <Button v-if="configurable" variant="outline" size="xs" @click="emit('settings')">
             <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t('mcp.list.builtin.settings') }}
           </Button>
-          <Button :variant="enabled ? 'outline' : 'primary'" size="sm" :disabled="toggling" @click="emit('toggle')">
-            <component :is="enabled ? PowerOff : Power" class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ enabled ? t('mcp.list.disable') : t('mcp.list.enable') }}
-          </Button>
         </template>
-        <Button v-else size="sm" :disabled="adding" @click="emit('add')">
+        <Button v-else size="xs" :disabled="adding" @click="emit('add')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ adding ? t('mcp.list.adding') : t('common.add') }}
         </Button>
@@ -62,6 +58,21 @@ const meta = computed(() =>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-5">
       <div class="max-w-xl">
+        <DetailSection v-if="isBuiltin" :title="t('mcp.detail.status')">
+          <div class="flex items-center gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-medium">{{ enabled ? t('mcp.editor.enabled') : t('mcp.editor.disabled') }}</div>
+              <p class="text-[11px] text-muted-foreground">{{ t('mcp.detail.enabledHint') }}</p>
+            </div>
+            <ToggleSwitch
+              :checked="!!enabled"
+              :loading="toggling"
+              :label="enabled ? t('mcp.list.disable') : t('mcp.list.enable')"
+              @toggle="emit('toggle')"
+            />
+          </div>
+        </DetailSection>
+
         <DetailSection :title="t('mcp.detail.about')" :hint="isBuiltin ? t('mcp.detail.builtinHint') : t('mcp.detail.addHint')">
           <p class="text-xs leading-relaxed">{{ row.description }}</p>
         </DetailSection>

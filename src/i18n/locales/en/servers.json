@@ -78,6 +78,7 @@
     "copyLabel": "{label} copy",
     "tagsHint": "The first tag groups the server in the sidebar.",
     "tagsPlaceholder": "Add a tag (Enter or comma)",
+    "testHint": "Tests SSH with the saved settings.",
     "lastTest": "Last test result",
     "notTested": "Not tested yet in this session.",
     "discardTitle": "Discard changes?",

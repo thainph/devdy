@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // Right pane of the MCP servers screen for a user server (or a new draft):
 // header with the live name, meta (transport · enabled · added) and actions
-// laid out like SkillDetail (Save · ⋯ with Test / enable / export / …), then
-// the form in flat sections.
+// laid out like SkillDetail (Save · ⋯ with export / duplicate / delete), then a
+// Status section (enabled switch + Test connection) and the form in flat sections.
 //
 // A saved server's enable/disable applies at once (like the sidebar's power
 // button), so it is not part of the dirty check; on a draft it is a form field.
@@ -11,10 +11,10 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  AlertCircle, AlertTriangle, CheckCircle2, Copy, Download, MoreHorizontal, Plug, Plus, Power, PowerOff, Save, Trash2, X, XCircle,
+  AlertCircle, AlertTriangle, CheckCircle2, Copy, Download, Loader2, MoreHorizontal, Plug, Plus, Trash2, X, XCircle,
 } from 'lucide-vue-next'
 import {
-  AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, Textarea,
+  AppSelect, Badge, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, ToggleSwitch, Textarea,
 } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -213,40 +213,28 @@ defineExpose({ dirty })
         </template>
       </template>
       <template #actions>
-        <Button size="sm" :disabled="!dirty || saving" :title="t('mcp.detail.saveHint')" @click="save">
-          <Save class="h-3.5 w-3.5" :stroke-width="2" />
+        <Button size="xs" :disabled="!dirty || saving" :title="t('mcp.detail.saveHint')" @click="save">
           {{ saving ? t('mcp.editor.saving') : t('common.save') }}
         </Button>
-        <DropdownMenu align="right">
+        <DropdownMenu v-if="server" align="right">
           <template #trigger>
-            <Button variant="ghost" size="icon-sm" :title="t('mcp.detail.moreActions')" :aria-label="t('mcp.detail.moreActions')">
-              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
+            <Button variant="outline" size="icon-sm" :title="t('mcp.detail.moreActions')" :aria-label="t('mcp.detail.moreActions')">
+              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>
-          <DropdownItem :disabled="testing" @click="handleTest">
-            <Plug class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ testing ? t('mcp.editor.testing') : t('mcp.editor.testConnection') }}
+          <DropdownItem @click="emit('export')">
+            <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('mcp.list.exportTitle') }}
           </DropdownItem>
-          <DropdownItem :disabled="toggling" @click="toggleEnabled">
-            <component :is="enabled ? PowerOff : Power" class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ enabled ? t('mcp.list.disable') : t('mcp.list.enable') }}
+          <DropdownItem @click="emit('duplicate')">
+            <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('mcp.detail.duplicate') }}
           </DropdownItem>
-          <template v-if="server">
-            <DropdownSeparator />
-            <DropdownItem @click="emit('export')">
-              <Download class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('mcp.list.exportTitle') }}
-            </DropdownItem>
-            <DropdownItem @click="emit('duplicate')">
-              <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('mcp.detail.duplicate') }}
-            </DropdownItem>
-            <DropdownSeparator />
-            <DropdownItem variant="destructive" @click="emit('delete')">
-              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-              {{ t('common.delete') }}
-            </DropdownItem>
-          </template>
+          <DropdownSeparator />
+          <DropdownItem variant="destructive" @click="emit('delete')">
+            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('common.delete') }}
+          </DropdownItem>
         </DropdownMenu>
       </template>
     </DetailHeader>
@@ -261,27 +249,54 @@ defineExpose({ dirty })
 
     <div class="min-h-0 flex-1 overflow-y-auto px-5">
       <div class="max-w-xl">
-        <!-- Test connection result -->
-        <div
-          v-if="testResult"
-          class="mt-4 flex items-start gap-1.5 rounded-md border p-3 text-xs"
-          :class="testResult.ok
-            ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-500'
-            : 'border-destructive/20 bg-destructive/10 text-destructive'"
-        >
-          <CheckCircle2 v-if="testResult.ok" class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-          <XCircle v-else class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="min-w-0 flex-1 break-words">{{ testResult.message }}</span>
-          <button
-            type="button"
-            class="shrink-0 cursor-pointer opacity-70 hover:opacity-100"
-            :title="t('mcp.detail.dismiss')"
-            :aria-label="t('mcp.detail.dismiss')"
-            @click="testResult = null"
+        <!-- Status: the enabled switch (a saved server applies at once) and Test
+             connection, which tests the form as filled in. -->
+        <DetailSection :title="t('mcp.detail.status')">
+          <div class="flex items-center gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-medium">{{ enabled ? t('mcp.editor.enabled') : t('mcp.editor.disabled') }}</div>
+              <p class="text-[11px] text-muted-foreground">{{ t(isNew ? 'mcp.detail.enabledHintDraft' : 'mcp.detail.enabledHint') }}</p>
+            </div>
+            <ToggleSwitch
+              :checked="enabled"
+              :loading="toggling"
+              :label="enabled ? t('mcp.list.disable') : t('mcp.list.enable')"
+              @toggle="toggleEnabled"
+            />
+          </div>
+          <div class="flex items-center gap-3">
+            <div class="min-w-0 flex-1">
+              <div class="text-xs font-medium">{{ t('mcp.editor.testConnection') }}</div>
+              <p class="text-[11px] text-muted-foreground">{{ t('mcp.detail.testHint') }}</p>
+            </div>
+            <Button variant="outline" size="xs" class="shrink-0" :disabled="testing" @click="handleTest">
+              <Loader2 v-if="testing" class="h-3 w-3 animate-spin" :stroke-width="2" />
+              <Plug v-else class="h-3 w-3" :stroke-width="1.75" />
+              {{ testing ? t('mcp.editor.testing') : t('mcp.detail.test') }}
+            </Button>
+          </div>
+          <!-- Test connection result -->
+          <div
+            v-if="testResult"
+            class="flex items-start gap-1.5 rounded-md border p-3 text-xs"
+            :class="testResult.ok
+              ? 'border-emerald-500/20 bg-emerald-500/10 text-emerald-500'
+              : 'border-destructive/20 bg-destructive/10 text-destructive'"
           >
-            <X class="h-3.5 w-3.5" :stroke-width="2" />
-          </button>
-        </div>
+            <CheckCircle2 v-if="testResult.ok" class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+            <XCircle v-else class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            <span class="min-w-0 flex-1 break-words">{{ testResult.message }}</span>
+            <button
+              type="button"
+              class="shrink-0 cursor-pointer opacity-70 hover:opacity-100"
+              :title="t('mcp.detail.dismiss')"
+              :aria-label="t('mcp.detail.dismiss')"
+              @click="testResult = null"
+            >
+              <X class="h-3.5 w-3.5" :stroke-width="2" />
+            </button>
+          </div>
+        </DetailSection>
 
         <DetailSection :title="t('mcp.editor.general')" :hint="t('mcp.detail.generalHint')">
           <div class="space-y-1.5">

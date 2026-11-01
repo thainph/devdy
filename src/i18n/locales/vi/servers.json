@@ -78,6 +78,7 @@
     "copyLabel": "{label} bản sao",
     "tagsHint": "Thẻ đầu tiên dùng để nhóm server ở thanh bên.",
     "tagsPlaceholder": "Thêm thẻ (Enter hoặc dấu phẩy)",
+    "testHint": "Kiểm tra SSH với cấu hình đã lưu.",
     "lastTest": "Kết quả kiểm tra gần nhất",
     "notTested": "Chưa kiểm tra trong phiên này.",
     "discardTitle": "Bỏ thay đổi?",

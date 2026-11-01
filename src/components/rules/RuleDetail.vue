@@ -11,7 +11,7 @@ import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   AlertCircle, Columns2, Download, Eye, FileText, FolderCheck, FolderOpen, LayoutTemplate,
-  MoreHorizontal, Pencil, RefreshCw, Save, Trash2, X,
+  MoreHorizontal, Pencil, RefreshCw, Trash2, X,
 } from 'lucide-vue-next'
 import { AppSelect, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
 import SkillEditor from '@/components/SkillEditor.vue'
@@ -267,14 +267,13 @@ defineExpose({ dirty, save })
         <span :title="metaTitle">{{ meta }}</span>
       </template>
       <template #actions>
-        <Button size="sm" :disabled="!canSave" :title="t('rules.detail.saveHint')" @click="save">
-          <Save class="h-3.5 w-3.5" :stroke-width="2" />
+        <Button size="xs" :disabled="!canSave" :title="t('rules.detail.saveHint')" @click="save">
           {{ saving ? t('rules.editor.saving') : t('common.save') }}
         </Button>
         <DropdownMenu align="right">
           <template #trigger>
-            <Button variant="ghost" size="icon-sm" :title="t('rules.detail.moreActions')" :aria-label="t('rules.detail.moreActions')">
-              <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
+            <Button variant="outline" size="icon-sm" :title="t('rules.detail.moreActions')" :aria-label="t('rules.detail.moreActions')">
+              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
             </Button>
           </template>
           <DropdownItem :disabled="loading" @click="editorRef?.insertTemplate()">

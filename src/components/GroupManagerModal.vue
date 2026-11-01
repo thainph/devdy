@@ -8,7 +8,8 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useProjectsStore } from '@/stores/projects'
 import { GROUP_COLORS, useGroupsStore, type Group, type GroupColor, type GroupKind } from '@/stores/groups'
-import { Check, FolderCheck, Layers, Loader2, Plus, Trash2 } from 'lucide-vue-next'
+import { Check, FolderCheck, GripVertical, Layers, Loader2, Plus, Trash2 } from 'lucide-vue-next'
+import { useDragSort } from '@/composables/useDragSort'
 
 const props = defineProps<{
   open: boolean
@@ -36,6 +37,21 @@ const saving = ref(false)
 const applyingAll = ref(false)
 
 const selectedGroup = computed(() => store.groups.find(g => g.id === selectedId.value) ?? null)
+
+// Drag a group row to reorder the list; a press only turns into a drag past a few pixels, so a
+// plain click still selects the group.
+const listRef = ref<HTMLElement | null>(null)
+const { dragFrom, start: startDrag, itemStyle, clickWasDrag } = useDragSort({
+  container: listRef,
+  onDrop: (from, to) => {
+    store.reorderGroups(from, to).catch(e => toast.error(String(e)))
+  },
+})
+
+function onGroupClick(group: Group) {
+  if (clickWasDrag()) return
+  selectGroup(group)
+}
 
 watch(
   () => props.open,
@@ -187,15 +203,30 @@ const emptyItemsLabel = computed(() => t(props.kind === 'skill' ? 'groups.noItem
           <p class="text-[10px] text-muted-foreground mt-1">{{ t('groups.noGroupsHint') }}</p>
         </div>
 
-        <div v-else class="flex-1 overflow-y-auto overflow-x-hidden py-1 min-h-0">
+        <div v-else ref="listRef" class="flex-1 overflow-y-auto overflow-x-hidden py-1 min-h-0">
           <button
-            v-for="group in store.groups"
+            v-for="(group, index) in store.groups"
             :key="group.id"
             type="button"
-            class="w-full text-left px-3 py-2 flex items-center gap-2 transition-colors cursor-pointer"
-            :class="group.id === selectedId ? 'bg-accent' : 'hover:bg-accent/50'"
-            @click="selectGroup(group)"
+            :data-drag-index="index"
+            class="group relative w-full text-left pl-1.5 pr-3 py-2 flex items-center gap-1.5 transition-colors select-none touch-none"
+            :class="
+              dragFrom === index
+                ? 'bg-accent shadow-md cursor-grabbing'
+                : group.id === selectedId
+                  ? 'bg-accent cursor-pointer'
+                  : 'hover:bg-accent/50 cursor-pointer'
+            "
+            :style="itemStyle(index)"
+            :title="t('groups.dragToReorder')"
+            @pointerdown="startDrag(index, $event)"
+            @click="onGroupClick(group)"
           >
+            <GripVertical
+              class="h-3.5 w-3.5 shrink-0 text-muted-foreground/40 transition-opacity"
+              :class="dragFrom === index ? 'opacity-100' : 'opacity-0 group-hover:opacity-100'"
+              :stroke-width="1.75"
+            />
             <span class="flex-1 min-w-0">
               <span class="block text-xs font-medium truncate">{{ group.name }}</span>
               <span class="block text-[10px] text-muted-foreground">{{ t('groups.memberCount', { count: group.member_count }) }}</span>
@@ -290,14 +321,26 @@ const emptyItemsLabel = computed(() => t(props.kind === 'skill' ? 'groups.noItem
     </div>
 
     <template #footer>
-      <div v-if="selectedGroup" class="mr-auto flex items-center gap-2">
-        <Button variant="destructive-ghost" @click="handleDelete">
+      <div v-if="selectedGroup" class="mr-auto flex items-center gap-1.5">
+        <Button
+          variant="destructive"
+          size="icon"
+          :title="t('groups.deleteGroup')"
+          :aria-label="t('groups.deleteGroup')"
+          @click="handleDelete"
+        >
           <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('groups.deleteGroup') }}
         </Button>
-        <Button variant="outline" :disabled="applyingAll" @click="handleApplyToAll">
-          <FolderCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('groups.applyToAll') }}
+        <Button
+          variant="outline"
+          size="icon"
+          :disabled="applyingAll"
+          :title="t('groups.applyToAll')"
+          :aria-label="t('groups.applyToAll')"
+          @click="handleApplyToAll"
+        >
+          <Loader2 v-if="applyingAll" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+          <FolderCheck v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
       </div>
       <Button :disabled="saving || !selectedGroup || !draftName.trim()" @click="handleSave">
