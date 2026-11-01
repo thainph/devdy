@@ -1,0 +1,63 @@
+/* Monokai — the classic Sublime palette (dark) and Monokai Pro Light (light): green primary, pink / orange / yellow / cyan / purple accents */
+@layer base {
+  [data-theme='monokai']:not(.dark) {
+    --background: 15 44% 96%;
+    --foreground: 290 8% 15%;
+    --card: 15 100% 99%;
+    --card-foreground: 290 8% 15%;
+    --popover: 15 100% 99%;
+    --popover-foreground: 290 8% 15%;
+    --primary: 154 61% 31%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 18 29% 91%;
+    --secondary-foreground: 290 8% 15%;
+    --muted: 18 29% 91%;
+    --muted-foreground: 324 3% 37%;
+    --accent: 261 52% 94%;
+    --accent-foreground: 252 46% 43%;
+    --destructive: 343 60% 47%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 19 19% 84%;
+    --input: 19 19% 84%;
+    --ring: 154 61% 31%;
+    --sidebar: 16 30% 93%;
+    --success: 154 61% 31%;
+    --success-foreground: 0 0% 100%;
+    --warning: 32 92% 31%;
+    --warning-foreground: 0 0% 100%;
+    --info: 193 74% 31%;
+    --info-foreground: 0 0% 100%;
+    --aurora-1: 342 72% 58%;
+    --aurora-2: 254 44% 55%;
+  }
+  [data-theme='monokai'].dark {
+    --background: 70 8% 15%;
+    --foreground: 60 30% 96%;
+    --card: 70 7% 17%;
+    --card-foreground: 60 30% 96%;
+    --popover: 70 7% 17%;
+    --popover-foreground: 60 30% 96%;
+    --primary: 80 76% 53%;
+    --primary-foreground: 80 5% 12%;
+    --secondary: 55 11% 22%;
+    --secondary-foreground: 60 30% 96%;
+    --muted: 55 11% 22%;
+    --muted-foreground: 48 17% 64%;
+    --accent: 55 8% 26%;
+    --accent-foreground: 60 30% 96%;
+    --destructive: 341 100% 68%;
+    --destructive-foreground: 80 5% 12%;
+    --border: 55 8% 26%;
+    --input: 55 8% 26%;
+    --ring: 80 76% 53%;
+    --sidebar: 80 5% 12%;
+    --success: 80 76% 53%;
+    --success-foreground: 80 5% 12%;
+    --warning: 32 98% 56%;
+    --warning-foreground: 80 5% 12%;
+    --info: 190 81% 67%;
+    --info-foreground: 80 5% 12%;
+    --aurora-1: 338 95% 56%;
+    --aurora-2: 261 100% 75%;
+  }
+}

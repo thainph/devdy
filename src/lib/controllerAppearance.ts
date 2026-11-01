@@ -3,22 +3,13 @@
 // "follow the desktop" for that field. Pure logic, no DOM (see
 // src/controller/appearance.ts for applying it).
 
+import { COLOR_THEMES } from './colorThemes.ts'
+
+export { COLOR_THEMES }
+
 export const FOLLOW_HOST = 'host'
 
 export const THEME_MODES = ['light', 'dark', 'system'] as const
-
-/** Palettes defined in main.css (`default` = no `data-theme` attribute). */
-export const COLOR_THEMES = [
-  'default',
-  'ocean',
-  'forest',
-  'sunset',
-  'rose',
-  'teal',
-  'lagoon',
-  'mint',
-  'midautumn',
-] as const
 
 export interface Appearance {
   /** `light` / `dark` / `system`. */

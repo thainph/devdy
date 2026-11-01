@@ -1,0 +1,360 @@
+/* Terminal CRT — skin. Dark: P1 phosphor-green monochrome tube. Light: amber
+ * line-printer paper with brown ink. Square corners, monospace everywhere, solid
+ * phosphor-edged surfaces, a static vignette instead of the aurora and a faint
+ * scanline overlay. See DESIGN_SYSTEM.md §6 for the hook contract. */
+@layer base {
+  [data-theme='crt']:not(.dark) {
+    --background: 40 55% 91%;
+    --foreground: 25 70% 13%;
+    --card: 42 60% 95%;
+    --card-foreground: 25 70% 13%;
+    --popover: 42 60% 95%;
+    --popover-foreground: 25 70% 13%;
+    --primary: 28 85% 27%;
+    --primary-foreground: 42 60% 95%;
+    --secondary: 38 45% 85%;
+    --secondary-foreground: 25 70% 15%;
+    --muted: 38 45% 86%;
+    --muted-foreground: 28 50% 28%;
+    --accent: 36 70% 80%;
+    --accent-foreground: 25 75% 16%;
+    --destructive: 0 70% 37%;
+    --destructive-foreground: 42 60% 96%;
+    --border: 30 40% 62%;
+    --input: 30 40% 62%;
+    --ring: 30 90% 38%;
+    --radius: 0;
+    --sidebar: 38 50% 87%;
+    --aurora-1: 35 90% 50%;
+    --aurora-2: 20 80% 40%;
+    --success: 130 55% 22%;
+    --success-foreground: 42 60% 96%;
+    --warning: 30 95% 30%;
+    --warning-foreground: 42 60% 96%;
+    --info: 190 70% 25%;
+    --info-foreground: 42 60% 96%;
+    --font-ui: "SF Mono", ui-monospace, Menlo, Monaco, "JetBrains Mono", monospace;
+    --font-mono: "SF Mono", ui-monospace, Menlo, Monaco, "JetBrains Mono", monospace;
+    /* Glow tint for text-shadow / borders; agent state re-tints it below. */
+    --crt-glow: 30 90% 40%;
+  }
+  [data-theme='crt'].dark {
+    --background: 135 45% 3%;
+    --foreground: 128 100% 66%;
+    --card: 135 40% 5%;
+    --card-foreground: 128 100% 66%;
+    --popover: 135 40% 5%;
+    --popover-foreground: 128 100% 66%;
+    --primary: 128 100% 62%;
+    --primary-foreground: 135 60% 4%;
+    --secondary: 135 40% 9%;
+    --secondary-foreground: 128 100% 66%;
+    --muted: 135 35% 8%;
+    --muted-foreground: 130 55% 46%;
+    --accent: 132 50% 13%;
+    --accent-foreground: 125 100% 74%;
+    --destructive: 0 95% 64%;
+    --destructive-foreground: 0 60% 6%;
+    --border: 130 70% 20%;
+    --input: 130 70% 20%;
+    --ring: 128 100% 62%;
+    --radius: 0;
+    --sidebar: 135 50% 2%;
+    --aurora-1: 128 100% 50%;
+    --aurora-2: 150 90% 40%;
+    --success: 120 85% 55%;
+    --success-foreground: 135 60% 5%;
+    --warning: 40 100% 56%;
+    --warning-foreground: 30 80% 7%;
+    --info: 170 85% 50%;
+    --info-foreground: 170 70% 6%;
+    --font-ui: "SF Mono", ui-monospace, Menlo, Monaco, "JetBrains Mono", monospace;
+    --font-mono: "SF Mono", ui-monospace, Menlo, Monaco, "JetBrains Mono", monospace;
+    --crt-glow: 128 100% 60%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Skin rules — unlayered so they beat Tailwind utilities. Glow strength is one
+ * knob (--crt-glow-a) so agent state can turn it up without repeating rules.
+ * ------------------------------------------------------------------------- */
+[data-theme='crt'] {
+  --crt-glow-a: 0.35;
+  --crt-scan-a: 0.055;
+}
+[data-theme='crt']:not(.dark) {
+  --crt-glow-a: 0.12;
+  --crt-scan-a: 0.03;
+}
+
+[data-theme='crt'] body,
+[data-theme='crt'].theme-scope {
+  font-feature-settings: normal;
+  letter-spacing: 0.01em;
+}
+
+/* Square everything the radius token doesn't reach (fixed Tailwind radii).
+ * `rounded-full` stays round: avatars, spinners and status dots read better. */
+[data-theme='crt'] .rounded,
+[data-theme='crt'] .rounded-sm,
+[data-theme='crt'] .rounded-md,
+[data-theme='crt'] .rounded-lg,
+[data-theme='crt'] .rounded-xl,
+[data-theme='crt'] .rounded-2xl,
+[data-theme='crt'] .ui-badge {
+  border-radius: 0;
+}
+
+/* Phosphor bloom on headings and primary-colored text. */
+[data-theme='crt'].dark :is(h1, h2, h3, .text-primary) {
+  text-shadow:
+    0 0 1px hsl(var(--crt-glow) / 0.6),
+    0 0 6px hsl(var(--crt-glow) / var(--crt-glow-a));
+}
+[data-theme='crt']:not(.dark) :is(h1, h2, h3) {
+  /* Ink bleed on paper: a hair of spread, no glow. */
+  text-shadow: 0 0 0.6px hsl(var(--foreground) / 0.5);
+}
+
+/* --- Surfaces: solid fill, 1px phosphor edge ------------------------------- */
+[data-theme='crt'] .ui-card {
+  background-color: hsl(var(--card));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border-color: hsl(var(--border));
+  box-shadow: inset 0 0 24px hsl(var(--crt-glow) / 0.04);
+}
+[data-theme='crt'] .ui-toast {
+  border-color: hsl(var(--primary) / 0.6);
+  box-shadow: 0 0 0 1px hsl(var(--background)), 0 0 12px hsl(var(--crt-glow) / 0.18);
+}
+
+/* Popovers + modals: boxed double rule, like a TUI dialog. */
+[data-theme='crt'] .ui-popover,
+[data-theme='crt'] .ui-modal {
+  border: 3px double hsl(var(--primary) / 0.75);
+  box-shadow:
+    0 0 0 1px hsl(var(--background)),
+    0 0 18px hsl(var(--crt-glow) / 0.22),
+    8px 8px 0 hsl(var(--foreground) / 0.08);
+}
+[data-theme='crt']:not(.dark) .ui-popover,
+[data-theme='crt']:not(.dark) .ui-modal {
+  box-shadow: 6px 6px 0 hsl(var(--foreground) / 0.18);
+}
+[data-theme='crt'] .ui-drawer {
+  border-left: 3px double hsl(var(--primary) / 0.6);
+  box-shadow: 0 0 24px hsl(var(--crt-glow) / 0.15);
+}
+
+/* --- Buttons --------------------------------------------------------------- */
+[data-theme='crt'] .ui-btn {
+  border-radius: 0;
+  letter-spacing: 0.02em;
+}
+[data-theme='crt'] .ui-btn:active {
+  transform: none; /* terminals don't squish */
+}
+/* Primary = inverted block cursor. */
+[data-theme='crt'] .ui-btn-primary {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  box-shadow: 0 0 8px hsl(var(--crt-glow) / calc(var(--crt-glow-a) * 0.8));
+  text-transform: uppercase;
+}
+[data-theme='crt'] .ui-btn-primary:hover {
+  opacity: 1;
+  filter: brightness(1.15);
+  box-shadow: 0 0 4px hsl(var(--crt-glow) / 0.7), 0 0 16px hsl(var(--crt-glow) / var(--crt-glow-a));
+}
+[data-theme='crt'] .ui-btn-outline {
+  background-color: transparent;
+  border-color: hsl(var(--primary) / 0.55);
+  color: hsl(var(--foreground));
+  box-shadow: none;
+}
+[data-theme='crt'] .ui-btn-outline:hover {
+  background-color: hsl(var(--primary) / 0.12);
+  border-color: hsl(var(--primary));
+  color: hsl(var(--foreground));
+}
+[data-theme='crt'] .ui-btn-ghost:hover {
+  background-color: hsl(var(--primary) / 0.12);
+}
+[data-theme='crt'] .ui-btn-destructive {
+  box-shadow: 0 0 8px hsl(var(--destructive) / 0.35);
+}
+
+/* --- Fields ---------------------------------------------------------------- */
+[data-theme='crt'] .ui-field {
+  border-radius: 0;
+  border-color: hsl(var(--border));
+  caret-color: hsl(var(--primary));
+}
+[data-theme='crt'] .ui-field:focus,
+[data-theme='crt'] .ui-field:focus-within {
+  border-color: hsl(var(--ring));
+  box-shadow: 0 0 0 1px hsl(var(--ring) / 0.8), 0 0 10px hsl(var(--crt-glow) / var(--crt-glow-a));
+}
+[data-theme='crt'] :is(textarea, input) {
+  caret-color: hsl(var(--primary));
+}
+
+[data-theme='crt'] .ui-badge {
+  letter-spacing: 0.04em;
+}
+
+/* --- Sidebar: a dim panel with a phosphor rule on its edge ----------------- */
+[data-theme='crt'] .app-sidebar {
+  border-right: 1px solid hsl(var(--primary) / 0.35);
+  box-shadow: inset -12px 0 24px -16px hsl(var(--crt-glow) / 0.25);
+}
+
+/* Active nav item = inverted phosphor block with a `>` prompt; the bar
+ * indicator is redundant with the block. */
+[data-theme='crt'] .app-sidebar .is-active {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  text-shadow: none;
+  box-shadow: 0 0 10px hsl(var(--crt-glow) / var(--crt-glow-a));
+}
+[data-theme='crt'] .app-sidebar .is-active::before {
+  content: ">";
+  position: absolute;
+  left: 0.15rem;
+  font-size: 0.7rem; /* fits in the px-3 gutter left of the icon */
+  font-weight: 700;
+}
+[data-theme='crt'] .app-sidebar .app-nav-indicator {
+  display: none;
+}
+
+[data-theme='crt'] .app-titlebar {
+  border-bottom: 1px solid hsl(var(--primary) / 0.35);
+  box-shadow: 0 1px 12px -6px hsl(var(--crt-glow) / 0.4);
+}
+
+/* Badges: bracket-style outline tags in the tone color instead of solid chips. */
+[data-theme='crt'] .ui-badge {
+  --crt-tone: var(--foreground);
+  background-color: hsl(var(--crt-tone) / 0.1);
+  border-color: hsl(var(--crt-tone) / 0.7);
+  color: hsl(var(--crt-tone));
+  text-transform: uppercase;
+}
+[data-theme='crt'] .ui-badge-neutral { --crt-tone: var(--muted-foreground); }
+[data-theme='crt'] :is(.ui-badge-running, .ui-badge-primary) { --crt-tone: var(--primary); }
+[data-theme='crt'] .ui-badge-success { --crt-tone: var(--success); }
+[data-theme='crt'] .ui-badge-error { --crt-tone: var(--destructive); }
+[data-theme='crt'] .ui-badge-warning { --crt-tone: var(--warning); }
+[data-theme='crt'] .ui-badge-info { --crt-tone: var(--info); }
+
+/* Modal / Drawer scrim: dimmed tube with its own scanlines, no blur. */
+[data-theme='crt'] .ui-backdrop {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  background:
+    repeating-linear-gradient(to bottom, transparent 0, transparent 2px, hsl(0 0% 0% / 0.18) 2px, hsl(0 0% 0% / 0.18) 3px),
+    hsl(var(--background) / 0.72);
+}
+
+/* --- Selection, focus, scrollbars ------------------------------------------ */
+[data-theme='crt'] ::selection {
+  background: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+  text-shadow: none;
+}
+/* Text fields style their own focus (.ui-field); bare inputs such as the chat
+ * composer textarea sit inside a card that draws the ring. */
+[data-theme='crt'] :focus-visible:not(input, textarea, select, [contenteditable]) {
+  outline: 1px solid hsl(var(--ring));
+  outline-offset: 1px;
+  box-shadow: 0 0 8px hsl(var(--crt-glow) / var(--crt-glow-a));
+}
+[data-theme='crt'] ::-webkit-scrollbar-thumb {
+  background: hsl(var(--primary) / 0.45);
+  border-radius: 0;
+}
+[data-theme='crt'] ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--primary) / 0.8);
+}
+
+/* --- Background: vignette on the app root + scanlines ----------------------
+ * `.app-shell` is the opaque window root, so the vignette is painted there as
+ * background-image over its bg color; the aurora layer underneath is dropped.
+ * ::after sits above the UI (pointer-events:none) and only paints a
+ * few-percent-alpha stripe, so text stays crisp and clickable. */
+:root[data-theme='crt'] body::before {
+  display: none;
+}
+[data-theme='crt'] .app-shell {
+  background-image:
+    radial-gradient(120% 90% at 50% 45%, hsl(var(--crt-glow) / 0.06), transparent 60%),
+    radial-gradient(150% 120% at 50% 50%, transparent 55%, hsl(0 0% 0% / 0.55) 100%);
+}
+[data-theme='crt']:not(.dark) .app-shell {
+  background-image:
+    radial-gradient(120% 90% at 50% 40%, hsl(45 80% 98% / 0.6), transparent 65%),
+    radial-gradient(150% 120% at 50% 50%, transparent 60%, hsl(28 60% 30% / 0.16) 100%);
+}
+:root[data-theme='crt'] body::after {
+  content: "";
+  position: fixed;
+  inset: 0;
+  z-index: 9999;
+  pointer-events: none;
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 2px,
+    hsl(0 0% 0% / var(--crt-scan-a)) 2px,
+    hsl(0 0% 0% / var(--crt-scan-a)) 3px
+  );
+}
+:root[data-theme='crt']:not(.dark) body::after {
+  /* Tractor-feed paper: faint ruled lines instead of black scanlines. */
+  background: repeating-linear-gradient(
+    to bottom,
+    transparent 0,
+    transparent 3px,
+    hsl(28 60% 30% / var(--crt-scan-a)) 3px,
+    hsl(28 60% 30% / var(--crt-scan-a)) 4px
+  );
+}
+
+/* --- Agent state: re-tint the phosphor ------------------------------------- */
+:root[data-theme='crt'][data-agent-state='running'] {
+  --crt-glow-a: 0.5;
+}
+:root[data-theme='crt']:not(.dark)[data-agent-state='running'] {
+  --crt-glow-a: 0.2;
+}
+:root[data-theme='crt'][data-agent-state='waiting'] {
+  --crt-glow: 40 100% 56%;
+}
+:root[data-theme='crt']:not(.dark)[data-agent-state='waiting'] {
+  --crt-glow: 35 95% 42%;
+}
+:root[data-theme='crt'][data-agent-state='error'] {
+  --crt-glow: 0 95% 60%;
+}
+
+/* --- Motion (opt-in) --------------------------------------------------------
+ * Only opacity is animated (compositor-only) — no layout, no repaint-heavy
+ * background-position, so the stream log stays smooth. */
+@keyframes crt-flicker {
+  0%, 100% { opacity: 1; }
+  47% { opacity: 0.86; }
+  48% { opacity: 1; }
+  72% { opacity: 0.93; }
+  73% { opacity: 1; }
+}
+@media (prefers-reduced-motion: no-preference) {
+  /* Phosphor flicker is a tube thing — paper (light) stays still. */
+  html[data-theme='crt'].dark:not([data-animated-bg='false']) body::after {
+    animation: crt-flicker 7s steps(1, end) infinite;
+  }
+  html[data-theme='crt'].dark[data-agent-state='running']:not([data-animated-bg='false']) body::after {
+    animation-duration: 3.5s;
+  }
+}

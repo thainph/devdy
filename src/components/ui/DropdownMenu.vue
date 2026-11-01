@@ -137,7 +137,7 @@ onBeforeUnmount(() => {
         <div
           v-if="open"
           ref="panel"
-          class="fixed z-[100] min-w-44 rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20"
+          class="ui-popover fixed z-[100] min-w-44 rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20"
           :style="{ left: `${pos.x}px`, top: `${pos.y}px` }"
           @click="close"
         >

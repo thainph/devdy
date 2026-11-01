@@ -1,0 +1,410 @@
+/* macOS Sequoia — skin. A native AppKit look (Finder, System Settings, Mail):
+ * SF system font, grey window chrome with a source-list sidebar, white content
+ * surfaces, push buttons, accent focus halos, vibrant menus and sheet-style
+ * modals. Flagged `systemAccent`: src/lib/systemAccent.ts replaces --primary /
+ * --ring / --primary-foreground at runtime with the user's macOS accent, so
+ * every accent use below goes through --primary. The token --primary is system
+ * blue darkened just enough for white text to pass AA. No decorative motion.
+ * See DESIGN_SYSTEM.md §6 for the hook contract. */
+@layer base {
+  [data-theme='macos']:not(.dark) {
+    --background: 0 0% 95%;
+    --foreground: 0 0% 12%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 12%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 0 0% 12%;
+    --primary: 211 100% 43%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 100%;
+    --secondary-foreground: 0 0% 12%;
+    --muted: 0 0% 91%;
+    --muted-foreground: 0 0% 40%;
+    --accent: 0 0% 89%;
+    --accent-foreground: 0 0% 10%;
+    --destructive: 3 85% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 84%;
+    --input: 0 0% 82%;
+    --ring: 211 100% 43%;
+    --radius: 0.375rem;
+    --sidebar: 0 0% 91%;
+    --aurora-1: 0 0% 80%;
+    --aurora-2: 0 0% 70%;
+    --success: 135 65% 29%;
+    --success-foreground: 0 0% 100%;
+    --warning: 28 100% 35%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 100% 33%;
+    --info-foreground: 0 0% 100%;
+    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+    /* Native separators / fills — alpha over whatever is underneath. */
+    --mac-sep: 0 0% 0% / 0.1;
+    --mac-fill: 0 0% 0% / 0.06;
+    --mac-select: 0 0% 0% / 0.08;
+  }
+  [data-theme='macos'].dark {
+    --background: 0 0% 12%;
+    --foreground: 0 0% 88%;
+    --card: 0 0% 16%;
+    --card-foreground: 0 0% 88%;
+    --popover: 0 0% 17%;
+    --popover-foreground: 0 0% 88%;
+    --primary: 211 100% 45%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 24%;
+    --secondary-foreground: 0 0% 90%;
+    --muted: 0 0% 19%;
+    --muted-foreground: 0 0% 62%;
+    --accent: 0 0% 23%;
+    --accent-foreground: 0 0% 92%;
+    --destructive: 3 80% 49%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 26%;
+    --input: 0 0% 30%;
+    --ring: 211 100% 45%;
+    --radius: 0.375rem;
+    --sidebar: 0 0% 14%;
+    --aurora-1: 0 0% 30%;
+    --aurora-2: 0 0% 25%;
+    --success: 135 60% 33%;
+    --success-foreground: 0 0% 100%;
+    --warning: 28 95% 37%;
+    --warning-foreground: 0 0% 100%;
+    --info: 199 90% 35%;
+    --info-foreground: 0 0% 100%;
+    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", "Helvetica Neue", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --mac-sep: 0 0% 100% / 0.1;
+    --mac-fill: 0 0% 100% / 0.08;
+    --mac-select: 0 0% 100% / 0.1;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Skin rules — unlayered so they beat Tailwind utilities.
+ * ------------------------------------------------------------------------- */
+[data-theme='macos'] body,
+[data-theme='macos'].theme-scope {
+  font-feature-settings: normal;
+  letter-spacing: normal;
+}
+
+/* --- Background: plain window material, no aurora, no frosted cards -------- */
+:root[data-theme='macos'] body::before {
+  display: none;
+}
+[data-theme='macos'] .glass {
+  background-color: hsl(var(--card));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* --- Surfaces -------------------------------------------------------------- */
+/* Grouped box (System Settings): solid white, hairline edge, barely-there lift. */
+[data-theme='macos'] .ui-card {
+  background-color: hsl(var(--card));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  border: 0.5px solid hsl(var(--mac-sep));
+  border-radius: 10px;
+  box-shadow: 0 0.5px 1.5px hsl(0 0% 0% / 0.06);
+}
+[data-theme='macos'].dark .ui-card {
+  box-shadow: none;
+}
+
+/* Menus: vibrant translucent material. */
+[data-theme='macos'] .ui-popover {
+  background-color: hsl(0 0% 96.5% / 0.92);
+  backdrop-filter: blur(30px) saturate(180%);
+  -webkit-backdrop-filter: blur(30px) saturate(180%);
+  border: 0.5px solid hsl(0 0% 0% / 0.15);
+  border-radius: 8px;
+  padding: 5px;
+  box-shadow: 0 10px 30px hsl(0 0% 0% / 0.2), 0 0 0 0.5px hsl(0 0% 0% / 0.05);
+}
+[data-theme='macos'].dark .ui-popover {
+  background-color: hsl(0 0% 17% / 0.88);
+  border-color: hsl(0 0% 100% / 0.14);
+  box-shadow: 0 10px 30px hsl(0 0% 0% / 0.45), 0 0 0 0.5px hsl(0 0% 0% / 0.6);
+}
+/* Menu items (DropdownItem / ContextMenu rows are direct-child buttons):
+ * 4px rounded rows, highlighted with the accent and white text on hover. */
+[data-theme='macos'] .ui-popover .ui-menu-item {
+  border-radius: 4px;
+  padding-top: 0.25rem;
+  padding-bottom: 0.25rem;
+  transition: none;
+}
+[data-theme='macos'] .ui-popover .ui-menu-item:not(:disabled):hover {
+  background-color: hsl(var(--primary));
+  color: hsl(var(--primary-foreground));
+}
+[data-theme='macos'] .ui-popover .ui-menu-item:not(:disabled):hover * {
+  color: inherit;
+}
+
+/* Sheets: rounded, borderless, deep soft shadow. */
+[data-theme='macos'] .ui-modal {
+  background-color: hsl(var(--card));
+  border: 0.5px solid hsl(var(--mac-sep));
+  border-radius: 12px;
+  box-shadow: 0 0 0 0.5px hsl(0 0% 0% / 0.08), 0 20px 50px hsl(0 0% 0% / 0.25);
+}
+[data-theme='macos'].dark .ui-modal {
+  box-shadow: 0 0 0 0.5px hsl(0 0% 0% / 0.7), 0 20px 50px hsl(0 0% 0% / 0.55);
+}
+[data-theme='macos'] .ui-drawer {
+  background-color: hsl(var(--card));
+  border-left: 0.5px solid hsl(var(--mac-sep));
+  box-shadow: 0 0 30px hsl(0 0% 0% / 0.18);
+}
+[data-theme='macos'] .ui-backdrop {
+  background-color: hsl(0 0% 0% / 0.25);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme='macos'] .ui-toast {
+  background-color: hsl(var(--popover));
+  border: 0.5px solid hsl(var(--mac-sep));
+  border-radius: 10px;
+  box-shadow: 0 6px 20px hsl(0 0% 0% / 0.15);
+}
+
+/* --- Push buttons ---------------------------------------------------------- */
+[data-theme='macos'] .ui-btn {
+  border-radius: 6px;
+  font-weight: 500;
+}
+[data-theme='macos'] .ui-btn:active {
+  transform: none; /* native buttons darken, they don't shrink */
+}
+[data-theme='macos'] .ui-btn-primary {
+  background-color: hsl(var(--primary));
+  background-image: linear-gradient(to bottom, hsl(0 0% 100% / 0.12), hsl(0 0% 100% / 0));
+  color: hsl(var(--primary-foreground));
+  box-shadow: 0 0.5px 1px hsl(0 0% 0% / 0.2), inset 0 0.5px 0 hsl(0 0% 100% / 0.2);
+}
+[data-theme='macos'] .ui-btn-primary:hover {
+  opacity: 1;
+}
+[data-theme='macos'] .ui-btn-primary:active {
+  filter: brightness(0.88);
+}
+[data-theme='macos'] .ui-btn-outline {
+  background-color: hsl(0 0% 100%);
+  border: 0.5px solid hsl(0 0% 0% / 0.15);
+  color: hsl(var(--foreground));
+  box-shadow: 0 0.5px 1px hsl(0 0% 0% / 0.15);
+}
+[data-theme='macos'] .ui-btn-outline:hover {
+  background-color: hsl(0 0% 100%);
+  border-color: hsl(0 0% 0% / 0.15);
+  color: hsl(var(--foreground));
+}
+[data-theme='macos'] .ui-btn-outline:active {
+  background-color: hsl(0 0% 92%);
+}
+[data-theme='macos'].dark .ui-btn-outline {
+  background-color: hsl(0 0% 100% / 0.16);
+  border-color: hsl(0 0% 100% / 0.08);
+  box-shadow: 0 0.5px 1px hsl(0 0% 0% / 0.3), inset 0 0.5px 0 hsl(0 0% 100% / 0.08);
+}
+[data-theme='macos'].dark .ui-btn-outline:hover {
+  background-color: hsl(0 0% 100% / 0.16);
+  border-color: hsl(0 0% 100% / 0.08);
+}
+[data-theme='macos'].dark .ui-btn-outline:active {
+  background-color: hsl(0 0% 100% / 0.24);
+}
+/* Toolbar button: borderless, grey wash on hover, a bit darker on press. */
+[data-theme='macos'] .ui-btn-ghost:hover {
+  background-color: hsl(var(--mac-fill));
+}
+[data-theme='macos'] .ui-btn-ghost:active {
+  background-color: hsl(var(--mac-select));
+}
+[data-theme='macos'] .ui-btn-destructive {
+  border: 0.5px solid hsl(0 0% 0% / 0.15);
+  background-color: hsl(0 0% 100%);
+  box-shadow: 0 0.5px 1px hsl(0 0% 0% / 0.15);
+}
+/* Dark: a quieter push button than outline so the brightened system red stays
+ * ≥ 4.5:1 on window (≈17%) and card (≈23%) backgrounds; red wash on hover. */
+[data-theme='macos'].dark .ui-btn-destructive {
+  border-color: hsl(3 100% 74% / 0.35);
+  background-color: hsl(0 0% 100% / 0.08);
+  color: hsl(3 100% 76%);
+  box-shadow: 0 0.5px 1px hsl(0 0% 0% / 0.3);
+}
+[data-theme='macos'].dark .ui-btn-destructive:hover {
+  background-color: hsl(3 100% 60% / 0.16);
+  border-color: hsl(3 100% 74% / 0.5);
+}
+[data-theme='macos'] .ui-btn-subtle {
+  background-color: hsl(var(--mac-fill));
+  border-color: transparent;
+}
+
+/* --- Text fields ----------------------------------------------------------- */
+[data-theme='macos'] .ui-field {
+  background-color: hsl(0 0% 100%);
+  border: 1px solid hsl(0 0% 0% / 0.15);
+  border-bottom-color: hsl(0 0% 0% / 0.22);
+  border-radius: 6px;
+  box-shadow: inset 0 0.5px 0 hsl(0 0% 0% / 0.06);
+  transition: box-shadow 0.12s ease, border-color 0.12s ease;
+}
+[data-theme='macos'].dark .ui-field {
+  background-color: hsl(0 0% 100% / 0.06);
+  border-color: hsl(0 0% 100% / 0.12);
+  border-bottom-color: hsl(0 0% 100% / 0.12);
+  box-shadow: inset 0 0.5px 0 hsl(0 0% 0% / 0.3);
+}
+[data-theme='macos'] .ui-field:focus,
+[data-theme='macos'] .ui-field:focus-within {
+  border-color: hsl(var(--primary));
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.45);
+}
+
+/* --- Focus: accent halo instead of an offset outline ----------------------- */
+/* Text fields style their own focus (.ui-field); bare inputs such as the chat
+ * composer textarea sit inside a card that draws the ring. */
+[data-theme='macos'] :focus-visible:not(input, textarea, select, [contenteditable]) {
+  outline: none;
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.45);
+}
+[data-theme='macos'] ::selection {
+  background: hsl(var(--primary) / 0.3);
+}
+
+/* --- Switch: accent when on, grey well when off ---------------------------- */
+[data-theme='macos'] .ui-switch[aria-checked='false'] {
+  background-color: hsl(0 0% 0% / 0.1);
+  box-shadow: inset 0 0 0 0.5px hsl(0 0% 0% / 0.06);
+}
+[data-theme='macos'].dark .ui-switch[aria-checked='false'] {
+  background-color: hsl(0 0% 100% / 0.14);
+  box-shadow: none;
+}
+[data-theme='macos'] .ui-switch[aria-checked='true'] {
+  background-color: hsl(var(--primary));
+}
+[data-theme='macos'] .ui-switch[aria-checked='mixed'] {
+  background-color: hsl(var(--primary) / 0.45);
+}
+[data-theme='macos'] .ui-switch-knob {
+  background-color: hsl(0 0% 100%);
+  box-shadow: 0 0 0 0.5px hsl(0 0% 0% / 0.06), 0 1px 2px hsl(0 0% 0% / 0.25);
+}
+[data-theme='macos'].dark .ui-switch-knob {
+  background-color: hsl(0 0% 88%);
+}
+
+/* --- Segmented control ----------------------------------------------------- */
+[data-theme='macos'] .ui-segmented {
+  background-color: hsl(var(--mac-fill));
+  border-radius: 6px;
+}
+[data-theme='macos'] .ui-segmented > button {
+  border-radius: 5px;
+}
+[data-theme='macos'] .ui-segmented .is-active {
+  background-color: hsl(0 0% 100%);
+  color: hsl(var(--foreground));
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.15), 0 0 0 0.5px hsl(0 0% 0% / 0.05);
+}
+[data-theme='macos'].dark .ui-segmented .is-active {
+  background-color: hsl(240 1% 40%); /* #636366 */
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.3);
+}
+
+/* --- Badges: soft tinted capsules ------------------------------------------ */
+[data-theme='macos'] .ui-badge {
+  --mac-tone: var(--muted-foreground);
+  background-color: hsl(var(--mac-tone) / 0.14);
+  border-color: transparent;
+  color: hsl(var(--mac-tone));
+  border-radius: 9999px;
+  font-weight: 600;
+}
+[data-theme='macos'] :is(.ui-badge-running, .ui-badge-primary) { --mac-tone: var(--primary); }
+[data-theme='macos'] .ui-badge-success { --mac-tone: var(--success); }
+[data-theme='macos'] .ui-badge-error { --mac-tone: var(--destructive); }
+[data-theme='macos'] .ui-badge-warning { --mac-tone: var(--warning); }
+[data-theme='macos'] .ui-badge-info { --mac-tone: var(--info); }
+/* The dark tokens are tuned for white-on-fill; text on a 14% wash needs the
+ * brighter system colors. */
+[data-theme='macos'].dark .ui-badge-neutral { color: hsl(0 0% 75%); }
+[data-theme='macos'].dark :is(.ui-badge-running, .ui-badge-primary) { color: hsl(210 100% 66%); }
+[data-theme='macos'].dark .ui-badge-success { color: hsl(135 60% 58%); }
+[data-theme='macos'].dark .ui-badge-error { color: hsl(3 100% 68%); }
+[data-theme='macos'].dark .ui-badge-warning { color: hsl(35 100% 60%); }
+[data-theme='macos'].dark .ui-badge-info { color: hsl(195 90% 62%); }
+
+/* --- Window chrome --------------------------------------------------------- */
+[data-theme='macos'] .app-titlebar {
+  background-color: hsl(var(--sidebar));
+  border-bottom: 0.5px solid hsl(var(--mac-sep));
+  box-shadow: none;
+}
+/* Source list: grey pane, hairline divider, 13px rows. */
+[data-theme='macos'] .app-sidebar {
+  background-color: hsl(var(--sidebar));
+  border-right: 0.5px solid hsl(var(--mac-sep));
+}
+[data-theme='macos'] .app-sidebar nav :is(a, button) {
+  font-size: 13px;
+  color: hsl(var(--foreground));
+  padding-top: 0.3125rem;
+  padding-bottom: 0.3125rem;
+  transition: none;
+}
+[data-theme='macos'] .app-sidebar nav :is(a, button):hover {
+  background-color: transparent;
+}
+[data-theme='macos'] .app-sidebar nav :is(a, button) > svg {
+  color: hsl(var(--muted-foreground));
+}
+[data-theme='macos'] .app-sidebar .is-active {
+  background-color: hsl(var(--mac-select));
+  color: hsl(var(--foreground));
+  font-weight: 400;
+  border-radius: 6px;
+}
+[data-theme='macos'] .app-sidebar .is-active svg,
+[data-theme='macos'] .app-sidebar nav .is-active > svg {
+  color: hsl(var(--primary));
+}
+[data-theme='macos'] .app-sidebar .app-nav-indicator {
+  display: none;
+}
+
+/* --- Scrollbars: thin overlay style ---------------------------------------- */
+[data-theme='macos'] ::-webkit-scrollbar {
+  width: 8px;
+  height: 8px;
+}
+[data-theme='macos'] ::-webkit-scrollbar-track {
+  background: transparent;
+}
+[data-theme='macos'] ::-webkit-scrollbar-thumb {
+  background: hsl(0 0% 0% / 0.25);
+  border-radius: 4px;
+  border: 1px solid transparent;
+  background-clip: padding-box;
+}
+[data-theme='macos'] ::-webkit-scrollbar-thumb:hover {
+  background: hsl(0 0% 0% / 0.4);
+  background-clip: padding-box;
+}
+[data-theme='macos'].dark ::-webkit-scrollbar-thumb {
+  background: hsl(0 0% 100% / 0.25);
+  background-clip: padding-box;
+}
+[data-theme='macos'].dark ::-webkit-scrollbar-thumb:hover {
+  background: hsl(0 0% 100% / 0.4);
+  background-clip: padding-box;
+}

@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, onMounted, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
@@ -57,6 +57,8 @@ import {
 } from '@/lib/sessionLinks'
 import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
+import { useAgentAmbient } from '@/composables/useAgentAmbient'
+import { applySystemAccent } from '@/lib/systemAccent'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
@@ -127,6 +129,8 @@ const live = useLiveRunsStore()
 const runsStore = useRunsStore()
 const conductorStore = useConductorStore()
 const bgProcs = useBackgroundProcessesStore()
+// Agent-reactive aurora (`<html data-agent-state>`) — main window only.
+if (!isPopoutWindow && !isSessionWindow) useAgentAmbient()
 const draftsStore = useChatDraftsStore()
 const { toast } = useToast()
 const { t, locale } = useI18n()
@@ -287,6 +291,12 @@ const sceneOn = computed(
     SCENIC_THEMES.has(sceneTheme.value) &&
     appSettings.settings?.animated_background !== 'false',
 )
+// The macOS accent may change in System Settings while we're in the background.
+window.addEventListener('focus', () => applySystemAccent(document.documentElement.dataset.theme ?? ''))
+// Exposed on <html> so skin / ambient CSS can drop its motion too.
+watchEffect(() => {
+  document.documentElement.dataset.animatedBg = appSettings.settings?.animated_background === 'false' ? 'false' : 'true'
+})
 
 // Force a clean RunView remount only when the *project* changes (heavy stream
 // state survives in the liveRuns store); switching runs within a project is
@@ -559,6 +569,7 @@ function applyColorTheme(theme: string) {
   const t = theme && theme !== 'default' ? theme : ''
   if (t) document.documentElement.setAttribute('data-theme', t)
   else document.documentElement.removeAttribute('data-theme')
+  applySystemAccent(t)
 }
 
 onMounted(async () => {
@@ -801,7 +812,7 @@ onMounted(async () => {
        ("+ Todo") needs, like PrInboxWindow. -->
   <div
     v-else-if="isGanttWindow"
-    class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
+    class="app-shell flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
   >
     <IssuesGanttView class="min-h-0 flex-1" />
     <ConfirmModal />
@@ -816,7 +827,7 @@ onMounted(async () => {
        the conversation, its toolbar and composer. -->
   <div
     v-else-if="isSessionWindow"
-    class="flex flex-col h-screen bg-background text-foreground overflow-hidden"
+    class="app-shell flex flex-col h-screen bg-background text-foreground overflow-hidden"
   >
     <ThemeDecorations :active="sceneOn" :theme="sceneTheme" />
     <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
@@ -832,7 +843,7 @@ onMounted(async () => {
     <ImageCompareHost />
   </div>
 
-  <div v-else class="flex flex-col h-screen bg-background text-foreground overflow-hidden">
+  <div v-else class="app-shell flex flex-col h-screen bg-background text-foreground overflow-hidden">
     <!-- Animated decorative overlay for scenic themes (e.g. Full Moon 🌕).
          Sits ABOVE the UI as a non-interactive, screen-blended light layer so it
          stays visible over the app's opaque panels without blocking clicks. -->
@@ -847,7 +858,7 @@ onMounted(async () => {
          Hidden in focus mode, where the point is no chrome at all. -->
     <header
       v-if="!(uiLayout.focusMode && isRunRoute)"
-      class="flex items-center gap-2 h-11 px-3 shrink-0 bg-sidebar border-b border-border/50"
+      class="app-titlebar flex items-center gap-2 h-11 px-3 shrink-0 bg-sidebar border-b border-border/50"
     >
       <img src="/logo.png" alt="Devdy" class="h-[18px] w-[18px] rounded shrink-0" />
       <p class="text-[13px] font-semibold leading-none tracking-tight shrink-0">Devdy</p>
@@ -958,12 +969,12 @@ onMounted(async () => {
                 :to="item.path"
                 class="relative flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer select-none"
                 :class="route.path.startsWith(item.path)
-                  ? 'bg-accent text-foreground font-medium'
+                  ? 'is-active bg-accent text-foreground font-medium'
                   : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
               >
                 <span
                   v-if="route.path.startsWith(item.path)"
-                  class="absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
+                  class="app-nav-indicator absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
                 />
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                 <span class="flex-1 truncate">{{ item.label }}</span>

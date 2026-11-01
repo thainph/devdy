@@ -40,7 +40,7 @@ const state = computed(() => (props.checked === 'mixed' ? 'mixed' : props.checke
     :aria-label="label"
     :title="label"
     :disabled="disabled || loading"
-    class="relative inline-flex shrink-0 cursor-pointer items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
+    class="ui-switch relative inline-flex shrink-0 cursor-pointer items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
     :class="[
       size === 'md' ? 'h-6 w-11' : 'h-5 w-9',
       state === 'on' ? 'bg-primary' : state === 'mixed' ? 'bg-primary/40' : 'bg-muted-foreground/30',
@@ -48,7 +48,7 @@ const state = computed(() => (props.checked === 'mixed' ? 'mixed' : props.checke
     @click="emit('toggle')"
   >
     <span
-      class="inline-flex transform items-center justify-center rounded-full bg-white shadow transition-transform"
+      class="ui-switch-knob inline-flex transform items-center justify-center rounded-full bg-white shadow transition-transform"
       :class="[KNOB[size].box, KNOB[size][state]]"
     >
       <Loader2 v-if="loading" :class="size === 'md' ? 'h-3 w-3' : 'h-2.5 w-2.5'" class="animate-spin text-primary" :stroke-width="2.5" />

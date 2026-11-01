@@ -1,0 +1,63 @@
+/* Nord — arctic, north-bluish: Snow Storm (light) / Polar Night (dark) with Frost accents, from nordtheme.com */
+@layer base {
+  [data-theme='nord']:not(.dark) {
+    --background: 218 27% 94%;
+    --foreground: 220 16% 22%;
+    --card: 218 28% 98%;
+    --card-foreground: 220 16% 22%;
+    --popover: 218 28% 98%;
+    --popover-foreground: 220 16% 22%;
+    --primary: 213 33% 43%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 218 27% 92%;
+    --secondary-foreground: 220 16% 22%;
+    --muted: 218 27% 92%;
+    --muted-foreground: 220 16% 36%;
+    --accent: 210 36% 89%;
+    --accent-foreground: 213 40% 30%;
+    --destructive: 354 45% 48%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 219 28% 88%;
+    --input: 219 28% 88%;
+    --ring: 213 33% 43%;
+    --sidebar: 219 27% 91%;
+    --aurora-1: 311 20% 63%;
+    --aurora-2: 179 25% 65%;
+    --success: 92 28% 37%;
+    --success-foreground: 0 0% 100%;
+    --warning: 40 71% 34%;
+    --warning-foreground: 0 0% 100%;
+    --info: 210 36% 46%;
+    --info-foreground: 0 0% 100%;
+  }
+  [data-theme='nord'].dark {
+    --background: 220 16% 22%;
+    --foreground: 218 27% 94%;
+    --card: 222 16% 28%;
+    --card-foreground: 218 27% 94%;
+    --popover: 222 16% 28%;
+    --popover-foreground: 218 27% 94%;
+    --primary: 193 43% 67%;
+    --primary-foreground: 220 16% 22%;
+    --secondary: 220 17% 32%;
+    --secondary-foreground: 218 27% 94%;
+    --muted: 220 17% 32%;
+    --muted-foreground: 219 28% 88%;
+    --accent: 213 24% 32%;
+    --accent-foreground: 218 27% 94%;
+    --destructive: 354 58% 70%;
+    --destructive-foreground: 220 16% 22%;
+    --border: 220 16% 36%;
+    --input: 220 16% 36%;
+    --ring: 193 43% 67%;
+    --sidebar: 220 17% 18%;
+    --aurora-1: 311 20% 63%;
+    --aurora-2: 179 25% 65%;
+    --success: 92 28% 65%;
+    --success-foreground: 220 16% 22%;
+    --warning: 40 71% 73%;
+    --warning-foreground: 220 16% 22%;
+    --info: 210 36% 66%;
+    --info-foreground: 220 16% 22%;
+  }
+}

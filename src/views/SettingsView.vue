@@ -27,6 +27,8 @@ import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitla
 import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type AwsProfileInfo, type AwsValidation } from '@/stores/awsAccounts'
 import AwsProfilePicker from '@/components/AwsProfilePicker.vue'
 import AzureAccountsSettings from '@/components/AzureAccountsSettings.vue'
+import ColorThemePicker from '@/components/ColorThemePicker.vue'
+import { applySystemAccent } from '@/lib/systemAccent'
 import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { useClaudeAccountsStore, type ClaudeValidation } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -1218,6 +1220,7 @@ function applyColorTheme(theme: string) {
   const t = theme && theme !== 'default' ? theme : ''
   if (t) document.documentElement.setAttribute('data-theme', t)
   else document.documentElement.removeAttribute('data-theme')
+  applySystemAccent(t)
 }
 
 function resetCyberFoxPosition() {
@@ -1407,22 +1410,8 @@ watch(() => settings.value.language, (v) => {
             </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.colorTheme') }}</label>
-              <AppSelect
-                size="sm"
-                v-model="settings.color_theme"
-                :options="[
-                  { value: 'default', label: t('settings.general.colorDefault') },
-                  { value: 'ocean', label: t('settings.general.colorOcean') },
-                  { value: 'forest', label: t('settings.general.colorForest') },
-                  { value: 'sunset', label: t('settings.general.colorSunset') },
-                  { value: 'rose', label: t('settings.general.colorRose') },
-                  { value: 'teal', label: t('settings.general.colorTeal') },
-                  { value: 'lagoon', label: t('settings.general.colorLagoon') },
-                  { value: 'mint', label: t('settings.general.colorMint') },
-                  { value: 'midautumn', label: t('settings.general.colorMidautumn') },
-                ]"
-              />
               <p class="text-[11px] text-muted-foreground">{{ t('settings.general.colorThemeHint') }}</p>
+              <ColorThemePicker v-model="settings.color_theme" />
             </div>
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.animatedBackground') }}</label>

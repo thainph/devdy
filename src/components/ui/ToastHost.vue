@@ -27,7 +27,7 @@ const TONES: Record<ToastVariant, string> = {
         <div
           v-for="t in state.items"
           :key="t.id"
-          class="pointer-events-auto flex items-center gap-2 min-w-56 max-w-sm bg-card border border-border rounded-lg shadow-md px-3.5 py-2.5 text-xs cursor-pointer"
+          class="ui-toast pointer-events-auto flex items-center gap-2 min-w-56 max-w-sm bg-card border border-border rounded-lg shadow-md px-3.5 py-2.5 text-xs cursor-pointer"
           role="status"
           @click="dismiss(t.id)"
         >

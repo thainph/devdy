@@ -1,4 +1,16 @@
 @import "tailwindcss";
+/* Named color themes kept one file each (same shape as the blocks below);
+ * ids are listed in src/lib/colorThemes.ts. */
+@import "./themes/monokai.css";
+@import "./themes/tokyonight.css";
+@import "./themes/nord.css";
+@import "./themes/contrast.css";
+@import "./themes/macos.css";
+@import "./themes/tahoe.css";
+@import "./themes/graphite.css";
+@import "./themes/crt.css";
+/* Aurora reacting to html[data-agent-state] (running / waiting / error / done). */
+@import "./agent-ambient.css";
 
 /* Inter variable — self-hosted so it works offline. One file covers all weights
  * (100–900) via the variable `wght` axis; a separate file for true italics. */
@@ -58,8 +70,11 @@
    * Surfaces are kept as HSL tokens; the frosted look comes from the primitives
    * (Card/Modal use a translucent fill + backdrop-blur) layered over the aurora
    * background (see `body::before` below). Larger --radius softens panels.
+   * `.theme-scope` re-declares the tokens on an element so a theme preview tile
+   * (with its own `data-theme` / `.dark`) doesn't inherit the active palette.
    * ------------------------------------------------------------------------- */
-  :root {
+  :root,
+  .theme-scope {
     --background: 240 40% 98%;
     --foreground: 235 42% 11%;
     --card: 0 0% 100%;
@@ -81,12 +96,17 @@
     --ring: 243 76% 59%;
     --radius: 0.625rem;
     --sidebar: 240 30% 96%;
-    --success: 161 94% 30%; /* emerald-600 */
-    --warning: 32 95% 44%; /* amber-600 */
-    --info: 200 98% 39%; /* sky-600 */
+    --success: 161 94% 27%; /* emerald-600, darkened for AA on white text */
+    --warning: 32 95% 36%; /* amber-600, darkened for AA */
+    --info: 200 98% 37%; /* sky-600, darkened for AA */
     --success-foreground: 0 0% 100%;
     --warning-foreground: 0 0% 100%;
     --info-foreground: 0 0% 100%;
+    /* Non-primary tints of the aurora background; themes may override. */
+    --aurora-1: 280 85% 60%;
+    --aurora-2: 200 90% 60%;
+    /* UI font stack; skins may swap it (see DESIGN_SYSTEM.md → Skins). */
+    --font-ui: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
   }
 
   .dark {
@@ -105,7 +125,7 @@
     --accent: 243 42% 28%;
     --accent-foreground: 220 32% 98%;
     --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 0 70% 8%;
     --border: 235 28% 26%;
     --input: 235 28% 26%;
     --ring: 243 92% 76%;
@@ -117,6 +137,8 @@
     --success-foreground: 164 86% 10%;
     --warning-foreground: 26 83% 14%;
     --info-foreground: 204 80% 12%;
+    --aurora-1: 280 90% 62%;
+    --aurora-2: 200 90% 60%;
   }
 
   /* ---------------------------------------------------------------------------
@@ -126,328 +148,6 @@
    * so they override the base :root / .dark tokens regardless of source order.
    * The default (indigo) theme uses no attribute → falls through to :root/.dark.
    * ------------------------------------------------------------------------- */
-
-  /* Ocean — cool blue / teal */
-  [data-theme='ocean']:not(.dark) {
-    --background: 200 40% 98%;
-    --foreground: 205 45% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 205 45% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 205 45% 10%;
-    --primary: 192 82% 40%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 200 30% 92%;
-    --secondary-foreground: 205 45% 20%;
-    --muted: 200 30% 92%;
-    --muted-foreground: 205 15% 40%;
-    --accent: 200 35% 88%;
-    --accent-foreground: 205 45% 20%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 200 25% 85%;
-    --input: 200 25% 85%;
-    --ring: 192 82% 40%;
-    --sidebar: 200 35% 95%;
-  }
-  [data-theme='ocean'].dark {
-    --background: 205 38% 9%;
-    --foreground: 200 30% 97%;
-    --card: 205 32% 12%;
-    --card-foreground: 200 30% 97%;
-    --popover: 205 32% 12%;
-    --popover-foreground: 200 30% 97%;
-    --primary: 190 90% 55%;
-    --primary-foreground: 200 60% 8%;
-    --secondary: 205 28% 18%;
-    --secondary-foreground: 200 30% 97%;
-    --muted: 205 28% 18%;
-    --muted-foreground: 200 20% 76%;
-    --accent: 205 28% 23%;
-    --accent-foreground: 200 30% 99%;
-    --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 205 24% 26%;
-    --input: 205 24% 26%;
-    --ring: 190 90% 55%;
-    --sidebar: 205 40% 7%;
-  }
-
-  /* Forest — natural green / emerald */
-  [data-theme='forest']:not(.dark) {
-    --background: 150 30% 98%;
-    --foreground: 158 40% 9%;
-    --card: 0 0% 100%;
-    --card-foreground: 158 40% 9%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 158 40% 9%;
-    --primary: 152 60% 36%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 150 22% 91%;
-    --secondary-foreground: 158 40% 18%;
-    --muted: 150 22% 91%;
-    --muted-foreground: 155 12% 38%;
-    --accent: 150 28% 87%;
-    --accent-foreground: 158 40% 18%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 150 20% 84%;
-    --input: 150 20% 84%;
-    --ring: 152 60% 36%;
-    --sidebar: 150 25% 95%;
-  }
-  [data-theme='forest'].dark {
-    --background: 160 20% 9%;
-    --foreground: 150 20% 97%;
-    --card: 160 18% 12%;
-    --card-foreground: 150 20% 97%;
-    --popover: 160 18% 12%;
-    --popover-foreground: 150 20% 97%;
-    --primary: 152 65% 50%;
-    --primary-foreground: 155 60% 7%;
-    --secondary: 158 16% 18%;
-    --secondary-foreground: 150 20% 97%;
-    --muted: 158 16% 18%;
-    --muted-foreground: 150 14% 76%;
-    --accent: 158 16% 23%;
-    --accent-foreground: 150 20% 99%;
-    --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 158 14% 26%;
-    --input: 158 14% 26%;
-    --ring: 152 65% 50%;
-    --sidebar: 160 22% 7%;
-  }
-
-  /* Sunset — warm violet base with orange accent */
-  [data-theme='sunset']:not(.dark) {
-    --background: 30 50% 98%;
-    --foreground: 285 35% 12%;
-    --card: 0 0% 100%;
-    --card-foreground: 285 35% 12%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 285 35% 12%;
-    --primary: 20 85% 48%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 28 35% 92%;
-    --secondary-foreground: 285 35% 22%;
-    --muted: 28 35% 92%;
-    --muted-foreground: 25 20% 40%;
-    --accent: 28 40% 88%;
-    --accent-foreground: 285 35% 22%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 28 30% 85%;
-    --input: 28 30% 85%;
-    --ring: 20 85% 48%;
-    --sidebar: 30 40% 96%;
-  }
-  [data-theme='sunset'].dark {
-    --background: 280 20% 10%;
-    --foreground: 30 30% 97%;
-    --card: 280 18% 13%;
-    --card-foreground: 30 30% 97%;
-    --popover: 280 18% 13%;
-    --popover-foreground: 30 30% 97%;
-    --primary: 22 90% 60%;
-    --primary-foreground: 20 60% 8%;
-    --secondary: 282 15% 19%;
-    --secondary-foreground: 30 30% 97%;
-    --muted: 282 15% 19%;
-    --muted-foreground: 25 18% 78%;
-    --accent: 282 15% 24%;
-    --accent-foreground: 30 30% 99%;
-    --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 282 14% 27%;
-    --input: 282 14% 27%;
-    --ring: 22 90% 60%;
-    --sidebar: 280 22% 8%;
-  }
-
-  /* Rose — elegant pink / purple */
-  [data-theme='rose']:not(.dark) {
-    --background: 330 40% 98%;
-    --foreground: 295 30% 12%;
-    --card: 0 0% 100%;
-    --card-foreground: 295 30% 12%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 295 30% 12%;
-    --primary: 340 75% 50%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 330 30% 93%;
-    --secondary-foreground: 295 30% 22%;
-    --muted: 330 30% 93%;
-    --muted-foreground: 325 15% 42%;
-    --accent: 330 35% 89%;
-    --accent-foreground: 295 30% 22%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 330 25% 86%;
-    --input: 330 25% 86%;
-    --ring: 340 75% 50%;
-    --sidebar: 330 32% 96%;
-  }
-  [data-theme='rose'].dark {
-    --background: 290 22% 10%;
-    --foreground: 330 25% 97%;
-    --card: 290 20% 13%;
-    --card-foreground: 330 25% 97%;
-    --popover: 290 20% 13%;
-    --popover-foreground: 330 25% 97%;
-    --primary: 340 85% 65%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 292 16% 19%;
-    --secondary-foreground: 330 25% 97%;
-    --muted: 292 16% 19%;
-    --muted-foreground: 325 15% 78%;
-    --accent: 292 16% 24%;
-    --accent-foreground: 330 25% 99%;
-    --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 292 15% 27%;
-    --input: 292 15% 27%;
-    --ring: 340 85% 65%;
-    --sidebar: 290 24% 8%;
-  }
-
-  /* Teal — classic balanced teal */
-  [data-theme='teal']:not(.dark) {
-    --background: 180 35% 98%;
-    --foreground: 185 45% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 185 45% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 185 45% 10%;
-    --primary: 178 70% 36%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 180 25% 92%;
-    --secondary-foreground: 185 45% 20%;
-    --muted: 180 25% 92%;
-    --muted-foreground: 183 14% 40%;
-    --accent: 180 30% 87%;
-    --accent-foreground: 185 45% 20%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 180 22% 84%;
-    --input: 180 22% 84%;
-    --ring: 178 70% 36%;
-    --sidebar: 180 30% 95%;
-  }
-  [data-theme='teal'].dark {
-    --background: 187 30% 9%;
-    --foreground: 180 25% 97%;
-    --card: 187 26% 12%;
-    --card-foreground: 180 25% 97%;
-    --popover: 187 26% 12%;
-    --popover-foreground: 180 25% 97%;
-    --primary: 174 75% 46%;
-    --primary-foreground: 185 60% 7%;
-    --secondary: 186 22% 18%;
-    --secondary-foreground: 180 25% 97%;
-    --muted: 186 22% 18%;
-    --muted-foreground: 180 16% 76%;
-    --accent: 186 22% 23%;
-    --accent-foreground: 180 25% 99%;
-    --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 186 20% 26%;
-    --input: 186 20% 26%;
-    --ring: 174 75% 46%;
-    --sidebar: 187 32% 7%;
-  }
-
-  /* Lagoon — deep teal leaning to cyan */
-  [data-theme='lagoon']:not(.dark) {
-    --background: 190 42% 98%;
-    --foreground: 194 48% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 194 48% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 194 48% 10%;
-    --primary: 186 80% 38%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 190 32% 92%;
-    --secondary-foreground: 194 48% 20%;
-    --muted: 190 32% 92%;
-    --muted-foreground: 192 16% 40%;
-    --accent: 190 36% 87%;
-    --accent-foreground: 194 48% 20%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 190 26% 84%;
-    --input: 190 26% 84%;
-    --ring: 186 80% 38%;
-    --sidebar: 190 36% 95%;
-  }
-  [data-theme='lagoon'].dark {
-    --background: 195 40% 8%;
-    --foreground: 190 30% 97%;
-    --card: 195 34% 11%;
-    --card-foreground: 190 30% 97%;
-    --popover: 195 34% 11%;
-    --popover-foreground: 190 30% 97%;
-    --primary: 184 85% 52%;
-    --primary-foreground: 195 60% 7%;
-    --secondary: 194 28% 17%;
-    --secondary-foreground: 190 30% 97%;
-    --muted: 194 28% 17%;
-    --muted-foreground: 190 18% 76%;
-    --accent: 194 28% 22%;
-    --accent-foreground: 190 30% 99%;
-    --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 194 24% 25%;
-    --input: 194 24% 25%;
-    --ring: 184 85% 52%;
-    --sidebar: 195 42% 6%;
-  }
-
-  /* Mint — fresh light teal / mint */
-  [data-theme='mint']:not(.dark) {
-    --background: 165 40% 98%;
-    --foreground: 170 42% 10%;
-    --card: 0 0% 100%;
-    --card-foreground: 170 42% 10%;
-    --popover: 0 0% 100%;
-    --popover-foreground: 170 42% 10%;
-    --primary: 168 65% 38%;
-    --primary-foreground: 0 0% 100%;
-    --secondary: 165 28% 91%;
-    --secondary-foreground: 170 42% 19%;
-    --muted: 165 28% 91%;
-    --muted-foreground: 168 14% 39%;
-    --accent: 165 32% 86%;
-    --accent-foreground: 170 42% 19%;
-    --destructive: 0 72% 51%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 165 24% 83%;
-    --input: 165 24% 83%;
-    --ring: 168 65% 38%;
-    --sidebar: 165 32% 95%;
-  }
-  [data-theme='mint'].dark {
-    --background: 172 26% 9%;
-    --foreground: 165 24% 97%;
-    --card: 172 22% 12%;
-    --card-foreground: 165 24% 97%;
-    --popover: 172 22% 12%;
-    --popover-foreground: 165 24% 97%;
-    --primary: 162 70% 48%;
-    --primary-foreground: 170 60% 7%;
-    --secondary: 170 18% 18%;
-    --secondary-foreground: 165 24% 97%;
-    --muted: 170 18% 18%;
-    --muted-foreground: 165 15% 76%;
-    --accent: 170 18% 23%;
-    --accent-foreground: 165 24% 99%;
-    --destructive: 0 74% 62%;
-    --destructive-foreground: 0 0% 100%;
-    --border: 170 16% 26%;
-    --input: 170 16% 26%;
-    --ring: 162 70% 48%;
-    --sidebar: 172 28% 7%;
-  }
 
   /* ===========================================================================
    * Mid-Autumn Festival (Tết Trung Thu) theme — festive seasonal palette.
@@ -462,7 +162,7 @@
     --card-foreground: 350 40% 14%;
     --popover: 0 0% 100%;
     --popover-foreground: 350 40% 14%;
-    --primary: 36 90% 46%;
+    --primary: 36 90% 34%;
     --primary-foreground: 0 0% 100%;
     --secondary: 30 45% 93%;
     --secondary-foreground: 350 40% 24%;
@@ -474,7 +174,7 @@
     --destructive-foreground: 0 0% 100%;
     --border: 32 34% 87%;
     --input: 32 34% 87%;
-    --ring: 36 90% 46%;
+    --ring: 36 90% 34%;
     --sidebar: 34 46% 96%;
   }
   [data-theme='midautumn'].dark {
@@ -493,7 +193,7 @@
     --accent: 352 46% 30%;
     --accent-foreground: 44 45% 96%;
     --destructive: 6 82% 60%;
-    --destructive-foreground: 0 0% 100%;
+    --destructive-foreground: 6 70% 8%;
     --border: 350 24% 26%;
     --input: 350 24% 26%;
     --ring: 44 94% 62%;
@@ -526,7 +226,7 @@
     position: relative;
     background-color: hsl(var(--background));
     color: hsl(var(--foreground));
-    font-family: "Inter", -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    font-family: var(--font-ui);
     font-feature-settings: "cv02", "cv03", "cv04", "cv11"; /* friendlier 1/4/6/9/a/l glyphs */
     -webkit-font-smoothing: antialiased;
     -moz-osx-font-smoothing: grayscale;
@@ -562,7 +262,7 @@
     background:
       radial-gradient(45% 45% at 12% 8%, hsl(var(--primary) / 0.14), transparent 70%),
       radial-gradient(40% 40% at 92% 6%, hsl(var(--ring) / 0.12), transparent 70%),
-      radial-gradient(48% 48% at 78% 96%, hsl(280 85% 60% / 0.10), transparent 72%),
+      radial-gradient(48% 48% at 78% 96%, hsl(var(--aurora-1) / 0.10), transparent 72%),
       radial-gradient(42% 42% at 22% 100%, hsl(var(--primary) / 0.08), transparent 72%);
     animation: aurora-drift 26s ease-in-out infinite alternate;
   }
@@ -570,8 +270,8 @@
     background:
       radial-gradient(45% 45% at 12% 8%, hsl(var(--primary) / 0.24), transparent 70%),
       radial-gradient(40% 40% at 92% 6%, hsl(var(--ring) / 0.20), transparent 70%),
-      radial-gradient(48% 48% at 78% 96%, hsl(280 90% 62% / 0.18), transparent 72%),
-      radial-gradient(42% 42% at 22% 100%, hsl(200 90% 60% / 0.12), transparent 72%);
+      radial-gradient(48% 48% at 78% 96%, hsl(var(--aurora-1) / 0.18), transparent 72%),
+      radial-gradient(42% 42% at 22% 100%, hsl(var(--aurora-2) / 0.12), transparent 72%);
   }
   /* Frosted glass surface — translucent fill + blur so the aurora shows through.
    * Use on floating panels/cards; pair with a border for the lit glass edge. */
