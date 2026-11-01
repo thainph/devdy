@@ -49,7 +49,12 @@
     "quitPolicyAsk": "Ask",
     "quitPolicyStopAll": "Stop all",
     "quitPolicyKeep": "Keep background processes",
-    "quitPolicyHint": "Applies when sessions are running or processes are left over. \"Keep\" still stops sessions and Devdy helpers."
+    "quitPolicyHint": "Applies when sessions are running or processes are left over. \"Keep\" still stops sessions and Devdy helpers.",
+    "launchAtLogin": "Launch at login",
+    "launchAtLoginOff": "Off",
+    "launchAtLoginOn": "Open window",
+    "launchAtLoginMinimized": "Start minimized",
+    "launchAtLoginHint": "Starts Devdy when you log in to macOS. \"Start minimized\" keeps the window in the Dock."
   },
   "mascot": {
     "title": "DY Mascot",

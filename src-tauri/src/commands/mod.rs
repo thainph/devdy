@@ -1,5 +1,6 @@
 pub mod agents_block;
 pub mod app_menu;
+pub mod autostart;
 pub mod aws_accounts;
 pub mod aws_sso;
 pub mod azure_accounts;

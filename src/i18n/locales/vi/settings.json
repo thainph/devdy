@@ -49,7 +49,12 @@
     "quitPolicyAsk": "Hỏi",
     "quitPolicyStopAll": "Dừng tất cả",
     "quitPolicyKeep": "Giữ tiến trình nền",
-    "quitPolicyHint": "Áp dụng khi còn phiên đang chạy hoặc tiến trình còn sót. \"Giữ\" vẫn dừng các phiên và tiến trình hỗ trợ của Devdy."
+    "quitPolicyHint": "Áp dụng khi còn phiên đang chạy hoặc tiến trình còn sót. \"Giữ\" vẫn dừng các phiên và tiến trình hỗ trợ của Devdy.",
+    "launchAtLogin": "Khởi động cùng macOS",
+    "launchAtLoginOff": "Tắt",
+    "launchAtLoginOn": "Mở cửa sổ",
+    "launchAtLoginMinimized": "Thu nhỏ khi khởi động",
+    "launchAtLoginHint": "Tự mở Devdy khi đăng nhập macOS. \"Thu nhỏ khi khởi động\" giữ cửa sổ ở Dock."
   },
   "mascot": {
     "title": "Linh thú DY",

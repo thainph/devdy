@@ -435,6 +435,43 @@ const loading = ref(true)
 let lastSaved: AppSettings | null = null
 let saveTimer: ReturnType<typeof setTimeout> | null = null
 
+// Launch at login lives in a macOS LaunchAgent, not in the settings table, so
+// it is applied on change instead of going through the debounced auto-save.
+type LaunchAtLogin = 'off' | 'on' | 'minimized'
+const launchAtLogin = ref<LaunchAtLogin>('off')
+const launchAtLoginOptions = computed(() => [
+  { value: 'off', label: t('settings.general.launchAtLoginOff') },
+  { value: 'on', label: t('settings.general.launchAtLoginOn') },
+  { value: 'minimized', label: t('settings.general.launchAtLoginMinimized') },
+])
+type AutostartStatus = { enabled: boolean; minimized: boolean }
+const autostartMode = (s: AutostartStatus): LaunchAtLogin =>
+  !s.enabled ? 'off' : s.minimized ? 'minimized' : 'on'
+
+async function loadLaunchAtLogin() {
+  try {
+    launchAtLogin.value = autostartMode(await invoke<AutostartStatus>('autostart_get'))
+  } catch {
+    // Unsupported platform — leave the select at "off".
+  }
+}
+
+async function setLaunchAtLogin(mode: LaunchAtLogin) {
+  const previous = launchAtLogin.value
+  launchAtLogin.value = mode
+  try {
+    const status = await invoke<AutostartStatus>('autostart_set', {
+      enabled: mode !== 'off',
+      minimized: mode === 'minimized',
+    })
+    launchAtLogin.value = autostartMode(status)
+    toast.success(t('settings.toast.saved'))
+  } catch (e) {
+    launchAtLogin.value = previous
+    toast.error(String(e))
+  }
+}
+
 const SECTIONS = [
   { id: 'general', labelKey: 'settings.sections.general', icon: Palette },
   { id: 'mascot', labelKey: 'settings.sections.mascot', icon: Bot },
@@ -1127,6 +1164,7 @@ onMounted(async () => {
     settings.value.quit_background_policy ||= 'ask'
     lastSaved = { ...settings.value }
     savedPrompts.value = parseSavedPrompts(settings.value.saved_prompts)
+    loadLaunchAtLogin()
     await ghStore.fetch()
     await glStore.fetch()
     await awsStore.fetch()
@@ -1423,6 +1461,16 @@ watch(() => settings.value.language, (v) => {
                 ]"
               />
               <p class="text-[11px] text-muted-foreground">{{ t('settings.general.quitPolicyHint') }}</p>
+            </div>
+            <div class="space-y-1.5">
+              <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.general.launchAtLogin') }}</label>
+              <AppSelect
+                size="sm"
+                :model-value="launchAtLogin"
+                :options="launchAtLoginOptions"
+                @update:model-value="(v) => setLaunchAtLogin(v as LaunchAtLogin)"
+              />
+              <p class="text-[11px] text-muted-foreground">{{ t('settings.general.launchAtLoginHint') }}</p>
             </div>
         </Card>
 

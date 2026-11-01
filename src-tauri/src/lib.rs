@@ -436,6 +436,15 @@ pub fn run() {
             if let Err(e) = commands::tray::init(app.handle()) {
                 tracing::warn!(event = "tray_init_failed", error = %e);
             }
+
+            // Launch at login: keep the LaunchAgent pointing at this executable,
+            // and honour its "start minimized" flag.
+            commands::autostart::refresh(app.handle());
+            if commands::autostart::launched_minimized() {
+                if let Some(w) = app.get_webview_window("main") {
+                    let _ = w.minimize();
+                }
+            }
             Ok(())
         })
         // Refuse credential / security commands to the remote-desktop bridge.
@@ -443,6 +452,8 @@ pub fn run() {
             health_check,
             set_app_menu,
             set_tray_menu,
+            commands::autostart::autostart_get,
+            commands::autostart::autostart_set,
             get_settings,
             update_setting,
             export_settings_backup,
