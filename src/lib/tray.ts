@@ -346,8 +346,8 @@ export async function refreshTray(): Promise<void> {
       /* outside the Tauri shell */
     }
     if (isMain) {
-      // Running sessions, then overdue Focus todos (`2 ⏰3`).
-      spec.title = trayBadge(useLiveRunsStore().runningIds.length, useFocusStore().overdueCount)
+      // Running-session count beside the glyph.
+      spec.title = trayBadge(useLiveRunsStore().runningIds.length)
       spec.sessions = buildSessionItems()
     }
 
