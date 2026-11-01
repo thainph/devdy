@@ -378,7 +378,7 @@ function onKeydown(e: KeyboardEvent) {
     ref="rootEl"
     tabindex="-1"
     class="prompt-attention flex h-full min-h-0 flex-col border-t-2 bg-card outline-none"
-    :class="isQuestions || isPlan ? 'border-t-primary/70' : 'border-t-warning/70'"
+    :class="isQuestions || isPlan ? 'border-t-info/70' : 'border-t-warning/70'"
     role="dialog"
     :aria-label="headerTitle"
     @keydown="onKeydown"
@@ -392,7 +392,7 @@ function onKeydown(e: KeyboardEvent) {
         <component
           :is="isQuestions ? HelpCircle : isPlan ? ClipboardList : hasDiff ? FileEdit : ShieldAlert"
           class="shrink-0"
-          :class="[isQuestions ? 'h-4 w-4' : 'h-5 w-5 mt-0.5', isQuestions || isPlan ? 'text-primary' : 'text-warning']"
+          :class="[isQuestions ? 'h-4 w-4' : 'h-5 w-5 mt-0.5', isQuestions || isPlan ? 'text-info' : 'text-warning']"
           :stroke-width="1.75"
         />
         <div class="flex-1 min-w-0">
@@ -416,7 +416,7 @@ function onKeydown(e: KeyboardEvent) {
           <div class="flex items-center gap-2 flex-wrap">
             <span
               v-if="currentQuestion.header"
-              class="text-[10px] uppercase tracking-wider rounded bg-primary/15 text-primary px-1.5 py-0.5"
+              class="text-[10px] uppercase tracking-wider rounded bg-info/15 text-info px-1.5 py-0.5"
             >{{ currentQuestion.header }}</span>
             <span class="text-[10px] uppercase tracking-wider text-foreground/40">
               {{ currentQuestion.multiSelect ? t('permission.selectAll') : t('permission.selectOne') }}
@@ -656,7 +656,7 @@ function onKeydown(e: KeyboardEvent) {
     opacity: 0;
   }
   40% {
-    box-shadow: inset 2px 0 0 0 hsl(var(--primary) / 0.45);
+    box-shadow: inset 2px 0 0 0 hsl(var(--info) / 0.45);
   }
   100% {
     transform: translateX(0);

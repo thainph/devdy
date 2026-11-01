@@ -218,8 +218,8 @@ const inputPreview = computed(() => {
     :class="[
       inbox ? 'rounded-lg border border-border border-l-2' : 'h-full border-t-2',
       inbox
-        ? isQuestions ? 'border-l-primary/70' : 'border-l-warning/70'
-        : isQuestions ? 'border-t-primary/70' : 'border-t-warning/70',
+        ? isQuestions ? 'border-l-info/70' : 'border-l-warning/70'
+        : isQuestions ? 'border-t-info/70' : 'border-t-warning/70',
     ]"
     role="dialog"
     :aria-label="isQuestions ? t('permission.controller.questionAria') : t('permission.controller.requestAria')"
@@ -228,7 +228,7 @@ const inputPreview = computed(() => {
       <component
         :is="isQuestions ? HelpCircle : hasDiff ? FileEdit : ShieldAlert"
         class="h-5 w-5 mt-0.5 shrink-0"
-        :class="isQuestions ? 'text-primary' : 'text-warning'"
+        :class="isQuestions ? 'text-info' : 'text-warning'"
         :stroke-width="1.75"
       />
       <div class="flex-1 min-w-0">
@@ -263,7 +263,7 @@ const inputPreview = computed(() => {
         <div class="flex items-center gap-2 flex-wrap">
           <span
             v-if="q.header"
-            class="text-[10px] uppercase tracking-wider rounded bg-primary/15 text-primary px-1.5 py-0.5"
+            class="text-[10px] uppercase tracking-wider rounded bg-info/15 text-info px-1.5 py-0.5"
             >{{ q.header }}</span
           >
           <span class="text-[10px] uppercase tracking-wider text-foreground/40">

@@ -468,7 +468,7 @@ async function loadStorage() {
                 <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                   <div
                     class="h-full rounded-full transition-all"
-                    :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-primary'"
+                    :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-info'"
                     :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
                   />
                 </div>
@@ -506,7 +506,7 @@ async function loadStorage() {
               <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
                 <div
                   class="h-full rounded-full transition-all"
-                  :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-primary'"
+                  :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-info'"
                   :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
                 />
               </div>

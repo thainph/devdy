@@ -55,7 +55,12 @@ function setOpen(v: boolean) {
   emit('update:open', v)
   if (v) place()
 }
-function toggle() { setOpen(!open.value) }
+function toggle(e: MouseEvent) {
+  // A disabled Button has pointer-events-none, so its click lands on this
+  // wrapper — don't open the menu for a disabled trigger.
+  if ((e.currentTarget as HTMLElement).querySelector(':scope > :disabled')) return
+  setOpen(!open.value)
+}
 function close() { setOpen(false) }
 
 function inside(t: EventTarget | null) {

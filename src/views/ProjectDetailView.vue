@@ -1037,12 +1037,12 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             @toggle="handleToggleGroup('skill', $event)"
             @reapply="handleReapplyGroup('skill', $event)"
           />
-          <Banner v-if="instructionWarnings.length > 0" tone="warning" class="space-y-1">
+          <Banner v-if="instructionWarnings.length > 0" tone="warning">
             <p class="font-medium text-warning">{{ t('projectDetail.instructionWarningsTitle') }}</p>
             <p
               v-for="(w, i) in instructionWarnings"
               :key="i"
-              class="leading-relaxed"
+              class="mt-1 leading-relaxed"
             >{{ instructionWarningText(w) }}</p>
           </Banner>
           <Card>
@@ -1120,12 +1120,12 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             @toggle="handleToggleGroup('rule', $event)"
             @reapply="handleReapplyGroup('rule', $event)"
           />
-          <Banner v-if="instructionWarnings.length > 0" tone="warning" class="space-y-1">
+          <Banner v-if="instructionWarnings.length > 0" tone="warning">
             <p class="font-medium text-warning">{{ t('projectDetail.instructionWarningsTitle') }}</p>
             <p
               v-for="(w, i) in instructionWarnings"
               :key="i"
-              class="leading-relaxed"
+              class="mt-1 leading-relaxed"
             >{{ instructionWarningText(w) }}</p>
           </Banner>
           <Card>

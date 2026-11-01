@@ -12,11 +12,15 @@ const props = withDefaults(defineProps<{
   icon?: Component | null
   /** Spinner instead of the icon while something is in progress. */
   loading?: boolean
+  /** Announce to screen readers (role alert/status) — for messages that appear
+   *  in response to an action, not for static notices. */
+  live?: boolean
   class?: string
 }>(), {
   tone: 'warning',
   icon: undefined,
   loading: false,
+  live: false,
   class: undefined,
 })
 
@@ -41,7 +45,7 @@ const glyph = computed(() =>
 <template>
   <div
     :class="cn('flex items-start gap-1.5 rounded-md border px-2 py-1.5 text-[11px] text-foreground', TONE[tone].box, props.class)"
-    :role="tone === 'destructive' ? 'alert' : 'status'"
+    :role="live ? (tone === 'destructive' ? 'alert' : 'status') : undefined"
   >
     <component :is="glyph" v-if="glyph" class="mt-px h-3.5 w-3.5 shrink-0" :class="[TONE[tone].icon, loading && 'animate-spin']" :stroke-width="2" />
     <div class="min-w-0 flex-1 break-words">

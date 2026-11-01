@@ -34,7 +34,7 @@ const isWarn = computed(() => percent.value >= WARN_PERCENT)
 const isOver = computed(() => ratio.value >= 1)
 
 const barClass = computed(() =>
-  isOver.value ? 'bg-destructive' : isWarn.value ? 'bg-warning' : 'bg-primary/70',
+  isOver.value ? 'bg-destructive' : isWarn.value ? 'bg-warning' : 'bg-info/70',
 )
 const textClass = computed(() =>
   isOver.value ? 'text-destructive' : isWarn.value ? 'text-warning' : 'text-muted-foreground',

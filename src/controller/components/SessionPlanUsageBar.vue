@@ -129,7 +129,7 @@ const show = computed(() => rows.value.some((r) => r.hasPlan))
 const FILL: Record<Row['tone'], string> = {
   over: 'bg-destructive',
   warning: 'bg-warning',
-  ok: 'bg-primary',
+  ok: 'bg-info',
 }
 const TEXT: Record<Row['tone'], string> = {
   over: 'text-destructive',
