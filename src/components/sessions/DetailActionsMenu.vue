@@ -28,7 +28,7 @@ const { t } = useI18n()
     <template #trigger>
       <Button
         variant="outline"
-        size="icon-sm"
+        size="icon"
         :title="t('item.moreActions')"
         :aria-label="t('item.moreActions')"
       >

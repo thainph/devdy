@@ -33,7 +33,7 @@ async function copy() {
   <Button
     v-if="iconOnly"
     variant="outline"
-    size="icon-sm"
+    size="icon"
     :title="t('capture.copyMarkdown')"
     :aria-label="t('capture.copyMarkdown')"
     @click="copy"
