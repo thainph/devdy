@@ -14,8 +14,6 @@
 @import "./themes/christmas.css";
 @import "./themes/tet.css";
 @import "./themes/crt.css";
-@import "./themes/synthwave.css";
-@import "./themes/brutal.css";
 /* Aurora reacting to html[data-agent-state] (running / waiting / error / done). */
 @import "./agent-ambient.css";
 

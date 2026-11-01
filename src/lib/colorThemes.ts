@@ -32,8 +32,6 @@ export const COLOR_THEME_DEFS: readonly ColorThemeDef[] = [
   { id: 'sand', group: 'trend' },
   { id: 'contrast', group: 'trend' },
   { id: 'crt', group: 'skin' },
-  { id: 'synthwave', group: 'skin' },
-  { id: 'brutal', group: 'skin' },
   { id: 'midautumn', group: 'seasonal' },
   { id: 'christmas', group: 'seasonal' },
   { id: 'tet', group: 'seasonal' },
