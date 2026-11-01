@@ -13,6 +13,9 @@
 @import "./themes/contrast.css";
 @import "./themes/christmas.css";
 @import "./themes/tet.css";
+@import "./themes/macos.css";
+@import "./themes/tahoe.css";
+@import "./themes/graphite.css";
 @import "./themes/crt.css";
 /* Aurora reacting to html[data-agent-state] (running / waiting / error / done). */
 @import "./agent-ambient.css";

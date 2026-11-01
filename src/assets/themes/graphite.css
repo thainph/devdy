@@ -1,0 +1,365 @@
+/* macOS Graphite — skin. Native macOS with the Graphite accent, tuned like
+ * Apple's pro apps (Xcode, Final Cut Pro, Logic Pro): monochrome, dense,
+ * hairline separators, no aurora, no glass. Color only appears in semantic
+ * status (slightly muted system red / green / orange). Fixed accent — this
+ * theme ignores the system accent. See DESIGN_SYSTEM.md §6 for the hooks. */
+@layer base {
+  [data-theme='graphite']:not(.dark) {
+    --background: 0 0% 100%;
+    --foreground: 0 0% 11%;
+    --card: 0 0% 100%;
+    --card-foreground: 0 0% 11%;
+    --popover: 0 0% 97%;
+    --popover-foreground: 0 0% 11%;
+    --primary: 240 2% 37%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 0 0% 96%;
+    --secondary-foreground: 0 0% 13%;
+    --muted: 0 0% 95%;
+    --muted-foreground: 240 2% 40%;
+    --accent: 0 0% 90%;
+    --accent-foreground: 0 0% 11%;
+    --destructive: 357 72% 45%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 0 0% 86%;
+    --input: 0 0% 82%;
+    --ring: 220 6% 50%;
+    --radius: 0.3125rem;
+    --sidebar: 0 0% 89%;
+    --aurora-1: 0 0% 60%;
+    --aurora-2: 220 5% 55%;
+    --success: 135 55% 29%;
+    --success-foreground: 0 0% 100%;
+    --warning: 30 90% 33%;
+    --warning-foreground: 0 0% 100%;
+    --info: 212 40% 40%;
+    --info-foreground: 0 0% 100%;
+    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+    /* Skin-only knobs (not contrast-tested pairs): toolbar, filled controls,
+     * hairlines, raised push buttons. */
+    --gr-toolbar: 0 0% 92.5%;
+    --gr-fill: 240 2% 37%;
+    --gr-fill-hover: 240 2% 32%;
+    --gr-fill-active: 240 2% 27%;
+    --gr-hairline: 0 0% 0% / 0.1;
+    --gr-raised: 0 0% 100%;
+    --gr-raised-hover: 0 0% 97%;
+    --gr-raised-active: 0 0% 91%;
+    --gr-well: 0 0% 100%;
+    --gr-wash: 0 0% 0%;
+  }
+  [data-theme='graphite'].dark {
+    --background: 0 0% 12%;
+    --foreground: 0 0% 90%;
+    --card: 0 0% 16.5%;
+    --card-foreground: 0 0% 90%;
+    --popover: 0 0% 17%;
+    --popover-foreground: 0 0% 90%;
+    /* Light graphite so `text-primary` still reads on #1E1E1E; filled buttons
+     * use the darker --gr-fill with white text instead (see skin rules). */
+    --primary: 240 2% 63%;
+    --primary-foreground: 0 0% 8%;
+    --secondary: 240 2% 23%;
+    --secondary-foreground: 0 0% 90%;
+    --muted: 0 0% 17%;
+    --muted-foreground: 240 2% 61%;
+    --accent: 0 0% 22%;
+    --accent-foreground: 0 0% 96%;
+    --destructive: 4 72% 62%;
+    --destructive-foreground: 0 0% 8%;
+    --border: 0 0% 24%;
+    --input: 0 0% 26%;
+    --ring: 220 5% 62%;
+    --radius: 0.3125rem;
+    --sidebar: 0 0% 10%;
+    --aurora-1: 0 0% 40%;
+    --aurora-2: 220 5% 40%;
+    --success: 135 42% 52%;
+    --success-foreground: 135 60% 8%;
+    --warning: 33 80% 56%;
+    --warning-foreground: 30 80% 8%;
+    --info: 212 45% 64%;
+    --info-foreground: 212 60% 10%;
+    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+    --font-mono: ui-monospace, "SF Mono", Menlo, monospace;
+    --gr-toolbar: 0 0% 17%;
+    --gr-fill: 240 2% 44%;
+    --gr-fill-hover: 240 2% 48%;
+    --gr-fill-active: 240 2% 38%;
+    --gr-hairline: 0 0% 100% / 0.08;
+    --gr-raised: 240 2% 23%;
+    --gr-raised-hover: 240 2% 26%;
+    --gr-raised-active: 240 2% 30%;
+    --gr-well: 240 3% 11.5%;
+    --gr-wash: 0 0% 100%;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Skin rules — unlayered so they beat Tailwind utilities.
+ * ------------------------------------------------------------------------- */
+[data-theme='graphite'] body,
+[data-theme='graphite'].theme-scope {
+  font-feature-settings: normal;
+}
+
+/* --- Background: flat window, no aurora, no glass -------------------------- */
+:root[data-theme='graphite'] body::before {
+  display: none;
+}
+[data-theme='graphite'] .glass {
+  background-color: hsl(var(--card));
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
+/* --- Surfaces -------------------------------------------------------------- */
+[data-theme='graphite'] .ui-card {
+  border-radius: 8px;
+  border-width: 0.5px;
+  border-color: hsl(0 0% 0% / 0.12);
+  box-shadow: 0 1px 2px hsl(0 0% 0% / 0.04);
+}
+[data-theme='graphite'].dark .ui-card {
+  border-color: hsl(0 0% 100% / 0.08);
+  box-shadow: none;
+}
+
+/* Native menu: translucent vibrancy panel with a hairline edge. */
+[data-theme='graphite'] .ui-popover {
+  border-radius: 6px;
+  border-width: 0.5px;
+  border-color: hsl(0 0% 0% / 0.14);
+  background-color: hsl(var(--popover) / 0.8);
+  backdrop-filter: blur(30px) saturate(160%);
+  -webkit-backdrop-filter: blur(30px) saturate(160%);
+  box-shadow: 0 8px 24px hsl(0 0% 0% / 0.16), 0 1px 3px hsl(0 0% 0% / 0.08);
+}
+[data-theme='graphite'].dark .ui-popover {
+  border-color: hsl(0 0% 100% / 0.12);
+  background-color: hsl(var(--popover) / 0.78);
+  box-shadow: 0 0 0 0.5px hsl(0 0% 0% / 0.8), 0 10px 28px hsl(0 0% 0% / 0.45);
+}
+/* Menu rows (DropdownItem): graphite highlight with white text on hover. */
+[data-theme='graphite'] .ui-popover button.w-full.text-left {
+  border-radius: 4px;
+}
+[data-theme='graphite'] .ui-popover button.w-full.text-left:not(:disabled):hover {
+  background-color: hsl(var(--gr-fill));
+  color: hsl(0 0% 100%);
+}
+[data-theme='graphite'] .ui-popover button.w-full.text-left.text-destructive:not(:disabled):hover {
+  background-color: hsl(357 72% 45%);
+}
+[data-theme='graphite'] .ui-popover button.w-full.text-left:not(:disabled):hover * {
+  color: inherit;
+}
+
+[data-theme='graphite'] .ui-modal {
+  border-radius: 10px;
+  border-width: 0.5px;
+  border-color: hsl(0 0% 0% / 0.14);
+  box-shadow: 0 20px 50px hsl(0 0% 0% / 0.22), 0 2px 6px hsl(0 0% 0% / 0.08);
+}
+[data-theme='graphite'].dark .ui-modal {
+  border-color: hsl(0 0% 100% / 0.1);
+  box-shadow: 0 0 0 0.5px hsl(0 0% 0% / 0.8), 0 24px 60px hsl(0 0% 0% / 0.55);
+}
+[data-theme='graphite'] .ui-drawer {
+  border-left: 0.5px solid hsl(var(--gr-hairline));
+  box-shadow: -12px 0 32px hsl(0 0% 0% / 0.14);
+}
+[data-theme='graphite'].dark .ui-drawer {
+  box-shadow: -12px 0 32px hsl(0 0% 0% / 0.45);
+}
+[data-theme='graphite'] .ui-toast {
+  border-radius: 8px;
+  border-width: 0.5px;
+  border-color: hsl(var(--gr-hairline));
+  box-shadow: 0 4px 14px hsl(0 0% 0% / 0.12);
+}
+[data-theme='graphite'].dark .ui-toast {
+  box-shadow: 0 0 0 0.5px hsl(0 0% 0% / 0.7), 0 6px 18px hsl(0 0% 0% / 0.4);
+}
+
+/* Sheet scrim: a light dim, no blur. */
+[data-theme='graphite'] .ui-backdrop {
+  background-color: hsl(0 0% 0% / 0.25);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+[data-theme='graphite'].dark .ui-backdrop {
+  background-color: hsl(0 0% 0% / 0.45);
+}
+
+/* --- Buttons: native push buttons — darken on press, never shrink ---------- */
+[data-theme='graphite'] .ui-btn {
+  transition-duration: 80ms;
+}
+[data-theme='graphite'] .ui-btn:active {
+  transform: none;
+}
+[data-theme='graphite'] .ui-btn-primary {
+  background-color: hsl(var(--gr-fill));
+  color: hsl(0 0% 100%);
+  box-shadow: inset 0 0.5px 0 hsl(0 0% 100% / 0.14), 0 0.5px 1px hsl(0 0% 0% / 0.2);
+}
+[data-theme='graphite'] .ui-btn-primary:hover {
+  opacity: 1;
+  background-color: hsl(var(--gr-fill-hover));
+}
+[data-theme='graphite'] .ui-btn-primary:active {
+  background-color: hsl(var(--gr-fill-active));
+}
+[data-theme='graphite'] .ui-btn-outline {
+  background-color: hsl(var(--gr-raised));
+  border-width: 0.5px;
+  border-color: hsl(0 0% 0% / 0.16);
+  color: hsl(var(--foreground));
+  box-shadow: 0 0.5px 1px hsl(0 0% 0% / 0.1);
+}
+[data-theme='graphite'] .ui-btn-outline:hover {
+  background-color: hsl(var(--gr-raised-hover));
+  border-color: hsl(0 0% 0% / 0.16);
+  color: hsl(var(--foreground));
+}
+[data-theme='graphite'] .ui-btn-outline:active {
+  background-color: hsl(var(--gr-raised-active));
+}
+[data-theme='graphite'].dark .ui-btn-outline,
+[data-theme='graphite'].dark .ui-btn-outline:hover {
+  border-color: hsl(0 0% 0% / 0.4);
+  box-shadow: inset 0 0.5px 0 hsl(0 0% 100% / 0.06), 0 0.5px 1px hsl(0 0% 0% / 0.3);
+}
+[data-theme='graphite'] .ui-btn-ghost:hover {
+  background-color: hsl(var(--gr-wash) / 0.06);
+}
+[data-theme='graphite'] .ui-btn-ghost:active {
+  background-color: hsl(var(--gr-wash) / 0.1);
+}
+
+/* --- Fields: inset wells with a hairline, graphite focus halo -------------- */
+[data-theme='graphite'] .ui-field {
+  background-color: hsl(var(--gr-well));
+  border-width: 0.5px;
+  border-color: hsl(0 0% 0% / 0.2);
+  box-shadow: inset 0 0.5px 1px hsl(0 0% 0% / 0.06);
+}
+[data-theme='graphite'].dark .ui-field {
+  border-color: hsl(0 0% 100% / 0.1);
+  box-shadow: inset 0 1px 1px hsl(0 0% 0% / 0.25);
+}
+[data-theme='graphite'] .ui-field:focus,
+[data-theme='graphite'] .ui-field:focus-within {
+  border-color: hsl(var(--ring) / 0.8);
+  box-shadow: 0 0 0 3px hsl(var(--ring) / 0.4);
+}
+
+/* --- Switch + segmented ---------------------------------------------------- */
+[data-theme='graphite'] .ui-switch[aria-checked='true'] {
+  background-color: hsl(var(--gr-fill));
+}
+[data-theme='graphite'] .ui-switch[aria-checked='mixed'] {
+  background-color: hsl(var(--gr-fill) / 0.5);
+}
+[data-theme='graphite'] .ui-switch[aria-checked='false'] {
+  background-color: hsl(var(--gr-wash) / 0.1);
+  box-shadow: inset 0 0 0 0.5px hsl(var(--gr-wash) / 0.08);
+}
+[data-theme='graphite'].dark .ui-switch[aria-checked='false'] {
+  background-color: hsl(var(--gr-wash) / 0.16);
+}
+[data-theme='graphite'] .ui-switch-knob {
+  box-shadow: 0 0.5px 1.5px hsl(0 0% 0% / 0.3), 0 0 0 0.5px hsl(0 0% 0% / 0.06);
+}
+
+[data-theme='graphite'] .ui-segmented {
+  background-color: hsl(var(--gr-wash) / 0.07);
+  border-radius: 6px;
+}
+[data-theme='graphite'] .ui-segmented > button {
+  border-radius: 4px;
+}
+[data-theme='graphite'] .ui-segmented .is-active {
+  background-color: hsl(var(--gr-raised));
+  color: hsl(var(--foreground));
+  box-shadow: 0 0.5px 1px hsl(0 0% 0% / 0.15), 0 0 0 0.5px hsl(0 0% 0% / 0.06);
+}
+[data-theme='graphite'].dark .ui-segmented {
+  background-color: hsl(0 0% 0% / 0.25);
+  box-shadow: inset 0 0 0 0.5px hsl(0 0% 100% / 0.06);
+}
+[data-theme='graphite'].dark .ui-segmented .is-active {
+  background-color: hsl(240 2% 36%);
+  box-shadow: inset 0 0.5px 0 hsl(0 0% 100% / 0.1), 0 0.5px 1px hsl(0 0% 0% / 0.4);
+}
+
+/* --- Badges: tinted capsules, monochrome unless the tone is a status ------- */
+[data-theme='graphite'] .ui-badge {
+  --gr-tone: var(--foreground);
+  border-radius: 999px;
+  border-color: transparent;
+  background-color: hsl(var(--gr-tone) / 0.12);
+  color: hsl(var(--gr-tone));
+  font-weight: 500;
+}
+[data-theme='graphite'] :is(.ui-badge-neutral, .ui-badge-running, .ui-badge-primary) {
+  --gr-tone: var(--foreground);
+  background-color: hsl(var(--gr-tone) / 0.08);
+  color: hsl(var(--gr-tone) / 0.8);
+}
+[data-theme='graphite'] .ui-badge-success { --gr-tone: var(--success); }
+[data-theme='graphite'] .ui-badge-error { --gr-tone: var(--destructive); }
+[data-theme='graphite'] .ui-badge-warning { --gr-tone: var(--warning); }
+[data-theme='graphite'] .ui-badge-info { --gr-tone: var(--info); }
+
+/* --- Window chrome: toolbar + source list ---------------------------------- */
+[data-theme='graphite'] .app-titlebar {
+  background-color: hsl(var(--gr-toolbar));
+  border-bottom: 1px solid hsl(0 0% 0% / 0.1);
+}
+[data-theme='graphite'].dark .app-titlebar {
+  border-bottom-color: hsl(0 0% 0% / 0.55);
+  box-shadow: inset 0 -0.5px 0 hsl(0 0% 100% / 0.04);
+}
+[data-theme='graphite'] .app-sidebar {
+  border-right-color: hsl(0 0% 0% / 0.1);
+}
+[data-theme='graphite'].dark .app-sidebar {
+  border-right-color: hsl(0 0% 0% / 0.55);
+}
+[data-theme='graphite'] .app-sidebar .is-active {
+  background-color: hsl(var(--gr-wash) / 0.1);
+  color: hsl(var(--foreground));
+}
+[data-theme='graphite'] .app-sidebar .app-nav-indicator {
+  display: none;
+}
+
+/* --- Selection, focus, scrollbars ------------------------------------------ */
+[data-theme='graphite'] ::selection {
+  background: hsl(240 2% 50% / 0.32);
+}
+[data-theme='graphite'] :focus-visible {
+  outline: 3px solid hsl(var(--ring) / 0.4);
+  outline-offset: 0;
+}
+/* Thin overlay-style thumb: a pill inset by a transparent border. */
+[data-theme='graphite'] ::-webkit-scrollbar {
+  width: 9px;
+  height: 9px;
+}
+[data-theme='graphite'] ::-webkit-scrollbar-thumb {
+  background: hsl(var(--gr-wash) / 0.22);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 9px;
+}
+[data-theme='graphite'] ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--gr-wash) / 0.38);
+  background-clip: padding-box;
+}
+[data-theme='graphite'] ::-webkit-scrollbar-corner {
+  background: transparent;
+}

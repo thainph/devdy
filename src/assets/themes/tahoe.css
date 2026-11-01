@@ -1,0 +1,384 @@
+/* macOS Tahoe (Liquid Glass) — skin. The macOS 26 look: a calm accent-tinted
+ * wallpaper on the window root, a floating inset glass sidebar, a toolbar that
+ * blends into the wallpaper, capsule controls and concentric, larger radii.
+ * Restrained on purpose: translucency + a 1px specular edge, no colour
+ * gimmicks, no ambient motion. The accent follows the macOS system accent
+ * (`systemAccent` in colorThemes.ts rewrites --primary/--ring at runtime), so
+ * every accent use below goes through --primary. See DESIGN_SYSTEM.md §6. */
+@layer base {
+  [data-theme='tahoe']:not(.dark) {
+    --background: 240 9% 96%;
+    --foreground: 240 6% 10%;
+    --card: 0 0% 100%;
+    --card-foreground: 240 6% 10%;
+    --popover: 0 0% 100%;
+    --popover-foreground: 240 6% 10%;
+    --primary: 211 100% 43%;
+    --primary-foreground: 0 0% 100%;
+    --secondary: 240 6% 92%;
+    --secondary-foreground: 240 6% 14%;
+    --muted: 240 6% 92%;
+    --muted-foreground: 240 4% 40%;
+    --accent: 240 6% 90%;
+    --accent-foreground: 240 6% 10%;
+    --destructive: 0 76% 46%;
+    --destructive-foreground: 0 0% 100%;
+    --border: 240 6% 86%;
+    --input: 240 6% 86%;
+    --ring: 211 100% 50%;
+    --radius: 0.625rem;
+    --sidebar: 240 8% 94%;
+    --aurora-1: 260 40% 72%;
+    --aurora-2: 190 45% 70%;
+    --success: 140 70% 27%;
+    --success-foreground: 0 0% 100%;
+    --warning: 30 100% 33%;
+    --warning-foreground: 0 0% 100%;
+    --info: 200 100% 33%;
+    --info-foreground: 0 0% 100%;
+    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  }
+  [data-theme='tahoe'].dark {
+    --background: 240 5% 10%;
+    --foreground: 240 10% 96%;
+    --card: 240 4% 16%;
+    --card-foreground: 240 10% 96%;
+    --popover: 240 4% 15%;
+    --popover-foreground: 240 10% 96%;
+    --primary: 211 100% 62%;
+    --primary-foreground: 220 60% 8%;
+    --secondary: 240 4% 20%;
+    --secondary-foreground: 240 10% 96%;
+    --muted: 240 4% 19%;
+    --muted-foreground: 240 5% 68%;
+    --accent: 240 4% 22%;
+    --accent-foreground: 240 10% 98%;
+    --destructive: 0 90% 65%;
+    --destructive-foreground: 0 60% 8%;
+    --border: 240 4% 24%;
+    --input: 240 4% 24%;
+    --ring: 211 100% 62%;
+    --radius: 0.625rem;
+    --sidebar: 240 5% 12%;
+    --aurora-1: 255 35% 45%;
+    --aurora-2: 200 40% 40%;
+    --success: 140 60% 52%;
+    --success-foreground: 140 60% 6%;
+    --warning: 38 100% 58%;
+    --warning-foreground: 30 80% 7%;
+    --info: 200 95% 62%;
+    --info-foreground: 205 70% 7%;
+    --font-ui: -apple-system, BlinkMacSystemFont, "SF Pro Text", sans-serif;
+  }
+}
+
+/* ---------------------------------------------------------------------------
+ * Skin rules — unlayered so they beat Tailwind utilities. The glass recipe is
+ * a handful of variables so light/dark only swap values, not rules.
+ * ------------------------------------------------------------------------- */
+[data-theme='tahoe'] {
+  --tahoe-blur: blur(30px) saturate(180%);
+  --tahoe-blur-heavy: blur(40px) saturate(180%);
+  --tahoe-pane: rgba(255, 255, 255, 0.55);
+  --tahoe-surface: hsl(var(--card) / 0.82);
+  --tahoe-menu: hsl(var(--popover) / 0.72);
+  --tahoe-clear: rgba(255, 255, 255, 0.6);
+  --tahoe-clear-hover: rgba(255, 255, 255, 0.82);
+  --tahoe-hairline: rgba(0, 0, 0, 0.08);
+  --tahoe-specular: rgba(255, 255, 255, 0.6);
+  --tahoe-rim: rgba(255, 255, 255, 0.35);
+  --tahoe-shadow: 0 8px 24px rgba(0, 0, 0, 0.08);
+  --tahoe-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.16), 0 2px 8px rgba(0, 0, 0, 0.06);
+}
+[data-theme='tahoe'].dark {
+  --tahoe-pane: rgba(40, 40, 44, 0.55);
+  --tahoe-surface: hsl(var(--card) / 0.78);
+  --tahoe-menu: hsl(var(--popover) / 0.7);
+  --tahoe-clear: rgba(255, 255, 255, 0.08);
+  --tahoe-clear-hover: rgba(255, 255, 255, 0.14);
+  --tahoe-hairline: rgba(255, 255, 255, 0.1);
+  --tahoe-specular: rgba(255, 255, 255, 0.14);
+  --tahoe-rim: rgba(255, 255, 255, 0.08);
+  --tahoe-shadow: 0 8px 24px rgba(0, 0, 0, 0.3);
+  --tahoe-shadow-lg: 0 24px 60px rgba(0, 0, 0, 0.5), 0 2px 8px rgba(0, 0, 0, 0.3);
+}
+
+[data-theme='tahoe'] body,
+[data-theme='tahoe'].theme-scope {
+  font-feature-settings: normal;
+}
+
+/* --- Wallpaper: glass needs something behind it ----------------------------
+ * Painted on the window root (the aurora layer is dropped). Accent and the two
+ * aurora tints are mixed toward the background first, so the result stays a
+ * pale, desaturated wash in light mode and a deep dusk in dark mode. */
+:root[data-theme='tahoe'] body::before {
+  display: none;
+}
+[data-theme='tahoe'] .app-shell {
+  background-color: hsl(var(--background));
+  background-image:
+    radial-gradient(70% 60% at 0% 0%, color-mix(in oklab, hsl(var(--primary)) 30%, hsl(var(--background))) 0%, transparent 70%),
+    radial-gradient(60% 55% at 100% 10%, color-mix(in oklab, hsl(var(--aurora-1)) 35%, hsl(var(--background))) 0%, transparent 70%),
+    radial-gradient(80% 70% at 70% 100%, color-mix(in oklab, hsl(var(--aurora-2)) 30%, hsl(var(--background))) 0%, transparent 72%);
+  background-attachment: fixed;
+}
+[data-theme='tahoe'].dark .app-shell {
+  background-image:
+    radial-gradient(70% 60% at 0% 0%, color-mix(in oklab, hsl(var(--primary)) 22%, hsl(var(--background))) 0%, transparent 70%),
+    radial-gradient(60% 55% at 100% 10%, color-mix(in oklab, hsl(var(--aurora-1)) 40%, hsl(var(--background))) 0%, transparent 70%),
+    radial-gradient(80% 70% at 70% 100%, color-mix(in oklab, hsl(var(--aurora-2)) 35%, hsl(var(--background))) 0%, transparent 72%);
+}
+
+/* --- Toolbar: floats on the wallpaper -------------------------------------- */
+[data-theme='tahoe'] .app-titlebar {
+  background-color: transparent;
+  border-bottom-color: transparent;
+}
+/* Project tabs + toolbar buttons read as glass capsules. */
+[data-theme='tahoe'] .app-titlebar [data-drag-index] {
+  border-radius: 999px;
+}
+[data-theme='tahoe'] .app-titlebar [data-drag-index].bg-accent {
+  background-color: var(--tahoe-clear);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 3px rgba(0, 0, 0, 0.06);
+}
+
+/* --- Floating glass sidebar ------------------------------------------------
+ * The <aside> keeps animating its width (App.vue's sidebar transition), so it
+ * stays a transparent clipping box; the pane is its fixed-width inner column,
+ * inset 8px from the window edge and 8px from the content. The shadow is kept
+ * small because the aside's overflow:hidden clips anything past that inset. */
+[data-theme='tahoe'] .app-sidebar {
+  background-color: transparent;
+  border-right: 0;
+}
+[data-theme='tahoe'] .app-sidebar > div {
+  width: 204px;
+  height: calc(100% - 8px);
+  margin-left: 8px;
+  border-radius: 18px;
+  overflow: hidden;
+  background-color: var(--tahoe-pane);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 6px rgba(0, 0, 0, 0.06);
+}
+[data-theme='tahoe'] .app-sidebar nav > :is(a, button) {
+  border-radius: 10px;
+}
+/* Selection: tinted glass, accent icon, no bar. */
+[data-theme='tahoe'] .app-sidebar .is-active {
+  background-color: hsl(var(--primary) / 0.14);
+  color: hsl(var(--foreground));
+  font-weight: 500;
+  box-shadow: inset 0 1px 0 var(--tahoe-rim), inset 0 0 0 0.5px hsl(var(--primary) / 0.12);
+}
+[data-theme='tahoe'] .app-sidebar .is-active > svg {
+  color: hsl(var(--primary));
+}
+[data-theme='tahoe'] .app-sidebar .app-nav-indicator {
+  display: none;
+}
+
+/* --- Surfaces -------------------------------------------------------------- */
+[data-theme='tahoe'] .ui-card {
+  border-radius: 16px;
+  background-color: var(--tahoe-surface);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  border-color: var(--tahoe-hairline);
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), var(--tahoe-shadow);
+}
+
+[data-theme='tahoe'] :is(.ui-popover, .ui-toast, .ui-modal, .ui-drawer) {
+  background-color: var(--tahoe-menu);
+  backdrop-filter: var(--tahoe-blur-heavy);
+  -webkit-backdrop-filter: var(--tahoe-blur-heavy);
+  border-color: var(--tahoe-hairline);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    var(--tahoe-shadow-lg);
+}
+[data-theme='tahoe'] :is(.ui-popover, .ui-toast) {
+  border-radius: 14px;
+}
+[data-theme='tahoe'] .ui-modal {
+  border-radius: 20px;
+  /* Header/footer rules would poke past the larger corners. */
+  overflow: hidden;
+}
+/* Menu rows nest inside the 14px menu with its 4px padding → 10px. */
+[data-theme='tahoe'] .ui-popover :is(button, a, [role='menuitem']) {
+  border-radius: 9px;
+}
+
+[data-theme='tahoe'] .ui-backdrop {
+  background-color: rgba(0, 0, 0, 0.18);
+  backdrop-filter: blur(4px);
+  -webkit-backdrop-filter: blur(4px);
+}
+[data-theme='tahoe'].dark .ui-backdrop {
+  background-color: rgba(0, 0, 0, 0.38);
+}
+
+/* --- Buttons: capsules ----------------------------------------------------- */
+[data-theme='tahoe'] .ui-btn:not([class*='rounded-none']) {
+  border-radius: 999px;
+}
+[data-theme='tahoe'] .ui-btn:active:not(:disabled) {
+  transform: scale(0.97);
+}
+
+/* Primary: accent-tinted glass — a soft top sheen and a quiet accent shadow. */
+[data-theme='tahoe'] .ui-btn-primary {
+  background-color: hsl(var(--primary));
+  background-image: linear-gradient(to bottom, rgba(255, 255, 255, 0.16), rgba(255, 255, 255, 0) 55%);
+  color: hsl(var(--primary-foreground));
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.3),
+    inset 0 0 0 0.5px rgba(0, 0, 0, 0.08),
+    0 1px 2px hsl(var(--primary) / 0.25),
+    0 4px 12px -4px hsl(var(--primary) / 0.35);
+}
+[data-theme='tahoe'] .ui-btn-primary:hover {
+  opacity: 1;
+  filter: brightness(1.06);
+}
+
+/* Outline + subtle: clear glass capsule. */
+[data-theme='tahoe'] :is(.ui-btn-outline, .ui-btn-subtle) {
+  background-color: var(--tahoe-clear);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  border-color: var(--tahoe-hairline);
+  color: hsl(var(--foreground));
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), 0 1px 2px rgba(0, 0, 0, 0.05);
+}
+[data-theme='tahoe'] .ui-btn-outline:hover {
+  background-color: var(--tahoe-clear-hover);
+  border-color: var(--tahoe-hairline);
+  color: hsl(var(--foreground));
+}
+
+/* Ghost: nothing until hover, then a faint glass capsule. */
+[data-theme='tahoe'] :is(.ui-btn-ghost, .ui-btn-destructive-ghost):hover {
+  background-color: var(--tahoe-clear);
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), inset 0 0 0 0.5px var(--tahoe-hairline);
+}
+[data-theme='tahoe'] .ui-btn-ghost:hover {
+  color: hsl(var(--foreground));
+}
+[data-theme='tahoe'] .ui-btn-destructive-ghost:hover {
+  background-color: hsl(var(--destructive) / 0.1);
+}
+
+/* --- Fields ---------------------------------------------------------------- */
+[data-theme='tahoe'] .ui-field {
+  border-radius: 999px;
+  background-color: var(--tahoe-clear);
+  border-color: var(--tahoe-hairline);
+  box-shadow: inset 0 1px 1px rgba(0, 0, 0, 0.04);
+  caret-color: hsl(var(--primary));
+}
+[data-theme='tahoe'] textarea.ui-field {
+  border-radius: 10px;
+}
+[data-theme='tahoe'] .ui-field:is(:focus, :focus-within) {
+  border-color: hsl(var(--primary) / 0.6);
+  box-shadow: 0 0 0 3px hsl(var(--primary) / 0.35);
+}
+
+/* --- Switch: accent track, a wide pill knob -------------------------------- */
+[data-theme='tahoe'] .ui-switch[aria-checked='true'] {
+  background-color: hsl(var(--primary));
+}
+[data-theme='tahoe'] .ui-switch[aria-checked='false'] {
+  background-color: hsl(var(--foreground) / 0.14);
+}
+[data-theme='tahoe'] .ui-switch {
+  box-shadow: inset 0 0.5px 1.5px rgba(0, 0, 0, 0.12);
+}
+[data-theme='tahoe'] .ui-switch-knob {
+  /* Slightly wider than tall, like Tahoe's lens knob; the translate classes
+   * still position it — width grows toward the right only by 3px. */
+  width: calc(1rem + 3px);
+  margin-left: -1.5px;
+  box-shadow:
+    inset 0 1px 0 rgba(255, 255, 255, 0.9),
+    0 0 0 0.5px rgba(0, 0, 0, 0.06),
+    0 1px 3px rgba(0, 0, 0, 0.18);
+}
+[data-theme='tahoe'] .ui-switch.h-5 .ui-switch-knob {
+  width: calc(0.875rem + 3px);
+}
+
+/* --- Segmented: glass track, raised glass lens for the selection ----------- */
+[data-theme='tahoe'] .ui-segmented {
+  border-radius: 999px;
+  background-color: hsl(var(--foreground) / 0.06);
+  box-shadow: inset 0 0.5px 1px rgba(0, 0, 0, 0.06), inset 0 0 0 0.5px var(--tahoe-hairline);
+}
+[data-theme='tahoe'] .ui-segmented > button {
+  border-radius: 999px;
+}
+[data-theme='tahoe'] .ui-segmented .is-active {
+  background-color: var(--tahoe-clear-hover);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 3px rgba(0, 0, 0, 0.1);
+}
+
+/* --- Badges: soft tinted capsules ------------------------------------------ */
+[data-theme='tahoe'] .ui-badge {
+  --tahoe-tone: var(--muted-foreground);
+  border-radius: 999px;
+  border-color: transparent;
+  background-color: hsl(var(--tahoe-tone) / 0.16);
+  color: hsl(var(--tahoe-tone));
+}
+[data-theme='tahoe'] .ui-badge-neutral {
+  --tahoe-tone: var(--muted-foreground);
+  background-color: hsl(var(--foreground) / 0.07);
+}
+[data-theme='tahoe'] :is(.ui-badge-running, .ui-badge-primary) { --tahoe-tone: var(--primary); }
+[data-theme='tahoe'] .ui-badge-success { --tahoe-tone: var(--success); }
+[data-theme='tahoe'] .ui-badge-error { --tahoe-tone: var(--destructive); }
+[data-theme='tahoe'] .ui-badge-warning { --tahoe-tone: var(--warning); }
+[data-theme='tahoe'] .ui-badge-info { --tahoe-tone: var(--info); }
+
+/* --- Selection, focus, scrollbars ------------------------------------------ */
+[data-theme='tahoe'] ::selection {
+  background: hsl(var(--primary) / 0.28);
+}
+[data-theme='tahoe'] :focus-visible {
+  outline: 3px solid hsl(var(--primary) / 0.45);
+  outline-offset: 1px;
+}
+[data-theme='tahoe'] ::-webkit-scrollbar-thumb {
+  background: hsl(var(--foreground) / 0.18);
+  border-radius: 999px;
+}
+[data-theme='tahoe'] ::-webkit-scrollbar-thumb:hover {
+  background: hsl(var(--foreground) / 0.32);
+}
+
+/* --- Motion: only hover/press transitions, and none when asked ------------- */
+@media (prefers-reduced-motion: reduce) {
+  [data-theme='tahoe'] .ui-btn:active:not(:disabled) {
+    transform: none;
+  }
+}

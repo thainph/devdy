@@ -144,6 +144,8 @@ A **skin** (group `skin`) also changes shape, material and motion, not just colo
 | `.ui-card` `.ui-modal` `.ui-drawer` `.ui-popover` `.ui-toast` | surfaces (Card, Modal, Drawer, Dropdown/ContextMenu, toasts) |
 | `.ui-btn` + `.ui-btn-<variant>` | Button (`primary`, `outline`, `ghost`, `destructive`, `destructive-ghost`, `subtle`) |
 | `.ui-field` | Input / Textarea / AppSelect trigger |
+| `.ui-switch` · `.ui-switch-knob` | ToggleSwitch track (`aria-checked`) · knob |
+| `.ui-segmented` + `.is-active` | SegmentedControl group · selected segment |
 | `.ui-badge` + `.ui-badge-<tone>` | Badge (`neutral`, `running`, `success`, `error`, `warning`, `info`, `primary`) |
 | `.ui-backdrop` | Modal / Drawer scrim |
 | `.app-shell` · `.app-titlebar` · `.app-sidebar` | window root (opaque `bg-background` — it hides `body::before` unless a skin makes it translucent) · title bar · navigation sidebar |

@@ -50,7 +50,11 @@
     "colorChristmas": "Christmas 🎄",
     "colorTet": "Lunar New Year (Tết) 🧧",
     "colorCrt": "Terminal CRT",
+    "colorMacos": "macOS Sequoia",
+    "colorTahoe": "macOS Tahoe (Liquid Glass)",
+    "colorGraphite": "macOS Graphite",
     "colorGroup": {
+      "macos": "macOS native",
       "skin": "Skins",
       "classic": "Classic",
       "editor": "Editor favorites",

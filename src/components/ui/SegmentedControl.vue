@@ -33,7 +33,7 @@ const emit = defineEmits<{ 'update:modelValue': [value: T] }>()
 
 <template>
   <div
-    :class="cn('flex rounded-md bg-muted p-0.5 text-[11px] font-medium', !stretch && 'shrink-0', props.class)"
+    :class="cn('ui-segmented flex rounded-md bg-muted p-0.5 text-[11px] font-medium', !stretch && 'shrink-0', props.class)"
     role="group"
   >
     <button
@@ -45,7 +45,7 @@ const emit = defineEmits<{ 'update:modelValue': [value: T] }>()
         stretch && 'flex-1',
         iconOnly ? 'p-1' : 'px-2 py-1',
         modelValue === o.value
-          ? 'bg-background text-foreground shadow-sm'
+          ? 'is-active bg-background text-foreground shadow-sm'
           : 'text-muted-foreground hover:text-foreground',
       ]"
       :title="o.title ?? (iconOnly ? o.label : undefined)"

@@ -58,6 +58,7 @@ import {
 import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
 import { useAgentAmbient } from '@/composables/useAgentAmbient'
+import { applySystemAccent } from '@/lib/systemAccent'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openItemListWindow } from '@/lib/itemListWindow'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
@@ -290,6 +291,8 @@ const sceneOn = computed(
     SCENIC_THEMES.has(sceneTheme.value) &&
     appSettings.settings?.animated_background !== 'false',
 )
+// The macOS accent may change in System Settings while we're in the background.
+window.addEventListener('focus', () => applySystemAccent(document.documentElement.dataset.theme ?? ''))
 // Exposed on <html> so skin / ambient CSS can drop its motion too.
 watchEffect(() => {
   document.documentElement.dataset.animatedBg = appSettings.settings?.animated_background === 'false' ? 'false' : 'true'
@@ -566,6 +569,7 @@ function applyColorTheme(theme: string) {
   const t = theme && theme !== 'default' ? theme : ''
   if (t) document.documentElement.setAttribute('data-theme', t)
   else document.documentElement.removeAttribute('data-theme')
+  applySystemAccent(t)
 }
 
 onMounted(async () => {

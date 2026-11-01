@@ -28,6 +28,7 @@ import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type A
 import AwsProfilePicker from '@/components/AwsProfilePicker.vue'
 import AzureAccountsSettings from '@/components/AzureAccountsSettings.vue'
 import ColorThemePicker from '@/components/ColorThemePicker.vue'
+import { applySystemAccent } from '@/lib/systemAccent'
 import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { useClaudeAccountsStore, type ClaudeValidation } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
@@ -1219,6 +1220,7 @@ function applyColorTheme(theme: string) {
   const t = theme && theme !== 'default' ? theme : ''
   if (t) document.documentElement.setAttribute('data-theme', t)
   else document.documentElement.removeAttribute('data-theme')
+  applySystemAccent(t)
 }
 
 function resetCyberFoxPosition() {
