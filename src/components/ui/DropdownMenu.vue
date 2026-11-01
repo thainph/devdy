@@ -8,8 +8,9 @@
 // so a scroll container (`overflow-auto`) or a clipping rail around the trigger
 // can't cut it off. It opens below the trigger, flips above when its MEASURED
 // height doesn't fit below, and is clamped to the viewport either way — a tall
-// menu (e.g. a PR session's actions) stays fully visible.
-import { ref, nextTick, onBeforeUnmount } from 'vue'
+// menu (e.g. a PR session's actions) stays fully visible. It is re-placed when
+// its size changes while open, staying on the side it opened on.
+import { ref, nextTick, onBeforeUnmount, watch } from 'vue'
 
 const props = withDefaults(defineProps<{ align?: 'left' | 'right' }>(), { align: 'right' })
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void }>()
@@ -21,6 +22,8 @@ const open = ref(false)
 const root = ref<HTMLElement | null>(null)
 const panel = ref<HTMLElement | null>(null)
 const pos = ref({ x: 0, y: 0 })
+/** Side chosen for this opening; null until first measured. */
+let side: 'below' | 'above' | null = null
 
 async function place() {
   const anchor = root.value?.getBoundingClientRect()
@@ -38,13 +41,19 @@ async function place() {
   x = Math.max(EDGE_MARGIN, Math.min(x, vw - width - EDGE_MARGIN))
   const below = anchor.bottom + GAP
   const above = anchor.top - GAP - height
-  let y = below
-  if (below + height > vh - EDGE_MARGIN) {
-    // Doesn't fit below: go above if it fits there, else whichever side has
-    // more room, clamped so the whole panel stays on-screen.
-    y = above >= EDGE_MARGIN || anchor.top > vh - anchor.bottom ? above : below
-    y = Math.max(EDGE_MARGIN, Math.min(y, vh - height - EDGE_MARGIN))
+  const fitsBelow = below + height <= vh - EDGE_MARGIN
+  const fitsAbove = above >= EDGE_MARGIN
+  // Keep the side picked when the menu opened while it still fits, so a panel
+  // that resizes (async rows, a search narrowing the list) doesn't jump across
+  // the trigger. Otherwise: below if it fits, else above if it fits, else
+  // whichever side has more room.
+  if (side === null || (side === 'below' ? !fitsBelow : !fitsAbove)) {
+    side = fitsBelow ? 'below' : fitsAbove || anchor.top > vh - anchor.bottom ? 'above' : 'below'
   }
+  // `above` is recomputed from the current height, so the panel grows upward
+  // away from the trigger instead of down over it.
+  let y = side === 'below' ? below : above
+  y = Math.max(EDGE_MARGIN, Math.min(y, vh - height - EDGE_MARGIN))
   pos.value = { x, y }
 }
 
@@ -53,7 +62,10 @@ function setOpen(v: boolean) {
   open.value = v
   bind(v)
   emit('update:open', v)
-  if (v) place()
+  if (v) {
+    side = null
+    place()
+  }
 }
 function toggle(e: MouseEvent) {
   // A disabled Button has pointer-events-none, so its click lands on this
@@ -84,6 +96,18 @@ function reposition(e?: Event) {
   })
 }
 
+// The panel can change size while open (rows loaded after opening, a search
+// or filter narrowing the list): re-place it, or it stays where its first,
+// smaller size put it and runs over the trigger / off-screen.
+let resizeObserver: ResizeObserver | null = null
+watch(panel, (el) => {
+  resizeObserver?.disconnect()
+  resizeObserver = null
+  if (!el || typeof ResizeObserver === 'undefined') return
+  resizeObserver = new ResizeObserver(() => reposition())
+  resizeObserver.observe(el)
+})
+
 function bind(on: boolean) {
   const m = on ? 'addEventListener' : 'removeEventListener'
   document[m]('mousedown', onDoc)
@@ -93,6 +117,7 @@ function bind(on: boolean) {
 }
 onBeforeUnmount(() => {
   bind(false)
+  resizeObserver?.disconnect()
   cancelAnimationFrame(rafId)
 })
 </script>
