@@ -94,6 +94,21 @@ function createGroupsStore(kind: GroupKind) {
       await fetchGroups()
     }
 
+    /** Move a group to a new slot: reorder locally first, then persist; refetch if that fails. */
+    async function reorderGroups(from: number, to: number): Promise<void> {
+      const list = [...groups.value]
+      const [moved] = list.splice(from, 1)
+      if (!moved) return
+      list.splice(to, 0, moved)
+      groups.value = list
+      try {
+        await invoke('reorder_groups', { kind, ids: list.map(g => g.id) })
+      } catch (e) {
+        await fetchGroups()
+        throw e
+      }
+    }
+
     async function getMembers(groupId: string): Promise<string[]> {
       return invoke<string[]>('get_group_members', { kind, groupId })
     }
@@ -111,7 +126,7 @@ function createGroupsStore(kind: GroupKind) {
 
     return {
       groups, itemGroups, loading, error,
-      fetchGroups, createGroup, updateGroup, deleteGroup,
+      fetchGroups, createGroup, updateGroup, deleteGroup, reorderGroups,
       getMembers, setMembers, applyGroupToAllProjects,
     }
   })

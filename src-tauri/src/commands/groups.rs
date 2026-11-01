@@ -447,6 +447,29 @@ pub async fn update_group(
     })
 }
 
+/// Persist a new group order. The frontend sends every id top-to-bottom; each
+/// row's position becomes its index, in one transaction.
+#[tauri::command]
+pub async fn reorder_groups(
+    db: State<'_, Db>,
+    kind: String,
+    ids: Vec<String>,
+) -> Result<(), String> {
+    let kind = GroupKind::parse(&kind)?;
+    let sql = format!("UPDATE {} SET position = ? WHERE id = ?", kind.groups_table());
+    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
+    for (index, id) in ids.iter().enumerate() {
+        sqlx::query(&sql)
+            .bind(index as i64)
+            .bind(id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
+    Ok(())
+}
+
 /// Delete the group itself. Members and project links go with it (ON DELETE CASCADE); the skills
 /// and rules themselves — and whatever is already applied to projects — are left untouched.
 #[tauri::command]
