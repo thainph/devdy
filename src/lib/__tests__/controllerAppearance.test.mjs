@@ -9,7 +9,7 @@ import {
   resolveAppearance,
 } from '../controllerAppearance.ts'
 
-const host = { theme: 'light', color_theme: 'teal' }
+const host = { theme: 'light', color_theme: 'nord' }
 
 test('no override follows the Host', () => {
   assert.deepEqual(resolveAppearance(host, NO_OVERRIDE), host)
@@ -18,11 +18,11 @@ test('no override follows the Host', () => {
 test('each field overrides on its own', () => {
   assert.deepEqual(resolveAppearance(host, { theme: 'dark', color_theme: 'host' }), {
     theme: 'dark',
-    color_theme: 'teal',
+    color_theme: 'nord',
   })
-  assert.deepEqual(resolveAppearance(host, { theme: 'host', color_theme: 'rose' }), {
+  assert.deepEqual(resolveAppearance(host, { theme: 'host', color_theme: 'tahoe' }), {
     theme: 'light',
-    color_theme: 'rose',
+    color_theme: 'tahoe',
   })
 })
 

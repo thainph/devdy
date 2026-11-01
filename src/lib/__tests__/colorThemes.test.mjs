@@ -42,5 +42,5 @@ test('every theme and group has a name in en and vi', () => {
 })
 
 test('label key capitalizes the id', () => {
-  assert.equal(colorThemeLabelKey('rosepine'), 'settings.general.colorRosepine')
+  assert.equal(colorThemeLabelKey('tokyonight'), 'settings.general.colorTokyonight')
 })

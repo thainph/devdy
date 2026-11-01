@@ -92,7 +92,7 @@ const themeIds = ['default', ...Object.keys(all.themes)]
 test('base blocks and at least the legacy themes are discovered', () => {
   assert.ok(Object.keys(mainBlocks.root).length > 0)
   assert.ok(Object.keys(mainBlocks.dark).length > 0)
-  for (const id of ['ocean', 'forest', 'sunset', 'rose', 'teal', 'lagoon', 'mint', 'midautumn']) {
+  for (const id of ['midautumn']) {
     assert.ok(all.themes[id], `theme ${id} not found`)
   }
 })

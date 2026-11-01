@@ -3,9 +3,9 @@
 // src/assets/themes/<id>.css; `default` has no attribute (the :root / .dark
 // tokens). Pure data, shared by the desktop picker and the phone Controller.
 
-export type ColorThemeGroup = 'macos' | 'skin' | 'classic' | 'editor' | 'trend' | 'seasonal'
+export type ColorThemeGroup = 'macos' | 'editor' | 'other'
 
-export const COLOR_THEME_GROUPS: readonly ColorThemeGroup[] = ['macos', 'skin', 'classic', 'editor', 'trend', 'seasonal']
+export const COLOR_THEME_GROUPS: readonly ColorThemeGroup[] = ['macos', 'editor', 'other']
 
 export interface ColorThemeDef {
   id: string
@@ -16,36 +16,21 @@ export interface ColorThemeDef {
 }
 
 export const COLOR_THEME_DEFS: readonly ColorThemeDef[] = [
-  { id: 'default', group: 'classic' },
-  { id: 'ocean', group: 'classic' },
-  { id: 'forest', group: 'classic' },
-  { id: 'sunset', group: 'classic' },
-  { id: 'rose', group: 'classic' },
-  { id: 'teal', group: 'classic' },
-  { id: 'lagoon', group: 'classic' },
-  { id: 'mint', group: 'classic' },
-  { id: 'catppuccin', group: 'editor' },
-  { id: 'tokyonight', group: 'editor' },
-  { id: 'rosepine', group: 'editor' },
-  { id: 'nord', group: 'editor' },
-  { id: 'dracula', group: 'editor' },
-  { id: 'gruvbox', group: 'editor' },
-  { id: 'kanagawa', group: 'editor' },
-  { id: 'neon', group: 'trend' },
-  { id: 'sand', group: 'trend' },
-  { id: 'contrast', group: 'trend' },
+  { id: 'default', group: 'other' },
   { id: 'macos', group: 'macos', systemAccent: true },
   { id: 'tahoe', group: 'macos', systemAccent: true },
   { id: 'graphite', group: 'macos' },
-  { id: 'crt', group: 'skin' },
-  { id: 'midautumn', group: 'seasonal' },
-  { id: 'christmas', group: 'seasonal' },
-  { id: 'tet', group: 'seasonal' },
+  { id: 'catppuccin', group: 'editor' },
+  { id: 'tokyonight', group: 'editor' },
+  { id: 'nord', group: 'editor' },
+  { id: 'crt', group: 'other' },
+  { id: 'contrast', group: 'other' },
+  { id: 'midautumn', group: 'other' },
 ]
 
 export const COLOR_THEMES: readonly string[] = COLOR_THEME_DEFS.map((d) => d.id)
 
-/** i18n key of a palette's name, e.g. `rosepine` → `settings.general.colorRosepine`. */
+/** i18n key of a palette's name, e.g. `tokyonight` → `settings.general.colorTokyonight`. */
 export function colorThemeLabelKey(id: string): string {
   return `settings.general.color${id.charAt(0).toUpperCase()}${id.slice(1)}`
 }
