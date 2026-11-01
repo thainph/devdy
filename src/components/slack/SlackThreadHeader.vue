@@ -126,7 +126,7 @@ const metaTitle = computed(() =>
         @unlink-run="emit('unlinkRun', $event)"
         @link="emit('linkRun', $event)"
       />
-      <AddTodoButton :prefill="todoPrefill" variant="label" />
+      <AddTodoButton :prefill="todoPrefill" variant="label" size="sm" />
       <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
       <Button
         :variant="showOriginal ? 'primary' : 'outline'"
