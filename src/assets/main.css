@@ -39,6 +39,11 @@
   --color-input: hsl(var(--input));
   --color-ring: hsl(var(--ring));
   --color-sidebar: hsl(var(--sidebar));
+  /* Semantic status colors — use these instead of raw emerald/amber/sky/red.
+   * Theme-independent (only light vs dark), see the :root / .dark blocks. */
+  --color-success: hsl(var(--success));
+  --color-warning: hsl(var(--warning));
+  --color-info: hsl(var(--info));
   --radius-sm: calc(var(--radius) - 2px);
   --radius-md: var(--radius);
   --radius-lg: calc(var(--radius) + 4px);
@@ -73,6 +78,9 @@
     --ring: 243 76% 59%;
     --radius: 0.625rem;
     --sidebar: 240 30% 96%;
+    --success: 161 94% 30%; /* emerald-600 */
+    --warning: 32 95% 44%; /* amber-600 */
+    --info: 200 98% 39%; /* sky-600 */
   }
 
   .dark {
@@ -96,6 +104,9 @@
     --input: 235 28% 26%;
     --ring: 243 92% 76%;
     --sidebar: 236 46% 6%;
+    --success: 158 64% 52%; /* emerald-400 */
+    --warning: 43 96% 56%; /* amber-400 */
+    --info: 198 93% 60%; /* sky-400 */
   }
 
   /* ---------------------------------------------------------------------------

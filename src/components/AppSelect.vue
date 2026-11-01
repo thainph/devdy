@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { ref, computed, onMounted, onBeforeUnmount, watch, nextTick } from 'vue'
 import { ChevronDown, Check } from 'lucide-vue-next'
-import { controlSize } from './ui/controlStyles'
+import { controlHeight, controlSize } from './ui/controlStyles'
 
 interface Option {
   value: string
@@ -211,8 +211,8 @@ watch(isOpen, (val) => {
       class="flex w-full items-center gap-2 rounded-md border transition-colors cursor-pointer select-none focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring disabled:opacity-50 disabled:cursor-not-allowed"
       :class="[
         controlSize[size],
-        // xs carries its own fixed height (h-7, same as Button xs).
-        size !== 'xs' && 'h-full',
+        // Same fixed height as Button / Input of this size.
+        controlHeight[size],
         variant === 'ghost'
           ? 'border-transparent bg-transparent hover:bg-accent hover:text-accent-foreground'
           : variant === 'outline'

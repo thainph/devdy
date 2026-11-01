@@ -128,7 +128,7 @@ const groups = computed(() => {
         </div>
         <Button
           :variant="pinned ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :aria-pressed="pinned"
           :title="pinned ? t('item.unpin') : t('item.pin')"
@@ -139,7 +139,7 @@ const groups = computed(() => {
         </Button>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :title="t('secretNotes.lock')"
           :aria-label="t('secretNotes.lock')"

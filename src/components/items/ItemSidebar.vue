@@ -175,7 +175,7 @@ const groups = computed(() => {
         </div>
         <Button
           :variant="pinned ? 'primary' : 'outline'"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :aria-pressed="pinned"
           :title="pinned ? t('item.unpin') : t('item.pin')"
@@ -187,7 +187,7 @@ const groups = computed(() => {
         <!-- Reload from the DB (the MCP sidecar writes without events). -->
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :disabled="reloading"
           :title="t('item.reload')"

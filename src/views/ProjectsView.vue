@@ -430,49 +430,55 @@ async function handleOpenInFolder(project: { path: string }) {
               class="flex items-center gap-0.5 rounded-lg border border-border/70 bg-card/80 p-0.5 shadow-sm opacity-0 translate-x-1 group-hover:opacity-100 group-hover:translate-x-0 transition-all duration-150"
               @click.stop
             >
-              <button
-                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 :title="t('projects.openInVscode')"
                 @click="handleOpenInVscode(project)"
               >
                 <Code2 class="h-4 w-4" :stroke-width="2" />
-              </button>
-              <button
-                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 :title="t('projects.openFolder')"
                 @click="handleOpenInFolder(project)"
               >
                 <FolderOpen class="h-4 w-4" :stroke-width="2" />
-              </button>
-              <button
-                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 :title="t('projects.openInTerminal')"
                 @click="handleOpenInTerminal(project)"
               >
                 <SquareTerminal class="h-4 w-4" :stroke-width="2" />
-              </button>
+              </Button>
               <span class="mx-0.5 h-4 w-px bg-border/70" />
-              <button
-                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 :title="t('projects.gantt')"
                 @click="openGanttWindow(project.id)"
               >
                 <GanttChartSquare class="h-4 w-4" :stroke-width="2" />
-              </button>
-              <button
-                class="flex h-7 w-7 items-center justify-center rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors cursor-pointer active:scale-95"
+              </Button>
+              <Button
+                variant="ghost"
+                size="icon-sm"
                 :title="t('projects.projectSettings')"
                 @click="router.push(`/projects/${project.id}/settings`)"
               >
                 <Settings class="h-4 w-4" :stroke-width="2" />
-              </button>
-              <button
-                class="flex h-7 w-7 items-center justify-center rounded-md text-destructive/70 hover:text-destructive hover:bg-destructive/10 transition-colors cursor-pointer active:scale-95"
+              </Button>
+              <Button
+                variant="destructive-ghost"
+                size="icon-sm"
                 :title="t('projects.removeProject')"
                 @click="handleRemove(project)"
               >
                 <Trash2 class="h-4 w-4" :stroke-width="2" />
-              </button>
+              </Button>
             </div>
           </div>
         </Card>

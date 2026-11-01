@@ -329,8 +329,9 @@ async function handleExport(skill: Skill) {
     >
       <template #toolbar>
         <Button
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="icon"
+          class="shrink-0"
           :title="t('groups.manageSkillGroups')"
           :aria-label="t('groups.manageSkillGroups')"
           @click="groupsOpen = true"
@@ -339,8 +340,9 @@ async function handleExport(skill: Skill) {
         </Button>
         <Button
           v-if="store.skills.length > 0"
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="icon"
+          class="shrink-0"
           :disabled="reapplyingId !== null"
           :title="reapplyingId === 'all' ? t('skills.list.reapplying') : `${t('skills.list.reapplyAll')} — ${t('skills.list.reapplyAllHint')}`"
           :aria-label="t('skills.list.reapplyAll')"
@@ -349,8 +351,9 @@ async function handleExport(skill: Skill) {
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
         </Button>
         <Button
-          variant="ghost"
-          size="icon-sm"
+          variant="outline"
+          size="icon"
+          class="shrink-0"
           :disabled="importingZip"
           :title="importingZip ? t('skills.list.importing') : t('skills.detail.importHint')"
           :aria-label="t('skills.list.import')"

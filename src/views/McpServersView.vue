@@ -457,7 +457,7 @@ function dotClass(row: McpRow): string {
       <template #toolbar>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :disabled="importing"
           :title="importing ? t('mcp.list.importing') : t('mcp.list.import')"
@@ -468,7 +468,7 @@ function dotClass(row: McpRow): string {
         </Button>
         <Button
           variant="outline"
-          size="icon-sm"
+          size="icon"
           class="shrink-0"
           :disabled="store.loading"
           :title="t('common.refresh')"
