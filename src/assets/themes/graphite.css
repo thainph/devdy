@@ -341,7 +341,9 @@
 [data-theme='graphite'] ::selection {
   background: hsl(240 2% 50% / 0.32);
 }
-[data-theme='graphite'] :focus-visible {
+/* Text fields style their own focus (.ui-field); bare inputs such as the chat
+ * composer textarea sit inside a card that draws the ring. */
+[data-theme='graphite'] :focus-visible:not(input, textarea, select, [contenteditable]) {
   outline: 3px solid hsl(var(--ring) / 0.4);
   outline-offset: 0;
 }

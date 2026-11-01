@@ -364,7 +364,9 @@
 [data-theme='tahoe'] ::selection {
   background: hsl(var(--primary) / 0.28);
 }
-[data-theme='tahoe'] :focus-visible {
+/* Text fields style their own focus (.ui-field); bare inputs such as the chat
+ * composer textarea sit inside a card that draws the ring. */
+[data-theme='tahoe'] :focus-visible:not(input, textarea, select, [contenteditable]) {
   outline: 3px solid hsl(var(--primary) / 0.45);
   outline-offset: 1px;
 }

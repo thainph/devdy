@@ -264,7 +264,9 @@
   color: hsl(var(--primary-foreground));
   text-shadow: none;
 }
-[data-theme='crt'] :focus-visible {
+/* Text fields style their own focus (.ui-field); bare inputs such as the chat
+ * composer textarea sit inside a card that draws the ring. */
+[data-theme='crt'] :focus-visible:not(input, textarea, select, [contenteditable]) {
   outline: 1px solid hsl(var(--ring));
   outline-offset: 1px;
   box-shadow: 0 0 8px hsl(var(--crt-glow) / var(--crt-glow-a));

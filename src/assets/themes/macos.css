@@ -270,7 +270,9 @@
 }
 
 /* --- Focus: accent halo instead of an offset outline ----------------------- */
-[data-theme='macos'] :focus-visible {
+/* Text fields style their own focus (.ui-field); bare inputs such as the chat
+ * composer textarea sit inside a card that draws the ring. */
+[data-theme='macos'] :focus-visible:not(input, textarea, select, [contenteditable]) {
   outline: none;
   box-shadow: 0 0 0 3px hsl(var(--primary) / 0.45);
 }
