@@ -88,6 +88,8 @@
   "dueDate": "Hạn chót",
   "setDueDate": "Đặt hạn chót",
   "clearDueDate": "Bỏ hạn chót",
+  "fieldProject": "Dự án",
+  "fieldDue": "Hạn chót",
   "dueToday": "Hạn hôm nay",
   "dueTomorrow": "Hạn ngày mai",
   "dueInDays": "Còn {n} ngày",

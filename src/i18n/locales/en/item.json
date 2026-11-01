@@ -88,6 +88,8 @@
   "dueDate": "Deadline",
   "setDueDate": "Set a deadline",
   "clearDueDate": "Clear the deadline",
+  "fieldProject": "Project",
+  "fieldDue": "Deadline",
   "dueToday": "Due today",
   "dueTomorrow": "Due tomorrow",
   "dueInDays": "Due in {n} days",

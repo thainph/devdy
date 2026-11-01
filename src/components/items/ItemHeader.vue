@@ -3,17 +3,19 @@
 // SlackThreadHeader, same layout and controls:
 //
 //   note  title (click → inline rename) / updated · N characters
-//   todo  ☐ text's first line (click → edit) / created · from <session> · due
-//   right (todo) [📅 deadline ×] [Project ▾][Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy
+//   todo  text's first line (click → edit) / created · from <session> · due
+//   right (note) [Project ▾] [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy
 //         markdown · ⋯ (New session from this … · Copy ID · Delete)
+//
+// A todo's project and deadline are edited in the body (TodoFields).
 //
 // While editing, the actions give way to Cancel · Save (⌘/Ctrl+Enter / Esc do
 // the same inside the fields). Narrow pane: the title gives way first, then the
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, LockKeyhole, Pencil, X } from 'lucide-vue-next'
-import { Button, DatePicker, DropdownItem } from '@/components/ui'
+import { Check, LockKeyhole, Pencil } from 'lucide-vue-next'
+import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import ProjectSelect from '@/components/ProjectSelect.vue'
 import CopyMarkdownButton from '@/components/CopyMarkdownButton.vue'
@@ -51,7 +53,6 @@ const emit = defineEmits<{
   save: []
   toggleDone: []
   setProject: [projectId: string | null]
-  setDueDate: [dueDate: string | null]
   openRun: [link: SessionLink]
   unlinkRun: [link: SessionLink]
   linkRun: [runId: string]
@@ -152,28 +153,9 @@ const newSessionLabel = computed(() =>
     </div>
 
     <div class="flex min-w-0 items-center gap-1.5">
-      <!-- Todo: its deadline (× clears it). -->
-      <div v-if="todo" class="flex shrink-0 items-center">
-        <DatePicker
-          :model-value="todo.due_date ?? ''"
-          size="sm"
-          :placeholder="t('item.setDueDate')"
-          :class="todo.due_date ? 'rounded-r-none' : ''"
-          @update:model-value="emit('setDueDate', $event || null)"
-        />
-        <button
-          v-if="todo.due_date"
-          type="button"
-          class="flex h-8 w-7 cursor-pointer items-center justify-center rounded-r-md border border-l-0 border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          :title="t('item.clearDueDate')"
-          :aria-label="t('item.clearDueDate')"
-          @click="emit('setDueDate', null)"
-        >
-          <X class="h-3 w-3" :stroke-width="2" />
-        </button>
-      </div>
-      <!-- The item's project and its sessions: linking depends on the project. -->
-      <div class="w-[11rem] min-w-[5.5rem] shrink">
+      <!-- A note's project (a todo's lives in TodoFields, in the body) and the
+           item's sessions: linking depends on the project. -->
+      <div v-if="note" class="w-[11rem] min-w-[5.5rem] shrink">
         <ProjectSelect
           :model-value="item.project_id"
           variant="outline"
