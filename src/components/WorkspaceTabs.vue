@@ -133,7 +133,7 @@ function onTabClick(projectId: string) {
         <span
           class="relative inline-flex h-2 w-2 rounded-full"
           :class="stateOf(tab.projectId).pending > 0
-            ? 'bg-amber-500'
+            ? 'bg-warning'
             : stateOf(tab.projectId).running
               ? 'bg-primary'
               : 'bg-muted-foreground/40'"

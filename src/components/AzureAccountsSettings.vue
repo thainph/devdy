@@ -214,8 +214,8 @@ onMounted(() => {
       {{ t('settings.azure.intro') }}
     </p>
 
-    <div class="p-2.5 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] leading-relaxed flex gap-2">
-      <ShieldAlert class="h-3.5 w-3.5 text-amber-500 shrink-0 mt-0.5" :stroke-width="1.75" />
+    <div class="p-2.5 bg-warning/10 border border-warning/20 rounded-md text-[11px] leading-relaxed flex gap-2">
+      <ShieldAlert class="h-3.5 w-3.5 text-warning shrink-0 mt-0.5" :stroke-width="1.75" />
       <span class="text-muted-foreground">
         {{ t('settings.azure.isolationWarning') }}
       </span>
@@ -263,14 +263,15 @@ onMounted(() => {
                 :disabled="busy[acc.id]"
                 @click="handleLogin(acc.id)"
               >
-                <Loader2 v-if="loggingIn[acc.id]" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-                <LogIn v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <Loader2 v-if="loggingIn[acc.id]" class="h-3 w-3 animate-spin" :stroke-width="1.75" />
+                <LogIn v-else class="h-3 w-3" :stroke-width="1.75" />
                 {{ t('settings.azure.login') }}
               </Button>
               <Button
                 variant="ghost"
                 size="icon-sm"
                 :title="t('common.edit')"
+                :aria-label="t('common.edit')"
                 :disabled="busy[acc.id]"
                 @click="startEdit(acc)"
               >
@@ -280,6 +281,7 @@ onMounted(() => {
                 variant="destructive-ghost"
                 size="icon-sm"
                 :title="t('common.delete')"
+                :aria-label="t('common.delete')"
                 :disabled="busy[acc.id]"
                 @click="handleDelete(acc.id)"
               >
@@ -289,9 +291,9 @@ onMounted(() => {
           </div>
           <div
             v-if="validations[acc.id]"
-            class="p-2 bg-emerald-500/10 border border-emerald-500/20 rounded-md text-[11px]"
+            class="p-2 bg-success/10 border border-success/20 rounded-md text-[11px]"
           >
-            <div class="flex items-center gap-1.5 text-emerald-500 font-medium">
+            <div class="flex items-center gap-1.5 text-success font-medium">
               <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
               {{ t('settings.azure.valid') }}
             </div>
@@ -306,7 +308,7 @@ onMounted(() => {
           </div>
           <div
             v-if="loggingIn[acc.id] || needsLogin(acc)"
-            class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+            class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
           >
             <Loader2 v-if="loggingIn[acc.id]" class="h-3 w-3 shrink-0 mt-0.5 animate-spin" :stroke-width="1.75" />
             <AlertTriangle v-else class="h-3 w-3 shrink-0 mt-0.5" :stroke-width="1.75" />
@@ -366,7 +368,7 @@ onMounted(() => {
       <Input v-model="newTags" size="sm" :disabled="adding" :placeholder="t('settings.azure.tagsPlaceholder')" />
       <div
         v-if="adding"
-        class="p-2 bg-amber-500/10 border border-amber-500/20 rounded-md text-[11px] text-amber-500 flex items-start gap-1.5"
+        class="p-2 bg-warning/10 border border-warning/20 rounded-md text-[11px] text-warning flex items-start gap-1.5"
       >
         <Loader2 class="h-3 w-3 shrink-0 mt-0.5 animate-spin" :stroke-width="1.75" />
         <span>{{ t('settings.azure.addWaiting') }}</span>

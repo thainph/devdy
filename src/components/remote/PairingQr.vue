@@ -115,7 +115,7 @@ onBeforeUnmount(() => {
       </p>
     </div>
     <Button variant="outline" size="sm" @click="copyPayload">
-      <Check v-if="copied" class="h-3.5 w-3.5 text-emerald-500" :stroke-width="2" />
+      <Check v-if="copied" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
       <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
       {{ copied ? 'Copied!' : copyLabel }}
     </Button>

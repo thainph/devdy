@@ -159,7 +159,7 @@ const newSessionLabel = computed(() =>
           <span
             :class="{
               'font-medium text-destructive': due.status === 'overdue',
-              'font-medium text-amber-600 dark:text-amber-400': due.status === 'today' || due.status === 'soon',
+              'font-medium text-warning': due.status === 'today' || due.status === 'soon',
             }"
           >{{ due.label }}</span>
         </template>

@@ -16,7 +16,7 @@ import { remotePathsForDrop } from '@/lib/remoteUpload'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import FileTreeNode from '@/components/FileTreeNode.vue'
 import FileActionsMenu from '@/components/FileActionsMenu.vue'
-import { ContextMenu } from '@/components/ui'
+import { Button, ContextMenu } from '@/components/ui'
 import type { FileTarget } from '@/lib/fileActions'
 import { useFileTreeStore } from '@/stores/fileTree'
 import { useToast } from '@/composables/useToast'
@@ -242,35 +242,43 @@ onBeforeUnmount(() => {
     <div class="flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-border/60">
       <span class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground truncate">{{ t('files.tree.explorer') }}</span>
       <div class="flex items-center gap-0.5 shrink-0">
-        <button
-          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
+        <Button
+          variant="ghost"
+          size="icon-sm"
           :title="t('files.tree.newFile')"
+          :aria-label="t('files.tree.newFile')"
           @click="promptCreate('file', '')"
         >
-          <FilePlus class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
-        <button
-          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
+          <FilePlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
           :title="t('files.tree.newFolder')"
+          :aria-label="t('files.tree.newFolder')"
           @click="promptCreate('folder', '')"
         >
-          <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
-        <button
-          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
+          <FolderPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
           :title="t('files.tree.collapseAll')"
+          :aria-label="t('files.tree.collapseAll')"
           @click="store.collapseAll(projectPath)"
         >
-          <ListCollapse class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
-        <button
-          class="p-1 rounded text-muted-foreground hover:text-foreground hover:bg-accent/60 cursor-pointer"
+          <ListCollapse class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
           :title="t('files.tree.reload')"
+          :aria-label="t('files.tree.reload')"
           :class="reloading && 'opacity-50 pointer-events-none'"
           @click="store.refresh(projectPath)"
         >
-          <RotateCw class="h-3.5 w-3.5" :class="reloading && 'animate-spin'" :stroke-width="2" />
-        </button>
+          <RotateCw class="h-3.5 w-3.5" :class="reloading && 'animate-spin'" :stroke-width="1.75" />
+        </Button>
       </div>
     </div>
 

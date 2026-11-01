@@ -149,7 +149,7 @@ onMounted(load)
         <div class="flex items-center gap-2 text-xs">
           <span
             class="h-2 w-2 shrink-0 rounded-full"
-            :class="info.running ? 'bg-emerald-500' : info.enabled ? 'bg-red-500' : 'bg-muted-foreground/50'"
+            :class="info.running ? 'bg-success' : info.enabled ? 'bg-destructive' : 'bg-muted-foreground/50'"
           />
           <span>
             {{
@@ -160,14 +160,16 @@ onMounted(load)
                   : t('settings.inboxApi.disabled')
             }}
           </span>
-          <button
-            type="button"
-            class="ml-auto cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="ml-auto"
             :title="t('settings.inboxApi.refresh')"
+            :aria-label="t('settings.inboxApi.refresh')"
             @click="load"
           >
             <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
+          </Button>
         </div>
       </div>
 
@@ -186,6 +188,7 @@ onMounted(load)
               size="icon-sm"
               :disabled="!info.baseUrl"
               :title="t('settings.inboxApi.copy')"
+              :aria-label="t('settings.inboxApi.copy')"
               @click="copy('url')"
             >
               <component :is="copied === 'url' ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -207,6 +210,7 @@ onMounted(load)
               size="icon-sm"
               :disabled="!info.token"
               :title="revealed ? t('settings.inboxApi.hide') : t('settings.inboxApi.reveal')"
+              :aria-label="revealed ? t('settings.inboxApi.hide') : t('settings.inboxApi.reveal')"
               @click="revealed = !revealed"
             >
               <component :is="revealed ? EyeOff : Eye" class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -216,6 +220,7 @@ onMounted(load)
               size="icon-sm"
               :disabled="!info.token"
               :title="t('settings.inboxApi.copy')"
+              :aria-label="t('settings.inboxApi.copy')"
               @click="copy('token')"
             >
               <component :is="copied === 'token' ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />

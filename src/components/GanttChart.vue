@@ -3,7 +3,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { ZoomIn, ZoomOut, CalendarOff, User, Eye, EyeOff, Loader2, ListPlus, ExternalLink } from 'lucide-vue-next'
-import { ContextMenu, DropdownItem } from '@/components/ui'
+import { Button, ContextMenu, DropdownItem } from '@/components/ui'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
 import type { TodoPrefill } from '@/lib/focus'
 import {
@@ -292,18 +292,24 @@ function fmt(iso: string | null): string {
         </span>
       </div>
       <div class="flex items-center gap-1">
-        <button
-          class="flex h-6 w-6 items-center justify-center rounded border border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
-          :title="t('gantt.chart.zoomOut')" @click="zoom(-6)"
+        <Button
+          variant="outline"
+          size="icon-sm"
+          :title="t('gantt.chart.zoomOut')"
+          :aria-label="t('gantt.chart.zoomOut')"
+          @click="zoom(-6)"
         >
-          <ZoomOut class="h-3.5 w-3.5" />
-        </button>
-        <button
-          class="flex h-6 w-6 items-center justify-center rounded border border-border/60 text-muted-foreground hover:text-foreground hover:border-border"
-          :title="t('gantt.chart.zoomIn')" @click="zoom(6)"
+          <ZoomOut class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon-sm"
+          :title="t('gantt.chart.zoomIn')"
+          :aria-label="t('gantt.chart.zoomIn')"
+          @click="zoom(6)"
         >
-          <ZoomIn class="h-3.5 w-3.5" />
-        </button>
+          <ZoomIn class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
       </div>
     </div>
 
@@ -425,7 +431,7 @@ function fmt(iso: string | null): string {
       </div>
     </div>
 
-    <div v-else class="rounded-lg border border-border/60 p-8 text-center text-[12px] text-muted-foreground">
+    <div v-else class="rounded-lg border border-border/60 p-8 text-center text-xs text-muted-foreground">
       {{ t('gantt.chart.noDeadline') }}
     </div>
 

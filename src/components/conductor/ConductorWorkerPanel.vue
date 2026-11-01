@@ -263,7 +263,7 @@ onBeforeUnmount(onDragEnd)
       <button
         v-if="viewingWorker"
         type="button"
-        class="w-full flex items-center gap-1.5 px-3 py-2 border-b border-border/30 text-[12px] text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors cursor-pointer"
+        class="w-full flex items-center gap-1.5 px-3 py-2 border-b border-border/30 text-xs text-muted-foreground hover:text-foreground hover:bg-accent/40 transition-colors cursor-pointer"
         @click="emit('backToConductor')"
       >
         <ChevronLeft class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
@@ -316,7 +316,7 @@ onBeforeUnmount(onDragEnd)
             <span
               v-if="density !== 'comfortable'"
               class="shrink-0 font-mono text-[10px]"
-              :class="isRunning(w) ? 'text-blue-500/80' : 'text-muted-foreground/70'"
+              :class="isRunning(w) ? 'text-info/80' : 'text-muted-foreground/70'"
             >{{ workerTime(w) }}</span>
           </div>
           <!-- Compact: "account · model" (model without "claude-"). -->

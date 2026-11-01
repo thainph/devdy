@@ -114,7 +114,7 @@ async function clearMasterPassword() {
       <div class="space-y-1.5">
         <label class="text-xs font-medium text-muted-foreground">
           {{ t('remote.settings.authToken') }}
-          <span v-if="status?.has_auth_token" class="text-emerald-500">{{ t('remote.settings.saved') }}</span>
+          <span v-if="status?.has_auth_token" class="text-success">{{ t('remote.settings.saved') }}</span>
         </label>
         <Input
           v-model="authToken"
@@ -151,7 +151,7 @@ async function clearMasterPassword() {
         <label class="flex items-center gap-2 text-xs font-medium text-muted-foreground">
           <span>
             {{ t('remote.settings.masterPassword') }}
-            <span v-if="status?.has_master_password" class="text-emerald-500">{{ t('remote.settings.set') }}</span>
+            <span v-if="status?.has_master_password" class="text-success">{{ t('remote.settings.set') }}</span>
           </span>
           <button
             v-if="status?.has_master_password"

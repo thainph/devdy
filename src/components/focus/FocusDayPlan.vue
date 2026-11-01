@@ -95,7 +95,7 @@ async function push(blockId?: string) {
         <!-- Timeline -->
         <ol class="relative space-y-2 border-l border-border pl-4">
           <li v-for="b in plan.blocks" :key="b.id" class="relative">
-            <span class="absolute -left-[1.3rem] top-1.5 h-2 w-2 rounded-full" :class="b.calendar_event_id ? 'bg-emerald-500' : 'bg-primary'" />
+            <span class="absolute -left-[1.3rem] top-1.5 h-2 w-2 rounded-full" :class="b.calendar_event_id ? 'bg-success' : 'bg-primary'" />
             <div class="flex items-start gap-2">
               <button type="button" class="min-w-0 flex-1 cursor-pointer text-left" @click="emit('open', b.todo_id)">
                 <p class="text-xs font-semibold tabular-nums text-muted-foreground">
@@ -104,7 +104,7 @@ async function push(blockId?: string) {
                 <p class="truncate font-medium hover:underline">{{ title(b.todo_id) }}</p>
                 <p v-if="b.note" class="text-xs text-muted-foreground">{{ b.note }}</p>
               </button>
-              <span v-if="b.calendar_event_id" class="shrink-0 text-emerald-600 dark:text-emerald-400" :title="t('focus.plan.onCalendar')">
+              <span v-if="b.calendar_event_id" class="shrink-0 text-success" :title="t('focus.plan.onCalendar')">
                 <CalendarCheck class="h-4 w-4" :stroke-width="1.75" />
               </span>
               <Button

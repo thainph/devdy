@@ -36,10 +36,10 @@ const isWarn = computed(() => percent.value >= warnPercent.value)
 const isOver = computed(() => ratio.value >= 1)
 
 const barClass = computed(() =>
-  isOver.value ? 'bg-red-500' : isWarn.value ? 'bg-amber-500' : 'bg-primary/70',
+  isOver.value ? 'bg-destructive' : isWarn.value ? 'bg-warning' : 'bg-primary/70',
 )
 const textClass = computed(() =>
-  isOver.value ? 'text-red-500' : isWarn.value ? 'text-amber-500' : 'text-muted-foreground',
+  isOver.value ? 'text-destructive' : isWarn.value ? 'text-warning' : 'text-muted-foreground',
 )
 
 // Real claude.ai 5h window, shown as a secondary hint when available.
@@ -72,7 +72,7 @@ const fiveHourText = computed(() => {
     <span class="font-mono shrink-0 tabular-nums" :class="textClass">{{ percent }}%</span>
     <button
       v-if="isWarn"
-      class="shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono cursor-pointer transition-colors text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
+      class="shrink-0 inline-flex items-center gap-1 rounded px-1.5 py-0.5 font-mono cursor-pointer transition-colors text-warning hover:bg-warning/10"
       :title="t('misc.context.compactTitle')"
       @click="emit('compact')"
     >

@@ -218,8 +218,8 @@ const inputPreview = computed(() => {
     :class="[
       inbox ? 'rounded-lg border border-border border-l-2' : 'h-full border-t-2',
       inbox
-        ? isQuestions ? 'border-l-indigo-500/70' : 'border-l-amber-400/70'
-        : isQuestions ? 'border-t-indigo-500/70' : 'border-t-amber-400/70',
+        ? isQuestions ? 'border-l-primary/70' : 'border-l-warning/70'
+        : isQuestions ? 'border-t-primary/70' : 'border-t-warning/70',
     ]"
     role="dialog"
     :aria-label="isQuestions ? t('permission.controller.questionAria') : t('permission.controller.requestAria')"
@@ -228,7 +228,7 @@ const inputPreview = computed(() => {
       <component
         :is="isQuestions ? HelpCircle : hasDiff ? FileEdit : ShieldAlert"
         class="h-5 w-5 mt-0.5 shrink-0"
-        :class="isQuestions ? 'text-indigo-400' : 'text-amber-400'"
+        :class="isQuestions ? 'text-primary' : 'text-warning'"
         :stroke-width="1.75"
       />
       <div class="flex-1 min-w-0">
@@ -263,7 +263,7 @@ const inputPreview = computed(() => {
         <div class="flex items-center gap-2 flex-wrap">
           <span
             v-if="q.header"
-            class="text-[10px] uppercase tracking-wider rounded bg-indigo-500/15 text-indigo-600 dark:text-indigo-300 px-1.5 py-0.5"
+            class="text-[10px] uppercase tracking-wider rounded bg-primary/15 text-primary px-1.5 py-0.5"
             >{{ q.header }}</span
           >
           <span class="text-[10px] uppercase tracking-wider text-foreground/40">
@@ -279,7 +279,7 @@ const inputPreview = computed(() => {
             class="w-full text-left rounded-md border px-3 py-2 transition-colors"
             :class="
               isSelected(qi, opt.label)
-                ? 'border-indigo-500 bg-indigo-500/10'
+                ? 'border-primary bg-primary/10'
                 : 'border-border bg-foreground/5 hover:bg-foreground/10'
             "
             @click="toggleOption(qi, opt.label)"
@@ -290,7 +290,7 @@ const inputPreview = computed(() => {
                 :class="[
                   q.multiSelect ? 'rounded' : 'rounded-full',
                   isSelected(qi, opt.label)
-                    ? 'border-indigo-500 bg-indigo-500 text-white'
+                    ? 'border-primary bg-primary text-primary-foreground'
                     : 'border-foreground/30',
                 ]"
               >
@@ -308,7 +308,7 @@ const inputPreview = computed(() => {
             v-model="other[qi]"
             type="text"
             :placeholder="t('permission.otherPlaceholder')"
-            class="w-full rounded-md border border-border bg-foreground/5 px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-indigo-500 focus:outline-none"
+            class="w-full rounded-md border border-border bg-foreground/5 px-3 py-2 text-sm text-foreground placeholder:text-foreground/40 focus:border-primary focus:outline-none"
           />
         </div>
       </div>
@@ -322,7 +322,7 @@ const inputPreview = computed(() => {
     >
       <div class="flex items-center gap-2 flex-wrap">
         <span class="text-[10px] uppercase tracking-wider text-foreground/40">{{ t('permission.tool') }}</span>
-        <span class="font-mono text-sm text-indigo-600 dark:text-indigo-300">{{ request.tool_name }}</span>
+        <span class="font-mono text-sm text-primary">{{ request.tool_name }}</span>
         <span v-if="filePath" class="font-mono text-xs text-foreground/50 truncate">{{ filePath }}</span>
       </div>
       <span v-if="request.cwd" class="block font-mono text-[11px] text-foreground/40 truncate">
@@ -346,7 +346,7 @@ const inputPreview = computed(() => {
         <pre class="px-3 pb-2 text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-80 overflow-auto">{{ inputPreview }}</pre>
       </details>
 
-      <p v-if="broadRememberWarning" class="text-[11px] text-amber-600 dark:text-amber-400">
+      <p v-if="broadRememberWarning" class="text-[11px] text-warning">
         {{ t('permission.broadScopeWarning') }}
       </p>
     </div>

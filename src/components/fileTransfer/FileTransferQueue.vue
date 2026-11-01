@@ -99,7 +99,7 @@ function errorText(error: string | null): string {
         </div>
         <span
           class="w-16 shrink-0 text-right tabular-nums"
-          :class="it.status === 'failed' ? 'text-destructive' : it.status === 'done' ? 'text-emerald-500' : 'text-muted-foreground'"
+          :class="it.status === 'failed' ? 'text-destructive' : it.status === 'done' ? 'text-success' : 'text-muted-foreground'"
         >
           <Check v-if="it.status === 'done'" class="inline h-3.5 w-3.5" />
           {{ statusText(it) }}
@@ -109,6 +109,7 @@ function errorText(error: string | null): string {
           variant="ghost"
           size="icon-sm"
           :title="t('common.cancel')"
+          :aria-label="t('common.cancel')"
           @click="emit('cancel', it.id)"
         >
           <X class="h-3.5 w-3.5" />
@@ -118,6 +119,7 @@ function errorText(error: string | null): string {
           variant="ghost"
           size="icon-sm"
           :title="t('fileTransfer.queue.retry')"
+          :aria-label="t('fileTransfer.queue.retry')"
           @click="emit('retry', it.id)"
         >
           <RotateCcw class="h-3.5 w-3.5" />

@@ -13,6 +13,7 @@ import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Check, Copy, Languages } from 'lucide-vue-next'
+import { Button } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { emojiFor } from '@/lib/slackEmoji'
 import { mrkdwnToPlain, renderSlackMrkdwn, type MrkdwnContext } from '@/lib/slackMrkdwn'
@@ -112,7 +113,7 @@ function onBodyClick(e: MouseEvent) {
 
     <div class="min-w-0 flex-1">
       <div v-if="!continued" class="flex items-baseline gap-1.5">
-        <span class="truncate text-[14px] font-bold text-foreground" :title="user?.realName ?? undefined">
+        <span class="truncate text-sm font-bold text-foreground" :title="user?.realName ?? undefined">
           {{ name }}
         </span>
         <span
@@ -129,14 +130,14 @@ function onBodyClick(e: MouseEvent) {
         </span>
       </div>
 
-      <p v-if="deleted" class="text-[14px] italic text-muted-foreground">
+      <p v-if="deleted" class="text-sm italic text-muted-foreground">
         {{ t('slackThread.message.deleted') }}
       </p>
       <template v-else>
         <!-- Sanitized by renderSlackMrkdwn (DOMPurify). -->
         <div
           v-if="shownText"
-          class="slack-body whitespace-pre-wrap break-words text-[14px] leading-[1.46] text-foreground"
+          class="slack-body whitespace-pre-wrap break-words text-sm leading-[1.46] text-foreground"
           @click="onBodyClick"
           v-html="bodyHtml"
         />
@@ -176,24 +177,19 @@ function onBodyClick(e: MouseEvent) {
       v-if="!deleted"
       class="pointer-events-none absolute -top-3 right-4 flex items-center gap-0.5 rounded-md border border-border/60 bg-popover p-0.5 opacity-0 shadow-sm transition-opacity group-hover:pointer-events-auto group-hover:opacity-100 focus-within:pointer-events-auto focus-within:opacity-100"
     >
-      <button
-        v-if="hasTranslation"
-        type="button"
-        class="flex cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-[11px] text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-        @click="emit('toggleOriginal')"
-      >
-        <Languages class="h-3.5 w-3.5" :stroke-width="1.75" />
+      <Button v-if="hasTranslation" variant="ghost" size="xs" @click="emit('toggleOriginal')">
+        <Languages class="h-3 w-3" :stroke-width="1.75" />
         {{ showOriginal ? t('slackThread.message.showTranslation') : t('slackThread.message.showOriginal') }}
-      </button>
-      <button
-        type="button"
-        class="cursor-pointer rounded p-1 text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
         :title="t('slackThread.message.copy')"
         :aria-label="t('slackThread.message.copy')"
         @click="copy"
       >
         <component :is="copied ? Check : Copy" class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
+      </Button>
     </div>
   </div>
 </template>

@@ -199,7 +199,7 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
             <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('remote.settings.controlOtherHint') }}</p>
           </div>
           <Button variant="outline" class="shrink-0" @click="openRemoteDesktop">
-            <MonitorSmartphone class="h-4 w-4" :stroke-width="1.75" />
+            <MonitorSmartphone class="h-3.5 w-3.5" :stroke-width="1.75" />
             {{ t('remote.settings.controlOtherOpen') }}
           </Button>
         </div>
@@ -215,22 +215,26 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
         <ShieldCheck class="h-4 w-4 text-primary" :stroke-width="1.75" />
         <h3 class="text-sm font-semibold flex-1">{{ t('remote.settings.auditLog') }}</h3>
         <div class="flex items-center gap-1">
-          <button
-            class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors"
+          <Button
+            variant="ghost"
+            size="icon-sm"
             :title="t('common.refresh')"
+            :aria-label="t('common.refresh')"
             @click="store.refreshAudit().catch(() => {})"
           >
             <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-          <button
-            class="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40 disabled:cursor-not-allowed"
+          </Button>
+          <Button
+            variant="destructive-ghost"
+            size="icon-sm"
             :title="t('remote.settings.clearLog')"
+            :aria-label="t('remote.settings.clearLog')"
             :disabled="clearingAudit || !store.audit.length"
             @click="clearAudit"
           >
             <Loader2 v-if="clearingAudit" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
             <Trash2 v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
+          </Button>
         </div>
       </template>
       <div v-if="store.audit.length" class="max-h-80 overflow-auto">

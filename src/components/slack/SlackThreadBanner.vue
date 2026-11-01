@@ -96,9 +96,9 @@ const errorDetail = computed(() => {
 
     <div
       v-if="!busy && thread.fetchStatus === 'ready' && thread.warnings.length"
-      class="flex items-start gap-2 border-b border-amber-500/30 bg-amber-500/10 px-5 py-2 text-xs text-foreground"
+      class="flex items-start gap-2 border-b border-warning/30 bg-warning/10 px-5 py-2 text-xs text-foreground"
     >
-      <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" :stroke-width="2" />
+      <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" :stroke-width="2" />
       <ul class="min-w-0 flex-1 space-y-0.5">
         <li v-for="w in thread.warnings" :key="w">{{ warningText(w) }}</li>
       </ul>

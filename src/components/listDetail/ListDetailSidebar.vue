@@ -11,7 +11,7 @@
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { AlertCircle, ChevronDown, ChevronRight, Folder, Plus, RotateCw, Search, X } from 'lucide-vue-next'
-import { Button, Input } from '@/components/ui'
+import { Button, Input, SegmentedControl } from '@/components/ui'
 import { parseCollapsed, type RowGroup } from '@/lib/listGroups'
 import { groupClass, groupHeaderClass, rowClass, rowListClass } from './rowStyles'
 
@@ -131,25 +131,7 @@ function showHeaders(): boolean {
           {{ newLabel || t('common.new') }}
         </Button>
       </div>
-      <div
-        v-if="filters.length > 0"
-        class="flex rounded-md bg-muted p-0.5 text-[11px] font-medium"
-        role="group"
-      >
-        <button
-          v-for="f in filters"
-          :key="f.value"
-          type="button"
-          class="flex flex-1 cursor-pointer items-center justify-center rounded px-2 py-1 transition-colors"
-          :class="filter === f.value
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground hover:text-foreground'"
-          :aria-pressed="filter === f.value"
-          @click="filter = f.value"
-        >
-          {{ f.label }}
-        </button>
-      </div>
+      <SegmentedControl v-if="filters.length > 0" v-model="filter" :options="filters" />
     </div>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">

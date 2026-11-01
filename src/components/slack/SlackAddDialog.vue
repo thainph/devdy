@@ -114,9 +114,9 @@ function onKeydown(e: KeyboardEvent) {
 
       <div
         v-if="noToken"
-        class="flex items-start gap-2 rounded-md border border-amber-500/40 bg-amber-500/10 px-3 py-2 text-xs text-foreground"
+        class="flex items-start gap-2 rounded-md border border-warning/40 bg-warning/10 px-3 py-2 text-xs text-foreground"
       >
-        <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-amber-500" :stroke-width="2" />
+        <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0 text-warning" :stroke-width="2" />
         <div class="min-w-0 flex-1 space-y-1.5">
           <p>{{ t('slackThread.add.noToken') }}</p>
           <Button variant="outline" size="xs" @click="emit('openMcp')">

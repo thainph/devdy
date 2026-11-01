@@ -73,7 +73,7 @@ watch(
         v-if="shortFingerprint"
         class="flex items-center justify-center gap-1.5 text-[11px] font-mono text-foreground/45"
       >
-        <ShieldCheck class="h-3.5 w-3.5 text-emerald-500" :stroke-width="2" />
+        <ShieldCheck class="h-3.5 w-3.5 text-success" :stroke-width="2" />
         {{ t('controller.otp.host', { fp: shortFingerprint }) }}
       </div>
 

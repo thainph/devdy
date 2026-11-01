@@ -6,8 +6,8 @@
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RouterLink } from 'vue-router'
-import { Badge, Card } from '@/components/ui'
-import { Cloud, CloudCog, Github, Gitlab, Loader2 } from 'lucide-vue-next'
+import { Badge, Card, ToggleSwitch } from '@/components/ui'
+import { Cloud, CloudCog, Github, Gitlab } from 'lucide-vue-next'
 
 export type AccountProvider = 'github' | 'gitlab' | 'aws' | 'azure'
 
@@ -17,7 +17,7 @@ export interface AccountRow {
   username: string | null
   /** Secondary line, e.g. scopes (GitHub), host (GitLab), region (AWS). */
   detail: string | null
-  /** Amber marker after the detail line, e.g. Azure "not signed in". */
+  /** Warning marker after the detail line, e.g. Azure "not signed in". */
   warning?: string | null
 }
 
@@ -99,28 +99,18 @@ const enabledCount = computed(() => props.accounts.filter(a => enabled.value.has
             <span v-if="account.username">@{{ account.username }}</span>
             <span v-if="account.username && account.detail"> · </span>
             <span v-if="account.detail">{{ account.detail }}</span>
-            <span v-if="account.warning" class="text-amber-500 font-sans">
+            <span v-if="account.warning" class="text-warning font-sans">
               <template v-if="account.username || account.detail"> · </template>{{ account.warning }}
             </span>
           </p>
         </div>
-        <button
-          type="button"
-          role="switch"
-          :aria-checked="enabled.has(account.id)"
+        <ToggleSwitch
+          :checked="enabled.has(account.id)"
           :disabled="busy !== null"
-          class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:cursor-not-allowed disabled:opacity-50"
-          :class="enabled.has(account.id) ? 'bg-primary' : 'bg-muted'"
-          :title="enabled.has(account.id) ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
-          @click="emit('toggle', account, !enabled.has(account.id))"
-        >
-          <span
-            class="inline-flex h-4 w-4 transform items-center justify-center rounded-full bg-white shadow transition-transform"
-            :class="enabled.has(account.id) ? 'translate-x-6' : 'translate-x-1'"
-          >
-            <Loader2 v-if="busy === account.id" class="h-3 w-3 animate-spin text-primary" :stroke-width="2.5" />
-          </span>
-        </button>
+          :loading="busy === account.id"
+          :label="enabled.has(account.id) ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
+          @toggle="emit('toggle', account, !enabled.has(account.id))"
+        />
       </div>
     </div>
   </Card>

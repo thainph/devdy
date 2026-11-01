@@ -16,6 +16,7 @@ import {
   ChevronDown, Cpu, FileText, Maximize2, Minimize2, Paperclip, Play, Send, Square, X,
 } from 'lucide-vue-next'
 import { Button, AppSelect } from '@/components/ui'
+import HeaderButton from './HeaderButton.vue'
 
 const { t } = useI18n()
 import {
@@ -666,21 +667,19 @@ function onKeydown(e: KeyboardEvent): void {
         <div class="px-1.5 pb-1.5 space-y-1.5">
           <!-- Action row: attachments/expand on the left, Send/Cancel on the right. -->
           <div class="flex items-center gap-1.5">
-            <button
-              class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+            <HeaderButton
               :disabled="disabled || sending"
-              :title="t('controller.composer.attachFile')"
+              :label="t('controller.composer.attachFile')"
               @click="fileInputEl?.click()"
             >
               <Paperclip class="h-4 w-4" :stroke-width="2" />
-            </button>
-            <button
-              class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
-              :title="composerExpanded ? t('controller.composer.collapseComposer') : t('controller.composer.expandComposer')"
+            </HeaderButton>
+            <HeaderButton
+              :label="composerExpanded ? t('controller.composer.collapseComposer') : t('controller.composer.expandComposer')"
               @click="toggleExpand"
             >
               <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
-            </button>
+            </HeaderButton>
 
             <!-- One dropdown for every run setting, mirroring the desktop
                  run-settings menu. Three separate selects fought for width on a
@@ -760,22 +759,22 @@ function onKeydown(e: KeyboardEvent): void {
               <Button
                 v-if="running"
                 variant="destructive"
-                class="h-8 shrink-0"
+                class="shrink-0"
                 :title="t('controller.composer.cancelTitle')"
                 @click="emit('cancel')"
               >
                 <Square class="h-3.5 w-3.5" :stroke-width="2" fill="currentColor" />
                 {{ t('controller.composer.cancel') }}
               </Button>
-              <button
+              <Button
                 v-if="!running"
-                class="inline-flex items-center justify-center gap-1.5 h-8 px-3.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 shrink-0"
+                class="px-3.5 shrink-0"
                 :disabled="primaryDisabled"
                 @click="submit"
               >
                 <component :is="sendKind === 'run' ? Play : Send" class="h-3.5 w-3.5" :stroke-width="2" />
                 {{ sendLabel }}
-              </button>
+              </Button>
             </div>
           </div>
         </div>

@@ -12,7 +12,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import {
   AlertCircle, CheckCircle2, Copy, CopyPlus, KeyRound, Loader2, MoreHorizontal, Plug, Trash2, Upload, X, XCircle,
 } from 'lucide-vue-next'
-import { Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
+import { Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
 import { useToast } from '@/composables/useToast'
@@ -341,21 +341,7 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
         <!-- Authentication -->
         <DetailSection :title="t('servers.editor.authentication')">
           <div class="space-y-1.5">
-            <div class="flex max-w-md rounded-md bg-muted p-0.5 text-[11px] font-medium" role="group">
-              <button
-                v-for="opt in authOptions"
-                :key="opt.value"
-                type="button"
-                class="flex flex-1 cursor-pointer items-center justify-center rounded px-2 py-1 transition-colors"
-                :class="authMethod === opt.value
-                  ? 'bg-background text-foreground shadow-sm'
-                  : 'text-muted-foreground hover:text-foreground'"
-                :aria-pressed="authMethod === opt.value"
-                @click="authMethod = opt.value"
-              >
-                {{ opt.label }}
-              </button>
-            </div>
+            <SegmentedControl v-model="authMethod" :options="authOptions" class="max-w-md" />
             <p v-if="!isKey" class="flex items-center gap-1 text-[10px] text-muted-foreground">
               <AlertCircle class="h-3 w-3 shrink-0" :stroke-width="1.75" />
               {{ t('servers.editor.agentHint') }}
@@ -470,7 +456,7 @@ const labelClass = 'text-[11px] font-medium text-muted-foreground uppercase trac
             v-if="!isNew && testResult"
             class="flex items-start gap-1.5 rounded-md border p-3 text-xs"
             :class="testResult.ok
-              ? 'bg-emerald-500/10 border-emerald-500/20 text-emerald-500'
+              ? 'bg-success/10 border-success/20 text-success'
               : 'bg-destructive/10 border-destructive/20 text-destructive'"
           >
             <CheckCircle2 v-if="testResult.ok" class="mt-px h-3.5 w-3.5 shrink-0" :stroke-width="2" />

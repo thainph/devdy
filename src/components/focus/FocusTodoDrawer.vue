@@ -271,7 +271,7 @@ function onKeydown(e: KeyboardEvent) {
           <div class="flex items-center gap-1">
             <Input v-model="snoozedUntil" type="datetime-local" size="sm" class="min-w-0 flex-1" />
             <Button v-if="snoozedUntil" variant="ghost" size="icon-sm" :title="t('focus.drawer.clear')" :aria-label="t('focus.drawer.clear')" @click="snoozedUntil = ''">
-              <X class="h-3 w-3" :stroke-width="2" />
+              <X class="h-3.5 w-3.5" :stroke-width="2" />
             </Button>
           </div>
         </div>
@@ -280,7 +280,7 @@ function onKeydown(e: KeyboardEvent) {
           <div class="flex items-center gap-1">
             <Input v-model="remindAt" type="datetime-local" size="sm" class="min-w-0 flex-1" />
             <Button v-if="remindAt" variant="ghost" size="icon-sm" :title="t('focus.drawer.clear')" :aria-label="t('focus.drawer.clear')" @click="remindAt = ''">
-              <X class="h-3 w-3" :stroke-width="2" />
+              <X class="h-3.5 w-3.5" :stroke-width="2" />
             </Button>
           </div>
         </div>

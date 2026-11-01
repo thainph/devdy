@@ -433,9 +433,9 @@ function onSaved(id: string) {
 
 /** Status dot of a row: on, off, or a built-in that needs setup. */
 function dotClass(row: McpRow): string {
-  if (row.tone === 'warning') return 'bg-amber-500'
+  if (row.tone === 'warning') return 'bg-warning'
   if (row.kind === 'catalog') return 'bg-transparent border border-muted-foreground/40'
-  return row.enabled ? 'bg-emerald-500' : 'bg-muted-foreground/40'
+  return row.enabled ? 'bg-success' : 'bg-muted-foreground/40'
 }
 </script>
 
@@ -494,7 +494,7 @@ function dotClass(row: McpRow): string {
           </span>
           <span
             v-if="row.transport === 'sse' && defaultIsCodex"
-            class="shrink-0 rounded bg-amber-500/15 px-1 text-[9px] font-semibold text-amber-600 dark:text-amber-400"
+            class="shrink-0 rounded bg-warning/15 px-1 text-[9px] font-semibold text-warning"
             :title="t('mcp.list.claudeOnlyTitle')"
           >
             {{ t('mcp.list.claudeOnly') }}

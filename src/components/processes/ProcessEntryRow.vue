@@ -37,15 +37,17 @@ const expanded = ref(false)
 <template>
   <div>
     <div class="group flex items-center gap-2 px-3 py-2 hover:bg-accent/40 transition-colors">
-      <button
-        type="button"
-        class="flex h-6 w-6 shrink-0 items-center justify-center rounded text-muted-foreground hover:text-foreground hover:bg-accent cursor-pointer"
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="expanded ? t('processes.actions.collapse') : t('processes.actions.expand')"
+        :aria-label="expanded ? t('processes.actions.collapse') : t('processes.actions.expand')"
         :aria-expanded="expanded"
         @click="expanded = !expanded"
       >
         <ChevronRight class="h-3.5 w-3.5 transition-transform" :class="expanded && 'rotate-90'" :stroke-width="2" />
-      </button>
+      </Button>
 
       <ProcessKindBadge :kind="entry.kind" />
 
@@ -94,7 +96,7 @@ const expanded = ref(false)
     </div>
 
     <!-- Per-process table -->
-    <div v-if="expanded" class="px-3 pb-2 pl-11">
+    <div v-if="expanded" class="px-3 pb-2 pl-12">
       <table class="w-full table-fixed text-[11px]">
         <thead class="text-muted-foreground">
           <tr class="border-b border-border/50">

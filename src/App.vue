@@ -969,7 +969,7 @@ onMounted(async () => {
                 <span class="flex-1 truncate">{{ item.label }}</span>
                 <span
                   v-if="item.path === '/focus' && focusStore.overdueCount > 0"
-                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-red-500 px-1 text-[10px] font-medium text-white leading-none"
+                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground leading-none"
                   :title="t('focus.buckets.overdue')"
                 >
                   {{ focusStore.overdueCount }}

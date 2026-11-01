@@ -31,7 +31,7 @@ function text(n: RunAttention): string {
 <template>
   <div
     v-if="notices.length"
-    class="mb-2 flex items-start gap-2 rounded-md border border-amber-500/30 bg-amber-500/10 px-2.5 py-1.5 text-xs text-amber-700 dark:text-amber-300"
+    class="mb-2 flex items-start gap-2 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5 text-[11px] text-warning"
     role="status"
   >
     <AlertTriangle class="mt-0.5 h-3.5 w-3.5 shrink-0" :stroke-width="2" />
@@ -40,7 +40,7 @@ function text(n: RunAttention): string {
     </div>
     <button
       type="button"
-      class="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 font-medium hover:bg-amber-500/20 cursor-pointer"
+      class="inline-flex shrink-0 items-center gap-1 rounded px-2 py-0.5 font-medium hover:bg-warning/20 cursor-pointer"
       :title="t('run.cancelRunningTurn')"
       @click="emit('stop')"
     >

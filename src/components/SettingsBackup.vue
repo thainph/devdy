@@ -159,7 +159,7 @@ function cancelImport() {
           autocomplete="new-password"
           :placeholder="t('settings.backup.export.passwordConfirm')"
         />
-        <p class="flex items-start gap-1.5 text-[11px] text-amber-600 dark:text-amber-400">
+        <p class="flex items-start gap-1.5 text-[11px] text-warning">
           <KeyRound class="mt-px h-3 w-3 shrink-0" :stroke-width="1.75" />
           {{ t('settings.backup.export.passwordWarning') }}
         </p>

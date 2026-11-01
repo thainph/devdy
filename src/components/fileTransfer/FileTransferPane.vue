@@ -204,22 +204,23 @@ defineExpose({ dir, selectedEntries, refresh })
     <div class="flex h-9 shrink-0 items-center justify-between gap-2 border-b border-border/60 px-3">
       <span class="truncate text-[11px] font-semibold uppercase tracking-wide text-muted-foreground">{{ title }}</span>
       <div class="flex shrink-0 items-center gap-0.5">
-        <Button variant="ghost" size="icon-sm" :title="t('fileTransfer.up')" :disabled="!parentDir(dir)" @click="goUp">
+        <Button variant="ghost" size="icon-sm" :title="t('fileTransfer.up')" :aria-label="t('fileTransfer.up')" :disabled="!parentDir(dir)" @click="goUp">
           <ArrowUp class="h-3.5 w-3.5" />
         </Button>
-        <Button variant="ghost" size="icon-sm" :title="t('fileTransfer.home')" @click="goHome">
+        <Button variant="ghost" size="icon-sm" :title="t('fileTransfer.home')" :aria-label="t('fileTransfer.home')" @click="goHome">
           <Home class="h-3.5 w-3.5" />
         </Button>
-        <Button variant="ghost" size="icon-sm" :title="t('common.refresh')" :disabled="!dir" @click="refresh">
+        <Button variant="ghost" size="icon-sm" :title="t('common.refresh')" :aria-label="t('common.refresh')" :disabled="!dir" @click="refresh">
           <RefreshCw class="h-3.5 w-3.5" :class="loading && 'animate-spin'" />
         </Button>
-        <Button variant="ghost" size="icon-sm" :title="t('fileTransfer.newFolder')" :disabled="!dir" @click="newFolder">
+        <Button variant="ghost" size="icon-sm" :title="t('fileTransfer.newFolder')" :aria-label="t('fileTransfer.newFolder')" :disabled="!dir" @click="newFolder">
           <FolderPlus class="h-3.5 w-3.5" />
         </Button>
         <Button
           variant="ghost"
           size="icon-sm"
           :title="t('fileTransfer.rename')"
+          :aria-label="t('fileTransfer.rename')"
           :disabled="selectedEntries.length !== 1"
           @click="rename"
         >
@@ -229,6 +230,7 @@ defineExpose({ dir, selectedEntries, refresh })
           variant="destructive-ghost"
           size="icon-sm"
           :title="t('common.delete')"
+          :aria-label="t('common.delete')"
           :disabled="selectedEntries.length === 0"
           @click="remove"
         >
@@ -252,7 +254,7 @@ defineExpose({ dir, selectedEntries, refresh })
     </nav>
 
     <p v-if="error" class="whitespace-pre-line break-all px-3 pt-2 text-xs text-destructive">{{ error }}</p>
-    <p v-else-if="truncated" class="px-3 pt-2 text-[11px] text-amber-500">
+    <p v-else-if="truncated" class="px-3 pt-2 text-[11px] text-warning">
       {{ t('fileTransfer.truncated', { count: entries.length }) }}
     </p>
 

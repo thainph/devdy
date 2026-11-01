@@ -13,7 +13,7 @@ import {
   AlertCircle, Columns2, Download, Eye, FileText, FolderCheck, FolderOpen, LayoutTemplate,
   MoreHorizontal, Pencil, RefreshCw, Trash2, X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input } from '@/components/ui'
+import { AppSelect, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import SkillEditor from '@/components/SkillEditor.vue'
 import DetailHeader from '@/components/listDetail/DetailHeader.vue'
 import DetailSection from '@/components/listDetail/DetailSection.vue'
@@ -382,28 +382,18 @@ defineExpose({ dirty, save })
             <span v-if="dirty" class="h-1.5 w-1.5 rounded-full bg-primary" />
           </span>
         </div>
-        <div class="flex shrink-0 rounded-md bg-muted p-0.5" role="group">
-          <button
-            v-for="m in viewModes"
-            :key="m.value"
-            type="button"
-            class="flex cursor-pointer items-center rounded p-1 transition-colors"
-            :class="viewMode === m.value
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'"
-            :title="m.label"
-            :aria-label="m.label"
-            :aria-pressed="viewMode === m.value"
-            @click="setViewMode(m.value)"
-          >
-            <component :is="m.icon" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </button>
-        </div>
+        <SegmentedControl
+          :model-value="viewMode"
+          :options="viewModes"
+          :stretch="false"
+          icon-only
+          @update:model-value="setViewMode"
+        />
       </div>
 
       <div
         v-if="validationError"
-        class="flex shrink-0 items-center gap-1.5 border-b border-amber-500/20 bg-amber-500/10 px-3 py-1.5 text-xs text-amber-500"
+        class="flex shrink-0 items-center gap-1.5 border-b border-warning/20 bg-warning/10 px-3 py-1.5 text-xs text-warning"
       >
         <AlertCircle class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
         <span class="min-w-0 truncate" :title="validationError">{{ validationError }}</span>

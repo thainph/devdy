@@ -72,8 +72,8 @@ const isDone = computed(() => todo.value.done)
 const doing = computed(() => todo.value.status === 'doing')
 
 const DUE_TONE = {
-  danger: 'text-red-600 dark:text-red-400 font-medium',
-  warn: 'text-amber-600 dark:text-amber-400 font-medium',
+  danger: 'text-destructive font-medium',
+  warn: 'text-warning font-medium',
   muted: 'text-muted-foreground',
 }
 </script>
@@ -124,8 +124,8 @@ const DUE_TONE = {
         class="whitespace-nowrap tabular-nums text-muted-foreground"
         :class="item.estimate_missing ? 'opacity-70' : ''"
         :title="estimateTitle"
-      >~{{ estimate }}<span v-if="item.estimate_missing" class="text-amber-600 dark:text-amber-400">?</span></span>
-      <span v-if="todo.priority === 1" class="rounded bg-red-600 px-1 py-px text-[9px] font-bold text-white">P1</span>
+      >~{{ estimate }}<span v-if="item.estimate_missing" class="text-warning">?</span></span>
+      <span v-if="todo.priority === 1" class="rounded bg-destructive px-1 py-px text-[9px] font-bold text-destructive-foreground">P1</span>
       <button
         v-if="todo.source_url"
         type="button"

@@ -13,7 +13,7 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
 import { parseRepoUrl, repoKey } from '@/lib/repoUrl'
 import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, GanttChartSquare, GripVertical } from 'lucide-vue-next'
-import { Button, Input, Badge, Modal, Card } from '@/components/ui'
+import { Button, Input, Badge, Modal, Card, PageHeader } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
@@ -282,24 +282,20 @@ async function handleOpenInFolder(project: { path: string }) {
 <template>
   <div class="flex flex-col h-full">
     <!-- Header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">{{ t('projects.title') }}</h1>
-        <span
-          v-if="!store.loading && store.projects.length > 0"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
+    <PageHeader
+      :title="t('projects.title')"
+      :count="!store.loading && store.projects.length > 0 ? store.projects.length : null"
+    >
+      <template #actions>
+        <Button
+          :disabled="adding || detecting"
+          @click="handleAdd"
         >
-          {{ store.projects.length }}
-        </span>
-      </div>
-      <Button
-        :disabled="adding || detecting"
-        @click="handleAdd"
-      >
-        <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-        {{ detecting ? t('projects.detecting') : adding ? t('projects.adding') : t('projects.addProject') }}
-      </Button>
-    </div>
+          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
+          {{ detecting ? t('projects.detecting') : adding ? t('projects.adding') : t('projects.addProject') }}
+        </Button>
+      </template>
+    </PageHeader>
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6">
@@ -436,7 +432,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 :title="t('projects.openInVscode')"
                 @click="handleOpenInVscode(project)"
               >
-                <Code2 class="h-4 w-4" :stroke-width="2" />
+                <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
               <Button
                 variant="ghost"
@@ -444,7 +440,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 :title="t('projects.openFolder')"
                 @click="handleOpenInFolder(project)"
               >
-                <FolderOpen class="h-4 w-4" :stroke-width="2" />
+                <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
               <Button
                 variant="ghost"
@@ -452,7 +448,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 :title="t('projects.openInTerminal')"
                 @click="handleOpenInTerminal(project)"
               >
-                <SquareTerminal class="h-4 w-4" :stroke-width="2" />
+                <SquareTerminal class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
               <span class="mx-0.5 h-4 w-px bg-border/70" />
               <Button
@@ -461,7 +457,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 :title="t('projects.gantt')"
                 @click="openGanttWindow(project.id)"
               >
-                <GanttChartSquare class="h-4 w-4" :stroke-width="2" />
+                <GanttChartSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
               <Button
                 variant="ghost"
@@ -469,7 +465,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 :title="t('projects.projectSettings')"
                 @click="router.push(`/projects/${project.id}/settings`)"
               >
-                <Settings class="h-4 w-4" :stroke-width="2" />
+                <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
               <Button
                 variant="destructive-ghost"
@@ -477,7 +473,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 :title="t('projects.removeProject')"
                 @click="handleRemove(project)"
               >
-                <Trash2 class="h-4 w-4" :stroke-width="2" />
+                <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
             </div>
           </div>
@@ -518,7 +514,7 @@ async function handleOpenInFolder(project: { path: string }) {
                   v-if="pendingRepos.length"
                   class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1 text-[10px] font-medium text-muted-foreground leading-none"
                 >{{ pendingRepos.length }}</span>
-                <span v-if="pending.repos.length > 0" class="text-[10px] text-emerald-500 font-medium">
+                <span v-if="pending.repos.length > 0" class="text-[10px] text-success font-medium">
                   {{ t('projects.autoDetected', { count: pending.repos.length }) }}
                 </span>
               </div>
@@ -559,7 +555,7 @@ async function handleOpenInFolder(project: { path: string }) {
                   <span class="font-mono text-muted-foreground truncate">
                     {{ parsedRepo.provider === 'gitlab' ? parsedRepo.gitlab_project_path : `${parsedRepo.github_owner}/${parsedRepo.github_repo}` }}
                   </span>
-                  <span v-if="isDuplicateRepo" class="flex items-center gap-1 text-amber-500 font-medium">
+                  <span v-if="isDuplicateRepo" class="flex items-center gap-1 text-warning font-medium">
                     <AlertTriangle class="h-2.5 w-2.5" :stroke-width="2" />
                     {{ t('projects.alreadyAdded') }}
                   </span>
@@ -594,7 +590,7 @@ async function handleOpenInFolder(project: { path: string }) {
                     :title="t('projects.removeRepo')"
                     @click="removeRepoRow(repo._key)"
                   >
-                    <Trash2 class="h-3 w-3" :stroke-width="1.75" />
+                    <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
                   </Button>
                 </div>
               </div>

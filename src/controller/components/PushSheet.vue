@@ -59,11 +59,11 @@ const kinds = computed(() => {
         {{ t('controller.push.privacy') }}
       </p>
 
-      <p v-if="s.error" class="mt-2 text-[12px] text-destructive">{{ t(`controller.push.errors.${s.error}`) }}</p>
+      <p v-if="s.error" class="mt-2 text-xs text-destructive">{{ t(`controller.push.errors.${s.error}`) }}</p>
       <p
         v-else-if="s.test"
-        class="mt-2 text-[12px]"
-        :class="s.test === 'sent' ? 'text-emerald-500' : 'text-destructive'"
+        class="mt-2 text-xs"
+        :class="s.test === 'sent' ? 'text-success' : 'text-destructive'"
       >
         {{ t(`controller.push.test.${s.test}`) }}
       </p>

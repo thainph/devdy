@@ -15,7 +15,7 @@ import PdfWorkerUrl from 'pdfjs-dist/build/pdf.worker.min.mjs?url'
 pdfjsLib.GlobalWorkerOptions.workerSrc = PdfWorkerUrl
 import { openPath, revealItemInDir } from '@tauri-apps/plugin-opener'
 import type MarkdownIt from 'markdown-it'
-import { Button, DropdownMenu } from '@/components/ui'
+import { Button, DropdownMenu, SegmentedControl } from '@/components/ui'
 import FileActionsMenu from '@/components/FileActionsMenu.vue'
 import { useFileTreeStore } from '@/stores/fileTree'
 import { usePrompt } from '@/composables/usePrompt'
@@ -969,25 +969,19 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <FileCode2 class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
       <span class="text-xs font-mono text-foreground/90 truncate flex-1" :title="curPath">{{ curPath }}</span>
       <!-- Raw / rendered toggle, only meaningful for markdown and HTML files -->
-      <div
+      <SegmentedControl
         v-if="previewable && !editing && !loading && !error && (content || isHtml)"
-        class="flex items-center rounded-md border border-border overflow-hidden shrink-0 text-[10px] font-medium"
-      >
-        <button
-          class="px-2 py-1 transition-colors cursor-pointer"
-          :class="mode === 'preview' ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground'"
-          @click="mode = 'preview'"
-        >{{ t('files.viewer.preview') }}</button>
-        <button
-          class="px-2 py-1 border-l border-border transition-colors cursor-pointer"
-          :class="mode === 'code' ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground'"
-          @click="mode = 'code'"
-        >{{ t('files.viewer.raw') }}</button>
-      </div>
+        v-model="mode"
+        :stretch="false"
+        :options="[
+          { value: 'preview', label: t('files.viewer.preview') },
+          { value: 'code', label: t('files.viewer.raw') },
+        ]"
+      />
       <!-- Font size controls -->
       <div v-if="content && !htmlPreview" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
         <button
-          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          class="flex items-center justify-center h-7 w-7 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.smallerFont')"
           :disabled="fontSize <= FONT_MIN"
           @click="bumpFontSize(-1)"
@@ -996,7 +990,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         </button>
         <span class="px-1.5 text-[10px] tabular-nums text-foreground/50 border-x border-border select-none">{{ fontSize }}</span>
         <button
-          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          class="flex items-center justify-center h-7 w-7 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.largerFont')"
           :disabled="fontSize >= FONT_MAX"
           @click="bumpFontSize(1)"
@@ -1007,7 +1001,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <!-- Zoom controls (images & PDF) — mirrors the font-size group for consistency -->
       <div v-if="kind === 'image' || kind === 'pdf'" class="flex items-center rounded-md border border-border overflow-hidden shrink-0">
         <button
-          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          class="flex items-center justify-center h-7 w-7 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.zoomOut')"
           :disabled="zoom <= ZOOM_MIN"
           @click="zoomOut"
@@ -1015,12 +1009,12 @@ defineExpose({ onRevealInFolder, onOpenInApp })
           <ZoomOut class="h-3.5 w-3.5" :stroke-width="1.75" />
         </button>
         <button
-          class="px-1.5 h-6 text-[10px] tabular-nums text-foreground/60 hover:text-foreground border-x border-border select-none cursor-pointer min-w-[3rem]"
+          class="px-1.5 h-7 text-[10px] tabular-nums text-foreground/60 hover:text-foreground border-x border-border select-none cursor-pointer min-w-[3rem]"
           :title="t('files.viewer.resetZoom')"
           @click="resetZoom"
         >{{ Math.round(zoom * 100) }}%</button>
         <button
-          class="flex items-center justify-center h-6 w-6 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
+          class="flex items-center justify-center h-7 w-7 text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-40 disabled:cursor-default"
           :title="t('files.viewer.zoomIn')"
           :disabled="zoom >= ZOOM_MAX"
           @click="zoomIn"
@@ -1029,74 +1023,96 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         </button>
       </div>
       <!-- Compare this image with another, side by side -->
-      <button
+      <Button
         v-if="kind === 'image' && canCompare"
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :class="{ 'bg-primary/15 text-primary': imageCompare.pendingFirst === curPath }"
         :title="t('files.compare.compareButton')"
+        :aria-label="t('files.compare.compareButton')"
+        :aria-pressed="imageCompare.pendingFirst === curPath"
         @click="startCompare"
       >
         <Columns2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
+      </Button>
       <!-- Toggle the in-page search bar -->
-      <button
+      <Button
         v-if="content && !htmlPreview"
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :class="{ 'bg-primary/15 text-primary': searchOpen }"
         :title="t('files.viewer.searchInFile')"
+        :aria-label="t('files.viewer.searchInFile')"
+        :aria-pressed="searchOpen"
         @click="searchOpen ? closeSearch() : openSearch()"
       >
         <Search class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
+      </Button>
       <!-- Reload the file's latest content from disk -->
-      <button
+      <Button
         v-if="kind === 'text'"
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('files.viewer.reloadFromDisk')"
+        :aria-label="t('files.viewer.reloadFromDisk')"
         :disabled="reloading"
         @click="reload"
       >
         <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
-      </button>
+      </Button>
       <!-- Edit toggle (text / markdown files only) -->
-      <button
+      <Button
         v-if="editable && !editing"
-        class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('files.viewer.editFile')"
+        :aria-label="t('files.viewer.editFile')"
         @click="startEdit"
       >
         <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
+      </Button>
       <!-- Save / cancel controls while editing -->
       <template v-if="editing">
-        <button
-          class="flex items-center gap-1 h-6 px-2 rounded-md text-[11px] font-medium bg-primary/15 text-primary hover:bg-primary/25 transition-colors cursor-pointer shrink-0 disabled:opacity-40 disabled:cursor-default"
+        <Button
+          variant="primary"
+          size="xs"
+          class="shrink-0"
           :title="t('files.viewer.saveChanges')"
           :disabled="saving || !dirty"
           @click="saveEdit"
         >
-          <Save class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <Save class="h-3 w-3" :stroke-width="2" />
           {{ saving ? t('files.viewer.saving') : t('common.save') }}
-        </button>
-        <button
-          class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+        </Button>
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
           :title="t('files.viewer.cancelEditing')"
+          :aria-label="t('files.viewer.cancelEditing')"
           @click="cancelEdit"
         >
           <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </button>
+        </Button>
       </template>
       <!-- Overflow menu: secondary file actions, labelled with text to avoid
            the ambiguity of look-alike copy / open icons -->
       <div class="h-4 w-px bg-border shrink-0" aria-hidden="true" />
       <DropdownMenu align="right">
         <template #trigger>
-          <button
-            class="flex items-center justify-center h-6 w-6 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+          <Button
+            variant="ghost"
+            size="icon-sm"
+            class="shrink-0"
             :title="t('files.viewer.moreActions')"
+            :aria-label="t('files.viewer.moreActions')"
           >
-            <MoreHorizontal class="h-4 w-4" :stroke-width="1.75" />
-          </button>
+            <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
         </template>
         <FileActionsMenu
           :project-path="projectPath"
@@ -1128,29 +1144,38 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <span class="text-[10px] tabular-nums text-foreground/50 select-none shrink-0 min-w-[3rem] text-right">
         {{ searchQuery ? `${currentMatch}/${matchCount}` : '' }}
       </span>
-      <button
-        class="flex items-center justify-center h-5 w-5 rounded text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-30 disabled:cursor-default"
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('files.viewer.previousMatch')"
+        :aria-label="t('files.viewer.previousMatch')"
         :disabled="!matchCount"
         @click="gotoMatch(-1)"
       >
         <ChevronUp class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
-      <button
-        class="flex items-center justify-center h-5 w-5 rounded text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0 disabled:opacity-30 disabled:cursor-default"
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('files.viewer.nextMatch')"
+        :aria-label="t('files.viewer.nextMatch')"
         :disabled="!matchCount"
         @click="gotoMatch(1)"
       >
         <ChevronDown class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
-      <button
-        class="flex items-center justify-center h-5 w-5 rounded text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer shrink-0"
+      </Button>
+      <Button
+        variant="ghost"
+        size="icon-sm"
+        class="shrink-0"
         :title="t('files.viewer.closeSearch')"
+        :aria-label="t('files.viewer.closeSearch')"
         @click="closeSearch"
       >
         <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </button>
+      </Button>
     </div>
 
     <!-- Body -->
@@ -1255,7 +1280,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       <!-- Oversized text file: refuse to render a partial view, point the user
            at an external editor that can open the whole thing. -->
       <div v-else-if="truncated" class="p-10 flex flex-col items-center gap-3 text-center">
-        <FileWarning class="h-12 w-12 text-amber-500/70" :stroke-width="1.5" />
+        <FileWarning class="h-12 w-12 text-warning/70" :stroke-width="1.5" />
         <div>
           <p class="text-sm font-medium text-foreground/80 mb-1">{{ t('files.viewer.tooLarge') }}</p>
           <p class="text-xs text-foreground/50 max-w-md">{{ t('files.viewer.tooLargeHint') }}</p>
@@ -1367,9 +1392,11 @@ defineExpose({ onRevealInFolder, onOpenInApp })
     <!-- Floating "Dịch" trigger for a text selection in the file body.
          `mousedown.prevent` keeps the selection alive through the click. -->
     <Teleport to="body">
-      <button
+      <Button
         v-if="translateTrigger"
-        class="fixed z-[65] inline-flex items-center gap-1 rounded-md border border-border bg-card px-2 py-1 text-[11px] font-medium text-primary shadow-lg shadow-black/30 hover:bg-accent/60 transition-colors cursor-pointer"
+        variant="outline"
+        size="xs"
+        class="fixed z-[65] bg-card text-primary shadow-lg shadow-black/30"
         :style="{ left: translateTrigger.x + 'px', top: translateTrigger.y + 'px' }"
         :title="t('files.viewer.translateSelection')"
         @mousedown.prevent
@@ -1377,7 +1404,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
       >
         <Languages class="h-3 w-3" :stroke-width="1.75" />
         {{ t('files.viewer.translate') }}
-      </button>
+      </Button>
     </Teleport>
 
     <!-- Translation result popover -->

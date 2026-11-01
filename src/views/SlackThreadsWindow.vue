@@ -508,8 +508,8 @@ onBeforeUnmount(() => {
       />
       <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
         <div class="text-center">
-          <div class="mx-auto mb-3 flex h-10 w-10 items-center justify-center rounded-xl bg-muted">
-            <Slack class="h-5 w-5 text-muted-foreground" :stroke-width="1.5" />
+          <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+            <Slack class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
           </div>
           <template v-if="store.selectedId && store.viewError">
             <p class="max-w-sm text-xs text-destructive">{{ errorLine(store.viewError) }}</p>

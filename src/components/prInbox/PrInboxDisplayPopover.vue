@@ -6,14 +6,14 @@
 // on every screen. Group-by is a radio list rather than an AppSelect: the
 // select's teleported menu sits outside the panel, so picking an option would
 // count as an outside click and close the popover.
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
 import { usePrInboxStore, type PrInboxDensity } from '@/stores/prInbox'
 import { PR_GROUP_BY_OPTIONS, type PrGroupBy } from '@/lib/prInboxGrouping'
-import { Button } from '@/components/ui'
+import { Button, SegmentedControl } from '@/components/ui'
 import { Check, EyeOff, KeyRound, SlidersHorizontal, ChevronRight } from 'lucide-vue-next'
 
 const emit = defineEmits<{ 'manage-bots': [] }>()
@@ -47,6 +47,7 @@ function onRadioKey(e: KeyboardEvent, current: PrGroupBy) {
 }
 
 const DENSITIES: readonly PrInboxDensity[] = ['comfortable', 'compact']
+const densityOptions = computed(() => DENSITIES.map(d => ({ value: d, label: t(`prInbox.density.${d}`) })))
 
 function manageBots() {
   open.value = false
@@ -101,19 +102,12 @@ function manageBots() {
       <!-- Density -->
       <div class="mb-3">
         <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('prInbox.density.label') }}</div>
-        <div class="flex items-center rounded-lg border border-border/60 p-0.5 bg-muted/30" role="group" :aria-label="t('prInbox.density.label')">
-          <button
-            v-for="d in DENSITIES"
-            :key="d"
-            type="button"
-            class="flex-1 px-3 py-1 text-xs font-medium rounded-md cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-            :class="store.density === d
-              ? 'bg-background text-foreground shadow-sm'
-              : 'text-muted-foreground hover:text-foreground'"
-            :aria-pressed="store.density === d"
-            @click="store.setDensity(d)"
-          >{{ t(`prInbox.density.${d}`) }}</button>
-        </div>
+        <SegmentedControl
+          :model-value="store.density"
+          :options="densityOptions"
+          :aria-label="t('prInbox.density.label')"
+          @update:model-value="store.setDensity"
+        />
       </div>
 
       <!-- Bots -->

@@ -7,7 +7,7 @@
 import { computed, nextTick, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { BookMarked, Search } from 'lucide-vue-next'
-import { DropdownMenu } from '@/components/ui'
+import { Button, DropdownMenu } from '@/components/ui'
 import { promptLabel, type SavedPrompt } from '@/lib/savedPrompts'
 
 const props = defineProps<{
@@ -78,14 +78,16 @@ watch(active, (i) => {
 <template>
   <DropdownMenu align="left" class="shrink-0" @update:open="onOpenChange">
     <template #trigger>
-      <button
-        class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+      <Button
+        variant="ghost"
+        size="icon"
+        class="shrink-0"
         :disabled="disabled"
         :title="t('run.savedPrompts')"
         :aria-label="t('run.savedPrompts')"
       >
         <BookMarked class="h-4 w-4" :stroke-width="2" />
-      </button>
+      </Button>
     </template>
 
     <div class="w-80">

@@ -15,6 +15,7 @@
 import { computed, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2, X } from 'lucide-vue-next'
+import { Button } from '@/components/ui'
 import type { ClaudeAccountToggle, ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
 
 const props = defineProps<{
@@ -119,12 +120,12 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
       <template v-else>
         <div v-if="!current && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
           {{ t('controller.data.loadFailed') }}
-          <button
-            class="rounded-md border border-border bg-secondary px-3 py-1.5 text-xs text-foreground hover:bg-accent cursor-pointer"
+          <Button
+            variant="outline"
             @click="projectId && emit('select', projectId)"
           >
             {{ t('controller.data.retry') }}
-          </button>
+          </Button>
         </div>
         <p v-else-if="!current" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
           <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
@@ -161,7 +162,7 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
                       : t('controller.projectToggles.enable', { name: t('controller.projectToggles.builtin') })
                   "
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                  :class="current.builtin_devdy.enabled ? 'bg-emerald-500' : 'bg-muted'"
+                  :class="current.builtin_devdy.enabled ? 'bg-success' : 'bg-muted'"
                   @click="emit('set', 'builtin_mcp', null, !current.builtin_devdy.enabled)"
                 >
                   <span
@@ -199,7 +200,7 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
                       : t('controller.projectToggles.enable', { name: item.name })
                   "
                   class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
-                  :class="item.enabled ? 'bg-emerald-500' : 'bg-muted'"
+                  :class="item.enabled ? 'bg-success' : 'bg-muted'"
                   @click="emit('set', s.kind, item.id, !item.enabled)"
                 >
                   <span

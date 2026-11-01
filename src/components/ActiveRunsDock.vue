@@ -231,11 +231,11 @@ function open(row: DockRow) {
       </span>
       <span
         v-if="waitingCount > 0"
-        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-amber-500 px-1 text-[10px] font-medium text-white leading-none"
+        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-white leading-none"
       >{{ waitingCount }}</span>
       <span
         v-else-if="doneCount > 0"
-        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-emerald-500 px-1 text-[10px] font-medium text-white leading-none"
+        class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-success px-1 text-[10px] font-medium text-white leading-none"
       >{{ doneCount }}</span>
     </div>
 
@@ -262,11 +262,11 @@ function open(row: DockRow) {
             <span
               class="relative inline-flex h-2 w-2 rounded-full"
               :class="row.pending > 0
-                ? 'bg-amber-500'
+                ? 'bg-warning'
                 : row.status === 'running'
                   ? 'bg-primary'
                   : row.done
-                    ? (isFailure(row.status) ? 'bg-red-500' : 'bg-emerald-500')
+                    ? (isFailure(row.status) ? 'bg-destructive' : 'bg-success')
                     : 'bg-muted-foreground/40'"
             />
           </span>
@@ -285,21 +285,21 @@ function open(row: DockRow) {
           </span>
           <span
             v-if="row.pending > 0"
-            class="flex items-center gap-0.5 rounded bg-amber-500/15 px-1 py-0.5 text-[10px] font-medium text-amber-600 dark:text-amber-400 shrink-0"
+            class="flex items-center gap-0.5 rounded bg-warning/15 px-1 py-0.5 text-[10px] font-medium text-warning shrink-0"
           >
             <ShieldAlert class="h-3 w-3" :stroke-width="2" />
             Review
           </span>
           <span
             v-else-if="row.done && isFailure(row.status)"
-            class="flex items-center gap-0.5 rounded bg-red-500/15 px-1 py-0.5 text-[10px] font-medium text-red-600 dark:text-red-400 shrink-0"
+            class="flex items-center gap-0.5 rounded bg-destructive/15 px-1 py-0.5 text-[10px] font-medium text-destructive shrink-0"
           >
             <XCircle class="h-3 w-3" :stroke-width="2" />
             {{ row.status === 'cancelled' ? 'Stopped' : 'Failed' }}
           </span>
           <span
             v-else-if="row.done"
-            class="flex items-center gap-0.5 rounded bg-emerald-500/15 px-1 py-0.5 text-[10px] font-medium text-emerald-600 dark:text-emerald-400 shrink-0"
+            class="flex items-center gap-0.5 rounded bg-success/15 px-1 py-0.5 text-[10px] font-medium text-success shrink-0"
           >
             <CheckCircle2 class="h-3 w-3" :stroke-width="2" />
             Done

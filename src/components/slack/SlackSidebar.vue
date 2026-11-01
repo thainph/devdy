@@ -23,7 +23,7 @@ import {
   Search,
   X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, Input } from '@/components/ui'
+import { AppSelect, Button, Input, SegmentedControl } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { formatFullDate, groupThreads } from '@/lib/slackThreadUtils'
 import type { SlackThreadProgress, SlackThreadSummary } from '@/stores/slackThreads'
@@ -65,6 +65,7 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const linkFilterOptions = computed(() => LINK_FILTERS.map((f) => ({ value: f.value, label: t(f.label) })))
 
 const COLLAPSED_KEY = 'slackThreads.collapsed'
 
@@ -160,25 +161,11 @@ function rowAgeTitle(th: SlackThreadSummary): string {
           {{ t('slackThread.sidebar.add') }}
         </Button>
       </div>
-      <div
-        class="flex rounded-md bg-muted p-0.5 text-[11px] font-medium"
-        role="group"
+      <SegmentedControl
+        v-model="linkFilter"
+        :options="linkFilterOptions"
         :aria-label="t('slackThread.sidebar.linkFilter')"
-      >
-        <button
-          v-for="f in LINK_FILTERS"
-          :key="f.value"
-          type="button"
-          class="flex flex-1 cursor-pointer items-center justify-center rounded px-2 py-1 transition-colors"
-          :class="linkFilter === f.value
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground hover:text-foreground'"
-          :aria-pressed="linkFilter === f.value"
-          @click="linkFilter = f.value"
-        >
-          {{ t(f.label) }}
-        </button>
-      </div>
+      />
     </div>
 
     <!-- Tree -->

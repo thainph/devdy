@@ -20,8 +20,8 @@ const n = computed(() => store.stray)
   <div v-if="n > 0" class="px-2 pb-2 border-t border-border/50 pt-2">
     <RouterLink
       to="/processes"
-      class="flex items-center gap-2 py-1.5 px-2 rounded-md text-[12px] transition-colors cursor-pointer select-none text-amber-600 dark:text-amber-400 hover:bg-amber-500/10"
-      :class="route.path === '/processes' && 'bg-amber-500/10'"
+      class="flex items-center gap-2 py-1.5 px-2 rounded-md text-xs transition-colors cursor-pointer select-none text-warning hover:bg-warning/10"
+      :class="route.path === '/processes' && 'bg-warning/10'"
       :title="t('processes.dock.title')"
     >
       <Cog class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />

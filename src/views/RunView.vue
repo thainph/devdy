@@ -961,7 +961,7 @@ function runDenseTooltip(run: RunRecord): string {
 // at a glance without a separate status pill. Mirrors StatusBadge's palette.
 // A freshly-created chat session ('fetched' + session) is a draft → stays muted.
 function runIconColorClass(run: RunRecord): string {
-  if (runIsRunning(run)) return 'text-blue-500'
+  if (runIsRunning(run)) return 'text-info'
   if (run.status === 'fetched' && run.run_type === 'session') return 'text-muted-foreground'
   return runStatusColorClass(run.status)
 }
@@ -3731,7 +3731,7 @@ function handleRefInput(val: string) {
           >
           <p class="text-[11px] font-medium text-foreground/80">{{ t('run.fetchIssuePr') }}</p>
 
-          <div v-if="repos.length === 0" class="text-[10px] text-amber-500/80 leading-relaxed">
+          <div v-if="repos.length === 0" class="text-[10px] text-warning/80 leading-relaxed">
             {{ t('run.noReposConfigured') }}
           </div>
 
@@ -3809,7 +3809,7 @@ function handleRefInput(val: string) {
                 <Input
                   v-model="sessionSearch"
                   :placeholder="t('run.searchSessionsPlaceholder')"
-                  class="h-8 pl-8 pr-8 text-xs"
+                  class="pl-8 pr-8"
                 />
                 <button
                   v-if="sessionSearch"
@@ -3905,13 +3905,13 @@ function handleRefInput(val: string) {
                     />
                     <Shield
                       v-if="run.protected"
-                      class="h-3 w-3 text-emerald-500"
+                      class="h-3 w-3 text-success"
                       :stroke-width="2"
                       :aria-label="t('run.protected')"
                     />
                     <Shield
                       v-else-if="isProtectedByConductor(run)"
-                      class="h-3 w-3 text-emerald-500/50"
+                      class="h-3 w-3 text-success/50"
                       :stroke-width="2"
                       :aria-label="t('run.protectedByConductor')"
                       :title="t('run.protectedByConductor')"
@@ -4366,7 +4366,7 @@ function handleRefInput(val: string) {
               <div class="text-center max-w-xs">
                 <Terminal class="h-8 w-8 text-foreground/20 mx-auto mb-3" :stroke-width="1" />
                 <template v-if="currentRunId && currentStatus === 'fetched'">
-                  <p class="text-xs font-medium text-amber-500/80 font-mono mb-1">{{ t('run.notRun') }}</p>
+                  <p class="text-xs font-medium text-warning/80 font-mono mb-1">{{ t('run.notRun') }}</p>
                   <!-- A fresh session needs a typed goal; an issue/PR can Run on its
                        default prompt. -->
                   <p class="text-[11px] text-foreground/40 leading-relaxed">
@@ -4540,14 +4540,17 @@ function handleRefInput(val: string) {
 
               <!-- Footer toolbar: attachments/actions plus compact run settings menu -->
               <div class="flex flex-wrap items-center gap-1.5 px-1.5 pb-1.5">
-                <button
-                  class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="shrink-0"
                   :disabled="sendingFollowUp"
                   :title="t('run.attachFile')"
+                  :aria-label="t('run.attachFile')"
                   @click="onPickFiles"
                 >
                   <Paperclip class="h-4 w-4" :stroke-width="2" />
-                </button>
+                </Button>
                 <SavedPromptPicker
                   v-if="savedPrompts.length"
                   :prompts="savedPrompts"
@@ -4560,13 +4563,16 @@ function handleRefInput(val: string) {
                   @insert="insertCaptureRef"
                   @picked="linkPicked"
                 />
-                <button
-                  class="inline-flex items-center justify-center h-8 w-8 rounded-md text-foreground/60 hover:text-foreground hover:bg-accent transition-colors cursor-pointer disabled:opacity-50 shrink-0"
+                <Button
+                  variant="ghost"
+                  size="icon"
+                  class="shrink-0"
                   :title="composerExpanded ? t('run.collapseComposer') : t('run.expandComposer')"
+                  :aria-label="composerExpanded ? t('run.collapseComposer') : t('run.expandComposer')"
                   @click="toggleComposerExpand"
                 >
                   <component :is="composerExpanded ? Minimize2 : Maximize2" class="h-4 w-4" :stroke-width="2" />
-                </button>
+                </Button>
                 <div
                   ref="runSettingsRoot"
                   class="relative inline-flex shrink-0"
@@ -4575,7 +4581,7 @@ function handleRefInput(val: string) {
                   <Button
                     variant="ghost"
                     size="sm"
-                    class="h-8 gap-1.5 px-2.5 text-foreground/70"
+                    class="px-2.5 text-foreground/70"
                     :title="runSettingsTitle"
                     :aria-label="runSettingsTitle"
                     aria-haspopup="dialog"
@@ -4619,7 +4625,7 @@ function handleRefInput(val: string) {
                             size="sm"
                             :options="modelOptions"
                             :disabled="currentStatus === 'running'"
-                            class="h-8 w-full"
+                            class="w-full"
                             :title="t('run.modelTitle')"
                           >
                             <template #leading>
@@ -4638,7 +4644,7 @@ function handleRefInput(val: string) {
                             size="sm"
                             :options="claudeAccountOptions"
                             :disabled="claudeAccountSelectDisabled"
-                            class="h-8 w-full"
+                            class="w-full"
                             :title="claudeAccountSelectTitle"
                           >
                             <template #leading>
@@ -4656,7 +4662,7 @@ function handleRefInput(val: string) {
                             size="sm"
                             :options="PERMISSION_MODE_OPTIONS"
                             :disabled="currentStatus === 'running'"
-                            class="h-8 w-full"
+                            class="w-full"
                             :title="t('run.permissionModeTitle')"
                           >
                             <template #leading>
@@ -4673,7 +4679,7 @@ function handleRefInput(val: string) {
                   <Button
                     v-if="currentStatus === 'running'"
                     variant="destructive"
-                    class="h-8 shrink-0"
+                    class="shrink-0"
                     :title="t('run.cancelRunningTurn')"
                     @click="handleCancel"
                   >
@@ -4682,9 +4688,9 @@ function handleRefInput(val: string) {
                   </Button>
                   <!-- While running, Cancel is the only action unless there is a
                        follow-up typed — a disabled Send next to it is just noise. -->
-                  <button
+                  <Button
                     v-if="currentStatus !== 'running' || !primaryDisabled"
-                    class="inline-flex items-center justify-center gap-1.5 h-8 px-3.5 text-xs bg-primary text-primary-foreground rounded-md hover:opacity-90 transition-opacity cursor-pointer disabled:opacity-50 shrink-0"
+                    class="shrink-0"
                     :disabled="primaryDisabled"
                     @click="handlePrimaryAction"
                     :title="currentStatus === 'running'
@@ -4697,7 +4703,7 @@ function handleRefInput(val: string) {
                   >
                     <component :is="chatSendLabel === t('run.sendLabelRun') ? Play : Send" class="h-3.5 w-3.5" :stroke-width="2" />
                     {{ chatSendLabel }}
-                  </button>
+                  </Button>
                 </div>
               </div>
             </div>

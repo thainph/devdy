@@ -9,7 +9,7 @@ import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { ChevronRight, Cpu, RefreshCw, Trash2 } from 'lucide-vue-next'
-import { Button, Card } from '@/components/ui'
+import { Button, Card, PageHeader } from '@/components/ui'
 import ProcessEntryRow from '@/components/processes/ProcessEntryRow.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -164,18 +164,9 @@ const sections = computed(() => [
 <template>
   <div class="flex flex-col h-full">
     <!-- Page header -->
-    <div class="flex items-center justify-between px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2">
-        <h1 class="text-sm font-semibold">{{ t('processes.title') }}</h1>
-        <span
-          v-if="totalProcesses > 0"
-          class="flex h-4 min-w-4 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-        >
-          {{ totalProcesses }}
-        </span>
-      </div>
-      <div class="flex items-center gap-2">
-        <Button variant="ghost" size="icon-sm" :title="t('processes.refresh')" :aria-label="t('processes.refresh')" @click="store.refresh()">
+    <PageHeader :title="t('processes.title')" :count="totalProcesses > 0 ? totalProcesses : null">
+      <template #actions>
+        <Button variant="outline" size="icon" :title="t('processes.refresh')" :aria-label="t('processes.refresh')" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
         <Button
@@ -184,14 +175,14 @@ const sections = computed(() => [
           :disabled="bulkBusy"
           @click="stopLeftovers"
         >
-          <Trash2 class="h-3.5 w-3.5" :stroke-width="2" />
+          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('processes.stopAllLeftovers') }}
         </Button>
         <Button v-if="entries.length > 0" variant="outline" :disabled="bulkBusy" @click="stopEverything">
           {{ t('processes.stopAll') }}
         </Button>
-      </div>
-    </div>
+      </template>
+    </PageHeader>
 
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6">
@@ -225,7 +216,7 @@ const sections = computed(() => [
             <template #header>
               <span
                 class="h-2 w-2 shrink-0 rounded-full"
-                :class="s.warn ? 'bg-amber-500' : 'bg-primary'"
+                :class="s.warn ? 'bg-warning' : 'bg-primary'"
               />
               <span class="text-xs font-semibold">{{ s.title }}</span>
               <span class="text-[11px] text-muted-foreground">({{ s.items.length }})</span>

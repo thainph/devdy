@@ -516,11 +516,11 @@ function prettyInput(input: unknown): string {
 // Muted badge colors per diagnostic level — calm, not alarming.
 function logBadgeClass(level: string): string {
   switch (level) {
-    case 'warn': return 'text-amber-600 dark:text-amber-400/90 bg-amber-500/10'
-    case 'error': return 'text-red-600 dark:text-red-400/90 bg-red-500/10'
+    case 'warn': return 'text-warning bg-warning/10'
+    case 'error': return 'text-destructive bg-destructive/10'
     case 'debug':
     case 'trace': return 'text-foreground/40 bg-foreground/5'
-    default: return 'text-sky-600 dark:text-sky-400/90 bg-sky-500/10'
+    default: return 'text-info bg-info/10'
   }
 }
 
@@ -907,7 +907,7 @@ function toolResult(e: StreamEntry): unknown {
         v-else-if="entry.kind === 'tool' && isBash(entry.name)"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
-          ? 'border-border border-l-red-500/70'
+          ? 'border-border border-l-destructive/70'
           : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button
@@ -927,13 +927,13 @@ function toolResult(e: StreamEntry): unknown {
             v-if="bashInfo(entry.input).background"
             class="text-[9px] uppercase tracking-wider text-foreground/40 border border-border rounded px-1 shrink-0"
           >bg</span>
-          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5">
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-destructive shrink-0 flex items-center gap-0.5">
             <XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}
           </span>
-          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5">
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5">
             <CheckCircle2 class="h-3 w-3" :stroke-width="1.75" />
           </span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
           <!-- Real command executed on the machine — terminal look + copy.
@@ -961,7 +961,7 @@ function toolResult(e: StreamEntry): unknown {
             <pre
               v-if="entry.result.content"
               class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto"
-              :class="entry.result.is_error ? 'text-red-600 dark:text-red-300/90' : 'text-foreground/70'"
+              :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'"
             >{{ entry.result.content }}</pre>
             <div v-else class="text-[11px] font-mono text-foreground/30 italic">{{ t('streamLog.noOutput') }}</div>
           </div>
@@ -973,7 +973,7 @@ function toolResult(e: StreamEntry): unknown {
         v-else-if="entry.kind === 'tool' && isEditTool(entry.name)"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
-          ? 'border-border border-l-red-500/70'
+          ? 'border-border border-l-destructive/70'
           : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button
@@ -994,7 +994,7 @@ function toolResult(e: StreamEntry): unknown {
           <span class="text-xs font-mono font-semibold shrink-0" :class="toolStyle(entry.name).nameClass">{{ entry.name }}</span>
           <span
             v-if="fileTarget(entry.input)"
-            class="text-[11px] font-mono text-sky-600 dark:text-sky-400/90 truncate underline decoration-dotted underline-offset-2 hover:text-sky-500 cursor-pointer"
+            class="text-[11px] font-mono text-info/90 truncate underline decoration-dotted underline-offset-2 hover:text-info cursor-pointer"
             :title="t('streamLog.openFile', { path: fileTarget(entry.input) })"
             role="button"
             @click.stop="emit('open-file', fileTarget(entry.input)!)"
@@ -1013,13 +1013,13 @@ function toolResult(e: StreamEntry): unknown {
             <span v-if="editStats(entry.name, entry.input).added" class="text-emerald-600 dark:text-emerald-400/80">+{{ editStats(entry.name, entry.input).added }}</span>
             <span v-if="editStats(entry.name, entry.input).removed" class="text-red-600 dark:text-red-400/80">−{{ editStats(entry.name, entry.input).removed }}</span>
           </span>
-          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5">
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-destructive shrink-0 flex items-center gap-0.5">
             <XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}
           </span>
-          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5">
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5">
             <CheckCircle2 class="h-3 w-3" :stroke-width="1.75" />
           </span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border p-2 space-y-2">
           <template v-for="(part, pi) in editParts(entry.name, entry.input)" :key="pi">
@@ -1027,7 +1027,7 @@ function toolResult(e: StreamEntry): unknown {
                  A single-file call already names it in the header. -->
             <div
               v-if="part.path && extraFileCount(entry.input) && part.path !== editParts(entry.name, entry.input)[pi - 1]?.path"
-              class="px-1 pt-1 text-[11px] font-mono text-sky-600 dark:text-sky-400/90 truncate underline decoration-dotted underline-offset-2 hover:text-sky-500 cursor-pointer"
+              class="px-1 pt-1 text-[11px] font-mono text-info/90 truncate underline decoration-dotted underline-offset-2 hover:text-info cursor-pointer"
               :title="t('streamLog.openFile', { path: part.path })"
               role="button"
               @click="emit('open-file', part.path!)"
@@ -1036,7 +1036,7 @@ function toolResult(e: StreamEntry): unknown {
           </template>
           <div v-if="entry.result?.is_error" class="px-1">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ t('streamLog.error') }}</div>
-            <pre class="text-[11px] font-mono text-red-600 dark:text-red-300/90 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ entry.result.content }}</pre>
+            <pre class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ entry.result.content }}</pre>
           </div>
         </div>
       </div>
@@ -1045,16 +1045,16 @@ function toolResult(e: StreamEntry): unknown {
       <div
         v-else-if="entry.kind === 'tool' && isAgentTool(entry.name)"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
-        :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
+        :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <Bot class="h-3.5 w-3.5 shrink-0 text-fuchsia-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-fuchsia-600 dark:text-fuchsia-300">{{ agentInfo(entry.input).subagent || t('streamLog.agent') }}</span>
           <span class="text-[11px] text-foreground/60 truncate">{{ agentInfo(entry.input).description }}</span>
-          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}</span>
-          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-destructive shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}</span>
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
           <div v-if="agentInfo(entry.input).prompt" class="px-3 py-2 bg-black/20 dark:bg-black/25">
@@ -1070,7 +1070,7 @@ function toolResult(e: StreamEntry): unknown {
               class="markdown-output text-sm leading-relaxed text-foreground"
               @click="onProseClick"
             />
-            <pre v-else class="text-[11px] font-mono text-red-600 dark:text-red-300/90 whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ entry.result.content }}</pre>
+            <pre v-else class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ entry.result.content }}</pre>
           </div>
         </div>
       </div>
@@ -1079,15 +1079,15 @@ function toolResult(e: StreamEntry): unknown {
       <div
         v-else-if="entry.kind === 'tool' && isAskUserTool(entry.name)"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
-        :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
+        :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <MessageCircleQuestion class="h-3.5 w-3.5 shrink-0 text-blue-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-blue-600 dark:text-blue-300">{{ t('streamLog.question') }}</span>
           <span class="text-[11px] text-foreground/60 truncate">{{ askQuestions(entry.input)[0]?.question }}</span>
-          <span v-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">{{ t('streamLog.waiting') }}</span>
+          <span v-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.waiting') }}</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border px-3 py-2 space-y-3">
           <div v-for="(q, qi) in askQuestions(entry.input)" :key="qi" class="space-y-1.5">
@@ -1099,7 +1099,7 @@ function toolResult(e: StreamEntry): unknown {
           </div>
           <div v-if="entry.result" class="pt-1 border-t border-border">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1 mt-2">{{ t('streamLog.answer') }}</div>
-            <pre class="text-[11px] font-mono text-emerald-700 dark:text-emerald-300/90 whitespace-pre-wrap break-words">{{ entry.result.content }}</pre>
+            <pre class="text-[11px] font-mono text-success whitespace-pre-wrap break-words">{{ entry.result.content }}</pre>
           </div>
         </div>
       </div>
@@ -1118,9 +1118,9 @@ function toolResult(e: StreamEntry): unknown {
           <span class="text-[11px] text-foreground/45 truncate">{{ todoItems(entry.input).find((t) => t.status === 'in_progress')?.content }}</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border px-3 py-2 space-y-1">
-          <div v-for="(t, ti) in todoItems(entry.input)" :key="ti" class="flex items-start gap-2 text-[12px]">
-            <CheckCircle2 v-if="t.status === 'completed'" class="h-3.5 w-3.5 mt-0.5 shrink-0 text-emerald-500" :stroke-width="1.75" />
-            <CircleDot v-else-if="t.status === 'in_progress'" class="h-3.5 w-3.5 mt-0.5 shrink-0 text-amber-500 animate-pulse" :stroke-width="1.75" />
+          <div v-for="(t, ti) in todoItems(entry.input)" :key="ti" class="flex items-start gap-2 text-xs">
+            <CheckCircle2 v-if="t.status === 'completed'" class="h-3.5 w-3.5 mt-0.5 shrink-0 text-success" :stroke-width="1.75" />
+            <CircleDot v-else-if="t.status === 'in_progress'" class="h-3.5 w-3.5 mt-0.5 shrink-0 text-warning animate-pulse" :stroke-width="1.75" />
             <Circle v-else class="h-3.5 w-3.5 mt-0.5 shrink-0 text-foreground/30" :stroke-width="1.75" />
             <span :class="{
               'line-through text-foreground/40': t.status === 'completed',
@@ -1135,21 +1135,21 @@ function toolResult(e: StreamEntry): unknown {
       <div
         v-else-if="entry.kind === 'tool' && isToolSearchTool(entry.name)"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
-        :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
+        :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <Search class="h-3.5 w-3.5 shrink-0 text-teal-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-teal-600 dark:text-teal-300">{{ t('streamLog.toolSearch') }}</span>
           <span class="text-[11px] font-mono text-foreground/50 truncate">{{ toolSearchQuery(entry.input) }}</span>
-          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}</span>
-          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">{{ t('streamLog.searching') }}</span>
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-destructive shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}</span>
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.searching') }}</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
           <div v-if="entry.result" class="px-3 py-2">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ entry.result.is_error ? t('streamLog.error') : t('streamLog.matches') }}</div>
-            <pre class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto" :class="entry.result.is_error ? 'text-red-600 dark:text-red-300/90' : 'text-foreground/70'">{{ entry.result.content }}</pre>
+            <pre class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto" :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'">{{ entry.result.content }}</pre>
           </div>
         </div>
       </div>
@@ -1158,16 +1158,16 @@ function toolResult(e: StreamEntry): unknown {
       <div
         v-else-if="entry.kind === 'tool' && isWebTool(entry.name)"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
-        :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
+        :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
           <Globe class="h-3.5 w-3.5 shrink-0 text-cyan-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-cyan-600 dark:text-cyan-300">{{ entry.name.toLowerCase() === 'websearch' ? t('streamLog.webSearch') : t('streamLog.webFetch') }}</span>
           <span class="text-[11px] font-mono text-foreground/50 truncate">{{ previewInput(entry.input) }}</span>
-          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}</span>
-          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">{{ t('streamLog.loading') }}</span>
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-destructive shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />{{ t('streamLog.error') }}</span>
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.loading') }}</span>
         </button>
         <div v-if="expanded[i] && entry.result" class="border-t border-border px-3 py-2">
           <div
@@ -1177,7 +1177,7 @@ function toolResult(e: StreamEntry): unknown {
             class="markdown-output text-sm leading-relaxed text-foreground max-h-[32rem] overflow-auto"
             @click="onProseClick"
           />
-          <pre v-else class="text-[11px] font-mono text-red-600 dark:text-red-300/90 whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ entry.result.content }}</pre>
+          <pre v-else class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ entry.result.content }}</pre>
         </div>
       </div>
 
@@ -1207,7 +1207,7 @@ function toolResult(e: StreamEntry): unknown {
       <div
         v-else-if="entry.kind === 'tool' && isMcpTool(entry.name)"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
-        :class="entry.result?.is_error ? 'border-border border-l-red-500/70' : ['border-border', toolStyle(entry.name).barClass]"
+        :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
           <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
@@ -1218,9 +1218,9 @@ function toolResult(e: StreamEntry): unknown {
           </span>
           <span class="text-xs text-foreground/80 truncate">{{ mcpActionLabel(entry) }}</span>
           <span v-if="mcpSummary(entry)" class="text-[11px] text-foreground/45 truncate">{{ mcpSummary(entry) }}</span>
-          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />denied</span>
-          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">waiting…</span>
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-destructive shrink-0 flex items-center gap-0.5"><XCircle class="h-3 w-3" :stroke-width="1.75" />denied</span>
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">waiting…</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
           <div class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-2 bg-black/20 dark:bg-black/25 text-[11px]">
@@ -1241,7 +1241,7 @@ function toolResult(e: StreamEntry): unknown {
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ entry.result.is_error ? 'status' : 'output' }}</div>
             <pre
               class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto"
-              :class="entry.result.is_error ? 'text-red-600 dark:text-red-300/90' : 'text-foreground/70'"
+              :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'"
             >{{ entry.result.content }}</pre>
           </div>
         </div>
@@ -1252,7 +1252,7 @@ function toolResult(e: StreamEntry): unknown {
         v-else-if="entry.kind === 'tool'"
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error
-          ? 'border-border border-l-red-500/70'
+          ? 'border-border border-l-destructive/70'
           : ['border-border', toolStyle(entry.name).barClass]"
       >
         <button
@@ -1274,19 +1274,19 @@ function toolResult(e: StreamEntry): unknown {
           <!-- File-based tool: the path is clickable to preview the file. -->
           <span
             v-if="fileTarget(entry.input)"
-            class="text-[11px] font-mono text-sky-600 dark:text-sky-400/90 truncate underline decoration-dotted underline-offset-2 hover:text-sky-500 cursor-pointer"
+            class="text-[11px] font-mono text-info/90 truncate underline decoration-dotted underline-offset-2 hover:text-info cursor-pointer"
             :title="'Open ' + fileTarget(entry.input)"
             role="button"
             @click.stop="emit('open-file', fileTarget(entry.input)!)"
           >{{ fileTarget(entry.input) }}</span>
           <span v-else class="text-[11px] font-mono text-foreground/40 truncate">{{ previewInput(entry.input) }}</span>
-          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-red-500 dark:text-red-400 shrink-0 flex items-center gap-0.5">
+          <span v-if="entry.result?.is_error" class="ml-auto text-[10px] text-destructive shrink-0 flex items-center gap-0.5">
             <XCircle class="h-3 w-3" :stroke-width="1.75" />error
           </span>
-          <span v-else-if="entry.result" class="ml-auto text-[10px] text-emerald-600/80 dark:text-emerald-400/70 shrink-0 flex items-center gap-0.5">
+          <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5">
             <CheckCircle2 class="h-3 w-3" :stroke-width="1.75" />
           </span>
-          <span v-else class="ml-auto text-[10px] text-amber-500/80 dark:text-amber-400/70 animate-pulse shrink-0">running…</span>
+          <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">running…</span>
         </button>
         <div v-if="expanded[i]" class="border-t border-border">
           <div class="px-3 py-2 bg-black/20 dark:bg-black/25">
@@ -1299,7 +1299,7 @@ function toolResult(e: StreamEntry): unknown {
             </div>
             <pre
               class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto"
-              :class="entry.result.is_error ? 'text-red-600 dark:text-red-300/90' : 'text-foreground/70'"
+              :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'"
             >{{ entry.result.content }}</pre>
           </div>
         </div>
@@ -1312,12 +1312,12 @@ function toolResult(e: StreamEntry): unknown {
         v-else-if="entry.kind === 'result' && (entry.is_error || entry.text)"
         class="mt-2 rounded-md border p-3"
         :class="entry.is_error
-          ? 'border-red-500/30 bg-red-500/5'
-          : 'border-emerald-500/20 bg-emerald-500/5'"
+          ? 'border-destructive/30 bg-destructive/5'
+          : 'border-success/20 bg-success/5'"
       >
         <div v-if="entry.is_error" class="flex items-center gap-2 mb-2">
-          <component :is="XCircle" class="h-4 w-4 text-red-400" :stroke-width="2" />
-          <span class="text-xs font-medium text-red-300">Failed</span>
+          <component :is="XCircle" class="h-4 w-4 text-destructive" :stroke-width="2" />
+          <span class="text-xs font-medium text-destructive">Failed</span>
           <div class="ml-auto flex items-center gap-3 text-[10px] font-mono text-foreground/40">
             <span v-if="entry.duration_ms">{{ formatDuration(entry.duration_ms) }}</span>
             <span v-if="entry.num_turns">{{ entry.num_turns }} turns</span>
@@ -1352,7 +1352,7 @@ function toolResult(e: StreamEntry): unknown {
       <!-- stderr line -->
       <div
         v-else-if="entry.kind === 'error'"
-        class="flex items-start gap-2 text-xs font-mono text-amber-600 dark:text-amber-400/90"
+        class="flex items-start gap-2 text-xs font-mono text-warning"
       >
         <AlertTriangle class="h-3 w-3 mt-0.5 shrink-0" :stroke-width="1.75" />
         <span class="whitespace-pre-wrap">{{ entry.text }}</span>

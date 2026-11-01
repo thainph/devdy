@@ -208,25 +208,25 @@ onMounted(async () => {
   <Modal :open="true" :title="heading" size="xl" scroll-body :dismiss-on-overlay="false" @close="cancel">
     <div class="flex flex-col h-[60vh]">
       <div class="flex items-center gap-1.5 border-b border-border px-3 py-2">
-        <Button variant="ghost" size="icon-sm" :title="t('remoteFiles.up')" :disabled="!parentDir(dir)" @click="goUp">
-          <ArrowUp class="h-4 w-4" />
+        <Button variant="ghost" size="icon" :title="t('remoteFiles.up')" :aria-label="t('remoteFiles.up')" :disabled="!parentDir(dir)" @click="goUp">
+          <ArrowUp class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-        <Button variant="ghost" size="icon-sm" :title="t('remoteFiles.home')" @click="goHome">
-          <Home class="h-4 w-4" />
+        <Button variant="ghost" size="icon" :title="t('remoteFiles.home')" :aria-label="t('remoteFiles.home')" @click="goHome">
+          <Home class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-        <Button variant="ghost" size="icon-sm" :title="t('common.refresh')" :disabled="!dir" @click="navigate(dir)">
-          <RefreshCw class="h-4 w-4" :class="loading && 'animate-spin'" />
+        <Button variant="ghost" size="icon" :title="t('common.refresh')" :aria-label="t('common.refresh')" :disabled="!dir" @click="navigate(dir)">
+          <RefreshCw class="h-3.5 w-3.5" :class="loading && 'animate-spin'" :stroke-width="1.75" />
         </Button>
         <Input
           v-model="pathInput"
-          class="flex-1 font-mono text-xs"
+          class="flex-1 font-mono"
           spellcheck="false"
           @keydown.enter="navigate(pathInput.trim())"
         />
       </div>
       <p class="px-3 pt-2 text-[11px] text-muted-foreground">{{ t('remoteFiles.hint') }}</p>
       <p v-if="error" class="px-3 pt-1 text-xs text-destructive break-all">{{ error }}</p>
-      <p v-else-if="truncated" class="px-3 pt-1 text-[11px] text-amber-500">
+      <p v-else-if="truncated" class="px-3 pt-1 text-[11px] text-warning">
         {{ t('remoteFiles.truncated', { count: entries.length }) }}
       </p>
       <div ref="listEl" class="flex-1 min-h-0 overflow-auto px-1.5 py-1.5">
@@ -269,9 +269,9 @@ onMounted(async () => {
           size="sm"
           class="w-56 shrink-0"
         />
-        <span v-if="existingSaveTarget" class="text-[11px] text-amber-500 shrink-0">{{ t('remoteFiles.willReplace') }}</span>
+        <span v-if="existingSaveTarget" class="text-[11px] text-warning shrink-0">{{ t('remoteFiles.willReplace') }}</span>
       </div>
-      <Button variant="outline" @click="cancel">{{ mode === 'browse' ? t('common.close') : t('common.cancel') }}</Button>
+      <Button variant="ghost" @click="cancel">{{ mode === 'browse' ? t('common.close') : t('common.cancel') }}</Button>
       <Button :disabled="!canConfirm" @click="confirm">
         <Download v-if="mode === 'browse'" class="h-3.5 w-3.5" />
         {{ confirmLabel }}

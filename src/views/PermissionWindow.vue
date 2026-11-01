@@ -13,6 +13,7 @@ import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Pin, PinOff, Inbox } from 'lucide-vue-next'
+import { Button } from '@/components/ui'
 // The main window owns the popped-out state and listens to this window's
 // 'tauri://destroyed' lifecycle event to re-dock, so this window doesn't need
 // to announce its own close.
@@ -141,15 +142,17 @@ async function togglePin() {
           {{ session.name }}
         </span>
       </div>
-      <button
-        type="button"
-        class="ml-auto shrink-0 flex items-center gap-1 rounded px-1.5 py-1 text-[11px] text-foreground/60 hover:bg-accent/60 hover:text-foreground transition-colors cursor-pointer"
+      <Button
+        :variant="pinned ? 'primary' : 'outline'"
+        size="xs"
+        class="ml-auto shrink-0"
+        :aria-pressed="pinned"
         :title="pinned ? t('permission.window.pinnedTitle') : t('permission.window.pinTitle')"
         @click="togglePin"
       >
-        <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <component :is="pinned ? Pin : PinOff" class="h-3 w-3" :stroke-width="1.75" />
         {{ pinned ? t('permission.window.pinned') : t('permission.window.pin') }}
-      </button>
+      </Button>
     </div>
 
     <!-- Pending request → the shared prompt; empty → waiting state. -->

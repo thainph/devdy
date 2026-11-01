@@ -5,7 +5,7 @@
 // Inbox; here they can only be removed.
 import { onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Card } from '@/components/ui'
+import { Button, Card } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
 import { BellRing, Loader2, Send, Smartphone, Trash2 } from 'lucide-vue-next'
@@ -154,23 +154,27 @@ function fmtTime(ts: string | null): string {
                 {{ t('remote.push.lastOk', { at: fmtTime(d.last_ok_at) }) }}
               </p>
             </div>
-            <button
-              class="p-1 rounded-md text-muted-foreground hover:text-foreground hover:bg-accent transition-colors disabled:opacity-40"
+            <Button
+              variant="ghost"
+              size="icon-sm"
               :title="t('remote.push.test')"
+              :aria-label="t('remote.push.test')"
               :disabled="busyId === d.id"
               @click="test(d)"
             >
               <Loader2 v-if="busyId === d.id" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
               <Send v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
-            <button
-              class="p-1 rounded-md text-muted-foreground hover:text-destructive hover:bg-destructive/10 transition-colors disabled:opacity-40"
+            </Button>
+            <Button
+              variant="destructive-ghost"
+              size="icon-sm"
               :title="t('remote.push.remove')"
+              :aria-label="t('remote.push.remove')"
               :disabled="busyId === d.id"
               @click="remove(d)"
             >
               <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </button>
+            </Button>
           </li>
         </ul>
       </div>

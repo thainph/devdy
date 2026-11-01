@@ -35,7 +35,7 @@ const hasWarning = computed(
   </span>
   <span
     v-else-if="hasWarning"
-    class="h-2 w-2 shrink-0 rounded-full bg-amber-500"
+    class="h-2 w-2 shrink-0 rounded-full bg-warning"
     :title="thread.warnings.map(warningText).join('\n')"
   />
 </template>

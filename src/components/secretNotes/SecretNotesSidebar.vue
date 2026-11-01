@@ -168,11 +168,11 @@ const groups = computed(() => {
       <!-- Notes of another vault (backup import): merge with its password. -->
       <form
         v-if="legacyCount"
-        class="mb-2 space-y-1.5 rounded-md border border-amber-500/30 bg-amber-500/10 px-2 py-1.5"
+        class="mb-2 space-y-1.5 rounded-md border border-warning/30 bg-warning/10 px-2 py-1.5"
         @submit.prevent="emit('merge')"
       >
         <p class="flex items-start gap-1.5 text-[11px] text-foreground">
-          <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0 text-amber-600 dark:text-amber-400" :stroke-width="2" />
+          <AlertCircle class="mt-px h-3.5 w-3.5 shrink-0 text-warning" :stroke-width="2" />
           <span class="min-w-0 flex-1 break-words">{{ t('secretNotes.merge.help', { n: legacyCount }) }}</span>
         </p>
         <div class="flex items-center gap-1.5">
@@ -180,7 +180,7 @@ const groups = computed(() => {
             v-model="mergePassword"
             type="password"
             autocomplete="off"
-            class="h-7"
+            size="xs"
             :placeholder="t('secretNotes.merge.password')"
           />
           <Button type="submit" size="xs" class="shrink-0" :disabled="merging || !mergePassword">

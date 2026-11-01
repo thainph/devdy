@@ -28,7 +28,7 @@ import {
   Trash2,
   X,
 } from 'lucide-vue-next'
-import { AppSelect, Button, Input } from '@/components/ui'
+import { AppSelect, Button, Input, SegmentedControl } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { formatDate, ymdToDate } from '@/lib/dateValue'
 import { dueStatus, localYmd } from '@/lib/todoDue'
@@ -86,7 +86,7 @@ const dueBadges = computed(() => {
       title: t('item.dueOn', { date: formatDate(d, locale.value, { dateStyle: 'full' }) }),
       tone:
         status === 'overdue' ? 'bg-destructive/15 font-medium text-destructive'
-        : status === 'today' || status === 'soon' ? 'bg-amber-500/15 font-medium text-amber-600 dark:text-amber-400'
+        : status === 'today' || status === 'soon' ? 'bg-warning/15 font-medium text-warning'
         : 'text-muted-foreground',
     }
   }
@@ -210,25 +210,11 @@ const groups = computed(() => {
           {{ t('common.new') }}
         </Button>
       </div>
-      <div
-        class="flex rounded-md bg-muted p-0.5 text-[11px] font-medium"
-        role="group"
+      <SegmentedControl
+        v-model="filter"
+        :options="FILTERS"
         :aria-label="kind === 'note' ? t('item.filterLinkedTitle') : t('item.filterStatusTitle')"
-      >
-        <button
-          v-for="f in FILTERS"
-          :key="f.value"
-          type="button"
-          class="flex flex-1 cursor-pointer items-center justify-center rounded px-2 py-1 transition-colors"
-          :class="filter === f.value
-            ? 'bg-background text-foreground shadow-sm'
-            : 'text-muted-foreground hover:text-foreground'"
-          :aria-pressed="filter === f.value"
-          @click="filter = f.value"
-        >
-          {{ f.label }}
-        </button>
-      </div>
+      />
     </div>
 
     <!-- Groups -->

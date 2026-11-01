@@ -53,7 +53,7 @@ const visible = computed(() => TABS.filter((item) => !props.hidden?.includes(ite
         <component :is="item.icon" class="h-5 w-5" :stroke-width="2" />
         <span
           v-if="item.id === 'inbox' && inboxCount > 0"
-          class="absolute -top-1.5 -right-2.5 min-w-4 h-4 px-1 rounded-full bg-amber-500 text-[10px] leading-4 text-white text-center"
+          class="absolute -top-1.5 -right-2.5 min-w-4 h-4 px-1 rounded-full bg-warning text-[10px] leading-4 text-white text-center"
         >
           {{ inboxCount > 99 ? '99+' : inboxCount }}
         </span>

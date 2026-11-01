@@ -34,10 +34,10 @@ const isWarn = computed(() => percent.value >= WARN_PERCENT)
 const isOver = computed(() => ratio.value >= 1)
 
 const barClass = computed(() =>
-  isOver.value ? 'bg-red-500' : isWarn.value ? 'bg-amber-500' : 'bg-primary/70',
+  isOver.value ? 'bg-destructive' : isWarn.value ? 'bg-warning' : 'bg-primary/70',
 )
 const textClass = computed(() =>
-  isOver.value ? 'text-red-500' : isWarn.value ? 'text-amber-500' : 'text-muted-foreground',
+  isOver.value ? 'text-destructive' : isWarn.value ? 'text-warning' : 'text-muted-foreground',
 )
 
 // claude.ai 5-hour usage window, shown as a secondary hint when available.
