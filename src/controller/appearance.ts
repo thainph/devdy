@@ -37,7 +37,7 @@ export const appearanceOverride = readonly(override)
 function setDark(dark: boolean): void {
   const root = document.documentElement
   root.classList.toggle('dark', dark)
-  // Status-bar / browser chrome color follows the page background (main.css
+  // Status-bar / browser chrome color follows the page background (base.css
   // stores it as bare `H S% L%` channels).
   const bg = getComputedStyle(root).getPropertyValue('--background').trim()
   const meta = document.querySelector<HTMLMetaElement>('meta[name="theme-color"]')

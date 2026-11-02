@@ -8,7 +8,7 @@ import { fileURLToPath } from 'node:url'
 import { COLOR_THEME_DEFS, COLOR_THEME_GROUPS, COLOR_THEMES, colorThemeLabelKey, colorThemesIn } from '../colorThemes.ts'
 
 const src = fileURLToPath(new URL('../../', import.meta.url))
-const mainCss = readFileSync(`${src}assets/main.css`, 'utf8')
+const mainCss = readFileSync(`${src}assets/base.css`, 'utf8')
 
 test('ids are unique and default comes first', () => {
   assert.equal(new Set(COLOR_THEMES).size, COLOR_THEMES.length)

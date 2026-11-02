@@ -1,0 +1,13 @@
+/* The phone Controller's stylesheet: the app's theme tokens and base styles,
+ * but Tailwind utilities generated only from what the Controller renders —
+ * its own screens plus the shared components and helpers it imports — instead
+ * of every desktop view. A shared component newly used here must be added. */
+@import "tailwindcss" source(none);
+@source "./";
+@source "../components/StreamLog.vue";
+@source "../components/DiffView.vue";
+@source "../components/IdeContextChip.vue";
+@source "../components/AppSelect.vue";
+@source "../components/ui";
+@source "../lib";
+@import "../assets/base.css";
