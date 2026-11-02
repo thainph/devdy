@@ -214,6 +214,9 @@
     "gone": "Note này đã bị xoá."
   },
   "projectToggles": {
+    "accounts": "Tài khoản",
+    "noAccounts": "Chưa có tài khoản nào.",
+    "connection": "Kết nối",
     "title": "Setting",
     "selectProject": "Chọn project",
     "noProjects": "Host chưa có project nào.",
@@ -237,8 +240,23 @@
     "claudeFollowDefault": "Đang dùng account mặc định ({name}).",
     "claudeFollowDefaultNone": "Đang dùng cấu hình Claude mặc định."
   },
+  "settingsMenu": {
+    "project": "Dự án",
+    "projectNamed": "Dự án · {name}",
+    "device": "Thiết bị này"
+  },
   "push": {
     "title": "Thông báo",
+    "statusOn": "Đang bật",
+    "statusOff": "Đang tắt",
+    "receive": "Nhận thông báo trên thiết bị này",
+    "sendsTitle": "Máy tính gửi thông báo khi có",
+    "kindsHint": "Bật / tắt từng loại trên máy tính.",
+    "kindRows": {
+      "pending": "Việc cần duyệt",
+      "done": "Phiên đã xong",
+      "failed": "Phiên bị lỗi"
+    },
     "state": {
       "on": "Đang bật — điện thoại sẽ báo khi có việc cần duyệt hoặc phiên chạy xong.",
       "off": "Đang tắt — bật để nhận thông báo cả khi khoá máy.",
@@ -252,17 +270,8 @@
       "add": "Chọn “Thêm vào MH chính”",
       "open": "Mở Devdy từ Màn hình chính, đăng nhập rồi bật thông báo tại đây"
     },
-    "kinds": {
-      "pending": "việc cần duyệt",
-      "done": "phiên đã xong",
-      "failed": "phiên bị lỗi"
-    },
-    "sends": "Máy tính đang gửi: {kinds}",
     "privacy": "Thông báo chỉ chứa số lượng — không có lệnh, tên tool hay project.",
-    "enable": "Bật thông báo",
-    "disable": "Tắt",
     "sendTest": "Gửi thử",
-    "close": "Đóng",
     "test": {
       "sent": "Đã gửi — thông báo sẽ đến trong giây lát.",
       "failed": "Không gửi được thông báo thử."
@@ -280,7 +289,6 @@
     "mode": "Chế độ",
     "followHost": "Giống máy tính",
     "followHostValue": "Giống máy tính ({value})",
-    "hint": "Chỉ đổi trên thiết bị này — máy tính vẫn giữ giao diện của nó.",
-    "close": "Đóng"
+    "hint": "Chỉ đổi trên thiết bị này — máy tính vẫn giữ giao diện của nó."
   }
 }

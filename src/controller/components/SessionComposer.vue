@@ -62,6 +62,9 @@ const props = withDefaults(
     sending?: boolean
     /** True when the connection isn't ready (disables everything). */
     disabled?: boolean
+    /** Where the unsent text is kept on this device (per run), so a page
+     * reload does not lose it; null keeps it in memory only. */
+    draftKey?: string | null
   }>(),
   {
     slashCommands: () => [],
@@ -75,6 +78,7 @@ const props = withDefaults(
     running: false,
     sending: false,
     disabled: false,
+    draftKey: null,
   },
 )
 
@@ -93,6 +97,37 @@ const MENTION_LIMIT = 50
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 const text = ref('')
+
+// The unsent text survives a reload (the browser may reload a backgrounded or
+// memory-starved page) and switching runs: one entry per run, dropped once
+// sent or cleared.
+const DRAFT_PREFIX = 'devdy.controller.draft:'
+function readDraft(key: string | null): string {
+  if (!key) return ''
+  try {
+    return localStorage.getItem(DRAFT_PREFIX + key) ?? ''
+  } catch {
+    return ''
+  }
+}
+function writeDraft(key: string | null, value: string): void {
+  if (!key) return
+  try {
+    if (value) localStorage.setItem(DRAFT_PREFIX + key, value)
+    else localStorage.removeItem(DRAFT_PREFIX + key)
+  } catch {
+    // Storage unavailable: the draft lives in memory only.
+  }
+}
+watch(
+  () => props.draftKey,
+  (key) => {
+    text.value = readDraft(key)
+    nextTick(autoResize)
+  },
+  { immediate: true },
+)
+watch(text, (value) => writeDraft(props.draftKey, value))
 const composerEl = ref<HTMLTextAreaElement | null>(null)
 const fileInputEl = ref<HTMLInputElement | null>(null)
 
