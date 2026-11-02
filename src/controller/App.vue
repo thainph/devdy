@@ -31,9 +31,10 @@ import ConnectionBadge from './components/ConnectionBadge.vue'
 import SettingsMenuView from './components/SettingsMenuView.vue'
 import PushSettingsView from './components/PushSettingsView.vue'
 import ThemeSettingsView from './components/ThemeSettingsView.vue'
-import { AppSelect } from '@/components/ui'
 import { ChevronLeft } from 'lucide-vue-next'
 import { isToggleGroup, type SettingsPage } from './settingsMenu'
+import ProjectPickerSheet from './components/ProjectPickerSheet.vue'
+import { concreteProject, rememberProject, validScope } from '@/lib/controllerProjectScope'
 import { createDataStore } from './dataStore'
 import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
@@ -99,8 +100,44 @@ const push = createPushStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck)
 const noteEditorOpen = ref(false)
 // The todo editor: closed (null), a new todo (`todo: null`) or an existing one.
 const todoEditor = ref<{ todo: TodoInfo | null; today: string } | null>(null)
-// The Todo tab's filter, search and Active / Done switch, kept across the editor.
-const todoProjectId = ref('')
+// ── shared project scope ─────────────────────────────────────────────────────
+// One project (null = all) that Sessions, Todo, Notes and Setting follow,
+// picked from the header title or Setting's Project row, kept on this device
+// with the recently used ones (`@/lib/controllerProjectScope`).
+const SCOPE_KEY = 'devdy.controller.projectScope'
+const RECENT_KEY = 'devdy.controller.recentProjects'
+function readStored(key: string): unknown {
+  try {
+    const raw = localStorage.getItem(key)
+    return raw ? JSON.parse(raw) : null
+  } catch {
+    return null
+  }
+}
+function writeStored(key: string, value: unknown): void {
+  try {
+    localStorage.setItem(key, JSON.stringify(value))
+  } catch {
+    // Storage unavailable: the scope lasts for this visit only.
+  }
+}
+const storedScope = ref<string | null>(((v) => (typeof v === 'string' ? v : null))(readStored(SCOPE_KEY)))
+const recentProjects = ref<string[]>(
+  ((v) => (Array.isArray(v) ? v.filter((x): x is string => typeof x === 'string') : []))(readStored(RECENT_KEY)),
+)
+const projectScope = computed(() => validScope(store.state.projectList, storedScope.value))
+/** The project the Setting switches work on (they need one, never "all"). */
+const settingsProjectId = computed(() =>
+  concreteProject(store.state.projectList, projectScope.value, recentProjects.value),
+)
+const pickerOpen = ref(false)
+
+// The Todo tab's search and Active / Done switch, kept across the editor; its
+// project is the shared scope ('' = all).
+const todoProjectId = computed<string>({
+  get: () => projectScope.value ?? '',
+  set: (id) => setScope(id || null),
+})
 const todoTab = ref<TodoTab>('active')
 const todoQuery = ref('')
 const toggleProjectId = ref<string | null>(null)
@@ -515,15 +552,18 @@ function onTab(next: ControllerTab): void {
   // Leaving the tab, or tapping Setting again, lands back on its menu.
   settingsPage.value = null
   tab.value = next
+  // The run browser keeps its own project while a run is open; a tab switch
+  // brings it back to the shared scope.
+  if (next === 'runs') browserProjectId.value = projectScope.value
   closeNoteEditor()
   if (next === 'inbox') syncInbox()
   else if (next === 'runs') refreshRuns()
 }
 
 // ── tab header ──────────────────────────────────────────────────────────────
-// One header for every tab: title and connection state; Sessions / Todo /
-// Notes and the Setting menu's project screens add a project dropdown. A
-// Setting screen adds Back to its menu.
+// One header for every tab: title and connection state; on Sessions / Todo /
+// Notes and the Setting project screens the title also names the project and
+// opens the project picker. A Setting screen adds Back to its menu.
 const TAB_TITLES: Record<ControllerTab, string> = {
   inbox: 'controller.inbox.title',
   runs: 'controller.browser.title',
@@ -551,50 +591,47 @@ function openSettingsPage(page: SettingsPage): void {
   settingsPage.value = page
 }
 
-// The Setting menu shows the picked project's name and "on / total" counts:
-// land on the first project, and fetch its switches when they are not in.
+// The Setting screens follow the shared scope (or, on "all", the most
+// recently used project): fetch its switches when they are not in.
 watch(
-  () => [tab.value === 'project' && hasData.value, store.state.projectList] as const,
-  ([on, projects]) => {
-    if (!on) return
-    const pid = toggleProjectId.value
-    if (!pid) {
-      if (projects.length) selectToggleProject(projects[0].id)
-    } else if (data.state.toggles?.project_id !== pid) {
-      data.loadToggles(pid)
-    }
+  () => [tab.value === 'project' && hasData.value, settingsProjectId.value] as const,
+  ([on, pid]) => {
+    if (!on || !pid) return
+    if (toggleProjectId.value !== pid || data.state.toggles?.project_id !== pid) selectToggleProject(pid)
   },
+  { immediate: true },
 )
 
-const projectFilterOptions = computed(() => [
-  { value: '', label: t('controller.data.allProjects') },
-  ...store.state.projectList.map((p) => ({ value: p.id, label: p.name })),
-])
-/** The header dropdown of the current tab ('' = every project). */
-const headerProjectId = computed<string>({
-  get: () => {
-    if (tab.value === 'runs') return browserProjectId.value ?? ''
-    if (tab.value === 'todo') return todoProjectId.value
-    if (tab.value === 'note') return data.state.noteFilter.projectId ?? ''
-    if (tab.value === 'project') return toggleProjectId.value ?? ''
-    return ''
-  },
-  set: (id) => {
-    if (tab.value === 'runs') browserProjectId.value = id || null
-    else if (tab.value === 'todo') todoProjectId.value = id
-    else if (tab.value === 'note') data.loadNotes(id || null, data.state.noteFilter.query)
-    else if (tab.value === 'project' && id) selectToggleProject(id)
-  },
+/** Pick the shared project (null = all) and apply it to the open tab. */
+function setScope(id: string | null): void {
+  storedScope.value = id
+  writeStored(SCOPE_KEY, id)
+  if (id) {
+    recentProjects.value = rememberProject(recentProjects.value, id)
+    writeStored(RECENT_KEY, recentProjects.value)
+  }
+  if (tab.value === 'runs') browserProjectId.value = id
+  else if (tab.value === 'note' && hasData.value) data.loadNotes(id, data.state.noteFilter.query)
+}
+function onPickProject(id: string | null): void {
+  pickerOpen.value = false
+  setScope(id)
+}
+
+/** The project the header names (each tab's own view of the scope). */
+const headerProjectId = computed<string | null>(() => {
+  if (tab.value === 'runs') return browserProjectId.value
+  if (tab.value === 'project') return settingsProjectId.value
+  return projectScope.value
 })
-const tabHasProjectFilter = computed(() => {
-  if (tab.value === 'inbox') return false
-  if (tab.value === 'project') return hasData.value && (settingsPage.value === null || isToggleGroup(settingsPage.value))
-  return true
+/** The header's project label, or undefined where the screen has no project. */
+const headerScope = computed<string | undefined>(() => {
+  if (tab.value === 'inbox') return undefined
+  if (tab.value !== 'runs' && !hasData.value) return undefined
+  if (tab.value === 'project' && !isToggleGroup(settingsPage.value)) return undefined
+  const id = headerProjectId.value
+  return (id && store.state.projectList.find((p) => p.id === id)?.name) || t('controller.data.allProjects')
 })
-/** Setting switches belong to one project: no "All projects" there. */
-const headerProjectOptions = computed(() =>
-  tab.value === 'project' ? projectFilterOptions.value.slice(1) : projectFilterOptions.value,
-)
 
 /** Setting → Refresh: re-fetch everything every tab shows. */
 function refreshAll(): void {
@@ -896,7 +933,7 @@ function onRequestFiles(): void {
   />
 
   <div v-else-if="!runId && !draftProjectId" class="app-shell flex h-dvh min-h-0 flex-col bg-background text-foreground">
-    <ControllerHeader :title="tabTitle">
+    <ControllerHeader :title="tabTitle" :scope="headerScope" @pick-scope="pickerOpen = true">
       <template v-if="onSettingsPage" #leading>
         <HeaderButton class="-ml-1.5" :label="t('controller.data.back')" @click="settingsPage = null">
           <ChevronLeft class="h-4 w-4" :stroke-width="2" />
@@ -905,14 +942,6 @@ function onRequestFiles(): void {
       <template #badge>
         <ConnectionBadge :status="status" :live="live" :status-label="browserStatusLabel" :host-fingerprint="hostFp" />
       </template>
-      <AppSelect
-        v-if="tabHasProjectFilter"
-        v-model="headerProjectId"
-        size="xs"
-        variant="outline"
-        class="w-32 max-w-full"
-        :options="headerProjectOptions"
-      />
     </ControllerHeader>
     <div class="relative flex-1 min-h-0">
       <InboxView
@@ -936,7 +965,7 @@ function onRequestFiles(): void {
         :projects="store.state.projectList"
         :pending-run-ids="Object.keys(store.state.pendingByRun)"
         :selected-project-id="browserProjectId"
-        @update:selected-project-id="browserProjectId = $event"
+        @update:selected-project-id="setScope"
         @open="openRun"
         @new-session="startNewSession"
       />
@@ -958,7 +987,7 @@ function onRequestFiles(): void {
         v-else-if="tab === 'note'"
         :notes="data.state.notes"
         :projects="store.state.projectList"
-        :project-id="data.state.noteFilter.projectId"
+        :project-id="projectScope"
         :query="data.state.noteFilter.query"
         :error="data.state.error"
         :failed="data.state.failed.notes"
@@ -970,10 +999,11 @@ function onRequestFiles(): void {
       <SettingsMenuView
         v-else-if="settingsPage === null"
         :projects="hasData ? store.state.projectList : []"
-        :project-id="toggleProjectId"
+        :project-id="settingsProjectId"
         :toggles="data.state.toggles"
         :push-on="hasPush ? pushOn : null"
         @open="openSettingsPage"
+        @pick-project="pickerOpen = true"
         @refresh="refreshAll"
         @disconnect="disconnect"
       />
@@ -990,6 +1020,15 @@ function onRequestFiles(): void {
         @select="selectToggleProject"
         @set="data.setToggle"
         @clear-error="data.clearError()"
+      />
+      <ProjectPickerSheet
+        v-if="pickerOpen"
+        :projects="store.state.projectList"
+        :selected="headerProjectId"
+        :allow-all="tab !== 'project'"
+        :recent="recentProjects"
+        @pick="onPickProject"
+        @close="pickerOpen = false"
       />
     </div>
     <BottomTabBar :tab="tab" :inbox-count="inboxCount" :hidden="hiddenTabs" @update:tab="onTab" />

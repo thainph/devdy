@@ -242,8 +242,8 @@
   },
   "settingsMenu": {
     "project": "Dự án",
-    "projectNamed": "Dự án · {name}",
-    "device": "Thiết bị này"
+    "device": "Thiết bị này",
+    "projectRow": "Project"
   },
   "push": {
     "title": "Thông báo",
@@ -290,5 +290,14 @@
     "followHost": "Giống máy tính",
     "followHostValue": "Giống máy tính ({value})",
     "hint": "Chỉ đổi trên thiết bị này — máy tính vẫn giữ giao diện của nó."
+  },
+  "projectPicker": {
+    "title": "Chọn project",
+    "search": "Tìm project",
+    "clear": "Xoá",
+    "recent": "Gần đây",
+    "others": "Project khác",
+    "empty": "Không có project phù hợp.",
+    "open": "Project: {name} — đổi"
   }
 }

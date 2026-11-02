@@ -123,6 +123,19 @@ const OUTPUT_COALESCE_WINDOW: Duration = Duration::from_millis(50);
 /// single oversized frame.
 const OUTPUT_COALESCE_MAX_LINES: usize = 256;
 
+/// How long a permission prompt waits before it goes to the phone. The
+/// desktop answers prompts covered by the project's standing allow / deny
+/// choices itself, but only after the Host has already put them on the bus:
+/// forwarded at once, they flashed on the phone and vanished before anyone
+/// could tap. A prompt still open after this is a real question.
+const PROMPT_SETTLE: Duration = Duration::from_millis(800);
+
+/// Whether a prompt for `tool` waits [`PROMPT_SETTLE`] first. AskUserQuestion
+/// is never auto-answered on the desktop, so it goes out at once.
+fn settles_first(tool: &str) -> bool {
+    tool != "AskUserQuestion"
+}
+
 /// What a running forward loop is allowed to forward.
 pub struct ForwardScope {
     /// Runs whose live transcript is streamed; mutated by `open_run`/`close_run`.
@@ -244,6 +257,27 @@ pub async fn forward_loop(
                     // ordered. Other runs are independent timelines.
                     if flush_run(&mut buffered, &run_id, &session, &room_id, &out, &seq).is_err() {
                         break;
+                    }
+                }
+
+                // A prompt the desktop may still auto-answer: send it only if it
+                // is still open once that had its chance.
+                if let RemoteRunEvent::PermissionRequest { request_id, tool, .. } = &ev {
+                    if settles_first(tool) {
+                        let request_id = request_id.clone();
+                        let payload = to_payload(ev);
+                        let (session, room_id, out, seq) =
+                            (session.clone(), room_id.clone(), out.clone(), seq.clone());
+                        tokio::spawn(async move {
+                            tokio::time::sleep(PROMPT_SETTLE).await;
+                            if crate::runs::permission::peek_pending(&run_id, &request_id).is_none() {
+                                return;
+                            }
+                            if let Some(env) = seal_stream(&session, &room_id, &payload, seq.next()) {
+                                let _ = out.send(env);
+                            }
+                        });
+                        continue;
                     }
                 }
 
@@ -844,6 +878,13 @@ pub async fn replay_history(
 
 #[cfg(test)]
 mod tests {
+    #[test]
+    fn only_questions_skip_the_settle_wait() {
+        assert!(!super::settles_first("AskUserQuestion"));
+        assert!(super::settles_first("Bash"));
+        assert!(super::settles_first("mcp__devdy__notes_create"));
+    }
+
     use super::*;
     use remote_e2e::Keypair;
     use std::io::Write;
