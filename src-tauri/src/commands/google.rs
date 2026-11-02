@@ -7,10 +7,11 @@
 //! (plus the client id/secret and account email) is persisted — into the same
 //! consolidated Keychain item as everything else (see `secrets.rs`).
 //!
-//! Access tokens are intentionally NOT stored here: the built-in `google` MCP
-//! server receives the refresh_token via env and mints its own short-lived
-//! access tokens on demand, so a run that outlives the 1h access token keeps
-//! working.
+//! Access tokens are intentionally NOT stored here: they are minted on demand
+//! from the refresh_token (`gcalendar::access_token_for`). The built-in `google`
+//! MCP server asks the credential broker for one when it needs it, so a run that
+//! outlives the 1h access token keeps working and the refresh_token never leaves
+//! this process.
 
 use serde::{Deserialize, Serialize};
 use sqlx::Row;

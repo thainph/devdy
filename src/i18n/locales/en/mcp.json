@@ -9,7 +9,7 @@
       "settings": "Google settings",
       "needsClient": "Built-in · needs OAuth client",
       "noAccount": "Built-in · no account",
-      "googleDescription": "Drive (drive_*): list, search, read, upload, share, delete files. Gmail (mail_*): search, read, attachments, send, reply, labels. Calendar (cal_*): view events, check free slots, create and update meetings. Injected when a Google account is connected — as {tools} tools."
+      "googleDescription": "Drive (drive_*): list, search, read, upload, share, delete files. Sheets (sheets_*): read any tab, edit individual cells, append rows. Gmail (mail_*): search, read, attachments, send, reply, labels. Calendar (cal_*): view events, check free slots, create and update meetings. Injected when a Google account is connected — as {tools} tools."
     },
     "empty": {
       "title": "No MCP servers yet",

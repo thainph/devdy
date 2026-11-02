@@ -15,6 +15,7 @@
 
 pub mod approver;
 pub mod audit;
+pub mod mcp_creds;
 pub mod policy;
 pub mod token;
 
@@ -76,6 +77,14 @@ pub struct BrokerRequest {
     /// Up to a few `file:kind` labels backing `tf_external_code`, for the reason.
     #[serde(default)]
     pub tf_external_hits: Vec<String>,
+    /// mcp only: the MCP server whose env/headers are wanted — a user server's
+    /// id, or `@conductor` (see `mcp_creds`).
+    #[serde(default)]
+    pub server: Option<String>,
+    /// google only: mint a fresh access token instead of reusing the cached one
+    /// (the server got a 401).
+    #[serde(default)]
+    pub refresh: bool,
 }
 
 /// Response returned to the shim (one NDJSON line). Secret fields are only
@@ -124,6 +133,12 @@ pub struct BrokerResponse {
     pub azure_tenant_id: Option<String>,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub azure_subscription_id: Option<String>,
+    /// mcp: env a user stdio server is started with. Secret values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub env: Option<std::collections::HashMap<String, String>>,
+    /// mcp: headers for an HTTP/SSE server (incl. the conductor's bearer). Secret values.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub headers: Option<std::collections::HashMap<String, String>>,
 }
 
 impl BrokerResponse {
@@ -139,6 +154,17 @@ impl BrokerResponse {
             decision: "allow".into(),
             token: Some(token),
             host: Some(host),
+            ..Default::default()
+        }
+    }
+    fn allow_mcp(
+        env: std::collections::HashMap<String, String>,
+        headers: std::collections::HashMap<String, String>,
+    ) -> Self {
+        BrokerResponse {
+            decision: "allow".into(),
+            env: Some(env),
+            headers: Some(headers),
             ..Default::default()
         }
     }
@@ -191,6 +217,12 @@ impl BrokerResponse {
 #[async_trait]
 pub trait ApproverResolver: Send + Sync {
     async fn resolve(&self, run_id: Option<&str>) -> Option<Arc<dyn Approver>>;
+
+    /// The project of live run `run_id` as registered when the run started —
+    /// not as claimed by the request. `None` (unknown / ended run) → deny.
+    fn run_project(&self, _run_id: &str) -> Option<String> {
+        None
+    }
 }
 
 /// Config for the app-wide singleton broker.
@@ -359,6 +391,12 @@ async fn process_line(
             return BrokerResponse::deny("malformed request");
         }
     };
+
+    // MCP credentials (Google access tokens, MCP server env/headers) are not
+    // command invocations; they have their own fail-closed path.
+    if mcp_creds::handles(&req.tool) {
+        return mcp_creds::process(&req, db, resolver, app).await;
+    }
 
     // Audit under the run that issued the request (falls back to "?").
     let run_id = req.run_id.as_deref().unwrap_or("?");
@@ -914,6 +952,7 @@ mod tests {
             azure_config_dir: field("azure_config_dir"),
             azure_tenant_id: field("azure_tenant_id"),
             azure_subscription_id: field("azure_subscription_id"),
+            ..Default::default()
         }
     }
 

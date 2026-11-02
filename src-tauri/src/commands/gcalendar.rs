@@ -284,7 +284,7 @@ fn token_cache() -> &'static Mutex<HashMap<String, (String, Instant)>> {
 /// valid even though our TTL still considers it live (the TTL is measured with a
 /// monotonic `Instant`, which on macOS does not advance while the machine is
 /// asleep, so a token can outlive its real ~1h expiry in cache after a sleep).
-async fn access_token_for(
+pub(crate) async fn access_token_for(
     client: &reqwest::Client,
     account_id: &str,
     force_refresh: bool,

@@ -9,7 +9,7 @@
       "settings": "Cài đặt Google",
       "needsClient": "Tích hợp sẵn · cần OAuth client",
       "noAccount": "Tích hợp sẵn · chưa có tài khoản",
-      "googleDescription": "Drive (drive_*): liệt kê, tìm, đọc, tải lên, chia sẻ, xóa file. Gmail (mail_*): tìm, đọc, tệp đính kèm, gửi, trả lời, nhãn. Calendar (cal_*): xem sự kiện, tìm giờ trống, tạo và cập nhật cuộc họp. Được chèn khi đã kết nối tài khoản Google — dưới dạng các tool {tools}."
+      "googleDescription": "Drive (drive_*): liệt kê, tìm, đọc, tải lên, chia sẻ, xóa file. Sheets (sheets_*): đọc mọi tab, sửa từng ô, thêm dòng. Gmail (mail_*): tìm, đọc, tệp đính kèm, gửi, trả lời, nhãn. Calendar (cal_*): xem sự kiện, tìm giờ trống, tạo và cập nhật cuộc họp. Được chèn khi đã kết nối tài khoản Google — dưới dạng các tool {tools}."
     },
     "empty": {
       "title": "Chưa có MCP server nào",

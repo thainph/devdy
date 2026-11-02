@@ -1942,6 +1942,7 @@ watch(() => settings.value.language, (v) => {
               <span>📁 drive_list / search / read / download</span>
               <span>✏️ drive_create / upload / update / rename / move</span>
               <span>🗑️ drive_delete (permanent) · share / permissions</span>
+              <span>📊 sheets_info / read / update / append</span>
               <span>📧 mail_list_messages / search / read_message / read_thread</span>
               <span>📎 mail_list_attachments / download_attachment(s)</span>
               <span>✉️ mail_send / create_draft / reply</span>

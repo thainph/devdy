@@ -1,21 +1,23 @@
 // Shared plumbing for the built-in `google` MCP server (Drive / Gmail / Calendar).
 //
-// - OAuth: mints short-lived access tokens from the stored refresh_token
-//   (env GOOGLE_CLIENT_ID / GOOGLE_CLIENT_SECRET / GOOGLE_REFRESH_TOKEN), caching
-//   until ~1 min before expiry so long runs keep working.
+// - OAuth: asks Devdy's credential broker (DEVDY_BROKER_SOCK, the socket the
+//   gh shim uses) for a short-lived access token per account, so long runs keep
+//   working. Refresh tokens and the OAuth client
+//   secret never reach this process: its env and command line are readable by
+//   any process of the same user, the agent's own shell included.
 // - `gapi()`: thin authenticated fetch wrapper over the Google REST APIs.
 // - `runServer()`: hand-rolled JSON-RPC 2.0 stdio loop (async handlers), matching
 //   the built-in devdy server's protocol. Only JSON frames go to stdout; logs to
 //   stderr. Zero runtime dependencies (Node 18+ global fetch).
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import net from 'node:net';
 
-const CLIENT_ID = process.env.GOOGLE_CLIENT_ID;
-const CLIENT_SECRET = process.env.GOOGLE_CLIENT_SECRET;
+// The broker caches minted tokens itself and may hand out one that is already
+// most of an hour old, so only hold it briefly (asking again is a local call).
+const TOKEN_TTL_MS = 5 * 60_000;
 
-// Connected accounts, from GOOGLE_ACCOUNTS (JSON array of
-// {label,email,refresh_token,default}). Falls back to the legacy single-account
-// env (GOOGLE_REFRESH_TOKEN) for older injections.
+// Connected accounts, from GOOGLE_ACCOUNTS (JSON array of {label,email,default}).
 function parseAccounts() {
   const raw = process.env.GOOGLE_ACCOUNTS;
   if (raw) {
@@ -23,9 +25,6 @@ function parseAccounts() {
       const arr = JSON.parse(raw);
       if (Array.isArray(arr) && arr.length) return arr;
     } catch { /* fall through */ }
-  }
-  if (process.env.GOOGLE_REFRESH_TOKEN) {
-    return [{ label: 'default', email: '', refresh_token: process.env.GOOGLE_REFRESH_TOKEN, default: true }];
   }
   return [];
 }
@@ -56,33 +55,59 @@ export function listAccounts() {
   return ACCOUNTS.map((a) => ({ label: a.label, email: a.email, default: !!a.default }));
 }
 
-export async function getAccessToken() {
+/** One NDJSON request/response over the broker socket. */
+function askBroker(req) {
+  const sock = process.env.DEVDY_BROKER_SOCK;
+  if (!sock || !process.env.DEVDY_PROJECT_ID) {
+    return Promise.reject(new Error('Devdy credential broker not configured for this server.'));
+  }
+  return new Promise((resolve, reject) => {
+    const conn = net.createConnection(sock);
+    let buf = '';
+    let settled = false;
+    const done = (fn, arg) => {
+      if (settled) return;
+      settled = true;
+      conn.destroy();
+      fn(arg);
+    };
+    conn.setTimeout(30_000, () => done(reject, new Error('credential broker timed out')));
+    conn.on('connect', () => conn.write(`${JSON.stringify(req)}\n`));
+    conn.on('data', (d) => {
+      buf += d.toString('utf8');
+      const nl = buf.indexOf('\n');
+      if (nl < 0) return;
+      try {
+        done(resolve, JSON.parse(buf.slice(0, nl)));
+      } catch (e) {
+        done(reject, e);
+      }
+    });
+    conn.on('error', () => done(reject, new Error('credential broker unreachable')));
+    conn.on('close', () => done(reject, new Error('credential broker closed the connection')));
+  });
+}
+
+/** Access token for the current call's account; `refresh` skips every cache
+ *  (after a 401). */
+export async function getAccessToken({ refresh = false } = {}) {
   const account = resolveAccount(accountCtx.getStore());
   const cached = tokenCache.get(account.label);
-  if (cached && Date.now() < cached.expiresAt - 60_000) return cached.accessToken;
-  if (!CLIENT_ID || !CLIENT_SECRET || !account.refresh_token) {
-    throw new Error('Google OAuth env incomplete. Reconnect the account in Devdy Settings → Google Account.');
-  }
-  const res = await fetch('https://oauth2.googleapis.com/token', {
-    method: 'POST',
-    headers: { 'Content-Type': 'application/x-www-form-urlencoded' },
-    body: new URLSearchParams({
-      client_id: CLIENT_ID,
-      client_secret: CLIENT_SECRET,
-      refresh_token: account.refresh_token,
-      grant_type: 'refresh_token',
-    }),
+  if (!refresh && cached && Date.now() < cached.expiresAt) return cached.accessToken;
+  const resp = await askBroker({
+    project_id: process.env.DEVDY_PROJECT_ID,
+    run_id: process.env.DEVDY_RUN_ID || null,
+    tool: 'google',
+    argv: [],
+    host: null,
+    account: account.label,
+    refresh,
   });
-  if (!res.ok) {
-    throw new Error(`OAuth token refresh failed for '${account.label}' (${res.status}): ${(await res.text()).slice(0, 300)}`);
+  if (!resp || resp.decision !== 'allow' || !resp.token) {
+    throw new Error(`No Google access token for '${account.label}': ${(resp && resp.reason) || 'denied'}`);
   }
-  const j = await res.json();
-  const entry = {
-    accessToken: j.access_token,
-    expiresAt: Date.now() + (Number(j.expires_in) || 3600) * 1000,
-  };
-  tokenCache.set(account.label, entry);
-  return entry.accessToken;
+  tokenCache.set(account.label, { accessToken: resp.token, expiresAt: Date.now() + TOKEN_TTL_MS });
+  return resp.token;
 }
 
 /** Authenticated fetch against a Google API. Throws on non-2xx with a trimmed
@@ -90,12 +115,15 @@ export async function getAccessToken() {
  *  (for streaming/binary/text downloads); otherwise JSON or text is returned. */
 export async function gapi(url, opts = {}) {
   const { method = 'GET', headers = {}, body, raw = false } = opts;
-  const token = await getAccessToken();
-  const res = await fetch(url, {
+  const send = async (refresh) => fetch(url, {
     method,
-    headers: { Authorization: `Bearer ${token}`, ...headers },
+    headers: { Authorization: `Bearer ${await getAccessToken({ refresh })}`, ...headers },
     body,
   });
+  let res = await send(false);
+  // A cached token can die early (revoked, or the machine slept past its
+  // expiry): retry once with a freshly minted one.
+  if (res.status === 401) res = await send(true);
   if (!res.ok) {
     let detail = '';
     try {

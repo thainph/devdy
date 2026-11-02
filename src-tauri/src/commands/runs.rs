@@ -472,44 +472,17 @@ pub(crate) async fn start_run_inner(
             // Inject the project's enabled MCP servers for the ACTUAL run engine
             // (QĐ-2). Claude gets the full 3-transport map via options.mcpServers;
             // MCP tools still flow through the existing canUseTool permission path.
-            let (mcp, _skipped) =
-                crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "claude")
-                    .await;
-            // Add the built-in `devdy` MCP server (notes + recall + project + VPS)
-            // unless switched off app-wide or for this project.
-            let mcp = if crate::commands::mcp::builtin_mcp_enabled(&db_pool, "devdy", &project_id).await {
-                crate::commands::mcp::with_builtin_devdy(
-                    mcp,
-                    &node_bin,
-                    &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
-                    &crate::runs::sidecar::resolve_db_path(&app),
-                    &project_id,
-                    &project_path,
-                )
-            } else {
-                mcp
-            };
-            // Add the built-in `google` MCP server (Drive + Gmail + Calendar) when a
-            // account is connected and it is not switched off (no-op otherwise).
-            let mcp = crate::commands::mcp::with_builtin_google(
+            let (mcp, _skipped) = assemble_run_mcp(
+                &app,
                 &db_pool,
-                mcp,
+                "claude",
                 &node_bin,
-                &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
                 &project_id,
+                &project_path,
+                &payload.run_id,
+                conductor_token.is_some(),
             )
-            .await;
-            // Conductor runs additionally get the loopback `conductor` MCP server
-            // (session_* control tools), scoped by their bearer token.
-            let mcp = if let Some(token) = conductor_token.as_deref() {
-                if let Some(cst) = app.try_state::<crate::conductor::ConductorState>() {
-                    crate::conductor::with_conductor(mcp, &cst.base_url(), token)
-                } else {
-                    mcp
-                }
-            } else {
-                mcp
-            };
+            .await?;
             if !mcp.is_null() {
                 options["mcpServers"] = mcp;
             }
@@ -600,38 +573,17 @@ pub(crate) async fn start_run_inner(
     }
     // Inject the project's enabled MCP servers for Codex (QĐ-2: actual engine).
     // Codex supports stdio + streamable HTTP; legacy SSE servers land in `skipped`.
-    let (codex_mcp, mcp_skipped) =
-        crate::commands::mcp::resolve_project_mcp_servers(&db_pool, &project_id, "codex").await;
-    let codex_mcp = if crate::commands::mcp::builtin_mcp_enabled(&db_pool, "devdy", &project_id).await {
-        crate::commands::mcp::with_builtin_devdy(
-            codex_mcp,
-            &node_bin,
-            &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
-            &crate::runs::sidecar::resolve_db_path(&app),
-            &project_id,
-            &project_path,
-        )
-    } else {
-        codex_mcp
-    };
-    let codex_mcp = crate::commands::mcp::with_builtin_google(
+    let (codex_mcp, mcp_skipped) = assemble_run_mcp(
+        &app,
         &db_pool,
-        codex_mcp,
+        "codex",
         &node_bin,
-        &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
         &project_id,
+        &project_path,
+        &payload.run_id,
+        conductor_token.is_some(),
     )
-    .await;
-    // Conductor runs get the loopback `conductor` MCP server on Codex too.
-    let codex_mcp = match (
-        conductor_token.as_deref(),
-        app.try_state::<crate::conductor::ConductorState>(),
-    ) {
-        (Some(token), Some(cst)) => {
-            crate::conductor::with_conductor_codex(codex_mcp, &cst.base_url(), token)
-        }
-        _ => codex_mcp,
-    };
+    .await?;
     if !codex_mcp.is_null() {
         cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
     }
@@ -855,6 +807,65 @@ fn prepend_shim_path(cmd: &mut Command, shim_dir: &Path) {
     cmd.env("PATH", joined);
 }
 
+/// The MCP map for a run on `engine` ("claude" | "codex"): the project's
+/// enabled servers plus the built-ins — `devdy` and `google` unless switched off,
+/// and the loopback `conductor` server for a conductor run. Credentials are left
+/// to the broker (see `McpLaunch`), so the map is safe to put on a command line.
+/// Returns the map (`Null` when empty) and the servers skipped for the engine.
+#[allow(clippy::too_many_arguments)]
+async fn assemble_run_mcp(
+    app: &AppHandle,
+    db: &Db,
+    engine: &str,
+    node_bin: &str,
+    project_id: &str,
+    project_path: &str,
+    run_id: &str,
+    is_conductor: bool,
+) -> Result<(serde_json::Value, Vec<String>), String> {
+    use crate::commands::mcp;
+    let launch = mcp::McpLaunch {
+        node_bin: node_bin.to_string(),
+        launcher: resolve_shim_dir(app)?.join("devdy-mcp-launch.mjs"),
+        broker_sock: app
+            .try_state::<BrokerHandle>()
+            .ok_or_else(|| "credential broker not initialized".to_string())?
+            .path
+            .clone(),
+        project_id: project_id.to_string(),
+        run_id: run_id.to_string(),
+    };
+    let (map, skipped) = mcp::resolve_project_mcp_servers(db, project_id, engine, &launch).await;
+    let map = if mcp::builtin_mcp_enabled(db, "devdy", project_id).await {
+        mcp::with_builtin_devdy(
+            map,
+            node_bin,
+            &crate::runs::sidecar::resolve_mcp_sidecar_script(app),
+            &crate::runs::sidecar::resolve_db_path(app),
+            project_id,
+            project_path,
+        )
+    } else {
+        map
+    };
+    let map = mcp::with_builtin_google(
+        db,
+        map,
+        &launch,
+        &crate::runs::sidecar::resolve_mcp_script(app, "google.mjs"),
+        project_id,
+    )
+    .await;
+    let map = match (is_conductor, app.try_state::<crate::conductor::ConductorState>()) {
+        (true, Some(cst)) if engine == "codex" => {
+            crate::conductor::with_conductor_codex(map, &cst.base_url(), &launch)
+        }
+        (true, Some(cst)) => crate::conductor::with_conductor(map, &cst.base_url(), &launch),
+        _ => map,
+    };
+    Ok((map, skipped))
+}
+
 /// Register this run with the app-wide singleton broker and wire the broker
 /// socket + shim PATH into the sidecar command. Returns a `BrokerRunGuard` to
 /// store in `RunHandles`; its Drop deregisters the run (the socket itself lives
@@ -888,6 +899,7 @@ async fn wire_broker(
         run_id.to_string(),
         BrokerRunCtx {
             cwd: Some(project_path.to_string()),
+            project_id: Some(project_id.to_string()),
         },
     );
 
@@ -3578,38 +3590,17 @@ pub(crate) async fn resume_run_with(
         // Re-inject the project's MCP servers on resume: a resumed run spawns a
         // FRESH sidecar/query whose first prompt arrives via send_user_message
         // WITHOUT options, so (unlike start_run) MCP would otherwise be lost.
-        let (codex_mcp, _skipped) =
-            crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "codex")
-                .await;
-        let codex_mcp = if crate::commands::mcp::builtin_mcp_enabled(db.inner(), "devdy", &project_id).await {
-            crate::commands::mcp::with_builtin_devdy(
-                codex_mcp,
-                &node_bin,
-                &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
-                &crate::runs::sidecar::resolve_db_path(&app),
-                &project_id,
-                &project_path,
-            )
-        } else {
-            codex_mcp
-        };
-        let codex_mcp = crate::commands::mcp::with_builtin_google(
+        let (codex_mcp, _skipped) = assemble_run_mcp(
+            &app,
             db.inner(),
-            codex_mcp,
+            "codex",
             &node_bin,
-            &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
             &project_id,
+            &project_path,
+            &run_id,
+            conductor_launch.is_some(),
         )
-        .await;
-        let codex_mcp = match (
-            conductor_launch.as_ref(),
-            app.try_state::<crate::conductor::ConductorState>(),
-        ) {
-            (Some(c), Some(cst)) => {
-                crate::conductor::with_conductor_codex(codex_mcp, &cst.base_url(), &c.token)
-            }
-            _ => codex_mcp,
-        };
+        .await?;
         if !codex_mcp.is_null() {
             cmd.env("DEVDY_CODEX_MCP", codex_mcp.to_string());
         }
@@ -3647,39 +3638,19 @@ pub(crate) async fn resume_run_with(
         }
         // Re-inject MCP on resume (see the Codex branch above). The sidecar reads
         // DEVDY_MCP_SERVERS as a fallback when the first prompt carries no options.
-        let (mcp, _skipped) =
-            crate::commands::mcp::resolve_project_mcp_servers(db.inner(), &project_id, "claude")
-                .await;
-        let mcp = if crate::commands::mcp::builtin_mcp_enabled(db.inner(), "devdy", &project_id).await {
-            crate::commands::mcp::with_builtin_devdy(
-                mcp,
-                &node_bin,
-                &crate::runs::sidecar::resolve_mcp_sidecar_script(&app),
-                &crate::runs::sidecar::resolve_db_path(&app),
-                &project_id,
-                &project_path,
-            )
-        } else {
-            mcp
-        };
-        let mcp = crate::commands::mcp::with_builtin_google(
+        // A resumed conductor keeps its `session_*` control tools: its session
+        // (restored on startup for pre-restart sessions) is still registered.
+        let (mcp, _skipped) = assemble_run_mcp(
+            &app,
             db.inner(),
-            mcp,
+            "claude",
             &node_bin,
-            &crate::runs::sidecar::resolve_mcp_script(&app, "google.mjs"),
             &project_id,
+            &project_path,
+            &run_id,
+            conductor_launch.is_some(),
         )
-        .await;
-        // A resumed conductor must keep its `session_*` control tools. Re-inject
-        // the loopback conductor MCP server with the session's current token
-        // (restored on startup for pre-restart sessions).
-        let mcp = match (
-            conductor_launch.as_ref(),
-            app.try_state::<crate::conductor::ConductorState>(),
-        ) {
-            (Some(c), Some(cst)) => crate::conductor::with_conductor(mcp, &cst.base_url(), &c.token),
-            _ => mcp,
-        };
+        .await?;
         if !mcp.is_null() {
             cmd.env("DEVDY_MCP_SERVERS", mcp.to_string());
         }

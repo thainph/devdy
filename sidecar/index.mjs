@@ -92,7 +92,8 @@ process.stdout.on('error', (err) => {
 
 // Broker → sidecar inputs consumed by this process only. Captured once and
 // removed from process.env so they never reach the Claude CLI child (or the MCP
-// servers it spawns) — DEVDY_MCP_SERVERS carries the session's bearer token.
+// servers it spawns). DEVDY_MCP_SERVERS holds no secret (servers fetch theirs
+// from the broker), but it is still this process's input only.
 const SIDECAR_ENV = {}
 for (const k of ['DEVDY_MCP_SERVERS', 'DEVDY_ALLOWED_TOOLS', 'DEVDY_APPEND_SYSTEM_PROMPT']) {
   SIDECAR_ENV[k] = process.env[k]

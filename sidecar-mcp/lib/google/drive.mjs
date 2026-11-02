@@ -105,7 +105,7 @@ export const tools = {
 
   read: {
     description:
-      'Read a file\'s text content. Google Docs → Markdown, Sheets → CSV, Slides → text (auto-exported). Binary/non-text files should be downloaded instead.',
+      'Read a file\'s text content. Google Docs → Markdown, Sheets → CSV of the FIRST tab only (use sheets_read for other tabs), Slides → text (auto-exported). Binary/non-text files should be downloaded instead.',
     inputSchema: {
       type: 'object',
       properties: { file_id: { type: 'string' } },
@@ -237,7 +237,8 @@ export const tools = {
   },
 
   update: {
-    description: 'Overwrite an existing file\'s content with new text.',
+    description:
+      'Overwrite an existing (non-Google-native) file\'s entire content with new text. Refuses Google Docs/Sheets/Slides, since replacing their media would wipe tabs, formatting and validation — use sheets_update to edit cells.',
     inputSchema: {
       type: 'object',
       properties: {
@@ -248,6 +249,11 @@ export const tools = {
       required: ['file_id', 'content'],
     },
     handler: async (a) => {
+      const meta = await gapi(`${BASE}/files/${a.file_id}?fields=name,mimeType&${SHARED}`);
+      if (meta.mimeType && meta.mimeType.startsWith('application/vnd.google-apps')) {
+        const hint = meta.mimeType === 'application/vnd.google-apps.spreadsheet' ? ' Use sheets_update to change specific cells.' : '';
+        throw new Error(`Refusing to overwrite ${meta.name} (${meta.mimeType}): it would replace the whole document.${hint}`);
+      }
       const mime = a.mime_type || 'text/plain';
       const f = await gapi(
         `${UPLOAD}/${a.file_id}?uploadType=media&fields=${FILE_FIELDS}&${SHARED}`,

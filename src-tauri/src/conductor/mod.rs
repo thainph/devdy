@@ -473,23 +473,34 @@ impl ConductorState {
 }
 
 /// Add the built-in `conductor` MCP server (Streamable HTTP, loopback) to an
-/// already-resolved MCP map. Only injected for conductor runs, which carry a
-/// `conductor_token`. A user server literally named `conductor` takes precedence.
+/// already-resolved MCP map. Only injected for conductor runs. A user server
+/// literally named `conductor` takes precedence.
+///
+/// The bearer token is not in the config: the CLI fetches the header from the
+/// broker, which hands a run only its own session's token (see
+/// `runs::broker::mcp_creds`).
 pub fn with_conductor(
     mcp: serde_json::Value,
     base_url: &str,
-    token: &str,
+    launch: &crate::commands::mcp::McpLaunch,
+) -> serde_json::Value {
+    insert_conductor(mcp, base_url, launch, "claude")
+}
+
+fn insert_conductor(
+    mcp: serde_json::Value,
+    base_url: &str,
+    launch: &crate::commands::mcp::McpLaunch,
+    engine: &str,
 ) -> serde_json::Value {
     let mut map = match mcp {
         serde_json::Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
     map.entry("conductor".to_string()).or_insert_with(|| {
-        serde_json::json!({
-            "type": "http",
-            "url": base_url,
-            "headers": { "Authorization": format!("Bearer {}", token) },
-        })
+        let mut cfg = serde_json::json!({ "type": "http", "url": base_url });
+        launch.set_headers_helper(&mut cfg, engine, crate::runs::broker::mcp_creds::CONDUCTOR_SERVER);
+        cfg
     });
     serde_json::Value::Object(map)
 }
@@ -503,9 +514,9 @@ pub fn with_conductor(
 pub fn with_conductor_codex(
     mcp: serde_json::Value,
     base_url: &str,
-    token: &str,
+    launch: &crate::commands::mcp::McpLaunch,
 ) -> serde_json::Value {
-    let mut mcp = with_conductor(mcp, base_url, token);
+    let mut mcp = insert_conductor(mcp, base_url, launch, "codex");
     if let Some(cfg) = mcp.get_mut("conductor").and_then(|c| c.as_object_mut()) {
         // Only tag our own server — a user server named `conductor` wins above
         // and must keep its configured behavior.
@@ -559,21 +570,47 @@ mod tests {
         assert!(cst.begin_wake_turn("c1"));
     }
 
+    fn launch() -> crate::commands::mcp::McpLaunch {
+        crate::commands::mcp::McpLaunch {
+            node_bin: "/bin/node".into(),
+            launcher: "/shims/devdy-mcp-launch.mjs".into(),
+            broker_sock: "/tmp/b.sock".into(),
+            project_id: "p".into(),
+            run_id: "c1".into(),
+        }
+    }
+
     #[test]
-    fn codex_conductor_server_auto_approves_and_carries_token() {
+    fn codex_conductor_server_auto_approves_and_fetches_token_from_broker() {
         let base = "http://127.0.0.1:4242/mcp";
-        let mcp = with_conductor_codex(serde_json::json!({}), base, "tok");
+        let mcp = with_conductor_codex(serde_json::json!({}), base, &launch());
         let c = &mcp["conductor"];
         assert_eq!(c["type"], "http");
         assert_eq!(c["url"], base);
-        assert_eq!(c["headers"]["Authorization"], "Bearer tok");
+        assert!(c.get("headers").is_none(), "no bearer in the config");
+        assert_eq!(
+            c["devdy_headers_helper"],
+            serde_json::json!(["/bin/node", "/shims/devdy-mcp-launch.mjs", "headers", "@conductor"])
+        );
         assert_eq!(c["default_tools_approval_mode"], "approve");
+    }
+
+    #[test]
+    fn claude_conductor_server_uses_a_headers_helper() {
+        let mcp = with_conductor(serde_json::json!({}), "http://127.0.0.1:1/mcp", &launch());
+        let c = &mcp["conductor"];
+        assert!(c.get("headers").is_none(), "no bearer in the config");
+        assert_eq!(
+            c["headersHelper"],
+            "DEVDY_BROKER_SOCK='/tmp/b.sock' DEVDY_PROJECT_ID='p' DEVDY_RUN_ID='c1' \
+             '/bin/node' '/shims/devdy-mcp-launch.mjs' 'headers' '@conductor'"
+        );
     }
 
     #[test]
     fn codex_conductor_keeps_user_server_named_conductor_untouched() {
         let user = serde_json::json!({ "conductor": { "type": "stdio", "command": "x" } });
-        let mcp = with_conductor_codex(user, "http://127.0.0.1:1/mcp", "tok");
+        let mcp = with_conductor_codex(user, "http://127.0.0.1:1/mcp", &launch());
         assert_eq!(mcp["conductor"]["command"], "x");
         assert!(mcp["conductor"].get("default_tools_approval_mode").is_none());
     }
