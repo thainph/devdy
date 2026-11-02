@@ -166,7 +166,12 @@ function shouldAutoScroll(): boolean {
 
 watch(
   () => props.entries.length,
-  () => {
+  (len, prevLen) => {
+    // Your own turn just went out: always show it (and the reply under it).
+    if (len > (prevLen ?? 0) && props.entries[len - 1]?.kind === 'user') {
+      pinToBottom()
+      return
+    }
     if (!shouldAutoScroll()) return
     // Re-check after Vue patches the stream: the user may start selecting text
     // after this watcher queued the update but before the DOM flush completes.
@@ -210,6 +215,10 @@ let resizeObserver: ResizeObserver | null = null
 
 onMounted(() => {
   window.addEventListener('pointerup', onWindowPointerUp)
+  // A finger that scrolls ends in pointercancel, not pointerup (iOS / Android
+  // take the gesture over): without this the stream stayed "held" for good
+  // and stopped following new messages after the first swipe.
+  window.addEventListener('pointercancel', onWindowPointerUp)
   if (typeof ResizeObserver !== 'undefined') {
     resizeObserver = new ResizeObserver(() => {
       if (shouldAutoScroll()) scrollToBottom()
@@ -221,6 +230,7 @@ onMounted(() => {
 })
 onUnmounted(() => {
   window.removeEventListener('pointerup', onWindowPointerUp)
+  window.removeEventListener('pointercancel', onWindowPointerUp)
   resizeObserver?.disconnect()
 })
 </script>
