@@ -6,6 +6,16 @@
  * inset from the screen edges. Unlayered, like the skin, so it beats Tailwind
  * utilities. */
 
+/* Only fixed chrome (tab bar, bottom sheets) samples the wallpaper. Every
+ * backdrop-filter is its own GPU layer, and a long transcript or list holds
+ * dozens of cards / outline buttons: iOS WebKit runs out of memory and reloads
+ * the page over and over, dropping what was being typed. Over a smooth
+ * gradient wallpaper the translucent fill alone looks the same. */
+[data-theme='tahoe'] :is(.ui-card, .ui-btn-outline, .ui-btn-subtle, .ui-segmented .is-active, .ui-backdrop) {
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+}
+
 /* Tab bar: a floating glass capsule above the home indicator. */
 [data-theme='tahoe'] .ctl-tabbar {
   margin: 0 12px max(8px, env(safe-area-inset-bottom));

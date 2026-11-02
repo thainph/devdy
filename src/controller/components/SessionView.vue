@@ -342,6 +342,7 @@ onUnmounted(() => {
       :running="running"
       :sending="sending"
       :disabled="!isActive"
+      :draft-key="runKey"
       @send="emit('send', $event)"
       @cancel="emit('cancel')"
       @update:engine="emit('update:engine', $event)"
