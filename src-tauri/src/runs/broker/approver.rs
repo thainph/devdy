@@ -221,4 +221,8 @@ impl ApproverResolver for ModalApproverResolver {
             ctx.cwd,
         )))
     }
+
+    fn run_project(&self, run_id: &str) -> Option<String> {
+        self.runs.lock().ok()?.get(run_id)?.project_id.clone()
+    }
 }

@@ -1,9 +1,9 @@
 #!/usr/bin/env node
 // Devdy built-in MCP server: Google (stdio, JSON-RPC 2.0).
 //
-// One server covering Drive, Gmail and Calendar. All three share the same gate
+// One server covering Drive, Sheets, Gmail and Calendar. All of them share the same gate
 // (an OAuth client + at least one connected account), the same credentials and
-// the same lifetime, so splitting them into three processes bought nothing —
+// the same lifetime, so splitting them into separate processes bought nothing —
 // see `with_builtin_google` in src-tauri/src/commands/mcp.rs.
 //
 // Injected under the key `google`, so tools are namespaced `mcp__google__*`.
@@ -18,6 +18,7 @@ import { runServer } from './lib/google.mjs';
 import { tools as calendarTools } from './lib/google/calendar.mjs';
 import { tools as driveTools } from './lib/google/drive.mjs';
 import { tools as mailTools } from './lib/google/mail.mjs';
+import { tools as sheetsTools } from './lib/google/sheets.mjs';
 
 /** Copy a tool group under `<prefix><name>`. `runServer` mutates each
  *  `inputSchema.properties` to add the shared `account` argument, so clone both
@@ -36,6 +37,7 @@ function prefixed(prefix, group) {
 
 const tools = {
   ...prefixed('drive_', driveTools),
+  ...prefixed('sheets_', sheetsTools),
   ...prefixed('mail_', mailTools),
   ...prefixed('cal_', calendarTools),
 };

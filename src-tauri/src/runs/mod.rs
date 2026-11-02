@@ -62,13 +62,14 @@ pub fn new_registry() -> RunRegistry {
     Arc::new(Mutex::new(HashMap::new()))
 }
 
-/// Per-run context the singleton broker needs to serve a request for that run.
-/// Currently just the working directory (surfaced as the `Ask` modal's `cwd`);
-/// never holds a token. `Clone` so the resolver can copy it out under a short
+/// Per-run context the singleton broker needs to serve a request for that run:
+/// the working directory (surfaced as the `Ask` modal's `cwd`) and the run's
+/// project (MCP credentials are only served for it); never holds a token. `Clone` so the resolver can copy it out under a short
 /// lock without holding the map locked across the await.
 #[derive(Clone, Default)]
 pub struct BrokerRunCtx {
     pub cwd: Option<String>,
+    pub project_id: Option<String>,
 }
 
 /// Live runs known to the singleton broker, keyed by `run_id`. Presence in this

@@ -1128,6 +1128,84 @@ fn extract_initialize_result(body: &str) -> Option<String> {
 
 // ---- Resolve for a run -----------------------------------------------------
 
+/// How a run's MCP config reaches secrets without carrying them.
+///
+/// The config is handed to the engine CLI on its command line (`--mcp-config`,
+/// `-c mcp_servers.*`) and ends up in process environments, both readable by any
+/// process of the same user. So it only names a server; the values come from the
+/// credential broker when the server starts (stdio env, via
+/// `sidecar-proxy/devdy-mcp-launch.mjs`) or connects (HTTP headers, via Claude's
+/// `headersHelper` / the Codex sidecar). See `runs::broker::mcp_creds`.
+pub struct McpLaunch {
+    pub node_bin: String,
+    /// `devdy-mcp-launch.mjs` in the shim dir.
+    pub launcher: std::path::PathBuf,
+    pub broker_sock: std::path::PathBuf,
+    pub project_id: String,
+    pub run_id: String,
+}
+
+impl McpLaunch {
+    /// Env a server needs to reach the broker. Codex starts stdio servers with a
+    /// minimal env, so it is set explicitly rather than inherited. Not secret.
+    pub fn broker_env(&self) -> serde_json::Map<String, serde_json::Value> {
+        let mut env = serde_json::Map::new();
+        env.insert("DEVDY_BROKER_SOCK".into(), self.broker_sock.to_string_lossy().into());
+        env.insert("DEVDY_PROJECT_ID".into(), self.project_id.clone().into());
+        env.insert("DEVDY_RUN_ID".into(), self.run_id.clone().into());
+        env
+    }
+
+    fn launcher_argv(&self, mode: &str, server: &str) -> Vec<String> {
+        vec![
+            self.node_bin.clone(),
+            self.launcher.to_string_lossy().into_owned(),
+            mode.to_string(),
+            server.to_string(),
+        ]
+    }
+
+    /// Stdio server whose env comes from the broker: the launcher fetches it and
+    /// then runs `command args…` with it.
+    pub fn stdio_with_secret_env(&self, server: &str, command: &str, args: &[String]) -> serde_json::Value {
+        let mut argv = self.launcher_argv("env", server);
+        argv.push("--".into());
+        argv.push(command.to_string());
+        argv.extend(args.iter().cloned());
+        serde_json::json!({
+            "type": "stdio",
+            "command": argv[0],
+            "args": argv[1..],
+            "env": self.broker_env(),
+        })
+    }
+
+    /// Point an HTTP/SSE server config at the broker for its headers. Claude runs
+    /// `headersHelper` through a shell and merges the JSON it prints; the Codex
+    /// sidecar runs `devdy_headers_helper` itself (Codex has no helper of its own)
+    /// and maps the result onto `env_http_headers`.
+    pub fn set_headers_helper(&self, cfg: &mut serde_json::Value, engine: &str, server: &str) {
+        let argv = self.launcher_argv("headers", server);
+        if engine == "codex" {
+            cfg["devdy_headers_helper"] = serde_json::json!(argv);
+        } else {
+            // The CLI passes its own env through, which already carries these;
+            // spelling them out keeps the helper working if that ever changes.
+            let env = self
+                .broker_env()
+                .into_iter()
+                .map(|(k, v)| format!("{k}={}", sh_quote(v.as_str().unwrap_or_default())));
+            let cmd = env.chain(argv.iter().map(|a| sh_quote(a))).collect::<Vec<_>>().join(" ");
+            cfg["headersHelper"] = serde_json::Value::String(cmd);
+        }
+    }
+}
+
+/// Single-quote `s` for a POSIX shell.
+fn sh_quote(s: &str) -> String {
+    format!("'{}'", s.replace('\'', "'\\''"))
+}
+
 /// Build the MCP config to inject for a run on `engine` ("claude" | "codex").
 ///
 /// Returns `(value, skipped)`:
@@ -1135,12 +1213,14 @@ fn extract_initialize_result(body: &str) -> Option<String> {
 ///   server applies.
 /// - `skipped` lists server names dropped for the engine (Codex + unsupported transports).
 ///
-/// Only servers with `enabled = 1` that are assigned to the project count. VALUE
-/// secrets are read from the Keychain here — the one place they enter a config.
+/// Only servers with `enabled = 1` that are assigned to the project count.
+/// Secret values never enter the config: a server that has env or header
+/// secrets is wired to fetch them from the broker at start (see [`McpLaunch`]).
 pub async fn resolve_project_mcp_servers(
     db: &Db,
     project_id: &str,
     engine: &str,
+    launch: &McpLaunch,
 ) -> (serde_json::Value, Vec<String>) {
     let rows = match sqlx::query(&format!(
         "SELECT {} FROM mcp_servers WHERE enabled = 1 AND id IN \
@@ -1170,15 +1250,17 @@ pub async fn resolve_project_mcp_servers(
                 let (command, args) =
                     crate::commands::mcp_packages::direct_launch(&command, &server.args)
                         .unwrap_or((command, server.args.clone()));
+                if !secret.env.is_empty() {
+                    let cfg = launch.stdio_with_secret_env(&server.id, &command, &args);
+                    map.insert(server.name.clone(), cfg);
+                    continue;
+                }
                 let mut cfg = serde_json::json!({
                     "type": "stdio",
                     "command": command,
                 });
                 if !args.is_empty() {
                     cfg["args"] = serde_json::json!(args);
-                }
-                if !secret.env.is_empty() {
-                    cfg["env"] = serde_json::json!(secret.env);
                 }
                 map.insert(server.name.clone(), cfg);
             }
@@ -1188,7 +1270,7 @@ pub async fn resolve_project_mcp_servers(
                     "url": server.url.clone().unwrap_or_default(),
                 });
                 if !secret.headers.is_empty() {
-                    cfg["headers"] = serde_json::json!(secret.headers);
+                    launch.set_headers_helper(&mut cfg, engine, &server.id);
                 }
                 map.insert(server.name.clone(), cfg);
             }
@@ -1203,7 +1285,7 @@ pub async fn resolve_project_mcp_servers(
                     "url": server.url.clone().unwrap_or_default(),
                 });
                 if !secret.headers.is_empty() {
-                    cfg["headers"] = serde_json::json!(secret.headers);
+                    launch.set_headers_helper(&mut cfg, engine, &server.id);
                 }
                 map.insert(server.name.clone(), cfg);
             }
@@ -1391,12 +1473,13 @@ pub fn with_builtin_devdy(
 
 /// Add the built-in `google` stdio MCP server (Drive + Gmail + Calendar) to an
 /// already-resolved MCP map when at least one Google account is connected. It
-/// runs the same Node binary as the Claude/devdy sidecar and receives ALL
+/// runs the same Node binary as the Claude/devdy sidecar and learns the
 /// connected accounts via env (`GOOGLE_ACCOUNTS` = JSON array of
-/// {label,email,refresh_token,default}); the server mints its own short-lived
-/// access tokens per account, so a run can outlive the 1h access-token lifetime.
-/// The AI selects an account via each tool's optional `account` argument
-/// (default account when omitted).
+/// {label,email,default} — no credentials). It asks the broker for a
+/// short-lived access token per account as needed, so a run can outlive the 1h
+/// access-token lifetime while refresh tokens and the client secret stay in this
+/// process. The AI selects an account via each tool's optional `account`
+/// argument (default account when omitted).
 ///
 /// One server rather than three: the three product groups share this exact gate,
 /// these exact credentials and one lifetime, so separate processes bought
@@ -1410,7 +1493,7 @@ pub fn with_builtin_devdy(
 pub async fn with_builtin_google(
     db: &Db,
     mcp: serde_json::Value,
-    node_bin: &str,
+    launch: &McpLaunch,
     google_script: &std::path::Path,
     project_id: &str,
 ) -> serde_json::Value {
@@ -1418,10 +1501,9 @@ pub async fn with_builtin_google(
     if !builtin_mcp_enabled(db, "google", project_id).await {
         return mcp;
     }
-    let client = match secrets::get_google_client() {
-        Some(c) => c,
-        None => return mcp,
-    };
+    if secrets::get_google_client().is_none() {
+        return mcp;
+    }
     let rows = match sqlx::query(
         "SELECT id, label, email, is_default FROM google_accounts ORDER BY is_default DESC, label",
     )
@@ -1435,13 +1517,12 @@ pub async fn with_builtin_google(
     let mut accounts = Vec::new();
     for row in &rows {
         let id: String = row.get("id");
-        let Some(refresh_token) = secrets::get_google_account_token(&id) else {
+        if secrets::get_google_account_token(&id).is_none() {
             continue;
-        };
+        }
         accounts.push(serde_json::json!({
             "label": row.get::<String, _>("label"),
             "email": row.try_get::<String, _>("email").unwrap_or_default(),
-            "refresh_token": refresh_token,
             "default": row.get::<i64, _>("is_default") != 0,
         }));
     }
@@ -1449,11 +1530,11 @@ pub async fn with_builtin_google(
         return mcp;
     }
 
-    let env = serde_json::json!({
-        "GOOGLE_CLIENT_ID": client.client_id,
-        "GOOGLE_CLIENT_SECRET": client.client_secret,
-        "GOOGLE_ACCOUNTS": serde_json::Value::Array(accounts).to_string(),
-    });
+    let mut env = launch.broker_env();
+    env.insert(
+        "GOOGLE_ACCOUNTS".into(),
+        serde_json::Value::Array(accounts).to_string().into(),
+    );
 
     let mut map = match mcp {
         serde_json::Value::Object(m) => m,
@@ -1463,7 +1544,7 @@ pub async fn with_builtin_google(
         map.entry("google".to_string()).or_insert_with(|| {
             serde_json::json!({
                 "type": "stdio",
-                "command": node_bin,
+                "command": launch.node_bin,
                 "args": [google_script.to_string_lossy()],
                 "env": env,
             })
@@ -1475,7 +1556,10 @@ pub async fn with_builtin_google(
 
 #[cfg(test)]
 mod tests {
-    use super::{merge_secrets, remote_test_payload, McpServer, SecretEntry, TestMcpConnectionPayload};
+    use super::{
+        merge_secrets, remote_test_payload, sh_quote, McpLaunch, McpServer, SecretEntry,
+        TestMcpConnectionPayload,
+    };
     use std::collections::HashMap;
 
     #[test]
@@ -1530,6 +1614,56 @@ mod tests {
     }
 
     use super::stderr_reason;
+
+    fn launch() -> McpLaunch {
+        McpLaunch {
+            node_bin: "/opt/node".into(),
+            launcher: "/App Support/devdy-mcp-launch.mjs".into(),
+            broker_sock: "/tmp/b.sock".into(),
+            project_id: "p1".into(),
+            run_id: "r1".into(),
+        }
+    }
+
+    #[test]
+    fn a_stdio_server_with_secret_env_gets_it_from_the_launcher() {
+        let cfg = launch().stdio_with_secret_env("srv-1", "npx", &["-y".into(), "pkg".into()]);
+        assert_eq!(cfg["command"], "/opt/node");
+        assert_eq!(
+            cfg["args"],
+            serde_json::json!(["/App Support/devdy-mcp-launch.mjs", "env", "srv-1", "--", "npx", "-y", "pkg"])
+        );
+        // Only the broker coordinates — no secret.
+        assert_eq!(
+            cfg["env"],
+            serde_json::json!({ "DEVDY_BROKER_SOCK": "/tmp/b.sock", "DEVDY_PROJECT_ID": "p1", "DEVDY_RUN_ID": "r1" })
+        );
+    }
+
+    #[test]
+    fn http_headers_come_from_a_helper_on_both_engines() {
+        let mut claude = serde_json::json!({ "type": "http", "url": "https://x" });
+        launch().set_headers_helper(&mut claude, "claude", "srv-1");
+        assert!(claude.get("headers").is_none());
+        assert_eq!(
+            claude["headersHelper"],
+            "DEVDY_BROKER_SOCK='/tmp/b.sock' DEVDY_PROJECT_ID='p1' DEVDY_RUN_ID='r1' \
+             '/opt/node' '/App Support/devdy-mcp-launch.mjs' 'headers' 'srv-1'"
+        );
+
+        let mut codex = serde_json::json!({ "type": "http", "url": "https://x" });
+        launch().set_headers_helper(&mut codex, "codex", "srv-1");
+        assert!(codex.get("headers").is_none());
+        assert_eq!(
+            codex["devdy_headers_helper"],
+            serde_json::json!(["/opt/node", "/App Support/devdy-mcp-launch.mjs", "headers", "srv-1"])
+        );
+    }
+
+    #[test]
+    fn sh_quote_escapes_single_quotes() {
+        assert_eq!(sh_quote("it's"), "'it'\\''s'");
+    }
 
     fn lines(v: &[&str]) -> Vec<String> {
         v.iter().map(|s| s.to_string()).collect()

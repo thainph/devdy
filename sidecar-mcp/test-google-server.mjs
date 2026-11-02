@@ -11,14 +11,16 @@
 //   - a tool that lost its `account` argument and so can't be pointed at a
 //     specific connected account,
 //   - anything printed to stdout that isn't a JSON-RPC frame, which corrupts the
-//     protocol stream for the host.
+//     protocol stream for the host,
+//   - a tool call that gets a token anywhere but the credential broker (the
+//     server holds no refresh token or client secret).
 
 import { spawn } from 'node:child_process';
 import { fileURLToPath } from 'node:url';
 import { dirname, join } from 'node:path';
 
 const SERVER = join(dirname(fileURLToPath(import.meta.url)), 'google.mjs');
-const GROUPS = { drive_: 15, mail_: 15, cal_: 9 };
+const GROUPS = { drive_: 15, sheets_: 4, mail_: 15, cal_: 9 };
 
 const failures = [];
 const check = (ok, label) => {
@@ -27,12 +29,12 @@ const check = (ok, label) => {
 };
 
 /** Send the frames, collect stdout, resolve with parsed frames + raw noise. */
-function drive(frames) {
+function drive(frames, env = {}) {
   return new Promise((resolve, reject) => {
     // Empty GOOGLE_ACCOUNTS: the server must still advertise its tools; only the
     // handlers need credentials.
     const child = spawn(process.execPath, [SERVER], {
-      env: { ...process.env, GOOGLE_ACCOUNTS: '[]', GOOGLE_CLIENT_ID: '', GOOGLE_CLIENT_SECRET: '' },
+      env: { ...process.env, GOOGLE_ACCOUNTS: '[]', DEVDY_BROKER_SOCK: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let out = '';
@@ -102,6 +104,20 @@ for (const n of ['cal_create_event', 'cal_update_event', 'cal_delete_event', 'ca
   const t = tools.find((x) => x.name === n);
   const notify = t && t.inputSchema.properties.notify;
   check(!!notify && /defaults to false/i.test(notify.description || ''), `${n} documents notify=false as the default`);
+}
+
+// With an account but no broker, a call fails closed with a broker error.
+{
+  const { parsed: frames } = await drive(
+    [
+      { jsonrpc: '2.0', id: 1, method: 'initialize', params: {} },
+      { jsonrpc: '2.0', id: 2, method: 'tools/call', params: { name: 'drive_list', arguments: {} } },
+    ],
+    { GOOGLE_ACCOUNTS: JSON.stringify([{ label: 'A', email: 'a@x', default: true }]) },
+  );
+  const r = frames.find((m) => m.id === 2);
+  const text = (r && r.result && r.result.content && r.result.content[0].text) || '';
+  check(!!r && r.result.isError && /broker/i.test(text), `a call without the broker fails closed (got: ${text.slice(0, 80)})`);
 }
 
 if (failures.length) {

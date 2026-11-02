@@ -190,6 +190,32 @@ function classifyStderrLine(raw) {
 // DEVDY_CODEX_MCP is the resolved Record<name, config>. Rust forwards stdio and
 // streamable HTTP servers to Codex. We turn each into TOML config override flags
 // placed BEFORE 'app-server'.
+//
+// The config carries no secrets (it ends up on codex's command line). An HTTP
+// server with secret headers comes with `devdy_headers_helper` — the argv of
+// sidecar-proxy/devdy-mcp-launch.mjs, which asks the credential broker for them.
+// Codex has no helper hook of its own, so we run it here and hand the values to
+// codex via env (`env_http_headers`), never via `-c` — so unlike on Claude,
+// those header values do sit in the codex process env. A server whose
+// credentials can't be fetched is left out (with a log line) rather than started
+// without them.
+
+/** Run a server's headers helper; null (server skipped) when it fails. */
+function helperHeaders(name, argv) {
+  if (!Array.isArray(argv) || !argv.length) return null
+  const r = spawnSync(argv[0], argv.slice(1), {
+    encoding: 'utf8', timeout: 15_000, stdio: ['ignore', 'pipe', 'pipe'],
+  })
+  if (r.status === 0) {
+    try {
+      const headers = JSON.parse(r.stdout)
+      if (headers && typeof headers === 'object') return headers
+    } catch { /* fall through */ }
+  }
+  // The helper's stderr names the reason (e.g. a broker denial) — never a secret.
+  note(`MCP server "${name}" skipped: could not get its credentials (${(r.stderr || '').trim() || r.error?.message || `exit ${r.status}`})`, 'warn')
+  return null
+}
 
 // Escape a string as a TOML basic string: wrap in double quotes, escape
 // backslash and double-quote (and control chars codex would choke on).
@@ -245,8 +271,13 @@ function buildMcpConfig() {
     const currentServerIndex = serverIndex++
     if (!cfg || typeof cfg !== 'object') continue
     // Shared per-server knobs (only for transports we forward below).
-    const forwarded = (cfg.type === 'stdio' && cfg.command) ||
-      ((cfg.type === 'http' || cfg.type === 'streamable_http') && cfg.url)
+    const isHttp = (cfg.type === 'http' || cfg.type === 'streamable_http') && cfg.url
+    let headers = cfg.headers
+    if (isHttp && cfg.devdy_headers_helper) {
+      headers = helperHeaders(name, cfg.devdy_headers_helper)
+      if (!headers) continue
+    }
+    const forwarded = (cfg.type === 'stdio' && cfg.command) || isHttp
     if (forwarded) {
       const timeoutSec = Number(cfg.tool_timeout_sec) > 0 ? Number(cfg.tool_timeout_sec) : MCP_TOOL_TIMEOUT_SEC
       if (timeoutSec) args.push('-c', `mcp_servers.${name}.tool_timeout_sec=${timeoutSec}`)
@@ -265,12 +296,12 @@ function buildMcpConfig() {
       continue
     }
 
-    if ((cfg.type === 'http' || cfg.type === 'streamable_http') && cfg.url) {
+    if (isHttp) {
       args.push('-c', `mcp_servers.${name}.url=${tomlString(cfg.url)}`)
-      if (cfg.headers && typeof cfg.headers === 'object' && Object.keys(cfg.headers).length) {
+      if (headers && typeof headers === 'object' && Object.keys(headers).length) {
         const headerEnvRefs = {}
         let i = 0
-        for (const [header, value] of Object.entries(cfg.headers)) {
+        for (const [header, value] of Object.entries(headers)) {
           const envName = `DEVDY_MCP_HTTP_${envNamePart(name)}_${currentServerIndex}_${i++}`
           env[envName] = String(value)
           headerEnvRefs[header] = envName
