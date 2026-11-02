@@ -107,7 +107,7 @@ const DEVDY_TOOL_GROUPS = [
   '📝 notes_list / read / search / create / update / append / set_project / reorder / delete',
   '🧠 sessions_recent / search / read',
   '✅ todos_list / add / done / update / set_project / reorder / delete / clear_done',
-  '📁 project_info / file_tree',
+  '📁 project_info / projects_list / projects_create / repos_list / repos_add / repos_remove / file_tree',
   '🔀 git_status / git_diff',
   '🖥️ vps_list / vps_run',
   '🧩 skills_list / read / create / update / delete',

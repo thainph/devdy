@@ -17,6 +17,7 @@
 // stdout; everything else must use stderr.
 
 import * as store from './lib/store.mjs';
+import * as projectsStore from './lib/projects-store.mjs';
 import { readRunTranscript, renderTranscript, findSnippet } from './lib/transcript.mjs';
 import { fileTree, gitStatus, gitDiff } from './lib/project.mjs';
 import { runOnServer } from './lib/ssh.mjs';
@@ -46,6 +47,16 @@ const todoLine = (t) => {
   if (t.source_url) bits.push(`source ${t.source_ref || t.source_url}`);
   if (t.linked_runs) bits.push(`sessions: ${t.linked_runs}`);
   return `- [${t.done ? 'x' : ' '}] ${t.text}${bits.map((b) => ` · ${b}`).join('')}  (${t.id})`;
+};
+// One linked repo: `- [id] name — /path · owner/repo` (or the GitLab path).
+const repoLine = (r) => {
+  const remote =
+    r.provider === 'gitlab' && r.gitlab_project_path
+      ? ` · gitlab:${r.gitlab_project_path}`
+      : r.github_owner && r.github_repo
+        ? ` · ${r.github_owner}/${r.github_repo}`
+        : '';
+  return `- [${r.id}] ${r.name} — ${r.path}${remote}`;
 };
 // A one-line excerpt centred on the first case-insensitive hit; falls back to the
 // head of the text when the match was in the title rather than the body.
@@ -512,7 +523,7 @@ const tools = {
 
   projects_list: {
     description:
-      'List every Devdy project (name, path, default engine and how many repos each has linked). Use this to discover project names/ids to pass to repos_list.',
+      'List every Devdy project (name, path, default engine and how many repos each has linked). Use this to discover project names/ids to pass to repos_list / repos_add.',
     inputSchema: { type: 'object', properties: {} },
     handler: () => {
       const rows = store.listProjects();
@@ -562,6 +573,61 @@ const tools = {
       return [...byProject.entries()]
         .map(([name, list]) => `# ${name} — ${list.length} repo(s)\n${list.map(fmt).join('\n')}`)
         .join('\n\n');
+    },
+  },
+
+  projects_create: {
+    description:
+      'Register a local folder as a new Devdy project. By default the folder itself and its immediate subfolders that are git repos are linked as repos (GitHub/GitLab coordinates read from each origin remote), like the app\'s "Add project" dialog; detect_repos=false links none. Fails if the folder is already a project.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'absolute path of an existing folder (~ allowed)' },
+        name: { type: 'string', description: 'project name (default: the folder name)' },
+        detect_repos: { type: 'boolean', description: 'link git repos found in the folder (default true)' },
+      },
+      required: ['path'],
+    },
+    handler: (a) => {
+      const p = projectsStore.createProject(a);
+      const repos = p.repos.length ? `\n${p.repos.map(repoLine).join('\n')}` : ' No repos linked.';
+      return `Created project "${p.name}" (${p.id}) at ${p.path}.${p.repos.length ? ` Linked ${p.repos.length} repo(s):` : ''}${repos}`;
+    },
+  },
+
+  repos_add: {
+    description:
+      'Link a local git repo folder to a Devdy project: project="<id or name>" (see projects_list), the current project by default. GitHub/GitLab coordinates are read from the repo\'s origin remote, or from remote_url when given.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        path: { type: 'string', description: 'absolute path of the repo folder (~ allowed)' },
+        project: { type: 'string', description: 'Project id or name (see projects_list); default the current project' },
+        name: { type: 'string', description: 'repo display name (default: the folder name)' },
+        remote_url: { type: 'string', description: 'GitHub/GitLab repo URL, overrides the origin remote' },
+      },
+      required: ['path'],
+    },
+    handler: (a) => {
+      const { project, repo, git } = projectsStore.addRepo(a);
+      const warn = git ? '' : '\n(note: the folder has no .git — it is linked anyway)';
+      return `Linked repo to project "${project.name}" (${project.id}):\n${repoLine(repo)}${warn}`;
+    },
+  },
+
+  repos_remove: {
+    description:
+      'Unlink one or more repos from their Devdy project by repo id (see repos_list). Only the link is removed — the folder and its git history on disk are untouched; past sessions keep running but lose the repo reference. A batch is all or nothing.',
+    inputSchema: {
+      type: 'object',
+      properties: {
+        id: { type: 'string' },
+        ids: { type: 'array', items: { type: 'string' }, description: 'Bulk unlink' },
+      },
+    },
+    handler: (a) => {
+      const rows = projectsStore.removeRepos({ ids: a.ids ?? a.id });
+      return `Unlinked ${rows.length} repo(s):\n${rows.map((r) => `- [${r.id}] ${r.name} — ${r.path} (from "${r.project_name}")`).join('\n')}`;
     },
   },
 
