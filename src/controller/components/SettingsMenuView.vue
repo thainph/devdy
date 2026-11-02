@@ -1,9 +1,10 @@
 <script setup lang="ts">
 /**
- * The Setting tab: a menu, each row opening its own screen. The project rows
- * act on the project picked in the header (their "on / total" counts come
- * from its switches once loaded); then this phone's look and notifications,
- * and the connection itself (Refresh re-fetches every tab, Disconnect).
+ * The Setting tab: a menu, each row opening its own screen. The first row
+ * picks the project (the shared project picker); the rows under it act on
+ * that project (their "on / total" counts come from its switches once
+ * loaded); then this phone's look and notifications, and the connection
+ * itself (Refresh re-fetches every tab, Disconnect).
  */
 import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -11,6 +12,7 @@ import {
   Bell,
   BellOff,
   ChevronRight,
+  FolderOpen,
   LogOut,
   Palette,
   Plug,
@@ -36,6 +38,7 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   open: [page: SettingsPage]
+  'pick-project': []
   refresh: []
   disconnect: []
 }>()
@@ -87,10 +90,16 @@ const row =
 <template>
   <main class="h-full min-h-0 overflow-auto px-3 py-3 text-foreground">
     <template v-if="projects.length">
-      <h2 :class="heading" class="mt-0 truncate">
-        {{ projectName ? t('controller.settingsMenu.projectNamed', { name: projectName }) : t('controller.settingsMenu.project') }}
-      </h2>
+      <h2 :class="heading" class="mt-0">{{ t('controller.settingsMenu.project') }}</h2>
       <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
+        <button type="button" :class="row" @click="emit('pick-project')">
+          <FolderOpen class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
+          <span class="shrink-0">{{ t('controller.settingsMenu.projectRow') }}</span>
+          <span class="min-w-0 flex-1 truncate text-right text-xs text-muted-foreground">{{ projectName }}</span>
+          <ChevronRight class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
+        </button>
+      </div>
+      <div class="ui-card mt-3 overflow-hidden rounded-xl border border-border bg-card">
         <button v-for="r in projectRows" :key="r.id" type="button" :class="row" @click="emit('open', r.id)">
           <component :is="r.icon" class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
           <span class="min-w-0 flex-1 truncate">{{ r.label }}</span>

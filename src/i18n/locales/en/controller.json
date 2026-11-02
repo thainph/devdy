@@ -242,8 +242,8 @@
   },
   "settingsMenu": {
     "project": "Project",
-    "projectNamed": "Project · {name}",
-    "device": "This device"
+    "device": "This device",
+    "projectRow": "Project"
   },
   "push": {
     "title": "Notifications",
@@ -290,5 +290,14 @@
     "followHost": "Same as desktop",
     "followHostValue": "Same as desktop ({value})",
     "hint": "Only changes this device — the desktop keeps its own look."
+  },
+  "projectPicker": {
+    "title": "Choose a project",
+    "search": "Search projects",
+    "clear": "Clear",
+    "recent": "Recent",
+    "others": "Other projects",
+    "empty": "No matching project.",
+    "open": "Project: {name} — change"
   }
 }
