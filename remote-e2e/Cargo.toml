@@ -2,7 +2,7 @@
 name = "remote-e2e"
 version = "0.1.0"
 edition = "2021"
-description = "Devdy Remote Control E2E crypto contract (PSK + X25519 ECDH + XChaCha20-Poly1305), cross-compatible with the libsodium-wrappers TS reference impl."
+description = "Devdy Remote Control E2E crypto contract (PSK + X25519 ECDH + XChaCha20-Poly1305), cross-compatible with the @noble/* TS reference impl in src/remote/e2e."
 license = "MIT"
 publish = false
 

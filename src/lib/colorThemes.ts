@@ -1,5 +1,5 @@
 // Named color palettes (Settings → Color theme). Each id matches a
-// `[data-theme='<id>']` block in src/assets/main.css or
+// `[data-theme='<id>']` block in src/assets/base.css or
 // src/assets/themes/<id>.css; `default` has no attribute (the :root / .dark
 // tokens). Pure data, shared by the desktop picker and the phone Controller.
 

@@ -6,7 +6,8 @@
 //! single BOUND run's events are forwarded (single-session redesign); events for
 //! other runs are dropped. Replay reads the persisted `.devdy/runs/<run_id>.log` and
 //! sends it in bounded batches before live stream continues (FR-005/AC-07),
-//! capped at [`REPLAY_MAX_LINES`].
+//! capped at [`REPLAY_MAX_LINES`] / [`REPLAY_MAX_BYTES`], with inline images and
+//! oversized strings stripped so a phone can afford to parse it.
 
 use crate::db::Db;
 use crate::remote::bus::{RemoteBus, RemoteRunEvent};
@@ -34,8 +35,22 @@ const PROJECT_FILES_MAX: usize = 500;
 /// (BR-006). Newer-than-cap logs are truncated from the FRONT (oldest dropped)
 /// so the Controller still lands on the most recent context.
 pub const REPLAY_MAX_LINES: usize = 2000;
+/// Total bytes (after [`slim_replay_line`]) a single replay may carry. Like the
+/// line cap, the newest lines win. The phone decrypts and parses the whole
+/// history in one go on its main thread, so this bounds that work too.
+pub const REPLAY_MAX_BYTES: usize = 2 * 1024 * 1024;
 /// Lines per replay batch envelope.
 const REPLAY_BATCH: usize = 200;
+/// Approximate bytes per replay batch envelope (raw line bytes; a single line
+/// larger than this still ships, alone in its batch).
+const REPLAY_BATCH_BYTES: usize = 256 * 1024;
+/// Longest string value (or non-JSON line) replay ships verbatim; longer ones
+/// are cut with a `…[truncated N bytes]` marker.
+const REPLAY_MAX_STRING: usize = 64 * 1024;
+/// Stands in for an inline image on the Controller. Swapped in as a `text`
+/// block, which the stream parser shows as text in a user bubble or a
+/// tool result instead of trying to decode an image.
+const REPLAY_IMAGE_PLACEHOLDER: &str = "[image omitted on remote]";
 
 /// Monotonic per-room sequence for `seq` on outbound data frames (SRS §5.1).
 #[derive(Default)]
@@ -825,10 +840,119 @@ pub fn run_log_path(project_path: &str, run_id: &str) -> PathBuf {
         .join(format!("{run_id}.log"))
 }
 
+/// Cut `s` to at most [`REPLAY_MAX_STRING`] bytes (on a char boundary) plus a
+/// marker saying how much was dropped. `None` when it already fits.
+fn truncate_replay_str(s: &str) -> Option<String> {
+    if s.len() <= REPLAY_MAX_STRING {
+        return None;
+    }
+    let mut cut = REPLAY_MAX_STRING;
+    while !s.is_char_boundary(cut) {
+        cut -= 1;
+    }
+    Some(format!("{}…[truncated {} bytes]", &s[..cut], s.len() - cut))
+}
+
+/// An inline (base64) image block: Claude's `{"type":"image","source":{"data":..}}`
+/// or a `data:` URL under `url` / `image_url`.
+fn is_inline_image(map: &serde_json::Map<String, serde_json::Value>) -> bool {
+    if map.get("type").and_then(|t| t.as_str()) != Some("image") {
+        return false;
+    }
+    let has_data = map
+        .get("source")
+        .and_then(|s| s.get("data"))
+        .is_some_and(|d| d.is_string());
+    let data_url = ["url", "image_url"].iter().any(|k| {
+        map.get(*k)
+            .and_then(|u| u.as_str())
+            .is_some_and(|u| u.starts_with("data:"))
+    });
+    has_data || data_url
+}
+
+/// Strip inline images and truncate oversized strings in place. Returns whether
+/// anything changed, so untouched lines ship byte-for-byte.
+fn slim_value(v: &mut serde_json::Value) -> bool {
+    use serde_json::Value;
+    match v {
+        Value::Object(map) if is_inline_image(map) => {
+            *v = serde_json::json!({ "type": "text", "text": REPLAY_IMAGE_PLACEHOLDER });
+            true
+        }
+        Value::Object(map) => map.values_mut().fold(false, |acc, x| slim_value(x) | acc),
+        Value::Array(items) => items.iter_mut().fold(false, |acc, x| slim_value(x) | acc),
+        Value::String(s) => match truncate_replay_str(s) {
+            Some(t) => {
+                *s = t;
+                true
+            }
+            None => false,
+        },
+        _ => false,
+    }
+}
+
+/// Shrink one log line for the Controller: images (base64 screenshots run to
+/// hundreds of KB per line) become a text placeholder and huge strings are cut.
+/// Non-JSON lines are only truncated. Desktop views read the log file directly
+/// and keep full fidelity; this only shapes what goes over the relay.
+fn slim_replay_line(line: &str) -> String {
+    let Ok(mut v) = serde_json::from_str::<serde_json::Value>(line) else {
+        return truncate_replay_str(line).unwrap_or_else(|| line.to_string());
+    };
+    if !slim_value(&mut v) {
+        return line.to_string();
+    }
+    serde_json::to_string(&v).unwrap_or_else(|_| line.to_string())
+}
+
+/// Slim the log's lines and keep the newest that fit both [`REPLAY_MAX_LINES`]
+/// and [`REPLAY_MAX_BYTES`] (the newest line is kept even if it alone is over).
+/// Works from the tail so dropped lines are never parsed.
+fn select_replay_lines(content: &str) -> Vec<String> {
+    let mut kept: Vec<String> = Vec::new();
+    let mut bytes = 0usize;
+    for raw in content.lines().rev().take(REPLAY_MAX_LINES) {
+        let line = slim_replay_line(raw);
+        if !kept.is_empty() && bytes + line.len() > REPLAY_MAX_BYTES {
+            break;
+        }
+        bytes += line.len();
+        kept.push(line);
+    }
+    kept.reverse();
+    kept
+}
+
+/// Split lines into batches of at most [`REPLAY_BATCH`] lines and roughly
+/// [`REPLAY_BATCH_BYTES`]; every batch holds at least one line.
+fn batch_replay_lines(lines: Vec<String>) -> Vec<Vec<String>> {
+    let mut batches: Vec<Vec<String>> = Vec::new();
+    let mut cur: Vec<String> = Vec::new();
+    let mut cur_bytes = 0usize;
+    for line in lines {
+        if !cur.is_empty()
+            && (cur.len() >= REPLAY_BATCH || cur_bytes + line.len() > REPLAY_BATCH_BYTES)
+        {
+            batches.push(std::mem::take(&mut cur));
+            cur_bytes = 0;
+        }
+        cur_bytes += line.len();
+        cur.push(line);
+    }
+    if !cur.is_empty() {
+        batches.push(cur);
+    }
+    batches
+}
+
 /// Send the persisted log for `run_id` back to the Controller in batches
-/// (FR-005/AC-07). Returns the number of lines sent. The final batch carries
-/// `done = true`; live stream then continues without overlap because the
-/// Controller only started receiving live events after it joined.
+/// (FR-005/AC-07). Returns the number of lines sent. Lines are slimmed for the
+/// phone (no inline images, long strings cut) and capped by count and bytes,
+/// newest kept. The final batch carries `done = true`; live stream then
+/// continues without overlap because the Controller only started receiving
+/// live events after it joined.
 pub async fn replay_history(
     session: &Session,
     room_id: &str,
@@ -838,15 +962,11 @@ pub async fn replay_history(
     seq: &SeqCounter,
 ) -> usize {
     let content = std::fs::read_to_string(log_path).unwrap_or_default();
-    let mut lines: Vec<String> = content.lines().map(str::to_string).collect();
     // BR-006: cap the replay; keep the most recent lines.
-    if lines.len() > REPLAY_MAX_LINES {
-        let drop = lines.len() - REPLAY_MAX_LINES;
-        lines.drain(0..drop);
-    }
+    let lines = select_replay_lines(&content);
     let total = lines.len();
 
-    let mut chunks = lines.chunks(REPLAY_BATCH).peekable();
+    let mut chunks = batch_replay_lines(lines).into_iter().peekable();
     if chunks.peek().is_none() {
         // No history — still signal completion so the Controller stops waiting.
         let payload = StreamPayload::History {
@@ -864,7 +984,7 @@ pub async fn replay_history(
         let done = chunks.peek().is_none();
         let payload = StreamPayload::History {
             run_id: run_id.to_string(),
-            lines: chunk.to_vec(),
+            lines: chunk,
             done,
         };
         if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
@@ -1017,6 +1137,156 @@ mod tests {
         // Oldest dropped: first kept line is line-500, last is line-(n-1).
         assert_eq!(got.first().unwrap(), "line-500");
         assert_eq!(got.last().unwrap(), &format!("line-{}", n - 1));
+    }
+
+    /// Write `lines` to a temp log, replay it, and return (sent, batches, done
+    /// flags) as the Controller would see them after opening each frame.
+    fn replay_lines(lines: &[String]) -> (usize, Vec<Vec<String>>, Vec<bool>) {
+        let a = Keypair::generate();
+        let b = Keypair::generate();
+        let psk = b"replay-test-psk-0123456789";
+        let host = Session::new(psk, &a, &b.public).unwrap();
+        let ctrl = Session::new(psk, &b, &a.public).unwrap();
+
+        let path = temp_log("replay-slim");
+        let mut f = std::fs::File::create(&path).unwrap();
+        for l in lines {
+            writeln!(f, "{l}").unwrap();
+        }
+        drop(f);
+
+        let (tx, mut rx) = crate::remote::outbound::channel();
+        let seq = SeqCounter::default();
+        let rt = tokio::runtime::Runtime::new().unwrap();
+        let sent = rt.block_on(replay_history(&host, "rm_1", "r_1", &path, &tx, &seq));
+        drop(tx);
+        let _ = std::fs::remove_file(&path);
+
+        let (mut batches, mut dones) = (Vec::new(), Vec::new());
+        while let Ok(env) = rx.try_recv() {
+            let pt = ctrl.open(env.cipher.as_deref().unwrap()).unwrap();
+            if let StreamPayload::History { lines, done, .. } = serde_json::from_slice(&pt).unwrap()
+            {
+                batches.push(lines);
+                dones.push(done);
+            }
+        }
+        (sent, batches, dones)
+    }
+
+    fn image_block(bytes: usize) -> serde_json::Value {
+        serde_json::json!({
+            "type": "image",
+            "source": { "type": "base64", "media_type": "image/png", "data": "A".repeat(bytes) }
+        })
+    }
+
+    #[test]
+    fn replay_strips_images_nested_in_tool_results_and_user_turns() {
+        let tool_result = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [{
+                "type": "tool_result",
+                "tool_use_id": "tu_1",
+                "content": [{ "type": "text", "text": "shot taken" }, image_block(800_000)]
+            }]}
+        });
+        let user_turn = serde_json::json!({
+            "type": "user",
+            "message": { "role": "user", "content": [
+                { "type": "text", "text": "look" },
+                image_block(500_000),
+                { "type": "image", "url": format!("data:image/png;base64,{}", "B".repeat(1000)) }
+            ]}
+        });
+        let plain = r#"{"type":"assistant","message":{"content":[{"type":"text","text":"hi"}]}}"#;
+        let (sent, batches, dones) = replay_lines(&[
+            tool_result.to_string(),
+            user_turn.to_string(),
+            plain.to_string(),
+        ]);
+        assert_eq!(sent, 3);
+        assert_eq!(dones.last(), Some(&true));
+        let got: Vec<String> = batches.concat();
+
+        let tr: serde_json::Value = serde_json::from_str(&got[0]).unwrap();
+        let inner = &tr["message"]["content"][0]["content"];
+        assert_eq!(inner[0]["text"], "shot taken");
+        assert_eq!(
+            inner[1],
+            serde_json::json!({ "type": "text", "text": REPLAY_IMAGE_PLACEHOLDER })
+        );
+        assert_eq!(tr["message"]["content"][0]["tool_use_id"], "tu_1");
+
+        let ut: serde_json::Value = serde_json::from_str(&got[1]).unwrap();
+        let content = ut["message"]["content"].as_array().unwrap();
+        assert_eq!(content[0]["text"], "look");
+        assert_eq!(content[1]["text"], REPLAY_IMAGE_PLACEHOLDER);
+        assert_eq!(content[2]["text"], REPLAY_IMAGE_PLACEHOLDER);
+        assert!(got[1].len() < 1000, "no base64 left");
+
+        // Untouched lines ship byte-for-byte.
+        assert_eq!(got[2], plain);
+    }
+
+    #[test]
+    fn replay_truncates_long_strings_and_raw_lines() {
+        let big = "x".repeat(REPLAY_MAX_STRING + 1234);
+        let json_line = serde_json::json!({
+            "type": "user",
+            "message": { "content": [{ "type": "tool_result", "content": big }] }
+        })
+        .to_string();
+        let raw_line = format!("not json {big}");
+        let (_, batches, _) = replay_lines(&[json_line, raw_line.clone()]);
+        let got = batches.concat();
+
+        let v: serde_json::Value = serde_json::from_str(&got[0]).unwrap();
+        let s = v["message"]["content"][0]["content"].as_str().unwrap();
+        assert!(s.starts_with(&"x".repeat(REPLAY_MAX_STRING)));
+        assert!(s.ends_with("…[truncated 1234 bytes]"), "{}", &s[s.len() - 40..]);
+
+        let dropped = raw_line.len() - REPLAY_MAX_STRING;
+        assert!(got[1].starts_with("not json "));
+        assert!(got[1].ends_with(&format!("…[truncated {dropped} bytes]")));
+    }
+
+    #[test]
+    fn truncation_respects_char_boundaries() {
+        // 'é' is 2 bytes, so the cap lands mid-char and must back off one byte.
+        let s = format!("a{}", "é".repeat(REPLAY_MAX_STRING));
+        let t = truncate_replay_str(&s).unwrap();
+        let kept = t.split('…').next().unwrap();
+        assert_eq!(kept.len(), REPLAY_MAX_STRING - 1);
+    }
+
+    #[test]
+    fn replay_byte_budget_keeps_the_newest_lines_in_bounded_batches() {
+        // 100 lines of ~40 KB each = ~4 MB: over the byte budget, under the
+        // line cap, and each line is under the string cap so none are cut.
+        let lines: Vec<String> = (0..100)
+            .map(|i| format!("{i:03}-{}", "y".repeat(40 * 1024)))
+            .collect();
+        let (sent, batches, dones) = replay_lines(&lines);
+
+        let got = batches.concat();
+        assert_eq!(got.len(), sent);
+        let bytes: usize = got.iter().map(String::len).sum();
+        assert!(bytes <= REPLAY_MAX_BYTES, "within budget: {bytes}");
+        assert!(bytes + lines[0].len() > REPLAY_MAX_BYTES, "budget used fully");
+        // The tail is kept, in order.
+        assert_eq!(got.last(), lines.last());
+        assert_eq!(got[..], lines[lines.len() - sent..]);
+
+        // Batches are bounded by bytes (not just 200 lines) and only the last
+        // one is done.
+        assert!(batches.len() > 1);
+        for b in &batches {
+            assert!(!b.is_empty());
+            assert!(b.iter().map(String::len).sum::<usize>() <= REPLAY_BATCH_BYTES);
+        }
+        assert_eq!(dones.iter().filter(|d| **d).count(), 1);
+        assert_eq!(dones.last(), Some(&true));
     }
 
     #[test]
