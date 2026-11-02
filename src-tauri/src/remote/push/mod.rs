@@ -6,8 +6,9 @@
 //! browser's push service — the relay is not involved. A dispatcher task, alive
 //! while Remote Control runs, listens on the [`RemoteBus`], collapses bursts of
 //! prompts / finished runs into one notification per device, and stays quiet
-//! while a phone Controller is connected and on screen — holding those bursts
-//! back until it leaves rather than dropping them.
+//! while a phone Controller is connected and on screen: what happens then is
+//! held, dropped if the phone reports leaving (it saw it live), and sent only
+//! if it is unclear the phone ever saw it (disconnected, gone quiet).
 
 pub mod actions;
 pub mod coalesce;
@@ -45,6 +46,8 @@ pub struct PushHub {
     last_heard: Arc<Mutex<Instant>>,
     /// Woken when the phone may have stopped looking, to hand out held bursts.
     release: Arc<Notify>,
+    /// The phone itself reported leaving the screen: what is held was seen.
+    left_screen: Arc<AtomicBool>,
     client: reqwest::Client,
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -56,6 +59,7 @@ impl Default for PushHub {
             visible: Arc::new(AtomicBool::new(true)),
             last_heard: Arc::new(Mutex::new(Instant::now())),
             release: Arc::new(Notify::new()),
+            left_screen: Arc::new(AtomicBool::new(false)),
             client: reqwest::Client::builder()
                 .timeout(SEND_TIMEOUT)
                 // A push service never redirects; following one would undo
@@ -86,6 +90,7 @@ impl PushHub {
         self.visible.store(visible, Ordering::SeqCst);
         self.touch();
         if !visible {
+            self.left_screen.store(true, Ordering::SeqCst);
             self.release.notify_one();
         }
     }
@@ -107,6 +112,11 @@ impl PushHub {
     pub fn is_suppressed(&self) -> bool {
         let since = self.last_heard.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
         suppressed(self.phone_connected.load(Ordering::SeqCst), self.visible.load(Ordering::SeqCst), since)
+    }
+
+    /// Consume a "left the screen" report.
+    fn take_left_screen(&self) -> bool {
+        self.left_screen.swap(false, Ordering::SeqCst)
     }
 
     /// Start the dispatcher (no-op if running). Runs alongside the relay agent.
@@ -213,12 +223,25 @@ async fn dispatch(hub: PushHub, db: Db, bus: RemoteBus) {
         } else {
             recheck = None;
         }
+        // Checked before every use of `holder`, so a held batch can never ride
+        // out with a burst after the phone said it saw it.
+        let settle = |holder: &mut Holder| {
+            if hub.take_left_screen() {
+                holder.discard();
+            }
+        };
         let ready = tokio::select! {
             ev = rx.recv() => {
                 match ev {
                     Ok(ev) => {
                         if let Some(kind) = kind_of(&ev) {
-                            co.note(kind, Instant::now());
+                            settle(&mut holder);
+                            // On screen, the phone shows it live.
+                            if hub.is_suppressed() {
+                                holder.hold(kind);
+                            } else {
+                                co.note(kind, Instant::now());
+                            }
                         }
                     }
                     Err(RecvError::Lagged(n)) => {
@@ -228,12 +251,17 @@ async fn dispatch(hub: PushHub, db: Db, bus: RemoteBus) {
                 }
                 None
             }
-            _ = sleep_until(due) => co
-                .take_due(Instant::now())
-                .and_then(|counts| holder.on_due(counts, hub.is_suppressed())),
-            _ = hub.release.notified() => holder.release(hub.is_suppressed()),
+            _ = sleep_until(due) => {
+                settle(&mut holder);
+                co.take_due(Instant::now()).and_then(|counts| holder.on_due(counts, hub.is_suppressed()))
+            }
+            _ = hub.release.notified() => {
+                settle(&mut holder);
+                holder.release(hub.is_suppressed())
+            }
             _ = sleep_until(recheck) => {
                 recheck = None;
+                settle(&mut holder);
                 holder.release(hub.is_suppressed())
             }
         };
@@ -305,8 +333,11 @@ mod tests {
         hub.set_visible(false);
         // A stored permit: the dispatcher sees it even if it was busy.
         tokio::time::timeout(Duration::from_millis(100), hub.release.notified()).await.unwrap();
+        assert!(hub.take_left_screen(), "the phone said so: drop what it saw");
+        assert!(!hub.take_left_screen(), "consumed once");
         hub.controller_detached();
         tokio::time::timeout(Duration::from_millis(100), hub.release.notified()).await.unwrap();
+        assert!(!hub.take_left_screen(), "a lost room is not proof it saw anything");
     }
 
     #[test]
