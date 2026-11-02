@@ -146,21 +146,6 @@ function selectToggleProject(projectId: string): void {
   data.loadToggles(projectId)
 }
 
-// The Setting menu shows the picked project's name and "on / total" counts:
-// land on the first project, and fetch its switches when they are not in.
-watch(
-  () => [tab.value === 'project' && hasData.value, store.state.projectList] as const,
-  ([on, projects]) => {
-    if (!on) return
-    const pid = toggleProjectId.value
-    if (!pid) {
-      if (projects.length) selectToggleProject(projects[0].id)
-    } else if (data.state.toggles?.project_id !== pid) {
-      data.loadToggles(pid)
-    }
-  },
-)
-
 /** The app phase drives which screen shows. `session` covers both the run
  * browser and an open run — `store.state.activeRunId` decides between them. */
 type Phase = 'link' | 'otp' | 'session'
@@ -565,6 +550,21 @@ function openSettingsPage(page: SettingsPage): void {
   data.clearError()
   settingsPage.value = page
 }
+
+// The Setting menu shows the picked project's name and "on / total" counts:
+// land on the first project, and fetch its switches when they are not in.
+watch(
+  () => [tab.value === 'project' && hasData.value, store.state.projectList] as const,
+  ([on, projects]) => {
+    if (!on) return
+    const pid = toggleProjectId.value
+    if (!pid) {
+      if (projects.length) selectToggleProject(projects[0].id)
+    } else if (data.state.toggles?.project_id !== pid) {
+      data.loadToggles(pid)
+    }
+  },
+)
 
 const projectFilterOptions = computed(() => [
   { value: '', label: t('controller.data.allProjects') },
