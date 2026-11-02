@@ -21,7 +21,8 @@
 // REVEAL_SECS or when the window loses focus; Copy happens in the backend (cleared
 // from the clipboard after 30 s). Content never goes to localStorage, the URL,
 // toasts or logs. Typing in the editor pushes the backend's idle auto-lock back
-// (vaultTouch); when the vault locks anyway, open drafts are dropped.
+// (vaultTouch); when the vault locks anyway, an unsaved draft is held in memory
+// only (behind the unlock screen) and reopened once the vault is unlocked again.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -96,11 +97,13 @@ async function refresh() {
     loadError.value = errText(e)
   }
   if (!status.value?.unlocked) forgetOpen()
+  else if (heldDraft) restoreDraft()
   else if (selectedId.value && !notes.value.some((n) => n.id === selectedId.value)) dropSelection()
 }
 
-/** Drop everything sensitive the window holds (on lock). */
+/** Drop everything sensitive the window holds (on lock), but an unsaved draft. */
 function forgetOpen() {
+  if (dirty.value) holdDraft()
   hideContent()
   clearDraft()
   selectedId.value = null
@@ -123,7 +126,7 @@ async function onUnlocked(viaRecovery: boolean) {
   await refresh()
   // Opened with the recovery key: a new password is due before anything else.
   if (viaRecovery) openPasswordDialog(true)
-  else if (!selectedId.value) selectFirst()
+  else if (!selectedId.value && !editing.value) selectFirst()
 }
 
 // ── Sidebar: search + project filter ─────────────────────────────────────────
@@ -261,9 +264,53 @@ function clearDraft() {
   storedContent = ''
 }
 
+/** An unsaved draft cut off by a lock. Memory only — never stored anywhere. */
+interface HeldDraft {
+  /** null = a new note. */
+  id: string | null
+  title: string
+  content: string
+  projectId: string | null
+  storedTitle: string
+  storedContent: string
+}
+let heldDraft: HeldDraft | null = null
+
+function holdDraft() {
+  heldDraft = {
+    id: creatingNew.value ? null : selectedId.value,
+    title: draftTitle.value,
+    content: draftContent.value,
+    // The note list is already emptied by the lock: an edited note keeps its own project.
+    projectId: creatingNew.value ? draftProject.value : null,
+    storedTitle,
+    storedContent,
+  }
+  toast.info(t('secretNotes.draftHeld'))
+}
+
+/** Reopen the held draft after unlock; its note gone (another device), as a new note. */
+function restoreDraft() {
+  const d = heldDraft
+  heldDraft = null
+  if (!d) return
+  const exists = d.id !== null && notes.value.some((n) => n.id === d.id)
+  hideContent()
+  creatingNew.value = !exists
+  if (exists) selectedId.value = d.id
+  storedTitle = exists ? d.storedTitle : ''
+  storedContent = exists ? d.storedContent : ''
+  draftTitle.value = d.title
+  draftContent.value = d.content
+  draftProject.value = d.projectId
+  editing.value = true
+  toast.info(t('secretNotes.draftRestored'))
+  focusEditor()
+}
+
 /** Leaving unsaved edits takes a confirm; true = go ahead. */
 async function confirmDiscard(): Promise<boolean> {
-  if (!dirty.value) return true
+  if (!dirty.value && !heldDraft) return true
   return confirm({
     title: t('item.confirm.discardTitle'),
     message: t('item.confirm.discardMessage'),
@@ -499,7 +546,7 @@ onMounted(async () => {
       }),
       // Closing with an unsaved draft asks first.
       await getCurrentWindow().onCloseRequested(async (e) => {
-        if (closing || !dirty.value) return
+        if (closing || (!dirty.value && !heldDraft)) return
         e.preventDefault()
         if (!(await confirmDiscard())) return
         closing = true
