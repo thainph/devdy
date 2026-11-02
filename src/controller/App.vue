@@ -615,7 +615,11 @@ watch(
     if (!ready) return
     syncInbox()
     if (hasData.value) data.reload()
-    if (hasPush.value) void push.refresh()
+    if (hasPush.value) {
+      void push.refresh()
+      // A "back on screen" sent while the socket was dying never arrived.
+      if (document.visibilityState === 'visible') push.setVisible(true)
+    }
   },
 )
 const entries = computed(() => runView.value?.entries ?? [])

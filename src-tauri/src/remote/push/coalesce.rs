@@ -97,6 +97,17 @@ pub struct BurstCounts {
 }
 
 impl BurstCounts {
+    /// One event of `kind`.
+    pub fn one(kind: PushKind) -> BurstCounts {
+        let mut c = BurstCounts::default();
+        match kind {
+            PushKind::Pending => c.new_pending = 1,
+            PushKind::Done => c.done = 1,
+            PushKind::Failed => c.failed = 1,
+        }
+        c
+    }
+
     pub fn merge(self, other: BurstCounts) -> BurstCounts {
         BurstCounts {
             new_pending: self.new_pending.saturating_add(other.new_pending),
@@ -106,15 +117,28 @@ impl BurstCounts {
     }
 }
 
-/// Bursts that came due while a phone was on screen. They are not dropped:
-/// once the phone leaves (background, disconnect, gone quiet) whatever is
-/// still worth saying goes out at once.
+/// What happened (or came due) while a phone looked on screen. If the phone
+/// then says it left (`push_visibility(false)`: locked, backgrounded) it saw
+/// all of it live, so it is [`discard`](Holder::discard)ed. Only when that is
+/// uncertain — the room is gone, or the phone went quiet (iOS can freeze a
+/// page before it reports) — does it go out at once.
 #[derive(Debug, Default)]
 pub struct Holder {
     held: Option<BurstCounts>,
 }
 
 impl Holder {
+    /// An event arrived while the phone was on screen.
+    pub fn hold(&mut self, kind: PushKind) {
+        let one = BurstCounts::one(kind);
+        self.held = Some(self.held.take().map_or(one, |h| h.merge(one)));
+    }
+
+    /// The phone said it left the screen: it already saw what is held.
+    pub fn discard(&mut self) {
+        self.held = None;
+    }
+
     /// A burst came due. Returns what to send now (with anything held), or
     /// keeps it while `suppressed`.
     pub fn on_due(&mut self, counts: BurstCounts, suppressed: bool) -> Option<BurstCounts> {
@@ -310,15 +334,7 @@ mod tests {
 
     #[test]
     fn suppressed_bursts_are_held_and_released_together() {
-        let one = |k: PushKind| {
-            let mut c = BurstCounts::default();
-            match k {
-                PushKind::Pending => c.new_pending = 1,
-                PushKind::Done => c.done = 1,
-                PushKind::Failed => c.failed = 1,
-            }
-            c
-        };
+        let one = BurstCounts::one;
         let mut h = Holder::default();
         assert_eq!(h.on_due(one(PushKind::Pending), true), None);
         assert_eq!(h.on_due(one(PushKind::Done), true), None);
@@ -330,6 +346,20 @@ mod tests {
         // Held counts ride along with the next burst that is sent.
         h.on_due(one(PushKind::Failed), true);
         assert_eq!(h.on_due(one(PushKind::Done), false), Some(BurstCounts { new_pending: 0, done: 1, failed: 1 }));
+    }
+
+    #[test]
+    fn what_the_phone_saw_on_screen_is_dropped_when_it_leaves() {
+        let mut h = Holder::default();
+        h.hold(PushKind::Done);
+        h.hold(PushKind::Pending);
+        assert!(h.is_holding());
+        h.discard();
+        assert!(!h.is_holding());
+        assert_eq!(h.release(false), None, "nothing left to say");
+        // Unsure whether it saw them (went quiet / disconnected): sent.
+        h.hold(PushKind::Failed);
+        assert_eq!(h.release(false), Some(BurstCounts { new_pending: 0, done: 0, failed: 1 }));
     }
 
     #[test]
