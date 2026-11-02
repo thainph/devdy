@@ -13,6 +13,20 @@ import {
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { useRunsStore } from './runs'
 import { useToolPermissionsStore } from './toolPermissions'
+import { useProjectsStore } from './projects'
+
+/** An assistant message calling a devdy MCP tool that creates projects / links repos. */
+function usesProjectWriteTool(p: Record<string, unknown> | null): boolean {
+  if (p?.type !== 'assistant') return false
+  const content = (p.message as { content?: unknown } | undefined)?.content
+  return (
+    Array.isArray(content) &&
+    content.some(
+      (b) =>
+        b?.type === 'tool_use' && typeof b.name === 'string' && /^mcp__devdy__(projects_create|repos_add|repos_remove)$/.test(b.name),
+    )
+  )
+}
 
 /**
  * In-memory streaming state for a single run. Lives in this store (not in
@@ -393,6 +407,9 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     // background run's state still advances.
     let eventBuffer: unknown[] = []
     let flushScheduled = false
+    // The devdy MCP sidecar writes projects/repos straight into the DB with no
+    // Tauri event: refetch once the tool's result comes back.
+    let projectsDirty = false
     function flushEvents() {
       flushScheduled = false
       if (!eventBuffer.length) return
@@ -402,6 +419,11 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       for (const payload of batch) {
         applyStreamEvent({ entries: s.entries, toolIndex }, payload)
         const p = payload as Record<string, unknown> | null
+        if (usesProjectWriteTool(p)) projectsDirty = true
+        else if (projectsDirty && (p?.type === 'user' || p?.type === 'result')) {
+          projectsDirty = false
+          void useProjectsStore().fetchProjects()
+        }
         // Capture slash commands advertised on system.init (Claude only).
         if (p && p.type === 'system' && p.subtype === 'init' && Array.isArray(p.slash_commands)) {
           s.slashCommands = (p.slash_commands as unknown[]).map((c) => String(c))
