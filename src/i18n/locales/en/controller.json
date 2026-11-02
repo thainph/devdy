@@ -214,6 +214,9 @@
     "gone": "This note was deleted."
   },
   "projectToggles": {
+    "accounts": "Accounts",
+    "noAccounts": "No accounts set up.",
+    "connection": "Connection",
     "title": "Setting",
     "selectProject": "Choose a project",
     "noProjects": "No projects on the host.",
@@ -237,8 +240,23 @@
     "claudeFollowDefault": "Using the default account ({name}).",
     "claudeFollowDefaultNone": "Using the default Claude setup."
   },
+  "settingsMenu": {
+    "project": "Project",
+    "projectNamed": "Project · {name}",
+    "device": "This device"
+  },
   "push": {
     "title": "Notifications",
+    "statusOn": "On",
+    "statusOff": "Off",
+    "receive": "Notifications on this device",
+    "sendsTitle": "The desktop notifies about",
+    "kindsHint": "Switched per kind on the desktop.",
+    "kindRows": {
+      "pending": "Requests waiting for you",
+      "done": "Finished runs",
+      "failed": "Failed runs"
+    },
     "state": {
       "on": "On — this phone is notified when something needs you or a run finishes.",
       "off": "Off — turn on to get notified while the phone is locked.",
@@ -252,17 +270,8 @@
       "add": "Choose “Add to Home Screen”",
       "open": "Open Devdy from the Home Screen, sign in, and turn notifications on here"
     },
-    "kinds": {
-      "pending": "approvals",
-      "done": "finished runs",
-      "failed": "failed runs"
-    },
-    "sends": "The desktop sends: {kinds}",
     "privacy": "Notifications carry counts only — never commands, tool names or projects.",
-    "enable": "Turn on notifications",
-    "disable": "Turn off",
     "sendTest": "Send a test",
-    "close": "Close",
     "test": {
       "sent": "Sent — it should arrive in a moment.",
       "failed": "The test notification could not be sent."
@@ -280,7 +289,6 @@
     "mode": "Theme",
     "followHost": "Same as desktop",
     "followHostValue": "Same as desktop ({value})",
-    "hint": "Only changes this device — the desktop keeps its own look.",
-    "close": "Close"
+    "hint": "Only changes this device — the desktop keeps its own look."
   }
 }

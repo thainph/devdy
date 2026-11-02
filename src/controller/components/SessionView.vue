@@ -84,7 +84,6 @@ const emit = defineEmits<{
   cancel: []
   decide: [decision: RemoteDecision]
   answer: [answers: QuestionAnswers]
-  disconnect: []
   back: []
   openInbox: []
   clearNotice: []
@@ -244,9 +243,6 @@ onUnmounted(() => {
       >
         <AlertTriangle class="h-3 w-3" :stroke-width="2" /> {{ decodeErrors }}
       </span>
-      <HeaderButton :label="t('controller.session.disconnect')" @click="emit('disconnect')">
-        <X class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
     </ControllerHeader>
 
     <!-- Subscription usage (Claude + Codex), mirror of the desktop BudgetBadge.

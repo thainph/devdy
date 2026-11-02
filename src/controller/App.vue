@@ -28,10 +28,12 @@ import ProjectTogglesView from './components/ProjectTogglesView.vue'
 import ControllerHeader from './components/ControllerHeader.vue'
 import HeaderButton from './components/HeaderButton.vue'
 import ConnectionBadge from './components/ConnectionBadge.vue'
-import PushSheet from './components/PushSheet.vue'
-import ThemeSheet from './components/ThemeSheet.vue'
+import SettingsMenuView from './components/SettingsMenuView.vue'
+import PushSettingsView from './components/PushSettingsView.vue'
+import ThemeSettingsView from './components/ThemeSettingsView.vue'
 import { AppSelect } from '@/components/ui'
-import { Bell, BellOff, Palette, RefreshCw, X } from 'lucide-vue-next'
+import { ChevronLeft } from 'lucide-vue-next'
+import { isToggleGroup, type SettingsPage } from './settingsMenu'
 import { createDataStore } from './dataStore'
 import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
@@ -111,7 +113,8 @@ const hasData = computed(() => hostHas(hostFeatures.value, 'data'))
 const hasInbox = computed(() => hostHas(hostFeatures.value, 'inbox'))
 const hasRemember = computed(() => hostHas(hostFeatures.value, 'remember'))
 const hasPush = computed(() => hostHas(hostFeatures.value, 'push'))
-const DATA_TABS: ControllerTab[] = ['todo', 'note', 'project']
+// Setting stays: it also holds this phone's look, notifications and Disconnect.
+const DATA_TABS: ControllerTab[] = ['todo', 'note']
 const hiddenTabs = computed<ControllerTab[]>(() =>
   // Unknown until the token arrives: show everything rather than flicker.
   hostFeatures.value === null || hasData.value ? [] : DATA_TABS,
@@ -142,6 +145,21 @@ function selectToggleProject(projectId: string): void {
   toggleProjectId.value = projectId
   data.loadToggles(projectId)
 }
+
+// The Setting menu shows the picked project's name and "on / total" counts:
+// land on the first project, and fetch its switches when they are not in.
+watch(
+  () => [tab.value === 'project' && hasData.value, store.state.projectList] as const,
+  ([on, projects]) => {
+    if (!on) return
+    const pid = toggleProjectId.value
+    if (!pid) {
+      if (projects.length) selectToggleProject(projects[0].id)
+    } else if (data.state.toggles?.project_id !== pid) {
+      data.loadToggles(pid)
+    }
+  },
+)
 
 /** The app phase drives which screen shows. `session` covers both the run
  * browser and an open run — `store.state.activeRunId` decides between them. */
@@ -509,6 +527,8 @@ navigator.serviceWorker?.addEventListener('message', onWorkerMessage)
 
 function onTab(next: ControllerTab): void {
   if (next !== tab.value) data.clearError()
+  // Leaving the tab, or tapping Setting again, lands back on its menu.
+  settingsPage.value = null
   tab.value = next
   closeNoteEditor()
   if (next === 'inbox') syncInbox()
@@ -516,8 +536,9 @@ function onTab(next: ControllerTab): void {
 }
 
 // ── tab header ──────────────────────────────────────────────────────────────
-// One header for every tab: title, connection state, Refresh and Disconnect;
-// Sessions / Todo / Notes add a project dropdown, the Inbox its push bell.
+// One header for every tab: title and connection state; Sessions / Todo /
+// Notes and the Setting menu's project screens add a project dropdown. A
+// Setting screen adds Back to its menu.
 const TAB_TITLES: Record<ControllerTab, string> = {
   inbox: 'controller.inbox.title',
   runs: 'controller.browser.title',
@@ -525,7 +546,25 @@ const TAB_TITLES: Record<ControllerTab, string> = {
   note: 'controller.notes.title',
   project: 'controller.projectToggles.title',
 }
-const tabTitle = computed(() => t(TAB_TITLES[tab.value]))
+const SETTINGS_TITLES: Record<SettingsPage, string> = {
+  mcp: 'controller.projectToggles.mcp',
+  skill: 'controller.projectToggles.skills',
+  rule: 'controller.projectToggles.rules',
+  server: 'controller.projectToggles.servers',
+  account: 'controller.projectToggles.accounts',
+  theme: 'controller.theme.title',
+  push: 'controller.push.title',
+}
+/** The Setting screen open over its menu (null = the menu). */
+const settingsPage = ref<SettingsPage | null>(null)
+const onSettingsPage = computed(() => tab.value === 'project' && settingsPage.value !== null)
+const tabTitle = computed(() =>
+  t(onSettingsPage.value ? SETTINGS_TITLES[settingsPage.value!] : TAB_TITLES[tab.value]),
+)
+function openSettingsPage(page: SettingsPage): void {
+  data.clearError()
+  settingsPage.value = page
+}
 
 const projectFilterOptions = computed(() => [
   { value: '', label: t('controller.data.allProjects') },
@@ -547,36 +586,28 @@ const headerProjectId = computed<string>({
     else if (tab.value === 'project' && id) selectToggleProject(id)
   },
 })
-const tabHasProjectFilter = computed(() => tab.value !== 'inbox')
+const tabHasProjectFilter = computed(() => {
+  if (tab.value === 'inbox') return false
+  if (tab.value === 'project') return hasData.value && (settingsPage.value === null || isToggleGroup(settingsPage.value))
+  return true
+})
 /** Setting switches belong to one project: no "All projects" there. */
 const headerProjectOptions = computed(() =>
   tab.value === 'project' ? projectFilterOptions.value.slice(1) : projectFilterOptions.value,
 )
 
-function refreshTab(): void {
-  switch (tab.value) {
-    case 'inbox':
-      syncInbox()
-      break
-    case 'runs':
-      refreshRuns()
-      break
-    case 'todo':
-      data.loadTodos()
-      break
-    case 'note':
-      data.loadNotes()
-      break
-    case 'project':
-      refreshRuns()
-      if (toggleProjectId.value) data.loadToggles(toggleProjectId.value)
-      break
+/** Setting → Refresh: re-fetch everything every tab shows. */
+function refreshAll(): void {
+  syncInbox()
+  refreshRuns()
+  if (hasData.value) {
+    data.loadTodos()
+    data.loadNotes()
+    if (toggleProjectId.value) data.loadToggles(toggleProjectId.value)
   }
 }
 
-const pushOpen = ref(false)
 const pushOn = computed(() => push.ui() === 'on')
-const themeOpen = ref(false)
 
 /** Open the Inbox from a session (the "another run needs you" banner). */
 function openInbox(): void {
@@ -866,6 +897,11 @@ function onRequestFiles(): void {
 
   <div v-else-if="!runId && !draftProjectId" class="app-shell flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <ControllerHeader :title="tabTitle">
+      <template v-if="onSettingsPage" #leading>
+        <HeaderButton class="-ml-1.5" :label="t('controller.data.back')" @click="settingsPage = null">
+          <ChevronLeft class="h-4 w-4" :stroke-width="2" />
+        </HeaderButton>
+      </template>
       <template #badge>
         <ConnectionBadge :status="status" :live="live" :status-label="browserStatusLabel" :host-fingerprint="hostFp" />
       </template>
@@ -877,24 +913,6 @@ function onRequestFiles(): void {
         class="w-32 max-w-full"
         :options="headerProjectOptions"
       />
-      <HeaderButton
-        v-if="tab === 'inbox' && hasPush"
-        :label="t('controller.push.title')"
-        :active="pushOn"
-        @click="pushOpen = true"
-      >
-        <Bell v-if="pushOn" class="h-4 w-4" :stroke-width="2" />
-        <BellOff v-else class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-      <HeaderButton v-if="tab === 'project'" :label="t('controller.theme.title')" @click="themeOpen = true">
-        <Palette class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-      <HeaderButton :label="t('controller.browser.refresh')" @click="refreshTab">
-        <RefreshCw class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
-      <HeaderButton :label="t('controller.session.disconnect')" @click="disconnect">
-        <X class="h-4 w-4" :stroke-width="2" />
-      </HeaderButton>
     </ControllerHeader>
     <div class="relative flex-1 min-h-0">
       <InboxView
@@ -949,8 +967,21 @@ function onRequestFiles(): void {
         @new="openNoteEditor(null)"
         @clear-error="data.clearError()"
       />
+      <SettingsMenuView
+        v-else-if="settingsPage === null"
+        :projects="hasData ? store.state.projectList : []"
+        :project-id="toggleProjectId"
+        :toggles="data.state.toggles"
+        :push-on="hasPush ? pushOn : null"
+        @open="openSettingsPage"
+        @refresh="refreshAll"
+        @disconnect="disconnect"
+      />
+      <ThemeSettingsView v-else-if="settingsPage === 'theme'" />
+      <PushSettingsView v-else-if="settingsPage === 'push'" :push="push" />
       <ProjectTogglesView
         v-else
+        :group="settingsPage"
         :projects="store.state.projectList"
         :toggles="data.state.toggles"
         :project-id="toggleProjectId"
@@ -960,8 +991,6 @@ function onRequestFiles(): void {
         @set="data.setToggle"
         @clear-error="data.clearError()"
       />
-      <PushSheet v-if="hasPush && pushOpen" :push="push" @close="pushOpen = false" />
-      <ThemeSheet v-if="themeOpen" @close="themeOpen = false" />
     </div>
     <BottomTabBar :tab="tab" :inbox-count="inboxCount" :hidden="hiddenTabs" @update:tab="onTab" />
   </div>
@@ -1003,7 +1032,6 @@ function onRequestFiles(): void {
     @cancel="onCancel"
     @decide="onDecide"
     @answer="onAnswer"
-    @disconnect="disconnect"
     @back="backToBrowser"
     @open-inbox="openInbox"
     @clear-notice="store.clearNotice()"

@@ -1,8 +1,9 @@
 <script setup lang="ts">
 /**
- * Per-project switches on the phone Controller (spec §2.B3): pick a project,
- * then turn MCP servers, skills, rules, VPS servers and git / cloud / Claude
- * accounts on or off for it. Switches only — the Host sends ids and names,
+ * Per-project switches on the phone Controller (spec §2.B3), one Setting
+ * screen per `group` (MCP servers, skills, rules, VPS servers, or the git /
+ * cloud / Claude accounts): turn them on or off for the project picked in
+ * the header. Switches only — the Host sends ids and names,
  * never env / header values, hosts, logins or tokens, and those stay editable
  * on the desktop alone.
  *
@@ -17,8 +18,11 @@ import { useI18n } from 'vue-i18n'
 import { Loader2, X } from 'lucide-vue-next'
 import { Banner, Button } from '@/components/ui'
 import type { ClaudeAccountToggle, ProjectInfo, ProjectTogglesKind, ToggleItem, ToggleKind } from '../protocol'
+import { TOGGLE_GROUPS, type ToggleGroup } from '../settingsMenu'
 
 const props = defineProps<{
+  /** Which screen: one kind, or every account kind together. */
+  group: ToggleGroup
   projects: ProjectInfo[]
   /** Switches of the selected project; null while loading. */
   toggles: ProjectTogglesKind | null
@@ -83,8 +87,9 @@ const sections = computed<Section[]>(() => {
     { kind: 'aws_account', label: t('controller.projectToggles.aws'), items: tg.aws_accounts },
     { kind: 'azure_account', label: t('controller.projectToggles.azure'), items: tg.azure_accounts },
   ]
+  const kinds: readonly ToggleKind[] = TOGGLE_GROUPS[props.group]
   // Accounts nobody set up would only add empty boxes.
-  return all.filter((s) => s.items.length || ['mcp', 'skill', 'rule', 'server'].includes(s.kind))
+  return all.filter((s) => kinds.includes(s.kind) && (s.items.length || props.group !== 'account'))
 })
 
 function claudeHint(accounts: ClaudeAccountToggle[]): string | undefined {
@@ -140,8 +145,15 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
         </p>
 
         <template v-else>
-          <section v-for="s in sections" :key="s.kind">
-            <h2 class="mt-4 mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+          <p v-if="!sections.length" class="py-10 text-center text-sm text-foreground/50">
+            {{ group === 'account' ? t('controller.projectToggles.noAccounts') : t('controller.projectToggles.none') }}
+          </p>
+          <section v-for="s in sections" :key="s.kind" class="mb-4">
+            <!-- One kind per screen: the header already names it. -->
+            <h2
+              v-if="group === 'account'"
+              class="mt-4 mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground first:mt-0"
+            >
               {{ s.label }}
             </h2>
             <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
