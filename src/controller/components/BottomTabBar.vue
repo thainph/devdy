@@ -35,7 +35,7 @@ const visible = computed(() => TABS.filter((item) => !props.hidden?.includes(ite
 
 <template>
   <nav
-    class="shrink-0 grid border-t border-border bg-card pb-[env(safe-area-inset-bottom)]"
+    class="ctl-tabbar shrink-0 grid border-t border-border bg-card pb-[env(safe-area-inset-bottom)]"
     :style="{ gridTemplateColumns: `repeat(${visible.length}, minmax(0, 1fr))` }"
     role="tablist"
   >
@@ -46,7 +46,7 @@ const visible = computed(() => TABS.filter((item) => !props.hidden?.includes(ite
       role="tab"
       :aria-selected="tab === item.id"
       class="relative flex flex-col items-center gap-0.5 pt-2 pb-1.5 text-[10px] font-medium transition-colors cursor-pointer"
-      :class="tab === item.id ? 'text-primary' : 'text-foreground/50 hover:text-foreground'"
+      :class="tab === item.id ? 'is-active text-primary' : 'text-foreground/50 hover:text-foreground'"
       @click="emit('update:tab', item.id)"
     >
       <span class="relative">

@@ -63,7 +63,7 @@ function previewOf(note: NoteSummary): string {
 </script>
 
 <template>
-  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col text-foreground">
 
     <Banner
       v-if="error"
@@ -105,7 +105,7 @@ function previewOf(note: NoteSummary): string {
       <p v-else-if="!notes.length" class="py-10 text-center text-sm text-foreground/50">
         {{ searching ? t('controller.notes.noResults') : t('controller.notes.empty') }}
       </p>
-      <div v-else class="overflow-hidden rounded-xl border border-border bg-card">
+      <div v-else class="ui-card overflow-hidden rounded-xl border border-border bg-card">
         <button
           v-for="note in notes"
           :key="note.id"

@@ -31,9 +31,9 @@ const kinds = computed(() => {
 
 <template>
   <div class="absolute inset-0 z-20 flex flex-col justify-end">
-    <div class="absolute inset-0 bg-black/50" @click="emit('close')" />
+    <div class="ui-backdrop absolute inset-0 bg-black/50" @click="emit('close')" />
     <div
-      class="relative rounded-t-2xl border-t border-border bg-card px-4 pt-2.5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl"
+      class="ctl-sheet relative rounded-t-2xl border-t border-border bg-card px-4 pt-2.5 pb-[max(1.25rem,env(safe-area-inset-bottom))] shadow-2xl"
     >
       <div class="mx-auto mb-3 h-1.5 w-10 rounded-full bg-foreground/20" />
       <p class="mb-2 text-sm font-semibold">{{ t('controller.push.title') }}</p>

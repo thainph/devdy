@@ -1,14 +1,17 @@
-// Mirror the desktop's look (Settings → theme + color palette) in the
-// Controller. The Host pushes an `appearance` frame on pairing; the last one is
-// cached so the next load (and the link / OTP screens before pairing) starts in
-// the same colors instead of flashing the default palette.
+// Mirror the desktop's light / dark / system choice in the Controller. The Host
+// pushes an `appearance` frame on pairing; the last one is cached so the next
+// load (and the link / OTP screens before pairing) starts in the same mode
+// instead of flashing the default one. The phone always wears the macOS Tahoe
+// skin (`data-theme` is fixed in controller.html) — the desktop's color theme
+// is not mirrored.
 //
-// This phone can override the theme and / or palette (the theme sheet); an
-// override is kept on this device only and wins over the Host's field.
+// This phone can override the mode (the theme sheet); an override is kept on
+// this device only and wins over the Host's.
 
 import { readonly, ref } from 'vue'
 import {
   NO_OVERRIDE,
+  parseAppearance,
   parseOverride,
   resolveAppearance,
   type Appearance,
@@ -45,17 +48,10 @@ darkQuery.addEventListener('change', (e) => {
   if (followSystem) setDark(e.matches)
 })
 
-function applyAppearance(a: Appearance): void {
-  const palette = a.color_theme && a.color_theme !== 'default' ? a.color_theme : ''
-  if (palette) document.documentElement.setAttribute('data-theme', palette)
-  else document.documentElement.removeAttribute('data-theme')
-
-  followSystem = a.theme !== 'dark' && a.theme !== 'light'
-  setDark(followSystem ? darkQuery.matches : a.theme === 'dark')
-}
-
 function applyCurrent(): void {
-  applyAppearance(resolveAppearance(host.value, override.value))
+  const { theme } = resolveAppearance(host.value, override.value)
+  followSystem = theme !== 'dark' && theme !== 'light'
+  setDark(followSystem ? darkQuery.matches : theme === 'dark')
 }
 
 function store(key: string, value: unknown): void {
@@ -76,26 +72,23 @@ function load(key: string): unknown {
   }
 }
 
-/** Apply and remember the Host's appearance (an override still wins). */
+/** Apply and remember the Host's mode (an override still wins). */
 export function setAppearance(a: Appearance): void {
-  host.value = { theme: a.theme, color_theme: a.color_theme }
+  host.value = parseAppearance(a)
   applyCurrent()
   store(STORAGE_KEY, host.value)
 }
 
-/** Apply and remember this phone's own theme / palette choice. */
+/** Apply and remember this phone's own mode. */
 export function setAppearanceOverride(o: AppearanceOverride): void {
   override.value = parseOverride(o)
   applyCurrent()
   store(OVERRIDE_KEY, override.value)
 }
 
-/** Apply the last Host appearance and this phone's override (call before mounting). */
+/** Apply the last Host mode and this phone's override (call before mounting). */
 export function restoreAppearance(): void {
-  const a = load(STORAGE_KEY) as Partial<Appearance> | null
-  if (a && typeof a.theme === 'string' && typeof a.color_theme === 'string') {
-    host.value = { theme: a.theme, color_theme: a.color_theme }
-  }
+  host.value = parseAppearance(load(STORAGE_KEY))
   override.value = parseOverride(load(OVERRIDE_KEY))
   applyCurrent()
 }

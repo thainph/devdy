@@ -278,7 +278,6 @@
   "theme": {
     "title": "Giao diện",
     "mode": "Chế độ",
-    "palette": "Bảng màu",
     "followHost": "Giống máy tính",
     "followHostValue": "Giống máy tính ({value})",
     "hint": "Chỉ đổi trên thiết bị này — máy tính vẫn giữ giao diện của nó.",

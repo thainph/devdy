@@ -101,7 +101,7 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
 </script>
 
 <template>
-  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col text-foreground">
 
     <Banner
       v-if="error"
@@ -144,7 +144,7 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
             <h2 class="mt-4 mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
               {{ s.label }}
             </h2>
-            <div class="overflow-hidden rounded-xl border border-border bg-card">
+            <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
               <!-- The built-in server heads the MCP section. -->
               <div
                 v-if="s.kind === 'mcp'"
@@ -169,12 +169,12 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
                       ? t('controller.projectToggles.disable', { name: t('controller.projectToggles.builtin') })
                       : t('controller.projectToggles.enable', { name: t('controller.projectToggles.builtin') })
                   "
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  class="ui-switch relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   :class="current.builtin_devdy.enabled ? 'bg-success' : 'bg-muted'"
                   @click="emit('set', 'builtin_mcp', null, !current.builtin_devdy.enabled)"
                 >
                   <span
-                    class="inline-block h-5 w-5 rounded-full bg-white shadow transition-transform"
+                    class="ui-switch-knob inline-block h-5 w-5 rounded-full bg-white shadow transition-transform"
                     :class="current.builtin_devdy.enabled ? 'translate-x-[22px]' : 'translate-x-0.5'"
                   />
                 </button>
@@ -207,12 +207,12 @@ function isDefaultAccount(item: ToggleItem | ClaudeAccountToggle): boolean {
                       ? t('controller.projectToggles.disable', { name: item.name })
                       : t('controller.projectToggles.enable', { name: item.name })
                   "
-                  class="relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
+                  class="ui-switch relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50"
                   :class="item.enabled ? 'bg-success' : 'bg-muted'"
                   @click="emit('set', s.kind, item.id, !item.enabled)"
                 >
                   <span
-                    class="inline-block h-5 w-5 rounded-full bg-white shadow transition-transform"
+                    class="ui-switch-knob inline-block h-5 w-5 rounded-full bg-white shadow transition-transform"
                     :class="item.enabled ? 'translate-x-[22px]' : 'translate-x-0.5'"
                   />
                 </button>

@@ -3,6 +3,7 @@
 // (phone / other PC) — it MUST NOT import any `@tauri-apps/*` API.
 import { createApp } from 'vue'
 import '@/assets/main.css'
+import './skin.css'
 import { i18n } from '@/i18n'
 import App from './App.vue'
 import { restoreAppearance } from './appearance'

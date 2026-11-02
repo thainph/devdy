@@ -57,7 +57,7 @@ watch(
 </script>
 
 <template>
-  <div class="min-h-dvh flex items-center justify-center px-4 py-10 bg-background text-foreground">
+  <div class="app-shell min-h-dvh flex items-center justify-center px-4 py-10 bg-background text-foreground">
     <div class="w-full max-w-sm space-y-6">
       <div class="text-center space-y-2">
         <div class="inline-flex h-12 w-12 items-center justify-center rounded-xl bg-primary/15 text-primary">
@@ -85,7 +85,7 @@ watch(
           autocomplete="one-time-code"
           :placeholder="t('controller.otp.placeholder')"
           :disabled="connecting"
-          class="w-full rounded-lg border border-border bg-background px-4 py-3 text-center text-xl font-mono tracking-[0.15em] focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
+          class="ui-field w-full rounded-lg border border-border bg-background px-4 py-3 text-center text-xl font-mono tracking-[0.15em] focus:border-ring focus:outline-none focus:ring-1 focus:ring-ring disabled:opacity-60"
           @input="onInput"
           @keydown.enter="submit"
         />

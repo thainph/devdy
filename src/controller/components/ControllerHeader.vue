@@ -10,7 +10,7 @@ defineProps<{
 </script>
 
 <template>
-  <header class="shrink-0 flex h-12 items-center gap-2 px-3 border-b border-border">
+  <header class="app-titlebar shrink-0 flex h-12 items-center gap-2 px-3 border-b border-border">
     <slot name="leading" />
     <h1 class="min-w-0 shrink truncate text-base font-semibold">{{ title }}</h1>
     <slot name="badge" />
