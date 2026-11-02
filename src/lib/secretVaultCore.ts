@@ -24,7 +24,7 @@ export interface SecretNoteMeta {
 }
 
 /** Same minimum as the backend (`MIN_PASSWORD_LEN`). */
-export const MIN_VAULT_PASSWORD = 8
+export const MIN_VAULT_PASSWORD = 6
 /** Same as the backend (`MAX_CONTENT_LEN`, bytes). */
 export const MAX_SECRET_CONTENT = 64 * 1024
 /** A revealed content hides itself after this long. */

@@ -16,6 +16,8 @@ test('passwordProblem', () => {
   assert.equal(passwordProblem('long enough', 'long enougH'), 'mismatch')
   assert.equal(passwordProblem('long enough', 'long enough'), null)
   assert.equal(passwordProblem('mật khẩu', 'mật khẩu'), null)
+  assert.equal(passwordProblem('123456', '123456'), null)
+  assert.equal(passwordProblem('12345', '12345'), 'short')
 })
 
 test('contentBytes counts UTF-8', () => {

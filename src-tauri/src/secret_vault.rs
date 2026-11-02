@@ -46,7 +46,7 @@ const KDF_NAME: &str = "argon2id13";
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
 const SALT_LEN: usize = 16;
-pub const MIN_PASSWORD_LEN: usize = 8;
+pub const MIN_PASSWORD_LEN: usize = 6;
 pub const MAX_TITLE_LEN: usize = 512;
 pub const MAX_CONTENT_LEN: usize = 64 * 1024;
 /// Idle time after which an unlocked vault locks itself.
@@ -731,6 +731,7 @@ mod tests {
         assert_eq!(unwrap_recovery(&h, &recovery.to_lowercase()).unwrap().as_ref(), dek.as_ref());
         assert_eq!(unwrap_recovery(&h, "00").err().as_deref(), Some(E_WRONG_RECOVERY));
         assert_eq!(new_header("short", CHEAP).err().as_deref(), Some(E_WEAK_PASSWORD));
+        assert!(new_header("123456", CHEAP).is_ok());
     }
 
     #[test]
