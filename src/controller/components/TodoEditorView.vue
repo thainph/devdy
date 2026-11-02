@@ -113,7 +113,7 @@ function clearBanner(): void {
 </script>
 
 <template>
-  <div class="relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div class="app-shell relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <ControllerHeader :title="todo ? t('controller.todo.sheet.editTitle') : t('controller.todo.sheet.newTitle')">
       <template #leading>
         <HeaderButton class="-ml-1.5" :label="t('controller.data.back')" @click="emit('back')">

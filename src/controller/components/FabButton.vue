@@ -14,7 +14,7 @@ defineEmits<{ click: [] }>()
 <template>
   <button
     type="button"
-    class="absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
+    class="ctl-fab absolute right-5 bottom-5 z-10 grid h-14 w-14 place-items-center rounded-full bg-primary text-primary-foreground shadow-lg shadow-primary/40 active:scale-95 transition cursor-pointer disabled:opacity-40 disabled:cursor-not-allowed"
     :title="label"
     :aria-label="label"
     :disabled="disabled"

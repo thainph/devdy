@@ -860,7 +860,7 @@ function onRequestFiles(): void {
     @clear-error="data.clearError()"
   />
 
-  <div v-else-if="!runId && !draftProjectId" class="flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div v-else-if="!runId && !draftProjectId" class="app-shell flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <ControllerHeader :title="tabTitle">
       <template #badge>
         <ConnectionBadge :status="status" :live="live" :status-label="browserStatusLabel" :host-fingerprint="hostFp" />

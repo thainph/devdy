@@ -646,7 +646,7 @@ function onKeydown(e: KeyboardEvent): void {
       <input ref="fileInputEl" type="file" multiple class="hidden" @change="onPickFiles" />
 
       <!-- Prompt card -->
-      <div class="relative rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring transition-colors">
+      <div class="ui-field relative rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring transition-colors">
         <textarea
           ref="composerEl"
           v-model="text"
@@ -686,7 +686,7 @@ function onKeydown(e: KeyboardEvent): void {
                  phone and pushed the send button around. -->
             <div ref="settingsRoot" class="relative shrink-0" @keydown.esc.stop="settingsOpen = false">
               <button
-                class="inline-flex items-center gap-1 h-8 px-2 rounded-md text-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
+                class="ui-btn ui-btn-ghost inline-flex items-center gap-1 h-8 px-2 rounded-md text-foreground/70 hover:text-foreground hover:bg-accent transition-colors cursor-pointer"
                 :title="t('controller.composer.runSettings')"
                 :aria-label="t('controller.composer.runSettings')"
                 aria-haspopup="dialog"

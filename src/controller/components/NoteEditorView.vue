@@ -157,19 +157,19 @@ function clearBanner(): void {
 </script>
 
 <template>
-  <div class="relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div class="app-shell relative flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <ControllerHeader :title="heading">
       <template #leading>
         <HeaderButton class="-ml-1.5" :label="t('controller.data.back')" @click="emit('back')">
           <ChevronLeft class="h-5 w-5" :stroke-width="2" />
         </HeaderButton>
       </template>
-      <div v-if="note" class="flex shrink-0 gap-0.5 rounded-lg border border-border bg-card p-0.5">
+      <div v-if="note" class="ui-segmented flex shrink-0 gap-0.5 rounded-lg border border-border bg-card p-0.5">
         <button
           v-for="m in (['view', 'edit'] as const)"
           :key="m"
           class="rounded-md px-2.5 py-1 text-xs transition-colors cursor-pointer"
-          :class="mode === m ? 'bg-secondary font-semibold text-foreground' : 'text-muted-foreground'"
+          :class="mode === m ? 'is-active bg-secondary font-semibold text-foreground' : 'text-muted-foreground'"
           @click="setMode(m)"
         >
           {{ t(`controller.notes.${m}`) }}

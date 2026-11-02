@@ -133,7 +133,7 @@ function statusDotClass(run: RunInfo): string {
 </script>
 
 <template>
-  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col text-foreground">
     <!-- Search spans every project, so it is available at both levels. -->
     <SearchField
       v-model="query"

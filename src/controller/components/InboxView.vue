@@ -104,7 +104,7 @@ const sinceLabel = computed(() =>
 </script>
 
 <template>
-  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col text-foreground">
 
     <main class="flex-1 min-h-0 overflow-auto">
       <!-- ── Waiting for you ─────────────────────────────────────────────── -->

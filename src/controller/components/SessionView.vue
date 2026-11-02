@@ -227,7 +227,7 @@ onUnmounted(() => {
 </script>
 
 <template>
-  <div class="flex h-dvh min-h-0 flex-col bg-background text-foreground">
+  <div class="app-shell flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <ControllerHeader :title="title">
       <template #leading>
         <HeaderButton class="-ml-1.5" :label="t('controller.browser.backToRuns')" @click="emit('back')">

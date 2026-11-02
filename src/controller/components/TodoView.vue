@@ -117,7 +117,7 @@ const CHIP_TONES: Record<string, string> = {
 </script>
 
 <template>
-  <div class="relative flex h-full min-h-0 flex-col bg-background text-foreground">
+  <div class="relative flex h-full min-h-0 flex-col text-foreground">
 
     <Banner
       v-if="error"
@@ -145,12 +145,12 @@ const CHIP_TONES: Record<string, string> = {
 
     <main class="flex-1 min-h-0 overflow-auto px-3 pt-3 pb-24">
       <!-- Active / Done -->
-      <div class="mb-3 flex gap-1 rounded-lg border border-border bg-card p-0.5">
+      <div class="ui-segmented mb-3 flex gap-1 rounded-lg border border-border bg-card p-0.5">
         <button
           v-for="key in (['active', 'done'] as const)"
           :key="key"
           class="flex-1 rounded-md px-2 py-1.5 text-xs transition-colors cursor-pointer"
-          :class="tab === key ? 'bg-secondary font-semibold text-foreground' : 'text-muted-foreground'"
+          :class="tab === key ? 'is-active bg-secondary font-semibold text-foreground' : 'text-muted-foreground'"
           @click="tab = key"
         >
           {{ t(`controller.todo.${key}`, { count: counts[key] }) }}
@@ -184,7 +184,7 @@ const CHIP_TONES: Record<string, string> = {
           <h2 class="mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
             {{ t(`controller.todo.groups.${g.key}`) }}
           </h2>
-          <div class="overflow-hidden rounded-xl border border-border bg-card">
+          <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
             <div
               v-for="todo in g.todos"
               :key="todo.id"
@@ -227,7 +227,7 @@ const CHIP_TONES: Record<string, string> = {
         </section>
       </template>
 
-      <div v-else class="overflow-hidden rounded-xl border border-border bg-card">
+      <div v-else class="ui-card overflow-hidden rounded-xl border border-border bg-card">
         <div
           v-for="todo in finished"
           :key="todo.id"

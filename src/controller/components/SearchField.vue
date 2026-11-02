@@ -23,7 +23,7 @@ const query = defineModel<string>({ required: true })
         inputmode="search"
         autocomplete="off"
         :placeholder="placeholder"
-        class="search-input w-full rounded-md border border-border bg-background py-1.5 pl-7 pr-7 text-sm outline-none placeholder:text-foreground/40 focus:border-foreground/30"
+        class="search-input ui-field w-full rounded-md border border-border bg-background py-1.5 pl-7 pr-7 text-sm outline-none placeholder:text-foreground/40 focus:border-foreground/30"
       />
       <button
         v-if="query.trim()"
