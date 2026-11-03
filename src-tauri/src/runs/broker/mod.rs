@@ -1056,7 +1056,7 @@ mod tests {
         let resp = round_trip(
             db,
             Arc::new(FixedApprover(true)),
-            r#"{"project_id":"p1","tool":"az","argv":["account","get-access-token"]}"#,
+            r#"{"project_id":"p1","tool":"az","argv":["account","set","--subscription","other"]}"#,
         )
         .await;
         assert_eq!(resp.decision, "deny");
