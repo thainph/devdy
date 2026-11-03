@@ -374,6 +374,10 @@ pub enum StreamPayload {
     // ---- Data features ([`FEATURE_DATA`]) ----
     /// Every todo (the Controller filters by project / done locally).
     TodoList { todos: Vec<TodoInfo> },
+    /// The ranked Focus board ([`FEATURE_FOCUS`]), exactly as the desktop's
+    /// `focus_board` command returns it: buckets, scores, reasons, "do now" ids
+    /// and today's Calendar load. Ranking stays on the Host (BR-05).
+    FocusBoard { board: serde_json::Value },
     /// Notes matching a `note_list` / `note_search`, echoing the filter so the
     /// Controller can drop a stale reply. Title + a short preview only; the
     /// editor fetches the full note with `note_get`.
@@ -431,7 +435,8 @@ pub enum StreamPayload {
 }
 
 /// One todo as the Controller sees it — no Focus fields (priority, estimate,
-/// AI plan…), which the phone does not edit.
+/// AI plan…): a [`FEATURE_FOCUS`] Controller reads those from the
+/// [`StreamPayload::FocusBoard`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TodoInfo {
     pub id: String,
@@ -564,14 +569,19 @@ pub const FEATURE_MULTI_RUN: &str = "multi_run";
 /// are refused, so an older bundle sees exactly the pre-data Host.
 pub const FEATURE_DATA: &str = "data";
 
+/// Feature flag a Controller advertises to render the Focus board: after every
+/// todo write it is sent a fresh [`StreamPayload::FocusBoard`] next to the
+/// `todo_list`. The `focus_board` action itself is a data action.
+pub const FEATURE_FOCUS: &str = "focus";
+
 /// Feature flag a Controller advertises to manage Web Push (`push_*`). Without
 /// it those actions are refused.
 pub const FEATURE_PUSH: &str = "push";
 
 /// What this Host advertises in `session_token.host_features`: the data
 /// screens, the Inbox's `list_pending`, Always (`allow_always` /
-/// `deny_always`) from a Controller, and Web Push.
-pub const HOST_FEATURES: [&str; 4] = ["data", "inbox", "remember", "push"];
+/// `deny_always`) from a Controller, Web Push and the Focus board.
+pub const HOST_FEATURES: [&str; 5] = ["data", "inbox", "remember", "push", "focus"];
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -754,6 +764,15 @@ pub struct CmdPayload {
     /// `todo_add`: local `YYYY-MM-DD` deadline.
     #[serde(default)]
     pub due_date: Option<String>,
+    /// `todo_add`: local `HH:MM` on `due_date`.
+    #[serde(default)]
+    pub due_time: Option<String>,
+    /// `todo_add`: 1 | 2 | 3 (Focus priority).
+    #[serde(default)]
+    pub priority: Option<i64>,
+    /// `todo_add`: estimate in minutes.
+    #[serde(default)]
+    pub estimate_min: Option<i64>,
     /// `project_toggle_set`: `skill` | `rule` | `mcp` | `builtin_mcp`.
     #[serde(default)]
     pub toggle_kind: Option<String>,
@@ -819,7 +838,7 @@ mod tests {
             host_features: HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
         })
         .unwrap();
-        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push"]));
+        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push", "focus"]));
     }
 
     #[test]

@@ -13,6 +13,7 @@
  */
 
 import type { FetchedModel } from '@/lib/engineOptions'
+import type { FocusBoard, TodoPriority, TodoStatus } from '@/lib/focus'
 
 /** Re-exported so controller modules import wire types from one place. */
 export type { FetchedModel }
@@ -409,8 +410,8 @@ export interface IpcResyncKind {
 
 // ---- Data features ({@link FEATURE_DATA}) ----
 
-/** One todo (mirror of Host `TodoInfo`). No Focus fields — the phone does not
- * edit priority / estimate / AI plan. */
+/** One todo (mirror of Host `TodoInfo`). No Focus fields — a {@link FEATURE_FOCUS}
+ * Controller reads them from the {@link FocusBoardKind}. */
 export interface TodoInfo {
   id: string
   /** The full text: the first line is the title, the rest a note. */
@@ -428,6 +429,13 @@ export interface TodoInfo {
 export interface TodoListKind {
   kind: 'todo_list'
   todos: TodoInfo[]
+}
+
+/** The ranked Focus board ({@link FEATURE_FOCUS}) — the desktop's `focus_board`
+ * payload as-is: buckets, scores, reasons, the "do now" ids and today's load. */
+export interface FocusBoardKind {
+  kind: 'focus_board'
+  board: FocusBoard
 }
 
 /** One note (Markdown) — mirror of Host `NoteInfo`. */
@@ -548,6 +556,7 @@ export type StreamPayload =
   | IpcEventKind
   | IpcResyncKind
   | TodoListKind
+  | FocusBoardKind
   | NoteListKind
   | ProjectTogglesKind
   | NoteKind
@@ -768,6 +777,8 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
       return Array.isArray(o.todos)
         ? { kind: 'todo_list', todos: (o.todos as unknown[]).filter(isTodoInfo) }
         : null
+    case 'focus_board':
+      return isFocusBoard(o.board) ? { kind: 'focus_board', board: o.board } : null
     case 'note_list':
       return Array.isArray(o.notes)
         ? {
@@ -839,6 +850,20 @@ function isTodoInfo(v: unknown): v is TodoInfo {
     typeof o.done === 'boolean' &&
     typeof o.created_at === 'string'
   )
+}
+
+/** Narrow a Focus board; rows without a usable todo are dropped in place. */
+function isFocusBoard(v: unknown): v is FocusBoard {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  if (typeof o.now !== 'string' || !Array.isArray(o.items) || !Array.isArray(o.top)) return false
+  o.items = (o.items as unknown[]).filter((it) => {
+    if (!it || typeof it !== 'object') return false
+    const r = it as Record<string, unknown>
+    return isTodoInfo(r.todo) && typeof r.bucket === 'string' && typeof r.score === 'number' && Array.isArray(r.reasons)
+  })
+  o.top = (o.top as unknown[]).filter((id) => typeof id === 'string')
+  return true
 }
 
 /** Narrow one note row. */
@@ -976,6 +1001,7 @@ export interface CmdPayload {
     | 'project_toggles_get'
     | 'project_toggle_set'
     | 'note_get'
+    | 'focus_board'
     // Web Push (a Controller that advertised FEATURE_PUSH).
     | 'push_config'
     | 'push_visibility'
@@ -1033,6 +1059,12 @@ export interface CmdPayload {
   content?: string
   /** `todo_add`: local `YYYY-MM-DD` deadline. */
   due_date?: string
+  /** `todo_add`: local `HH:MM` on `due_date`. */
+  due_time?: string
+  /** `todo_add`: Focus priority. */
+  priority?: TodoPriority
+  /** `todo_add`: estimate in minutes. */
+  estimate_min?: number
   /** `project_toggle_set`: which kind of switch. */
   toggle_kind?: ToggleKind
   /** `project_toggle_set`: the new state. */
@@ -1058,6 +1090,14 @@ export interface TodoPatchWire {
   text?: string
   due_date?: string | null
   project_id?: string | null
+  // Focus fields ({@link FEATURE_FOCUS}).
+  due_time?: string | null
+  priority?: TodoPriority
+  estimate_min?: number | null
+  status?: TodoStatus
+  /** RFC3339; null wakes a snoozed todo. */
+  snoozed_until?: string | null
+  remind_at?: string | null
 }
 
 /** The fields a `note_update` may change. */
@@ -1102,9 +1142,13 @@ export const FEATURE_DATA = 'data'
 /** Advertise Web Push management (`push_*`). Without it the Host refuses them. */
 export const FEATURE_PUSH = 'push'
 
+/** Advertise the Focus board: the Host follows every todo write with a fresh
+ * {@link FocusBoardKind}. `focus_board` itself rides {@link FEATURE_DATA}. */
+export const FEATURE_FOCUS = 'focus'
+
 /** What a Host can advertise in `session_token.host_features`. An older Host
  * sends none: the Controller then hides what it would only be refused. */
-export type HostFeature = 'data' | 'inbox' | 'remember' | 'push'
+export type HostFeature = 'data' | 'inbox' | 'remember' | 'push' | 'focus'
 
 /** Whether the Host advertised `feature`. */
 export function hostHas(features: readonly string[] | null | undefined, feature: HostFeature): boolean {
@@ -1112,7 +1156,13 @@ export function hostHas(features: readonly string[] | null | undefined, feature:
 }
 
 /** Everything this controller bundle understands, sent on the gate frame. */
-export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN, FEATURE_DATA, FEATURE_PUSH]
+export const CLIENT_FEATURES: string[] = [
+  FEATURE_OUTPUT_BATCH,
+  FEATURE_MULTI_RUN,
+  FEATURE_DATA,
+  FEATURE_PUSH,
+  FEATURE_FOCUS,
+]
 
 /**
  * `respond_permission` — only `allow_once`/`deny_once` (BR-016). For
@@ -1280,12 +1330,28 @@ export function todoListCmd(): CmdPayload {
   return { kind: 'cmd', action: 'todo_list' }
 }
 
-/** `todo_add` — a new todo; the Host pushes the fresh list. */
-export function todoAddCmd(input: { text: string; projectId?: string | null; dueDate?: string | null }): CmdPayload {
+/** `todo_add` — a new todo; the Host pushes the fresh list. The Focus fields
+ * are only sent when set (an older Host ignores them). */
+export function todoAddCmd(input: {
+  text: string
+  projectId?: string | null
+  dueDate?: string | null
+  dueTime?: string | null
+  priority?: TodoPriority | null
+  estimateMin?: number | null
+}): CmdPayload {
   const cmd: CmdPayload = { kind: 'cmd', action: 'todo_add', text: input.text }
   if (input.projectId) cmd.project_id = input.projectId
   if (input.dueDate) cmd.due_date = input.dueDate
+  if (input.dueDate && input.dueTime) cmd.due_time = input.dueTime
+  if (input.priority && input.priority !== 2) cmd.priority = input.priority
+  if (input.estimateMin) cmd.estimate_min = input.estimateMin
   return cmd
+}
+
+/** `focus_board` — the ranked board, answered with a {@link FocusBoardKind}. */
+export function focusBoardCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'focus_board' }
 }
 
 /** `todo_update` — change title / note (`text`), deadline or project. */

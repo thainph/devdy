@@ -92,6 +92,11 @@ pub struct HandlerCtx {
     ///
     /// [`FEATURE_DATA`]: crate::remote::protocol::FEATURE_DATA
     pub data: bool,
+    /// The Controller renders the Focus board ([`FEATURE_FOCUS`]): todo writes
+    /// are followed by a fresh board.
+    ///
+    /// [`FEATURE_FOCUS`]: crate::remote::protocol::FEATURE_FOCUS
+    pub focus: bool,
     /// The Controller manages Web Push ([`FEATURE_PUSH`]).
     ///
     /// [`FEATURE_PUSH`]: crate::remote::protocol::FEATURE_PUSH

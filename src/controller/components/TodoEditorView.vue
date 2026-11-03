@@ -2,16 +2,24 @@
 /**
  * Create or edit one todo on the phone Controller — a full-height screen laid
  * out like the note editor: title, project, due date (with Today / Tomorrow /
- * Next week / No date chips) and a note. Focus fields (priority, estimate, AI
- * plan) stay desktop-only.
+ * Next week / No date chips) and a note. On a Host with the Focus board it
+ * also edits the hand-set Focus fields — time, priority, estimate, status — and
+ * shows the source link and AI plan read-only (AI runs stay on the desktop).
  *
  * Writes go through the `save` / `remove` props; the screen only goes back once
  * the Host accepted them, and stays (busy) meanwhile.
  */
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ChevronLeft, X } from 'lucide-vue-next'
+import { ChevronLeft, ExternalLink, X } from 'lucide-vue-next'
 import { AppSelect, Banner, Button, Input, Textarea } from '@/components/ui'
+import {
+  formatEstimate,
+  parseEstimate,
+  type FocusTodo,
+  type TodoPriority,
+  type TodoStatus,
+} from '@/lib/focus'
 import {
   activeDueChip,
   DUE_CHIPS,
@@ -37,6 +45,11 @@ const props = defineProps<{
   error: string | null
   save: (input: TodoSave) => Promise<boolean>
   remove: (id: string) => Promise<boolean>
+  /** The Host ranks todos: show the Focus fields. */
+  focus?: boolean
+  /** The todo's Focus fields (from the board); null for a new todo or one the
+   * board does not carry (done long ago). */
+  focusTodo?: FocusTodo | null
 }>()
 
 const emit = defineEmits<{
@@ -50,6 +63,10 @@ const title = ref('')
 const note = ref('')
 const dueDate = ref('')
 const projectId = ref('')
+const dueTime = ref('')
+const priority = ref<TodoPriority>(2)
+const estimate = ref('')
+const status = ref<TodoStatus>('todo')
 const confirmingDelete = ref(false)
 const localError = ref<string | null>(null)
 
@@ -61,6 +78,11 @@ watch(
     note.value = parts.note
     dueDate.value = todo?.due_date ?? ''
     projectId.value = todo ? (todo.project_id ?? '') : props.defaultProjectId
+    const f = props.focusTodo
+    dueTime.value = f?.due_time ?? todo?.due_time ?? ''
+    priority.value = f?.priority ?? 2
+    estimate.value = f?.estimate_min ? formatEstimate(f.estimate_min) : ''
+    status.value = f?.status ?? 'todo'
     confirmingDelete.value = false
     localError.value = null
   },
@@ -78,10 +100,28 @@ function pickChip(chip: DueChip): void {
   dueDate.value = dueFromChip(chip, props.today)
 }
 
+// Focus fields are editable when the Host ranks todos and either this is a new
+// todo or the board carries this one (a todo done long ago is not on it).
+const showFocus = computed(() => !!props.focus && (!props.todo || !!props.focusTodo))
+const PRIORITIES: TodoPriority[] = [1, 2, 3]
+const STATUSES: TodoStatus[] = ['todo', 'doing', 'waiting']
+const ESTIMATE_CHIPS = [15, 30, 60, 120, 240]
+const estimateMin = computed(() => parseEstimate(estimate.value))
+/** The source as a link the phone can open (http(s) only — `run:` ids and
+ * `owner/repo#12` shorthands would resolve against the relay's origin). */
+const sourceHref = computed(() => {
+  const url = props.focusTodo?.source_url ?? ''
+  return /^https?:\/\//i.test(url) ? url : null
+})
+
 async function submit(): Promise<void> {
   if (props.busy) return
   if (!title.value.trim()) {
     localError.value = t('controller.todo.sheet.needsTitle')
+    return
+  }
+  if (showFocus.value && estimateMin.value === undefined) {
+    localError.value = t('focus.drawer.estimateInvalid')
     return
   }
   localError.value = null
@@ -91,6 +131,15 @@ async function submit(): Promise<void> {
     dueDate: dueDate.value,
     projectId: projectId.value,
     base: props.todo,
+    focus: showFocus.value
+      ? {
+          dueTime: dueTime.value,
+          priority: priority.value,
+          estimateMin: estimateMin.value ?? null,
+          status: status.value,
+          base: props.focusTodo ?? null,
+        }
+      : undefined,
   })
   if (ok) emit('back')
 }
@@ -180,6 +229,87 @@ function clearBanner(): void {
           </button>
         </div>
 
+        <template v-if="showFocus">
+          <label v-if="dueDate" class="mb-3 block">
+            <span class="mb-1 block text-[11px] text-muted-foreground">{{ t('focus.drawer.dueTime') }}</span>
+            <Input v-model="dueTime" type="time" size="md" class="w-full" />
+          </label>
+
+          <div class="mb-3">
+            <span class="mb-1 block text-[11px] text-muted-foreground">{{ t('focus.priority.label') }}</span>
+            <div class="ui-segmented flex gap-1 rounded-lg border border-border bg-card p-0.5">
+              <button
+                v-for="p in PRIORITIES"
+                :key="p"
+                type="button"
+                class="flex-1 rounded-md px-2 py-1.5 text-xs transition-colors cursor-pointer"
+                :class="priority === p ? 'is-active bg-secondary font-semibold text-foreground' : 'text-muted-foreground'"
+                @click="priority = p"
+              >
+                {{ t(`focus.priority.${p}`) }}
+              </button>
+            </div>
+          </div>
+
+          <label class="mb-2 block">
+            <span class="mb-1 block text-[11px] text-muted-foreground">{{ t('focus.drawer.estimate') }}</span>
+            <Input
+              v-model="estimate"
+              size="md"
+              class="w-full"
+              autocomplete="off"
+              inputmode="text"
+              :placeholder="t('focus.drawer.estimatePlaceholder')"
+            />
+          </label>
+          <div class="mb-3 flex flex-wrap gap-1.5">
+            <button
+              v-for="m in ESTIMATE_CHIPS"
+              :key="m"
+              type="button"
+              class="rounded-full border px-2.5 py-1 text-xs transition-colors cursor-pointer"
+              :class="
+                estimateMin === m
+                  ? 'border-primary bg-primary/15 text-foreground'
+                  : 'border-border bg-secondary text-muted-foreground hover:text-foreground'
+              "
+              @click="estimate = formatEstimate(m)"
+            >
+              {{ formatEstimate(m) }}
+            </button>
+          </div>
+
+          <div class="mb-3">
+            <span class="mb-1 block text-[11px] text-muted-foreground">{{ t('focus.status.label') }}</span>
+            <div class="ui-segmented flex gap-1 rounded-lg border border-border bg-card p-0.5">
+              <button
+                v-for="st in STATUSES"
+                :key="st"
+                type="button"
+                class="flex-1 rounded-md px-2 py-1.5 text-xs transition-colors cursor-pointer"
+                :class="status === st ? 'is-active bg-secondary font-semibold text-foreground' : 'text-muted-foreground'"
+                @click="status = st"
+              >
+                {{ t(`focus.status.${st}`) }}
+              </button>
+            </div>
+          </div>
+
+          <a
+            v-if="sourceHref && focusTodo"
+            :href="sourceHref"
+            target="_blank"
+            rel="noopener noreferrer"
+            class="mb-3 flex items-center gap-1.5 text-xs text-primary"
+          >
+            <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+            <span class="truncate">{{ t('focus.actions.openSource') }} · {{ focusTodo.source_ref ?? focusTodo.source_url }}</span>
+          </a>
+          <p v-else-if="focusTodo?.source_ref" class="mb-3 truncate text-xs text-muted-foreground">
+            {{ t('focus.drawer.source') }} · {{ focusTodo.source_ref }}
+          </p>
+        </template>
+
         <label class="mb-3 flex flex-1 flex-col">
           <span class="mb-1 block text-[11px] text-muted-foreground">{{ t('controller.todo.sheet.note') }}</span>
           <Textarea
@@ -189,6 +319,13 @@ function clearBanner(): void {
             :placeholder="t('controller.todo.sheet.notePlaceholder')"
           />
         </label>
+
+        <div v-if="showFocus && focusTodo?.ai_plan" class="mb-3">
+          <span class="mb-1 block text-[11px] text-muted-foreground">{{ t('focus.drawer.aiPlan') }}</span>
+          <p class="max-h-60 overflow-auto whitespace-pre-wrap rounded-lg border border-border bg-card px-3 py-2 text-xs">
+            {{ focusTodo.ai_plan }}
+          </p>
+        </div>
 
         <div class="grid grid-cols-2 gap-2 pb-[env(safe-area-inset-bottom)]">
           <Button v-if="todo" variant="destructive" size="md" :disabled="busy" @click="onDelete">

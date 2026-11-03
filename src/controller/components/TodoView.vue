@@ -5,6 +5,10 @@
  * Upcoming / No due date and a circle that toggles done. Tapping a row (or the
  * floating +) asks the parent to open the full-height todo editor.
  *
+ * When the Host ranks todos (Focus board) the Active list is the board
+ * instead: today's load, "Do now" and the time buckets, with a sheet of quick
+ * actions (start, wait, snooze) per row.
+ *
  * Backend-agnostic like the other controller views: the list comes in as a
  * prop; `toggle` / `refresh` / `open` go out as events. The filter, search and
  * Active / Done switch are models owned by the parent, so they survive a trip
@@ -25,9 +29,12 @@ import {
   todoGroup,
   type TodoTab,
 } from '@/lib/remoteTodos'
+import type { FocusBoard, FocusItem } from '@/lib/focus'
 import FabButton from './FabButton.vue'
+import FocusActionSheet from './FocusActionSheet.vue'
+import FocusBoardList from './FocusBoardList.vue'
 import SearchField from './SearchField.vue'
-import type { ProjectInfo, TodoInfo } from '../protocol'
+import type { ProjectInfo, TodoInfo, TodoPatchWire } from '../protocol'
 
 const props = defineProps<{
   /** null until the Host's first `todo_list`. */
@@ -37,10 +44,18 @@ const props = defineProps<{
   error: string | null
   /** The list request failed (refused / no answer). */
   failed?: boolean
+  /** The Host ranks todos (Focus board). */
+  focus?: boolean
+  /** The Host's Focus board; null while loading. */
+  board?: FocusBoard | null
+  /** The board request failed: fall back to the plain list. */
+  boardFailed?: boolean
 }>()
 
 const emit = defineEmits<{
   toggle: [id: string]
+  /** A quick Focus action on one todo. */
+  patch: [id: string, patch: TodoPatchWire]
   refresh: []
   /** Open the editor on this todo, or on a new one (null). */
   open: [todo: TodoInfo | null]
@@ -57,18 +72,40 @@ const query = defineModel<string>('query', { required: true })
 // comes back to the foreground, so a screen left open past midnight (or a
 // phone woken the next morning) regroups Today / Overdue on its own.
 const today = ref(localYmd())
+/** Epoch ms for the board's relative labels ("start before 14:00"). */
+const now = ref(Date.now())
 function refreshToday(): void {
-  const now = localYmd()
-  if (now !== today.value) today.value = now
+  now.value = Date.now()
+  const ymd = localYmd()
+  if (ymd !== today.value) today.value = ymd
 }
 function onVisibility(): void {
-  if (document.visibilityState === 'visible') refreshToday()
+  if (document.visibilityState !== 'visible') return
+  refreshToday()
+  // The board is ranked at one instant and may have changed on the desktop
+  // meanwhile: re-rank on coming back.
+  if (props.board) {
+    lastRank = Date.now()
+    emit('refresh')
+  }
 }
 let tick: ReturnType<typeof setInterval> | null = null
 
+// Buckets and "Do now" move with the clock and with desktop edits the Host
+// does not push: re-rank every few minutes while the screen is open.
+const RERANK_MS = 5 * 60_000
+let lastRank = Date.now()
+function onTick(): void {
+  refreshToday()
+  if (props.board && document.visibilityState === 'visible' && Date.now() - lastRank >= RERANK_MS) {
+    lastRank = Date.now()
+    emit('refresh')
+  }
+}
+
 onMounted(() => {
   refreshToday()
-  tick = setInterval(refreshToday, 60_000)
+  tick = setInterval(onTick, 60_000)
   document.addEventListener('visibilitychange', onVisibility)
   emit('refresh')
 })
@@ -86,7 +123,44 @@ const scoped = computed(() =>
 const counts = computed(() => countTodos(scoped.value))
 const groups = computed(() => groupOpenTodos(scoped.value, today.value))
 const finished = computed(() => doneTodos(scoped.value))
-const isEmpty = computed(() => (tab.value === 'active' ? groups.value.length === 0 : finished.value.length === 0))
+/** The board's rows under the same project filter and search as the list. */
+const boardItems = computed<FocusItem[]>(() => {
+  const items = props.board?.items ?? []
+  const keep = new Set(searchTodos(filterByProject(items.map((it) => it.todo), projectFilter.value || null), query.value).map((t) => t.id))
+  return items.filter((it) => keep.has(it.todo.id))
+})
+const useBoard = computed(() => tab.value === 'active' && !!props.board)
+/** Active tab of a Focus Host before its board arrived (the plain list would
+ * flash, then reshuffle). */
+const boardLoading = computed(
+  () => tab.value === 'active' && !!props.focus && !props.board && !props.boardFailed,
+)
+const isEmpty = computed(() =>
+  tab.value === 'active'
+    ? useBoard.value
+      ? !boardItems.value.some((it) => it.bucket !== 'done')
+      : groups.value.length === 0
+    : finished.value.length === 0,
+)
+
+// The quick-action sheet, by id so it follows the re-ranked board.
+const actionsId = ref<string | null>(null)
+const actionsItem = computed(() =>
+  actionsId.value ? (props.board?.items.find((it) => it.todo.id === actionsId.value) ?? null) : null,
+)
+function onAction(patch: TodoPatchWire): void {
+  if (actionsId.value) emit('patch', actionsId.value, patch)
+  actionsId.value = null
+}
+function onActionToggle(): void {
+  if (actionsId.value) emit('toggle', actionsId.value)
+  actionsId.value = null
+}
+function onActionEdit(): void {
+  const it = actionsItem.value
+  actionsId.value = null
+  if (it) emit('open', it.todo)
+}
 
 function formatDay(ymd: string): string {
   const [y, m, d] = ymd.split('-').map(Number)
@@ -166,7 +240,7 @@ const CHIP_TONES: Record<string, string> = {
           {{ t('controller.data.retry') }}
         </Button>
       </div>
-      <p v-else-if="todos === null" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
+      <p v-else-if="todos === null || boardLoading" class="flex items-center justify-center gap-2 py-10 text-sm text-foreground/50">
         <Loader2 class="h-4 w-4 animate-spin" :stroke-width="2" /> {{ t('controller.data.loading') }}
       </p>
       <p v-else-if="isEmpty" class="py-10 text-center text-sm text-foreground/50">
@@ -178,6 +252,17 @@ const CHIP_TONES: Record<string, string> = {
               : t('controller.todo.emptyDone')
         }}
       </p>
+
+      <FocusBoardList
+        v-else-if="useBoard && board"
+        :board="board"
+        :items="boardItems"
+        :project-names="projectNames"
+        :now="now"
+        @toggle="emit('toggle', $event)"
+        @open="emit('open', $event)"
+        @actions="actionsId = $event.todo.id"
+      />
 
       <template v-else-if="tab === 'active'">
         <section v-for="g in groups" :key="g.key" class="mb-3">
@@ -257,6 +342,16 @@ const CHIP_TONES: Record<string, string> = {
     <FabButton
       :label="t('controller.todo.add')"
       @click="emit('open', null)"
+    />
+
+    <FocusActionSheet
+      v-if="actionsItem"
+      :item="actionsItem"
+      :now="now"
+      @patch="onAction"
+      @toggle="onActionToggle"
+      @edit="onActionEdit"
+      @close="actionsId = null"
     />
   </div>
 </template>

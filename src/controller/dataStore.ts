@@ -6,11 +6,13 @@
  * a delivery ack and resolve to whether the Host accepted them, so a sheet or
  * editor only closes once its change is actually saved.
  *
- * The Host pushes the fresh `todo_list` after every todo write and the real
+ * The Host pushes the fresh `todo_list` (and, for a Focus Controller, the
+ * re-ranked `focus_board`) after every todo write and the real
  * `project_toggles` after every switch, so those need no re-fetch. Note writes
  * are not followed by a push: the store re-lists with the current filter.
  */
 import { reactive } from 'vue'
+import type { FocusBoard, FocusTodo, TodoPriority, TodoStatus } from '@/lib/focus'
 import type { CommandAckHandler } from './connection'
 import {
   noteAddCmd,
@@ -20,6 +22,7 @@ import {
   noteUpdateCmd,
   projectTogglesGetCmd,
   projectToggleSetCmd,
+  focusBoardCmd,
   todoAddCmd,
   todoDeleteCmd,
   todoListCmd,
@@ -49,6 +52,19 @@ export interface TodoSave {
   /** The todo as the sheet opened it: only fields changed since then are sent,
    * so a field the user did not touch never overwrites a desktop edit. */
   base?: TodoInfo | null
+  /** Focus fields, only when the Host has the Focus board. */
+  focus?: TodoFocusSave
+}
+
+/** The Focus fields the todo editor saves; diffed against `base`. */
+export interface TodoFocusSave {
+  /** `HH:MM`, '' = all day. */
+  dueTime: string
+  priority: TodoPriority
+  estimateMin: number | null
+  status: TodoStatus
+  /** The todo's Focus fields as the editor opened them (null for a new todo). */
+  base: FocusTodo | null
 }
 
 /** What the note editor saves. `id` null = a new note. */
@@ -65,6 +81,7 @@ export interface NoteSave {
  * an error with a retry instead of spinning forever. */
 export interface LoadFailures {
   todos: boolean
+  board: boolean
   notes: boolean
   toggles: boolean
   note: boolean
@@ -73,6 +90,8 @@ export interface LoadFailures {
 export interface DataState {
   /** null until the first `todo_list` arrives. */
   todos: TodoInfo[] | null
+  /** The ranked Focus board; null until the first `focus_board` arrives. */
+  board: FocusBoard | null
   notes: NoteSummary[] | null
   /** The full note the editor asked for (`note_get`); null while loading. */
   note: NoteInfo | null
@@ -93,6 +112,7 @@ export interface DataState {
 export function createDataStore(send: SendCommand, describeError: (reason: string | null) => string) {
   const state = reactive<DataState>({
     todos: null,
+    board: null,
     notes: null,
     note: null,
     noteId: null,
@@ -101,13 +121,16 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     togglesProjectId: null,
     pending: 0,
     error: null,
-    failed: { todos: false, notes: false, toggles: false, note: false },
+    failed: { todos: false, board: false, notes: false, toggles: false, note: false },
   })
 
   function apply(p: StreamPayload): void {
     switch (p.kind) {
       case 'todo_list':
         state.todos = p.todos
+        break
+      case 'focus_board':
+        state.board = p.board
         break
       case 'note_list':
         // A reply to a filter the user has since changed would flash stale rows.
@@ -172,9 +195,28 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     read(todoListCmd(), 'todos')
   }
 
+  function loadBoard(): void {
+    read(focusBoardCmd(), 'board')
+  }
+
   async function saveTodo(input: TodoSave): Promise<boolean> {
+    const f = input.focus
     if (!input.id) {
-      return write(todoAddCmd({ text: input.text, projectId: input.projectId, dueDate: input.dueDate }))
+      const { ok, itemId } = await writeAck(
+        todoAddCmd({
+          text: input.text,
+          projectId: input.projectId,
+          dueDate: input.dueDate,
+          dueTime: f?.dueTime,
+          priority: f?.priority,
+          estimateMin: f?.estimateMin,
+        }),
+      )
+      // A new todo starts as `todo`; another status is a second write. The todo
+      // exists either way, so its failure only shows as an error: answering
+      // false would keep the editor on "new" and a retry would add it twice.
+      if (ok && itemId && f && f.status !== 'todo') void write(todoUpdateCmd(itemId, { status: f.status }))
+      return ok
     }
     // Diff against what the sheet opened with — not the live list, which may
     // already carry a desktop edit the user never saw.
@@ -183,6 +225,14 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     if (!current || current.text !== input.text) patch.text = input.text
     if (!current || (current.due_date ?? '') !== input.dueDate) patch.due_date = input.dueDate || null
     if (!current || (current.project_id ?? '') !== input.projectId) patch.project_id = input.projectId || null
+    if (f) {
+      const b = f.base
+      const dueTime = input.dueDate ? f.dueTime : ''
+      if (!b || (b.due_time ?? '') !== dueTime) patch.due_time = dueTime || null
+      if (!b || b.priority !== f.priority) patch.priority = f.priority
+      if (!b || (b.estimate_min ?? null) !== f.estimateMin) patch.estimate_min = f.estimateMin
+      if (!b || b.status !== f.status) patch.status = f.status
+    }
     if (Object.keys(patch).length === 0) return true
     return write(todoUpdateCmd(input.id, patch))
   }
@@ -198,6 +248,11 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
 
   function deleteTodo(id: string): Promise<boolean> {
     return write(todoDeleteCmd(id))
+  }
+
+  /** A quick Focus action (start, wait, snooze…); the Host pushes the board. */
+  function patchTodo(id: string, patch: TodoPatchWire): Promise<boolean> {
+    return write(todoUpdateCmd(id, patch))
   }
 
   // ---- notes ----
@@ -315,6 +370,7 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
   /** After a reconnect: re-fetch whatever a screen has already loaded. */
   function reload(): void {
     if (state.todos) loadTodos()
+    if (state.board) loadBoard()
     if (state.notes) loadNotes()
     if (state.togglesProjectId) loadToggles(state.togglesProjectId)
     if (state.noteId) loadNote(state.noteId)
@@ -326,10 +382,11 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
 
   function reset(): void {
     state.todos = null
+    state.board = null
     state.notes = null
     state.note = null
     state.noteId = null
-    state.failed = { todos: false, notes: false, toggles: false, note: false }
+    state.failed = { todos: false, board: false, notes: false, toggles: false, note: false }
     state.noteFilter = { projectId: null, query: '' }
     state.toggles = null
     state.togglesProjectId = null
@@ -341,9 +398,11 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     state,
     apply,
     loadTodos,
+    loadBoard,
     saveTodo,
     toggleTodo,
     deleteTodo,
+    patchTodo,
     loadNotes,
     loadNote,
     closeNote,

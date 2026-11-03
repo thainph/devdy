@@ -1,4 +1,5 @@
-//! Remote Control data actions: todos, notes and per-project switches
+//! Remote Control data actions: todos (with the Focus board), notes and
+//! per-project switches
 //! (`docs/remote-mobile-companion-spec.md` §2.B / §3.2).
 //!
 //! Only reached for a Controller that advertised
@@ -35,9 +36,20 @@ pub const MAX_NOTE_CONTENT: usize = 1_000_000;
 /// Longest search query.
 pub const MAX_QUERY: usize = 200;
 
-/// Keys a `todo_update` patch may carry — the fields the phone edits. Focus
-/// fields (priority, estimate, status, AI plan…) stay desktop-only.
-pub const TODO_PATCH_KEYS: [&str; 3] = ["text", "due_date", "project_id"];
+/// Keys a `todo_update` patch may carry — the fields the phone edits: the
+/// plain todo ones plus the Focus ones a person sets by hand. AI output,
+/// actual time and `done` (→ `todo_toggle`) stay desktop-only.
+pub const TODO_PATCH_KEYS: [&str; 9] = [
+    "text",
+    "due_date",
+    "project_id",
+    "due_time",
+    "priority",
+    "estimate_min",
+    "status",
+    "snoozed_until",
+    "remind_at",
+];
 /// Keys a `note_update` patch may carry.
 pub const NOTE_PATCH_KEYS: [&str; 3] = ["title", "content", "project_id"];
 
@@ -85,25 +97,53 @@ fn opt_string(v: &Value) -> Result<Option<&str>, RejectReason> {
     }
 }
 
+/// An integer patch value (`null` allowed when `nullable`).
+fn opt_int(v: &Value, nullable: bool) -> Result<Option<i64>, RejectReason> {
+    match v {
+        Value::Null if nullable => Ok(None),
+        v => v.as_i64().map(Some).ok_or(RejectReason::Malformed),
+    }
+}
+
 /// Validate a `todo_update` patch into the map `update_todo_fields_inner`
-/// takes. Only [`TODO_PATCH_KEYS`]; at least one of them; `text` may not be
-/// cleared; a blank `project_id` / `due_date` clears it.
+/// takes. Only [`TODO_PATCH_KEYS`]; at least one of them; `text` and
+/// `priority` / `status` may not be cleared; a blank / null optional field
+/// clears it. Cross-field rules (a `due_time` needs a `due_date`) are left to
+/// `update_todo_fields_inner`.
 pub fn todo_patch(wire: Option<&Value>) -> Result<Map<String, Value>, RejectReason> {
+    use crate::focus::validate as v;
     let obj = wire.and_then(Value::as_object).ok_or(RejectReason::Malformed)?;
     if obj.is_empty() || obj.keys().any(|k| !TODO_PATCH_KEYS.contains(&k.as_str())) {
         return Err(RejectReason::Malformed);
     }
+    let bad = |_| RejectReason::Malformed;
     let mut out = Map::new();
     for (key, val) in obj {
-        let s = opt_string(val)?;
         let v = match key.as_str() {
             "text" => {
+                let s = opt_string(val)?;
                 let t = s.map(str::trim).filter(|t| !t.is_empty()).ok_or(RejectReason::Malformed)?;
                 bounded_text(t, MAX_TODO_TEXT)?;
                 Value::String(t.to_string())
             }
-            "due_date" => valid_due_date(s)?.map_or(Value::Null, Value::String),
-            "project_id" => optional_id(s)?.map_or(Value::Null, Value::String),
+            "due_date" => valid_due_date(opt_string(val)?)?.map_or(Value::Null, Value::String),
+            "project_id" => optional_id(opt_string(val)?)?.map_or(Value::Null, Value::String),
+            "due_time" => v::due_time(opt_string(val)?).map_err(bad)?.map_or(Value::Null, Value::String),
+            "priority" => {
+                let p = opt_int(val, false)?.ok_or(RejectReason::Malformed)?;
+                Value::from(v::priority(p).map_err(bad)?)
+            }
+            "estimate_min" => match opt_int(val, true)? {
+                None => Value::Null,
+                Some(m) => Value::from(v::estimate(m).map_err(bad)?),
+            },
+            "status" => {
+                let s = opt_string(val)?.ok_or(RejectReason::Malformed)?;
+                Value::String(v::status(s).map_err(bad)?)
+            }
+            "snoozed_until" | "remind_at" => {
+                v::instant(key, opt_string(val)?).map_err(bad)?.map_or(Value::Null, Value::String)
+            }
             _ => unreachable!("filtered above"),
         };
         out.insert(key.clone(), v);
@@ -364,6 +404,7 @@ pub async fn handle(ctx: &HandlerCtx, cmd: &CmdPayload) {
         "todo_update" => todo_update(ctx, cmd).await,
         "todo_toggle" => todo_toggle(ctx, cmd).await,
         "todo_delete" => todo_delete(ctx, cmd).await,
+        "focus_board" => focus_board(ctx).await,
         "note_list" | "note_search" => note_list(ctx, cmd).await,
         "note_get" => note_get(ctx, cmd).await,
         "note_add" => note_add(ctx, cmd).await,
@@ -417,6 +458,20 @@ async fn require_project(ctx: &HandlerCtx, project_id: Option<&str>) -> DataResu
     }
 }
 
+/// The fresh list after a todo write; a Focus Controller also gets the
+/// re-ranked board, so the write shows up in its place without another round
+/// trip. Best effort: the write itself already landed, so a board failure must
+/// not fail its ack.
+async fn send_todos_after_write(ctx: &HandlerCtx) -> DataResult {
+    send_todo_list(ctx).await?;
+    if ctx.focus {
+        if let Err(Failure::Failed(e)) = send_focus_board(ctx).await {
+            tracing::debug!(event = "remote_focus_board_failed", error = %e);
+        }
+    }
+    Ok(None)
+}
+
 async fn send_todo_list(ctx: &HandlerCtx) -> DataResult {
     let list = todos::load_todos(&ctx.db).await.map_err(Failure::Failed)?;
     send_payload(
@@ -429,8 +484,21 @@ async fn send_todo_list(ctx: &HandlerCtx) -> DataResult {
     Ok(None)
 }
 
+async fn send_focus_board(ctx: &HandlerCtx) -> DataResult {
+    let board = crate::commands::focus::load_board(ctx.app.clone(), &ctx.db)
+        .await
+        .map_err(Failure::Failed)?;
+    let board = serde_json::to_value(board).map_err(|e| Failure::Failed(e.to_string()))?;
+    send_payload(ctx, StreamPayload::FocusBoard { board }).await;
+    Ok(None)
+}
+
 async fn todo_list(ctx: &HandlerCtx) -> DataResult {
     send_todo_list(ctx).await
+}
+
+async fn focus_board(ctx: &HandlerCtx) -> DataResult {
+    send_focus_board(ctx).await
 }
 
 async fn todo_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -441,19 +509,40 @@ async fn todo_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     bounded_text(text, MAX_TODO_TEXT)?;
     let project_id = optional_id(cmd.project_id.as_deref())?;
     let due_date = valid_due_date(cmd.due_date.as_deref())?;
+    let (due_time, priority, estimate_min) = new_todo_focus(cmd, due_date.is_some())?;
     require_project(ctx, project_id.as_deref()).await?;
     let input = todos::NewTodo {
         text: text.to_string(),
         project_id,
         due_date,
+        due_time,
+        priority,
+        estimate_min,
         ..Default::default()
     };
     let todo = todos::add_todo_inner(&ctx.app, &ctx.db, input)
         .await
         .map_err(Failure::Failed)?;
     // Push the fresh list so the phone shows the write without a round trip.
-    send_todo_list(ctx).await?;
+    send_todos_after_write(ctx).await?;
     Ok(Some(todo.id))
+}
+
+/// The Focus fields of a `todo_add`: `due_time` (needs a date), `priority`,
+/// `estimate_min`; each optional.
+pub fn new_todo_focus(
+    cmd: &CmdPayload,
+    has_date: bool,
+) -> Result<(Option<String>, Option<i64>, Option<i64>), RejectReason> {
+    use crate::focus::validate as v;
+    let bad = |_| RejectReason::Malformed;
+    let due_time = v::due_time(cmd.due_time.as_deref()).map_err(bad)?;
+    if due_time.is_some() && !has_date {
+        return Err(RejectReason::Malformed);
+    }
+    let priority = cmd.priority.map(v::priority).transpose().map_err(bad)?;
+    let estimate_min = cmd.estimate_min.map(v::estimate).transpose().map_err(bad)?;
+    Ok((due_time, priority, estimate_min))
 }
 
 async fn require_todo(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<String, Failure> {
@@ -471,7 +560,7 @@ async fn todo_update(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     todos::update_todo_fields_inner(&ctx.app, &ctx.db, &id, &patch)
         .await
         .map_err(Failure::Failed)?;
-    send_todo_list(ctx).await
+    send_todos_after_write(ctx).await
 }
 
 async fn todo_toggle(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -479,7 +568,7 @@ async fn todo_toggle(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     todos::toggle_todo_inner(&ctx.app, &ctx.db, &id)
         .await
         .map_err(Failure::Failed)?;
-    send_todo_list(ctx).await
+    send_todos_after_write(ctx).await
 }
 
 async fn todo_delete(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -487,7 +576,7 @@ async fn todo_delete(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     todos::delete_todo_inner(&ctx.app, &ctx.db, &id)
         .await
         .map_err(Failure::Failed)?;
-    send_todo_list(ctx).await
+    send_todos_after_write(ctx).await
 }
 
 /// `note_list` / `note_search`: the reply echoes the filter. Writes are not
@@ -729,7 +818,9 @@ mod tests {
 
         let bad = |v: Value| todo_patch(Some(&v)).unwrap_err();
         assert_eq!(bad(json!({})), RejectReason::Malformed);
-        assert_eq!(bad(json!({ "priority": 1 })), RejectReason::Malformed, "Focus fields stay desktop-only");
+        for k in ["ai_plan", "actual_min", "estimate_source"] {
+            assert_eq!(bad(json!({ k: null })), RejectReason::Malformed, "{k} stays desktop-only");
+        }
         assert_eq!(bad(json!({ "done": true })), RejectReason::Malformed, "done goes through todo_toggle");
         assert_eq!(bad(json!({ "text": "  " })), RejectReason::Malformed);
         assert_eq!(bad(json!({ "text": null })), RejectReason::Malformed);
@@ -738,6 +829,60 @@ mod tests {
         assert_eq!(bad(json!({ "text": "x".repeat(MAX_TODO_TEXT + 1) })), RejectReason::Malformed);
         assert_eq!(todo_patch(None).unwrap_err(), RejectReason::Malformed);
         assert_eq!(todo_patch(Some(&json!("text"))).unwrap_err(), RejectReason::Malformed);
+    }
+
+    #[test]
+    fn todo_patch_takes_the_focus_fields() {
+        let p = todo_patch(Some(&json!({
+            "due_time": "15:30",
+            "priority": 1,
+            "estimate_min": 90,
+            "status": "doing",
+            "snoozed_until": "2026-11-04T09:00:00+07:00",
+            "remind_at": null,
+        })))
+        .unwrap();
+        assert_eq!(p["due_time"], "15:30");
+        assert_eq!(p["priority"], 1);
+        assert_eq!(p["estimate_min"], 90);
+        assert_eq!(p["status"], "doing");
+        assert_eq!(p["snoozed_until"], "2026-11-04T09:00:00+07:00");
+        assert_eq!(p["remind_at"], Value::Null);
+        let p = todo_patch(Some(&json!({ "estimate_min": null, "due_time": "", "snoozed_until": "" }))).unwrap();
+        assert_eq!(p["estimate_min"], Value::Null);
+        assert_eq!(p["due_time"], Value::Null);
+        assert_eq!(p["snoozed_until"], Value::Null);
+
+        let bad = |v: Value| todo_patch(Some(&v)).unwrap_err();
+        for v in [
+            json!({ "priority": 4 }),
+            json!({ "priority": null }),
+            json!({ "priority": "1" }),
+            json!({ "estimate_min": 1 }),
+            json!({ "estimate_min": 1.5 }),
+            json!({ "status": "done" }),
+            json!({ "status": null }),
+            json!({ "due_time": "25:00" }),
+            json!({ "snoozed_until": "tomorrow" }),
+        ] {
+            assert_eq!(bad(v.clone()), RejectReason::Malformed, "{v}");
+        }
+    }
+
+    #[test]
+    fn new_todo_focus_fields() {
+        let cmd = |v: Value| serde_json::from_value::<CmdPayload>(v).unwrap();
+        let base = json!({ "kind": "cmd", "action": "todo_add", "text": "x" });
+        assert_eq!(new_todo_focus(&cmd(base.clone()), false), Ok((None, None, None)));
+        let mut full = base.clone();
+        full["due_time"] = json!("09:15");
+        full["priority"] = json!(3);
+        full["estimate_min"] = json!(30);
+        assert_eq!(new_todo_focus(&cmd(full.clone()), true), Ok((Some("09:15".into()), Some(3), Some(30))));
+        assert_eq!(new_todo_focus(&cmd(full), false), Err(RejectReason::Malformed), "a time needs a date");
+        let mut bad = base;
+        bad["priority"] = json!(0);
+        assert_eq!(new_todo_focus(&cmd(bad), false), Err(RejectReason::Malformed));
     }
 
     #[test]

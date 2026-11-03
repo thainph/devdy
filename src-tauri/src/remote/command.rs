@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 33] = [
+pub const ALLOW_LIST: [&str; 34] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -57,6 +57,7 @@ pub const ALLOW_LIST: [&str; 33] = [
     "project_toggles_get",
     "project_toggle_set",
     "note_get",
+    "focus_board",
     // Web Push; refused unless the client advertised `push` (see PUSH_ACTIONS).
     "push_config",
     "push_visibility",
@@ -67,7 +68,7 @@ pub const ALLOW_LIST: [&str; 33] = [
 
 /// The data actions: allow-listed, but only for a Controller that advertised
 /// [`crate::remote::protocol::FEATURE_DATA`].
-pub const DATA_ACTIONS: [&str; 13] = [
+pub const DATA_ACTIONS: [&str; 14] = [
     "todo_list",
     "todo_add",
     "todo_update",
@@ -81,6 +82,7 @@ pub const DATA_ACTIONS: [&str; 13] = [
     "project_toggles_get",
     "project_toggle_set",
     "note_get",
+    "focus_board",
 ];
 
 /// Whether `action` is one of the [`DATA_ACTIONS`].
@@ -125,7 +127,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 17] = [
+pub const READ_ONLY_ACTIONS: [&str; 18] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -144,6 +146,7 @@ pub const READ_ONLY_ACTIONS: [&str; 17] = [
     "note_search",
     "project_toggles_get",
     "note_get",
+    "focus_board",
     // Push: reading the VAPID key, and the phone saying it went to / came back
     // from the background (fires on every app switch). Subscribing, removing
     // and test sends stay on the command budget.
@@ -419,6 +422,7 @@ mod tests {
             "project_toggles_get",
             "project_toggle_set",
             "note_get",
+            "focus_board",
         ] {
             assert!(is_allowed_action(a), "{a} should be allowed");
             assert!(is_data_action(a), "{a} is a data action");
@@ -473,7 +477,7 @@ mod tests {
 
     #[test]
     fn data_reads_and_writes_use_the_right_budget() {
-        for a in ["todo_list", "note_list", "note_search", "project_toggles_get", "note_get"] {
+        for a in ["todo_list", "note_list", "note_search", "project_toggles_get", "note_get", "focus_board"] {
             assert!(is_read_only_action(a), "{a} only reads");
         }
         for a in [

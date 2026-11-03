@@ -74,6 +74,7 @@ import {
 } from './protocol'
 import { localYmd } from '@/lib/todoDue'
 import type { TodoTab } from '@/lib/remoteTodos'
+import type { FocusTodo } from '@/lib/focus'
 
 const { t } = useI18n()
 const { renderText, loadMarkdown } = useMarkdown()
@@ -99,7 +100,9 @@ const data = createDataStore(
 const push = createPushStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false)
 const noteEditorOpen = ref(false)
 // The todo editor: closed (null), a new todo (`todo: null`) or an existing one.
-const todoEditor = ref<{ todo: TodoInfo | null; today: string } | null>(null)
+// `focus` is the todo's board row as it was when the editor opened (the diff
+// base for the Focus fields).
+const todoEditor = ref<{ todo: TodoInfo | null; focus: FocusTodo | null; today: string } | null>(null)
 // ── shared project scope ─────────────────────────────────────────────────────
 // One project (null = all) that Sessions, Todo, Notes and Setting follow,
 // picked from the header title or Setting's Project row, kept on this device
@@ -150,6 +153,7 @@ const hasData = computed(() => hostHas(hostFeatures.value, 'data'))
 const hasInbox = computed(() => hostHas(hostFeatures.value, 'inbox'))
 const hasRemember = computed(() => hostHas(hostFeatures.value, 'remember'))
 const hasPush = computed(() => hostHas(hostFeatures.value, 'push'))
+const hasFocus = computed(() => hostHas(hostFeatures.value, 'focus'))
 // Setting stays: it also holds this phone's look, notifications and Disconnect.
 const DATA_TABS: ControllerTab[] = ['todo', 'note']
 const hiddenTabs = computed<ControllerTab[]>(() =>
@@ -169,7 +173,13 @@ function openNoteEditor(note: NoteSummary | null): void {
 }
 function openTodoEditor(todo: TodoInfo | null): void {
   data.clearError()
-  todoEditor.value = { todo, today: localYmd() }
+  const row = todo ? data.state.board?.items.find((it) => it.todo.id === todo.id) : null
+  todoEditor.value = { todo, focus: row ? { ...row.todo } : null, today: localYmd() }
+}
+/** Todo tab (re)load: the list, and the ranked board on a Focus Host. */
+function loadTodoTab(): void {
+  data.loadTodos()
+  if (hasFocus.value) data.loadBoard()
 }
 function closeTodoEditor(): void {
   todoEditor.value = null
@@ -638,7 +648,7 @@ function refreshAll(): void {
   syncInbox()
   refreshRuns()
   if (hasData.value) {
-    data.loadTodos()
+    loadTodoTab()
     data.loadNotes()
     if (toggleProjectId.value) data.loadToggles(toggleProjectId.value)
   }
@@ -928,6 +938,8 @@ function onRequestFiles(): void {
     :error="data.state.error"
     :save="data.saveTodo"
     :remove="data.deleteTodo"
+    :focus="hasFocus"
+    :focus-todo="todoEditor.focus"
     @back="closeTodoEditor"
     @clear-error="data.clearError()"
   />
@@ -978,9 +990,13 @@ function onRequestFiles(): void {
         :projects="store.state.projectList"
         :error="data.state.error"
         :failed="data.state.failed.todos"
+        :focus="hasFocus"
+        :board="hasFocus ? data.state.board : null"
+        :board-failed="data.state.failed.board"
         @open="openTodoEditor"
         @toggle="data.toggleTodo"
-        @refresh="data.loadTodos()"
+        @patch="(id, patch) => void data.patchTodo(id, patch)"
+        @refresh="loadTodoTab"
         @clear-error="data.clearError()"
       />
       <NoteListView
