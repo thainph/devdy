@@ -2663,7 +2663,16 @@ pub async fn create_session_run(
     project_id: String,
     engine_override: Option<String>,
 ) -> Result<RunRecord, String> {
-    let default_engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
+    create_session_run_inner(db.inner(), project_id, engine_override).await
+}
+
+/// `create_session_run` for callers holding a plain pool (Focus "Start with AI").
+pub async fn create_session_run_inner(
+    db: &Db,
+    project_id: String,
+    engine_override: Option<String>,
+) -> Result<RunRecord, String> {
+    let default_engine = crate::commands::settings::resolve_default_engine(db).await;
     let engine = engine_override
         .filter(|e| !e.trim().is_empty())
         .unwrap_or(default_engine);
@@ -2679,7 +2688,7 @@ pub async fn create_session_run(
     .bind(&project_id)
     .bind(&engine)
     .bind(&now)
-    .execute(db.inner())
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
 

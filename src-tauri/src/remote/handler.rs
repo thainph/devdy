@@ -18,8 +18,9 @@ use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
 use crate::remote::guard;
 use crate::remote::command::{
-    data_action_permitted, is_allowed_action, is_data_action, is_push_action, map_remote_decision,
-    push_action_permitted, CommandRateLimiter, IdempotencyGuard, RejectReason,
+    data_action_permitted, focus_action_permitted, is_allowed_action, is_data_action, is_focus_action,
+    is_push_action, map_remote_decision, push_action_permitted, CommandRateLimiter, IdempotencyGuard,
+    RejectReason,
 };
 use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
@@ -92,6 +93,11 @@ pub struct HandlerCtx {
     ///
     /// [`FEATURE_DATA`]: crate::remote::protocol::FEATURE_DATA
     pub data: bool,
+    /// The Controller renders the Focus board ([`FEATURE_FOCUS`]): todo writes
+    /// are followed by a fresh board.
+    ///
+    /// [`FEATURE_FOCUS`]: crate::remote::protocol::FEATURE_FOCUS
+    pub focus: bool,
     /// The Controller manages Web Push ([`FEATURE_PUSH`]).
     ///
     /// [`FEATURE_PUSH`]: crate::remote::protocol::FEATURE_PUSH
@@ -99,6 +105,9 @@ pub struct HandlerCtx {
     /// Tags the push subscriptions this session makes, so ending or kicking
     /// it drops them ([`crate::remote::push::session_tag`]).
     pub push_session_tag: String,
+    /// The live Focus board of a `data` + `focus` session; dropped (unlisten
+    /// + abort) with the context ([`crate::remote::focus::start_live_board`]).
+    pub live_board: std::sync::OnceLock<crate::remote::focus::LiveBoard>,
 }
 
 impl HandlerCtx {
@@ -212,7 +221,7 @@ pub(super) async fn command_ack(
 }
 
 /// [`command_ack`] that also names the run the command created.
-async fn command_ack_for(
+pub(super) async fn command_ack_for(
     ctx: &HandlerCtx,
     cmd: &CmdPayload,
     accepted: bool,
@@ -310,8 +319,9 @@ pub(super) async fn reject(ctx: &HandlerCtx, action: &str, run_id: Option<&str>,
 /// built this ctx) → wrong-run → rate limit → allow-list → per-action
 /// validation → execute. A failure at any gate audits and returns without
 /// touching run state. Reaching this function means the session is authenticated
-/// (the OTP gate is what mints the [`HandlerCtx`]).
-pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
+/// (the OTP gate is what mints the [`HandlerCtx`]). The context is shared so a
+/// Focus AI request can answer after its ack, if the session is still there.
+pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: CmdPayload) {
     let action = cmd.action.as_str();
     let run_id = cmd.run_id.clone();
 
@@ -374,6 +384,14 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
         return;
     }
 
+    // Gate 3a: Focus actions only for a Controller that negotiated both data
+    // and the board.
+    if !focus_action_permitted(action, ctx.data && ctx.focus) {
+        reject(ctx, action, None, RejectReason::NotAllowed).await;
+        command_ack(ctx, &cmd, false, Some(RejectReason::NotAllowed.as_str())).await;
+        return;
+    }
+
     // Gate 3b: push actions only for a Controller that negotiated them.
     if !push_action_permitted(action, ctx.push) {
         reject(ctx, action, None, RejectReason::NotAllowed).await;
@@ -389,6 +407,10 @@ pub async fn handle(ctx: &HandlerCtx, cmd: CmdPayload) {
 
     if is_data_action(action) {
         crate::remote::data::handle(ctx, &cmd).await;
+        return;
+    }
+    if is_focus_action(action) {
+        crate::remote::focus::handle(ctx, &cmd).await;
         return;
     }
     if is_push_action(action) {

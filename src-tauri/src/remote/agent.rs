@@ -1124,6 +1124,7 @@ async fn try_authenticate_first_frame(
     let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
     let data = has_feature(crate::remote::protocol::FEATURE_DATA);
     let push = has_feature(crate::remote::protocol::FEATURE_PUSH);
+    let focus = has_feature(crate::remote::protocol::FEATURE_FOCUS);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
@@ -1131,6 +1132,7 @@ async fn try_authenticate_first_frame(
         multi_run = multi_run,
         data = data,
         push = push,
+        focus = focus,
     );
     // A phone that just authenticated is on screen (it reports otherwise with
     // `push_visibility`); a remote desktop never holds pushes back.
@@ -1228,9 +1230,12 @@ async fn try_authenticate_first_frame(
         idle: idle.clone(),
         ipc,
         data,
+        focus,
         push,
         push_session_tag: crate::remote::push::session_tag(&session_secret),
+        live_board: Default::default(),
     });
+    crate::remote::focus::start_live_board(&ctx);
     *room_ctx = Some(ctx.clone());
 
     // Dispatch the first (already-decrypted) frame as a normal command.

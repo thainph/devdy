@@ -1,6 +1,8 @@
 //! Pure Web Push decision logic: which run events count, how a burst of them
 //! collapses into one notification, what each device receives, and when to
-//! stay quiet. No I/O — the dispatcher in `mod.rs` feeds it.
+//! stay quiet. No I/O — the dispatcher in `mod.rs` feeds it. Focus reminders
+//! ([`PushKind::Focus`]) skip the bursts: the scheduler already groups one
+//! tick's notices into one notification ([`PushMessage::focus`]).
 
 use serde::{Deserialize, Serialize};
 use std::time::{Duration, Instant};
@@ -17,6 +19,9 @@ pub enum PushKind {
     Done,
     /// A run failed.
     Failed,
+    /// A Focus reminder (`crate::focus::scheduler`). Sent as composed, never
+    /// counted into a burst.
+    Focus,
 }
 
 impl PushKind {
@@ -25,6 +30,7 @@ impl PushKind {
             PushKind::Pending => "pending",
             PushKind::Done => "done",
             PushKind::Failed => "failed",
+            PushKind::Focus => "focus",
         }
     }
 }
@@ -45,11 +51,23 @@ pub struct PushEvents {
     pub pending: bool,
     pub done: bool,
     pub failed: bool,
+    /// Added after the others: a setting saved before it existed means on.
+    #[serde(default = "on")]
+    pub focus: bool,
 }
+
+fn on() -> bool {
+    true
+}
+
+/// The `events` column's opt-out token for [`PushKind::Focus`]. Rows written
+/// before the kind existed do not name it and must keep getting reminders, so
+/// unlike the other kinds it is on unless switched off explicitly.
+const NO_FOCUS: &str = "-focus";
 
 impl Default for PushEvents {
     fn default() -> Self {
-        PushEvents { pending: true, done: true, failed: true }
+        PushEvents { pending: true, done: true, failed: true, focus: true }
     }
 }
 
@@ -59,6 +77,7 @@ impl PushEvents {
             PushKind::Pending => self.pending,
             PushKind::Done => self.done,
             PushKind::Failed => self.failed,
+            PushKind::Focus => self.focus,
         }
     }
 
@@ -68,13 +87,15 @@ impl PushEvents {
             pending: self.pending && other.pending,
             done: self.done && other.done,
             failed: self.failed && other.failed,
+            focus: self.focus && other.focus,
         }
     }
 
-    /// From the `events` column: a comma list of kind names.
+    /// From the `events` column: a comma list of kind names (`focus` is on
+    /// unless listed as [`NO_FOCUS`]).
     pub fn from_list(list: &str) -> PushEvents {
         let has = |k: &str| list.split(',').any(|x| x.trim() == k);
-        PushEvents { pending: has("pending"), done: has("done"), failed: has("failed") }
+        PushEvents { pending: has("pending"), done: has("done"), failed: has("failed"), focus: !has(NO_FOCUS) }
     }
 
     pub fn to_list(self) -> String {
@@ -82,6 +103,7 @@ impl PushEvents {
             .into_iter()
             .filter(|k| self.has(*k))
             .map(PushKind::as_str)
+            .chain((!self.focus).then_some(NO_FOCUS))
             .collect::<Vec<_>>()
             .join(",")
     }
@@ -104,6 +126,7 @@ impl BurstCounts {
             PushKind::Pending => c.new_pending = 1,
             PushKind::Done => c.done = 1,
             PushKind::Failed => c.failed = 1,
+            PushKind::Focus => {}
         }
         c
     }
@@ -179,11 +202,15 @@ impl Coalescer {
     }
 
     pub fn note(&mut self, kind: PushKind, now: Instant) {
+        if kind == PushKind::Focus {
+            return;
+        }
         let (_, c) = self.burst.get_or_insert((now + self.window, BurstCounts::default()));
         match kind {
             PushKind::Pending => c.new_pending += 1,
             PushKind::Done => c.done += 1,
             PushKind::Failed => c.failed += 1,
+            PushKind::Focus => {}
         }
     }
 
@@ -204,8 +231,11 @@ impl Coalescer {
     }
 }
 
-/// The encrypted body's plaintext. Counts only — never a tool, command,
-/// project or title; the service worker words it.
+/// The encrypted body's plaintext. For runs: counts only — never a tool,
+/// command, project or title; the service worker words it. A Focus reminder
+/// (`t: "focus"`) carries the desktop notification's own title / body (the
+/// todo text the user wrote, already in the app language) and the todo to
+/// open; it is end-to-end encrypted to the phone like every push.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct PushMessage {
     pub v: u8,
@@ -216,12 +246,62 @@ pub struct PushMessage {
     pub done: Option<u32>,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub failed: Option<u32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub title: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub body: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub todo_id: Option<String>,
+}
+
+/// Longest Focus title / body sent. A push payload is capped near 4 KB after
+/// encryption; this keeps even all-Vietnamese text well inside it.
+pub const MAX_FOCUS_TITLE_CHARS: usize = 80;
+pub const MAX_FOCUS_BODY_CHARS: usize = 600;
+/// A todo id longer than this is not one of ours: dropped (opens the board).
+pub const MAX_TODO_ID_CHARS: usize = 128;
+
+fn clip(s: &str, max: usize) -> String {
+    if s.chars().count() <= max {
+        return s.to_string();
+    }
+    format!("{}…", s.chars().take(max - 1).collect::<String>())
 }
 
 impl PushMessage {
-    pub fn test() -> Self {
-        PushMessage { v: 1, t: "test", pending: None, done: None, failed: None }
+    fn bare(t: &'static str) -> Self {
+        PushMessage { v: 1, t, pending: None, done: None, failed: None, title: None, body: None, todo_id: None }
     }
+
+    pub fn test() -> Self {
+        PushMessage::bare("test")
+    }
+
+    /// A Focus reminder as the scheduler composed it (`None` todo: the
+    /// morning summary — opens the Todo tab).
+    pub fn focus(title: &str, body: &str, todo_id: Option<&str>) -> Self {
+        PushMessage {
+            title: Some(clip(title.trim(), MAX_FOCUS_TITLE_CHARS)),
+            body: Some(clip(body.trim(), MAX_FOCUS_BODY_CHARS)),
+            todo_id: todo_id
+                .map(str::trim)
+                .filter(|id| !id.is_empty() && id.chars().count() <= MAX_TODO_ID_CHARS)
+                .map(str::to_string),
+            ..PushMessage::bare("focus")
+        }
+    }
+
+    /// A reminder must not be dropped or replaced while it waits at the push
+    /// service (see `send::send`).
+    pub fn is_focus(&self) -> bool {
+        self.t == "focus"
+    }
+}
+
+/// The Focus reminder one device gets: only if it (and the desktop) have the
+/// kind on.
+pub fn compose_focus(msg: &PushMessage, events: PushEvents) -> Option<PushMessage> {
+    events.has(PushKind::Focus).then(|| msg.clone())
 }
 
 /// The message one device gets for a burst, or `None` when nothing it opted
@@ -235,7 +315,7 @@ pub fn compose(counts: BurstCounts, open_pending: u32, events: PushEvents) -> Op
     if !triggered {
         return None;
     }
-    Some(PushMessage { v: 1, t: "summary", pending: Some(pending), done: Some(done), failed: Some(failed) })
+    Some(PushMessage { pending: Some(pending), done: Some(done), failed: Some(failed), ..PushMessage::bare("summary") })
 }
 
 /// How long "on screen" holds without hearing from the phone. iOS can freeze
@@ -244,7 +324,9 @@ pub fn compose(counts: BurstCounts, open_pending: u32, events: PushEvents) -> Op
 pub const VISIBLE_STALE_AFTER: Duration = Duration::from_secs(60);
 
 /// Stay quiet while a phone Controller is connected and on screen: it already
-/// shows everything live. A phone that reported itself hidden (screen locked,
+/// shows everything live. Run events only — a Focus reminder is never held
+/// back (the controller does not show reminders, so held-and-dropped would be
+/// lost). A phone that reported itself hidden (screen locked,
 /// app in the background), or has gone quiet past [`VISIBLE_STALE_AFTER`],
 /// still gets notified.
 pub fn suppressed(phone_connected: bool, phone_visible: bool, since_heard: Duration) -> bool {
@@ -255,7 +337,7 @@ pub fn suppressed(phone_connected: bool, phone_visible: bool, since_heard: Durat
 mod tests {
     use super::*;
 
-    const ALL: PushEvents = PushEvents { pending: true, done: true, failed: true };
+    const ALL: PushEvents = PushEvents { pending: true, done: true, failed: true, focus: true };
 
     #[test]
     fn a_burst_waits_for_the_window_then_closes() {
@@ -307,7 +389,7 @@ mod tests {
 
     #[test]
     fn switched_off_kinds_neither_trigger_nor_show() {
-        let only_failed = PushEvents { pending: false, done: false, failed: true };
+        let only_failed = PushEvents { pending: false, done: false, failed: true, focus: true };
         assert_eq!(compose(BurstCounts { new_pending: 1, done: 3, failed: 0 }, 1, only_failed), None);
         let m = compose(BurstCounts { new_pending: 1, done: 3, failed: 1 }, 1, only_failed).unwrap();
         assert_eq!((m.pending, m.done, m.failed), (Some(0), Some(0), Some(1)));
@@ -316,10 +398,13 @@ mod tests {
     #[test]
     fn device_and_desktop_switches_combine() {
         let device = PushEvents::from_list("pending,failed");
-        let desktop = PushEvents { pending: true, done: true, failed: false };
-        assert_eq!(device.and(desktop), PushEvents { pending: true, done: false, failed: false });
+        let desktop = PushEvents { pending: true, done: true, failed: false, focus: true };
+        assert_eq!(device.and(desktop), PushEvents { pending: true, done: false, failed: false, focus: true });
         assert_eq!(PushEvents::default().to_list(), "pending,done,failed");
-        assert_eq!(PushEvents::from_list(" done ,bogus"), PushEvents { pending: false, done: true, failed: false });
+        assert_eq!(
+            PushEvents::from_list(" done ,bogus"),
+            PushEvents { pending: false, done: true, failed: false, focus: true }
+        );
     }
 
     #[test]
@@ -360,6 +445,61 @@ mod tests {
         // Unsure whether it saw them (went quiet / disconnected): sent.
         h.hold(PushKind::Failed);
         assert_eq!(h.release(false), Some(BurstCounts { new_pending: 0, done: 0, failed: 1 }));
+    }
+
+    #[test]
+    fn the_focus_switch_defaults_on_for_settings_and_rows_saved_before_it() {
+        let old: PushEvents = serde_json::from_str(r#"{"pending":true,"done":false,"failed":true}"#).unwrap();
+        assert_eq!(old, PushEvents { pending: true, done: false, failed: true, focus: true });
+        let off: PushEvents =
+            serde_json::from_str(r#"{"pending":true,"done":true,"failed":true,"focus":false}"#).unwrap();
+        assert!(!off.has(PushKind::Focus));
+        assert_eq!(serde_json::to_value(off).unwrap()["focus"], false);
+        // The `events` column: an old row never named focus — still on.
+        assert!(PushEvents::from_list("pending,done,failed").focus);
+        let no_focus = PushEvents { focus: false, ..PushEvents::default() };
+        assert_eq!(no_focus.to_list(), "pending,done,failed,-focus");
+        assert_eq!(PushEvents::from_list(&no_focus.to_list()), no_focus);
+        assert_eq!(PushEvents::from_list(&PushEvents::default().to_list()), PushEvents::default());
+        // Device and desktop must both have it on.
+        assert!(!PushEvents::default().and(no_focus).focus);
+    }
+
+    #[test]
+    fn a_focus_reminder_carries_its_text_and_todo() {
+        let m = PushMessage::focus("Focus", "Overdue: Ship it", Some("t1"));
+        assert_eq!(
+            serde_json::to_value(&m).unwrap(),
+            serde_json::json!({ "v": 1, "t": "focus", "title": "Focus", "body": "Overdue: Ship it", "todo_id": "t1" })
+        );
+        assert!(m.is_focus());
+        // The morning summary opens the board: no todo.
+        let morning = PushMessage::focus("Focus · Today", "Today: 2 tasks", None);
+        assert_eq!(serde_json::to_value(&morning).unwrap().get("todo_id"), None);
+        assert_eq!(PushMessage::focus("F", "b", Some("  ")).todo_id, None);
+        assert_eq!(PushMessage::focus("F", "b", Some(&"x".repeat(MAX_TODO_ID_CHARS + 1))).todo_id, None);
+        // Bounded, so the encrypted payload stays inside the push size limit.
+        let long = PushMessage::focus(&"T".repeat(500), &"ư".repeat(5000), None);
+        assert_eq!(long.title.unwrap().chars().count(), MAX_FOCUS_TITLE_CHARS);
+        let body = long.body.unwrap();
+        assert_eq!(body.chars().count(), MAX_FOCUS_BODY_CHARS);
+        assert!(body.ends_with('…') && body.len() < 2048);
+        assert!(!PushMessage::test().is_focus());
+    }
+
+    #[test]
+    fn focus_reminders_go_only_where_the_kind_is_on() {
+        let m = PushMessage::focus("Focus", "Reminder: A", Some("a"));
+        assert_eq!(compose_focus(&m, ALL), Some(m.clone()));
+        assert_eq!(compose_focus(&m, PushEvents { focus: false, ..ALL }), None);
+        // The run switches do not matter for a reminder.
+        let runs_off = PushEvents { pending: false, done: false, failed: false, focus: true };
+        assert!(compose_focus(&m, runs_off).is_some());
+        // And a reminder never enters a run burst.
+        let mut c = Coalescer::new(COALESCE_WINDOW);
+        c.note(PushKind::Focus, Instant::now());
+        assert_eq!(c.deadline(), None);
+        assert_eq!(compose(BurstCounts::one(PushKind::Focus), 0, ALL), None);
     }
 
     #[test]

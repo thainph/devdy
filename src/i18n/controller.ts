@@ -13,11 +13,11 @@ type LocaleModule = { default: Record<string, unknown> }
 // Vite needs literal glob patterns, so the list is spelled out twice.
 registerMessages({
   en: import.meta.glob<LocaleModule>(
-    './locales/en/{controller,item,misc,permission,projects,run,settings,streamLog}.json',
+    './locales/en/{controller,focus,item,misc,permission,projects,run,settings,streamLog}.json',
     { eager: true },
   ),
   vi: import.meta.glob<LocaleModule>(
-    './locales/vi/{controller,item,misc,permission,projects,run,settings,streamLog}.json',
+    './locales/vi/{controller,focus,item,misc,permission,projects,run,settings,streamLog}.json',
     { eager: true },
   ),
 })

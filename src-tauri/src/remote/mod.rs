@@ -24,6 +24,7 @@ pub mod command;
 pub mod commands;
 pub mod data;
 pub mod file_proxy;
+pub mod focus;
 pub mod forwarder;
 pub mod fs_bridge;
 pub mod fs_policy;
