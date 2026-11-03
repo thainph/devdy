@@ -378,6 +378,28 @@ pub enum StreamPayload {
     /// `focus_board` command returns it: buckets, scores, reasons, "do now" ids
     /// and today's Calendar load. Ranking stays on the Host (BR-05).
     FocusBoard { board: serde_json::Value },
+    /// The outcome of a `focus_ai_*` request, echoing the Controller's
+    /// `request_id`. `ai_kind` is `suggest` | `analyze` | `plan_today`; `result`
+    /// is exactly what the desktop command returns. A failure carries only a
+    /// short `error` code (`busy`, `cancelled`, `timeout`, `failed`, …).
+    FocusAiResult {
+        request_id: String,
+        ai_kind: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// The stored day plan of `date` (`null` when there is none).
+    FocusDayPlan {
+        date: String,
+        plan: Option<serde_json::Value>,
+    },
+    /// BR-11: the suggested actual time of a todo (`null` = no suggestion).
+    FocusActual { todo_id: String, minutes: Option<i64> },
+    /// The Focus settings, as stored (normalised).
+    FocusSettings { settings: serde_json::Value },
     /// Notes matching a `note_list` / `note_search`, echoing the filter so the
     /// Controller can drop a stale reply. Title + a short preview only; the
     /// editor fetches the full note with `note_get`.
@@ -773,6 +795,20 @@ pub struct CmdPayload {
     /// `todo_add`: estimate in minutes.
     #[serde(default)]
     pub estimate_min: Option<i64>,
+    /// `todo_add` / `focus_ai_suggest`: the todo's source link (http(s) or a
+    /// shorthand; normalised by the Host).
+    #[serde(default)]
+    pub source_url: Option<String>,
+    /// `focus_day_plan_get` / `focus_plan_to_calendar`: local `YYYY-MM-DD`.
+    #[serde(default)]
+    pub date: Option<String>,
+    /// `focus_plan_to_calendar`: the blocks to add (absent = every block).
+    #[serde(default)]
+    pub block_ids: Option<Vec<String>>,
+    /// `focus_settings_set`: the Focus settings to store (a missing key keeps
+    /// its current value).
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
     /// `project_toggle_set`: `skill` | `rule` | `mcp` | `builtin_mcp`.
     #[serde(default)]
     pub toggle_kind: Option<String>,

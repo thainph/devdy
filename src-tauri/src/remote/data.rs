@@ -1,5 +1,4 @@
-//! Remote Control data actions: todos (with the Focus board), notes and
-//! per-project switches
+//! Remote Control data actions: todos, notes and per-project switches
 //! (`docs/remote-mobile-companion-spec.md` §2.B / §3.2).
 //!
 //! Only reached for a Controller that advertised
@@ -35,11 +34,14 @@ pub const MAX_NOTE_TITLE: usize = 1_000;
 pub const MAX_NOTE_CONTENT: usize = 1_000_000;
 /// Longest search query.
 pub const MAX_QUERY: usize = 200;
+/// Longest todo source link.
+pub const MAX_SOURCE_URL: usize = 2_048;
 
 /// Keys a `todo_update` patch may carry — the fields the phone edits: the
-/// plain todo ones plus the Focus ones a person sets by hand. AI output,
-/// actual time and `done` (→ `todo_toggle`) stay desktop-only.
-pub const TODO_PATCH_KEYS: [&str; 9] = [
+/// plain todo ones plus the Focus ones a person sets (or applies from an AI
+/// suggestion) by hand. AI output (`ai_plan`) and `done` (→ `todo_toggle`)
+/// stay off the wire.
+pub const TODO_PATCH_KEYS: [&str; 11] = [
     "text",
     "due_date",
     "project_id",
@@ -49,6 +51,8 @@ pub const TODO_PATCH_KEYS: [&str; 9] = [
     "status",
     "snoozed_until",
     "remind_at",
+    "actual_min",
+    "estimate_source",
 ];
 /// Keys a `note_update` patch may carry.
 pub const NOTE_PATCH_KEYS: [&str; 3] = ["title", "content", "project_id"];
@@ -144,6 +148,15 @@ pub fn todo_patch(wire: Option<&Value>) -> Result<Map<String, Value>, RejectReas
             "snoozed_until" | "remind_at" => {
                 v::instant(key, opt_string(val)?).map_err(bad)?.map_or(Value::Null, Value::String)
             }
+            "actual_min" => match opt_int(val, true)? {
+                None => Value::Null,
+                Some(m) => Value::from(v::actual(m).map_err(bad)?),
+            },
+            "estimate_source" => match opt_string(val)? {
+                None => Value::Null,
+                Some(s @ ("user" | "ai")) => Value::String(s.to_string()),
+                Some(_) => return Err(RejectReason::Malformed),
+            },
             _ => unreachable!("filtered above"),
         };
         out.insert(key.clone(), v);
@@ -186,6 +199,22 @@ pub fn note_patch(wire: Option<&Value>) -> Result<NotePatch, RejectReason> {
         }
     }
     Ok(out)
+}
+
+/// An optional todo source link: trimmed, bounded and one `focus::source`
+/// can read; blank means none.
+pub fn source_url(raw: Option<&str>) -> Result<Option<String>, RejectReason> {
+    let url = raw.map(str::trim).unwrap_or("");
+    if url.is_empty() {
+        return Ok(None);
+    }
+    if url.len() > MAX_SOURCE_URL || url.chars().any(char::is_control) {
+        return Err(RejectReason::Malformed);
+    }
+    match crate::focus::source::normalize(url) {
+        Ok(Some(_)) => Ok(Some(url.to_string())),
+        _ => Err(RejectReason::Malformed),
+    }
 }
 
 /// A search query: trimmed, bounded; blank means "no search".
@@ -382,7 +411,7 @@ pub async fn project_toggles(db: &Db, project_id: &str) -> Result<StreamPayload,
     })
 }
 
-async fn exists(db: &Db, table: &str, id: &str) -> bool {
+pub(super) async fn exists(db: &Db, table: &str, id: &str) -> bool {
     // `table` is always one of our literals, never wire input.
     sqlx::query(&format!("SELECT 1 FROM {table} WHERE id = ? LIMIT 1"))
         .bind(id)
@@ -404,7 +433,6 @@ pub async fn handle(ctx: &HandlerCtx, cmd: &CmdPayload) {
         "todo_update" => todo_update(ctx, cmd).await,
         "todo_toggle" => todo_toggle(ctx, cmd).await,
         "todo_delete" => todo_delete(ctx, cmd).await,
-        "focus_board" => focus_board(ctx).await,
         "note_list" | "note_search" => note_list(ctx, cmd).await,
         "note_get" => note_get(ctx, cmd).await,
         "note_add" => note_add(ctx, cmd).await,
@@ -485,20 +513,29 @@ async fn send_todo_list(ctx: &HandlerCtx) -> DataResult {
 }
 
 async fn send_focus_board(ctx: &HandlerCtx) -> DataResult {
-    let board = crate::commands::focus::load_board(ctx.app.clone(), &ctx.db)
-        .await
-        .map_err(Failure::Failed)?;
-    let board = serde_json::to_value(board).map_err(|e| Failure::Failed(e.to_string()))?;
-    send_payload(ctx, StreamPayload::FocusBoard { board }).await;
+    push_focus_board(ctx).await.map_err(Failure::Failed)?;
     Ok(None)
+}
+
+/// The ranked board at this instant (`focus_board`, and after Focus writes).
+pub(super) async fn push_focus_board(ctx: &HandlerCtx) -> Result<(), String> {
+    let board = crate::commands::focus::load_board(ctx.app.clone(), &ctx.db).await?;
+    let board = serde_json::to_value(board).map_err(|e| e.to_string())?;
+    send_payload(ctx, StreamPayload::FocusBoard { board }).await;
+    Ok(())
+}
+
+/// A fresh `todo_list` + board after a write the phone did not make through
+/// a todo action (Focus AI, the live board). Best effort, like the push after
+/// a todo write.
+pub(super) async fn push_todos(ctx: &HandlerCtx) {
+    if let Err(Failure::Failed(e)) = send_todos_after_write(ctx).await {
+        tracing::debug!(event = "remote_todo_list_failed", error = %e);
+    }
 }
 
 async fn todo_list(ctx: &HandlerCtx) -> DataResult {
     send_todo_list(ctx).await
-}
-
-async fn focus_board(ctx: &HandlerCtx) -> DataResult {
-    send_focus_board(ctx).await
 }
 
 async fn todo_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -510,6 +547,7 @@ async fn todo_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     let project_id = optional_id(cmd.project_id.as_deref())?;
     let due_date = valid_due_date(cmd.due_date.as_deref())?;
     let (due_time, priority, estimate_min) = new_todo_focus(cmd, due_date.is_some())?;
+    let source_url = source_url(cmd.source_url.as_deref())?;
     require_project(ctx, project_id.as_deref()).await?;
     let input = todos::NewTodo {
         text: text.to_string(),
@@ -518,6 +556,7 @@ async fn todo_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
         due_time,
         priority,
         estimate_min,
+        source_url,
         ..Default::default()
     };
     let todo = todos::add_todo_inner(&ctx.app, &ctx.db, input)
@@ -818,8 +857,8 @@ mod tests {
 
         let bad = |v: Value| todo_patch(Some(&v)).unwrap_err();
         assert_eq!(bad(json!({})), RejectReason::Malformed);
-        for k in ["ai_plan", "actual_min", "estimate_source"] {
-            assert_eq!(bad(json!({ k: null })), RejectReason::Malformed, "{k} stays desktop-only");
+        for k in ["ai_plan", "ai_analyzed_at", "started_at", "source_url"] {
+            assert_eq!(bad(json!({ k: null })), RejectReason::Malformed, "{k} stays off the wire");
         }
         assert_eq!(bad(json!({ "done": true })), RejectReason::Malformed, "done goes through todo_toggle");
         assert_eq!(bad(json!({ "text": "  " })), RejectReason::Malformed);
@@ -867,6 +906,46 @@ mod tests {
         ] {
             assert_eq!(bad(v.clone()), RejectReason::Malformed, "{v}");
         }
+    }
+
+    #[test]
+    fn todo_patch_takes_actual_time_and_estimate_source() {
+        let p = todo_patch(Some(&json!({ "actual_min": 95, "estimate_source": "ai", "estimate_min": 120 }))).unwrap();
+        assert_eq!(p["actual_min"], 95);
+        assert_eq!(p["estimate_source"], "ai");
+        let p = todo_patch(Some(&json!({ "actual_min": null, "estimate_source": null }))).unwrap();
+        assert_eq!(p["actual_min"], Value::Null);
+        assert_eq!(p["estimate_source"], Value::Null);
+        assert_eq!(todo_patch(Some(&json!({ "estimate_source": "user" }))).unwrap()["estimate_source"], "user");
+
+        let bad = |v: Value| todo_patch(Some(&v)).unwrap_err();
+        for v in [
+            json!({ "actual_min": 0 }),
+            json!({ "actual_min": 14_401 }),
+            json!({ "actual_min": "95" }),
+            json!({ "actual_min": 1.5 }),
+            json!({ "estimate_source": "guess" }),
+            json!({ "estimate_source": "AI" }),
+            json!({ "estimate_source": "" }),
+            json!({ "estimate_source": 1 }),
+        ] {
+            assert_eq!(bad(v.clone()), RejectReason::Malformed, "{v}");
+        }
+    }
+
+    #[test]
+    fn todo_source_links() {
+        assert_eq!(source_url(None), Ok(None));
+        assert_eq!(source_url(Some("   ")), Ok(None));
+        assert_eq!(
+            source_url(Some(" https://github.com/o/r/issues/1 ")),
+            Ok(Some("https://github.com/o/r/issues/1".into()))
+        );
+        let long = format!("https://example.com/{}", "a".repeat(MAX_SOURCE_URL));
+        assert_eq!(source_url(Some(&long)), Err(RejectReason::Malformed));
+        assert_eq!(source_url(Some("just some words")), Err(RejectReason::Malformed));
+        assert_eq!(source_url(Some("o/r#12")), Ok(Some("o/r#12".into())), "shorthand");
+        assert_eq!(source_url(Some("https://x.y/a\u{0}b")), Err(RejectReason::Malformed));
     }
 
     #[test]
