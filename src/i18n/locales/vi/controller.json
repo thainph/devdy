@@ -255,7 +255,8 @@
     "kindRows": {
       "pending": "Việc cần duyệt",
       "done": "Phiên đã xong",
-      "failed": "Phiên bị lỗi"
+      "failed": "Phiên bị lỗi",
+      "focus": "Nhắc việc Focus"
     },
     "state": {
       "on": "Đang bật — điện thoại sẽ báo khi có việc cần duyệt hoặc phiên chạy xong.",
@@ -270,7 +271,7 @@
       "add": "Chọn “Thêm vào MH chính”",
       "open": "Mở Devdy từ Màn hình chính, đăng nhập rồi bật thông báo tại đây"
     },
-    "privacy": "Thông báo chỉ chứa số lượng — không có lệnh, tên tool hay project.",
+    "privacy": "Thông báo về phiên chạy chỉ chứa số lượng — không có lệnh, tên tool hay project. Nhắc việc Focus hiện nội dung việc, được mã hoá đầu-cuối tới điện thoại này.",
     "sendTest": "Gửi thử",
     "test": {
       "sent": "Đã gửi — thông báo sẽ đến trong giây lát.",

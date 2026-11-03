@@ -18,7 +18,11 @@ const { t } = useI18n()
 const s = computed(() => props.push.state)
 const ui = computed(() => props.push.ui())
 
-const KINDS = ['pending', 'done', 'failed'] as const
+const RUN_KINDS = ['pending', 'done', 'failed'] as const
+// Focus reminders only from a Host that sends them.
+const kinds = computed(() =>
+  s.value.events?.focus === undefined ? RUN_KINDS : ([...RUN_KINDS, 'focus'] as const),
+)
 const switchable = computed(() => ui.value === 'on' || ui.value === 'off')
 
 function toggle(): void {
@@ -93,7 +97,7 @@ const row = 'flex w-full items-center gap-2.5 px-3 py-2.5 border-b border-border
     <template v-if="switchable && s.events">
       <h2 :class="heading">{{ t('controller.push.sendsTitle') }}</h2>
       <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
-        <div v-for="k in KINDS" :key="k" :class="row">
+        <div v-for="k in kinds" :key="k" :class="row">
           <span class="min-w-0 flex-1 truncate text-sm font-medium">{{ t(`controller.push.kindRows.${k}`) }}</span>
           <span class="shrink-0 text-xs" :class="s.events[k] ? 'text-success' : 'text-muted-foreground'">
             {{ s.events[k] ? t('controller.push.statusOn') : t('controller.push.statusOff') }}

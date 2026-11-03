@@ -38,6 +38,7 @@ import { concreteProject, rememberProject, validScope } from '@/lib/controllerPr
 import { createDataStore } from './dataStore'
 import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
+import { focusOpenFromMessage, focusOpenFromSearch, withoutFocusOpen, type FocusOpen } from '@/lib/remotePush'
 import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import {
@@ -552,10 +553,53 @@ window.addEventListener('pagehide', onPageHide)
 function onWorkerMessage(e: MessageEvent): void {
   const msg = e.data as { type?: unknown } | null
   if (msg?.type === 'devdy:open-inbox' && phase.value === 'session') openInbox()
+  // A Focus reminder: its todo (handled once the session is usable).
+  const open = focusOpenFromMessage(msg)
+  if (open) focusOpen.value = open
   // The browser rotated the push subscription: re-sync it with the Host.
   if (msg?.type === 'devdy:subscription-changed' && hasPush.value) void push.refresh()
 }
 navigator.serviceWorker?.addEventListener('message', onWorkerMessage)
+
+// ── tapped Focus reminder ───────────────────────────────────────────────────
+// The worker posts `devdy:open-todo` to an open window, or opens one on
+// `?open=todo&todo=<id>` (dropped from the address so a reload does not
+// repeat it). Once the session is usable: the Todo tab, then that todo's
+// editor as soon as a fresh list (and board) has it.
+const focusOpen = ref<FocusOpen | null>(focusOpenFromSearch(window.location.search))
+if (focusOpen.value) history.replaceState(history.state, '', withoutFocusOpen(window.location.href))
+let focusOpenWait: { todoId: string; todos: unknown; board: unknown } | null = null
+watch(
+  () =>
+    [focusOpen.value, status.value === 'connected' && auth.value === 'authenticated', hostFeatures.value] as const,
+  ([target, ready, features]) => {
+    if (!target || !ready || features === null) return
+    focusOpen.value = null
+    if (!hasData.value) return
+    if (runId.value || draftProjectId.value) backToBrowser()
+    onTab('todo')
+    closeTodoEditor()
+    focusOpenWait = target.todoId ? { todoId: target.todoId, todos: data.state.todos, board: data.state.board } : null
+    loadTodoTab()
+  },
+)
+watch(
+  () => [data.state.todos, data.state.board, data.state.failed.todos, data.state.failed.board] as const,
+  ([todos, board, failed, boardFailed]) => {
+    const wait = focusOpenWait
+    if (!wait) return
+    if (failed) {
+      focusOpenWait = null
+      return
+    }
+    // A board that failed to load is not waited for (the editor opens without it).
+    if (todos === wait.todos || (hasFocus.value && board === wait.board && !boardFailed)) return
+    focusOpenWait = null
+    // Gone meanwhile (deleted / done elsewhere): the tab alone.
+    const todo = todos?.find((x) => x.id === wait.todoId)
+    if (todo && tab.value === 'todo') openTodoEditor(todo)
+  },
+)
 
 function onTab(next: ControllerTab): void {
   if (next !== tab.value) data.clearError()
