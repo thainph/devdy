@@ -22,6 +22,8 @@ import RunBrowserView from './components/RunBrowserView.vue'
 import InboxView from './components/InboxView.vue'
 import TodoView from './components/TodoView.vue'
 import TodoEditorView from './components/TodoEditorView.vue'
+import FocusPlanView from './components/FocusPlanView.vue'
+import FocusSettingsView from './components/FocusSettingsView.vue'
 import NoteListView from './components/NoteListView.vue'
 import NoteEditorView from './components/NoteEditorView.vue'
 import ProjectTogglesView from './components/ProjectTogglesView.vue'
@@ -36,6 +38,7 @@ import { isToggleGroup, type SettingsPage } from './settingsMenu'
 import ProjectPickerSheet from './components/ProjectPickerSheet.vue'
 import { concreteProject, rememberProject, validScope } from '@/lib/controllerProjectScope'
 import { createDataStore } from './dataStore'
+import { useControllerErrors } from './focusErrors'
 import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
 import { focusOpenFromMessage, focusOpenFromSearch, withoutFocusOpen, type FocusOpen } from '@/lib/remotePush'
@@ -76,6 +79,7 @@ import {
 import { localYmd } from '@/lib/todoDue'
 import type { TodoTab } from '@/lib/remoteTodos'
 import type { FocusTodo } from '@/lib/focus'
+import { PLAN_KEY, todoAiKey } from '@/lib/remoteFocus'
 
 const { t } = useI18n()
 const { renderText, loadMarkdown } = useMarkdown()
@@ -83,20 +87,9 @@ const { renderText, loadMarkdown } = useMarkdown()
 const store = createRunStore()
 const conn = shallowRef<ControllerConnection | null>(null)
 
-// Todo / Note / project-switch screens (FEATURE_DATA).
-const DATA_ERRORS = new Set([
-  'not_connected', 'connection_lost', 'host_ack_timeout', 'not_found', 'malformed',
-  'rate_limited', 'action_not_allowed', 'failed', 'load_timeout',
-])
-const data = createDataStore(
-  (cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false,
-  (reason) => {
-    const key = reason === 'disconnected' ? 'connection_lost' : reason
-    return key && DATA_ERRORS.has(key)
-      ? t(`controller.data.errors.${key}`)
-      : t('controller.data.errors.generic', { reason: reason ?? '?' })
-  },
-)
+// Todo / Note / project-switch screens (FEATURE_DATA), and Focus on top.
+const errors = useControllerErrors()
+const data = createDataStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false, errors.describe)
 // Web Push (host feature `push`): this phone's notification switch.
 const push = createPushStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false)
 const noteEditorOpen = ref(false)
@@ -104,6 +97,10 @@ const noteEditorOpen = ref(false)
 // `focus` is the todo's board row as it was when the editor opened (the diff
 // base for the Focus fields).
 const todoEditor = ref<{ todo: TodoInfo | null; focus: FocusTodo | null; today: string } | null>(null)
+// The "Plan today" screen (Focus), over the Todo tab.
+const planOpen = ref(false)
+// A todo to start a session on once it has a project (the project picker).
+const aiProjectFor = ref<FocusTodo | null>(null)
 // ── shared project scope ─────────────────────────────────────────────────────
 // One project (null = all) that Sessions, Todo, Notes and Setting follow,
 // picked from the header title or Setting's Project row, kept on this device
@@ -177,10 +174,61 @@ function openTodoEditor(todo: TodoInfo | null): void {
   const row = todo ? data.state.board?.items.find((it) => it.todo.id === todo.id) : null
   todoEditor.value = { todo, focus: row ? { ...row.todo } : null, today: localYmd() }
 }
-/** Todo tab (re)load: the list, and the ranked board on a Focus Host. */
+/** Open the editor on a todo by id (from the day plan). */
+function openTodoById(id: string): void {
+  const todo =
+    data.state.todos?.find((x) => x.id === id) ?? data.state.board?.items.find((it) => it.todo.id === id)?.todo
+  if (todo) openTodoEditor(todo)
+}
+/** Todo tab (re)load: the list, and the ranked board on a Focus Host (plus
+ * its settings once, for the working day the snooze presets start at). */
 function loadTodoTab(): void {
   data.loadTodos()
-  if (hasFocus.value) data.loadBoard()
+  if (hasFocus.value) {
+    data.loadBoard()
+    if (!data.state.settings) data.loadSettings()
+  }
+}
+/** The editor's view of its todo as the board has it now (the AI plan
+ * follows an analysis). */
+const liveFocusTodo = computed(() => {
+  const id = todoEditor.value?.todo?.id
+  return id ? (data.state.board?.items.find((it) => it.todo.id === id)?.todo ?? null) : null
+})
+
+// ── Focus AI ──
+/** 🚀 Start with AI: a new session on the todo, then shown in the run view. A
+ * todo without a project gets one first (the picker on the Todo tab; the
+ * editor has its own project field). */
+async function startTodoAi(todo: FocusTodo): Promise<void> {
+  const inEditor = !!todoEditor.value
+  if (!todo.project_id && !inEditor) {
+    aiProjectFor.value = todo
+    return
+  }
+  const out = await data.startTodoAi(todo.id)
+  if (out.ok && out.runId) {
+    todoEditor.value = null
+    planOpen.value = false
+    openRun(out.runId)
+    refreshRuns()
+  } else if (out.code === 'project_required' && !inEditor) {
+    data.clearError()
+    aiProjectFor.value = todo
+  }
+}
+/** The picker's answer: file the todo under `projectId`, then start. */
+async function onAiProject(projectId: string | null): Promise<void> {
+  const todo = aiProjectFor.value
+  aiProjectFor.value = null
+  if (!todo || !projectId) return
+  if (await data.patchTodo(todo.id, { project_id: projectId })) void startTodoAi({ ...todo, project_id: projectId })
+}
+function onPlanToday(): void {
+  void data.planToday()
+}
+function pushPlan(blockIds?: string[]) {
+  return data.planToCalendar(data.state.dayPlan?.plan?.date ?? localYmd(), blockIds)
 }
 function closeTodoEditor(): void {
   todoEditor.value = null
@@ -427,6 +475,8 @@ function disconnect(): void {
   data.reset()
   noteEditorOpen.value = false
   todoEditor.value = null
+  planOpen.value = false
+  aiProjectFor.value = null
   link.value = null
   phase.value = 'link'
   status.value = 'idle'
@@ -610,6 +660,7 @@ function onTab(next: ControllerTab): void {
   // brings it back to the shared scope.
   if (next === 'runs') browserProjectId.value = projectScope.value
   closeNoteEditor()
+  planOpen.value = false
   if (next === 'inbox') syncInbox()
   else if (next === 'runs') refreshRuns()
 }
@@ -633,6 +684,7 @@ const SETTINGS_TITLES: Record<SettingsPage, string> = {
   account: 'controller.projectToggles.accounts',
   theme: 'controller.theme.title',
   push: 'controller.push.title',
+  focus: 'controller.focus.settings.title',
 }
 /** The Setting screen open over its menu (null = the menu). */
 const settingsPage = ref<SettingsPage | null>(null)
@@ -984,8 +1036,35 @@ function onRequestFiles(): void {
     :remove="data.deleteTodo"
     :focus="hasFocus"
     :focus-todo="todoEditor.focus"
+    :live-todo="liveFocusTodo"
+    :render-text="renderText"
+    :ai-running="data.state.aiRunning"
+    :ai-errors="data.state.aiErrors"
+    :analyses="data.state.analyses"
+    :suggest="data.suggestTodo"
     @back="closeTodoEditor"
     @clear-error="data.clearError()"
+    @analyze="(id) => void data.analyzeTodo(id)"
+    @cancel-ai="data.cancelAi"
+    @start-ai="startTodoAi"
+  />
+
+  <!-- Plan today: full height too; a todo opened from it comes back here. -->
+  <FocusPlanView
+    v-else-if="!runId && !draftProjectId && tab === 'todo' && planOpen && hasFocus"
+    :day-plan="data.state.dayPlan"
+    :failed="data.state.failed.plan"
+    :planning="data.isAiRunning(PLAN_KEY)"
+    :plan-error="errors.aiError(data.state.aiErrors[PLAN_KEY])"
+    :items="data.state.board?.items ?? []"
+    :error="data.state.error"
+    :push="pushPlan"
+    @back="planOpen = false"
+    @load="data.loadDayPlan()"
+    @make="onPlanToday"
+    @cancel="data.cancelAi(PLAN_KEY)"
+    @open="openTodoById"
+    @clear-error="data.clearError(); data.clearAiError(PLAN_KEY)"
   />
 
   <div v-else-if="!runId && !draftProjectId" class="app-shell flex h-dvh min-h-0 flex-col bg-background text-foreground">
@@ -1037,9 +1116,21 @@ function onRequestFiles(): void {
         :focus="hasFocus"
         :board="hasFocus ? data.state.board : null"
         :board-failed="data.state.failed.board"
+        :ai-running="data.state.aiRunning"
+        :ai-errors="data.state.aiErrors"
+        :analyses="data.state.analyses"
+        :actual="data.state.actual"
+        :work-start="data.state.settings?.work_start"
         @open="openTodoEditor"
         @toggle="data.toggleTodo"
         @patch="(id, patch) => void data.patchTodo(id, patch)"
+        @remove="(id) => void data.deleteTodo(id)"
+        @analyze="(id) => void data.analyzeTodo(id)"
+        @cancel-analyze="(id) => data.cancelAi(todoAiKey(id))"
+        @start-ai="startTodoAi"
+        @suggest-actual="data.suggestActual"
+        @refresh-calendar="void data.refreshCalendar()"
+        @plan="planOpen = true"
         @refresh="loadTodoTab"
         @clear-error="data.clearError()"
       />
@@ -1062,6 +1153,7 @@ function onRequestFiles(): void {
         :project-id="settingsProjectId"
         :toggles="data.state.toggles"
         :push-on="hasPush ? pushOn : null"
+        :focus="hasFocus && hasData"
         @open="openSettingsPage"
         @pick-project="pickerOpen = true"
         @refresh="refreshAll"
@@ -1069,6 +1161,16 @@ function onRequestFiles(): void {
       />
       <ThemeSettingsView v-else-if="settingsPage === 'theme'" />
       <PushSettingsView v-else-if="settingsPage === 'push'" :push="push" />
+      <FocusSettingsView
+        v-else-if="settingsPage === 'focus'"
+        :settings="data.state.settings"
+        :failed="data.state.failed.settings"
+        :busy="dataBusy"
+        :error="data.state.error"
+        :save="data.saveSettings"
+        @load="data.loadSettings()"
+        @clear-error="data.clearError()"
+      />
       <ProjectTogglesView
         v-else
         :group="settingsPage"
@@ -1089,6 +1191,15 @@ function onRequestFiles(): void {
         :recent="recentProjects"
         @pick="onPickProject"
         @close="pickerOpen = false"
+      />
+      <ProjectPickerSheet
+        v-if="aiProjectFor"
+        :projects="store.state.projectList"
+        :selected="null"
+        :allow-all="false"
+        :recent="recentProjects"
+        @pick="onAiProject"
+        @close="aiProjectFor = null"
       />
     </div>
     <BottomTabBar :tab="tab" :inbox-count="inboxCount" :hidden="hiddenTabs" @update:tab="onTab" />

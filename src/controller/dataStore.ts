@@ -10,9 +10,24 @@
  * re-ranked `focus_board`) after every todo write and the real
  * `project_toggles` after every switch, so those need no re-fetch. Note writes
  * are not followed by a push: the store re-lists with the current filter.
+ *
+ * Focus AI requests ({@link FEATURE_FOCUS}) are acked at once and answered
+ * later by a `focus_ai_result` carrying the client's `request_id`; the store
+ * keeps them by what they are for (`todo:<id>`, `plan`, `suggest:<url>`) for
+ * the spinners and resolves each caller's promise with the result or a code.
  */
 import { reactive } from 'vue'
-import type { FocusBoard, FocusTodo, TodoPriority, TodoStatus } from '@/lib/focus'
+import type {
+  AiAnalysis,
+  AiSuggestion,
+  DayPlan,
+  FocusBoard,
+  FocusSettings,
+  FocusTodo,
+  TodoPriority,
+  TodoStatus,
+} from '@/lib/focus'
+import { PLAN_KEY, focusErrorCode, newRequestId, suggestAiKey, todoAiKey } from '../lib/remoteFocus.ts'
 import type { CommandAckHandler } from './connection'
 import {
   noteAddCmd,
@@ -22,13 +37,25 @@ import {
   noteUpdateCmd,
   projectTogglesGetCmd,
   projectToggleSetCmd,
+  focusAiAnalyzeCmd,
+  focusAiCancelCmd,
+  focusAiPlanTodayCmd,
+  focusAiSuggestCmd,
   focusBoardCmd,
+  focusCalendarRefreshCmd,
+  focusDayPlanGetCmd,
+  focusPlanToCalendarCmd,
+  focusSettingsGetCmd,
+  focusSettingsSetCmd,
+  focusSuggestActualCmd,
+  todoStartAiCmd,
   todoAddCmd,
   todoDeleteCmd,
   todoListCmd,
   todoToggleCmd,
   todoUpdateCmd,
   type CmdPayload,
+  type FocusAiResultKind,
   type NoteInfo,
   type NoteSummary,
   type NotePatchWire,
@@ -65,6 +92,11 @@ export interface TodoFocusSave {
   status: TodoStatus
   /** The todo's Focus fields as the editor opened them (null for a new todo). */
   base: FocusTodo | null
+  /** Minutes last applied from an AI analysis: an estimate still equal to it
+   * is saved with `estimate_source: 'ai'`. */
+  aiEstimateMin?: number | null
+  /** New todo: its source link. */
+  sourceUrl?: string
 }
 
 /** What the note editor saves. `id` null = a new note. */
@@ -85,6 +117,21 @@ export interface LoadFailures {
   notes: boolean
   toggles: boolean
   note: boolean
+  plan: boolean
+  settings: boolean
+}
+
+/** How an AI request ended: its result, or a short error code (`cancelled`,
+ * `timeout`, `busy`, `project_required`, `no_plan`, `failed`…). */
+export type AiOutcome<T> = { ok: true; result: T } | { ok: false; code: string }
+
+/** A todo write's outcome with the Host's code on refusal. */
+export interface WriteOutcome {
+  ok: boolean
+  /** Refusal code (`focusErrorCode` of the ack reason); null when accepted. */
+  code: string | null
+  runId: string | null
+  itemId: string | null
 }
 
 export interface DataState {
@@ -107,6 +154,33 @@ export interface DataState {
   /** The last refused / undelivered write, already human-readable. */
   error: string | null
   failed: LoadFailures
+  // ---- Focus ({@link FEATURE_FOCUS}) ----
+  /** Running AI requests: what they are for → `request_id`. */
+  aiRunning: Record<string, string>
+  /** The last failure per AI key (not for a cancel); cleared on the next try. */
+  aiErrors: Record<string, string>
+  /** The latest structured analysis per todo this session (its markdown is `ai_plan`). */
+  analyses: Record<string, AiAnalysis>
+  /** The last `focus_day_plan` (null until asked / none saved). */
+  dayPlan: { date: string; plan: DayPlan | null } | null
+  /** The last `focus_actual` suggestion. */
+  actual: { todoId: string; minutes: number | null } | null
+  /** The Host's Focus settings; null until `focus_settings` arrives. */
+  settings: FocusSettings | null
+}
+
+/** Longest an AI request may stay unanswered (the Host gives up at 180 s). */
+const AI_TIMEOUT_MS = 200_000
+
+/** A copy of `map` without `key` (a fresh object so the template re-renders). */
+function without<T>(map: Record<string, T>, key: string): Record<string, T> {
+  const next = { ...map }
+  delete next[key]
+  return next
+}
+
+function emptyFailures(): LoadFailures {
+  return { todos: false, board: false, notes: false, toggles: false, note: false, plan: false, settings: false }
 }
 
 export function createDataStore(send: SendCommand, describeError: (reason: string | null) => string) {
@@ -121,8 +195,20 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     togglesProjectId: null,
     pending: 0,
     error: null,
-    failed: { todos: false, board: false, notes: false, toggles: false, note: false },
+    failed: emptyFailures(),
+    aiRunning: {},
+    aiErrors: {},
+    analyses: {},
+    dayPlan: null,
+    actual: null,
+    settings: null,
   })
+
+  /** AI requests awaiting their `focus_ai_result`, by `request_id`. */
+  const aiPending = new Map<
+    string,
+    { key: string; settle: (r: FocusAiResultKind | { ok: false; code: string }) => void; timer: ReturnType<typeof setTimeout> }
+  >()
 
   function apply(p: StreamPayload): void {
     switch (p.kind) {
@@ -131,6 +217,21 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
         break
       case 'focus_board':
         state.board = p.board
+        break
+      case 'focus_ai_result': {
+        const pending = aiPending.get(p.request_id)
+        // A request cancelled / timed out here, or from another device: ignore.
+        if (pending) pending.settle(p)
+        break
+      }
+      case 'focus_day_plan':
+        state.dayPlan = { date: p.date, plan: p.plan }
+        break
+      case 'focus_actual':
+        state.actual = { todoId: p.todo_id, minutes: p.minutes }
+        break
+      case 'focus_settings':
+        state.settings = p.settings
         break
       case 'note_list':
         // A reply to a filter the user has since changed would flash stale rows.
@@ -171,20 +272,25 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     return (await writeAck(cmd)).ok
   }
 
-  /** {@link write}, also yielding the id an add created. */
-  function writeAck(cmd: CmdPayload): Promise<{ ok: boolean; itemId: string | null }> {
+  /** {@link write}, also yielding the id an add created / the run a start made. */
+  function writeAck(cmd: CmdPayload): Promise<WriteOutcome> {
     state.error = null
     return new Promise((resolve) => {
-      const sent = send(cmd, (accepted, reason, _runId, itemId) => {
+      const sent = send(cmd, (accepted, reason, runId, itemId) => {
         state.pending = Math.max(0, state.pending - 1)
         if (!accepted) state.error = describeError(reason ?? null)
-        resolve({ ok: accepted, itemId: itemId ?? null })
+        resolve({
+          ok: accepted,
+          code: accepted ? null : reason === 'host_ack_timeout' ? reason : focusErrorCode(reason),
+          runId: runId ?? null,
+          itemId: itemId ?? null,
+        })
       })
       if (sent) {
         state.pending += 1
       } else {
         state.error = describeError('not_connected')
-        resolve({ ok: false, itemId: null })
+        resolve({ ok: false, code: 'not_connected', runId: null, itemId: null })
       }
     })
   }
@@ -210,6 +316,7 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
           dueTime: f?.dueTime,
           priority: f?.priority,
           estimateMin: f?.estimateMin,
+          sourceUrl: f?.sourceUrl,
         }),
       )
       // A new todo starts as `todo`; another status is a second write. The todo
@@ -230,7 +337,10 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
       const dueTime = input.dueDate ? f.dueTime : ''
       if (!b || (b.due_time ?? '') !== dueTime) patch.due_time = dueTime || null
       if (!b || b.priority !== f.priority) patch.priority = f.priority
-      if (!b || (b.estimate_min ?? null) !== f.estimateMin) patch.estimate_min = f.estimateMin
+      if (!b || (b.estimate_min ?? null) !== f.estimateMin) {
+        patch.estimate_min = f.estimateMin
+        if (f.estimateMin != null && f.estimateMin === f.aiEstimateMin) patch.estimate_source = 'ai'
+      }
       if (!b || b.status !== f.status) patch.status = f.status
     }
     if (Object.keys(patch).length === 0) return true
@@ -253,6 +363,128 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
   /** A quick Focus action (start, wait, snooze…); the Host pushes the board. */
   function patchTodo(id: string, patch: TodoPatchWire): Promise<boolean> {
     return write(todoUpdateCmd(id, patch))
+  }
+
+  // ---- Focus ----
+
+  /**
+   * Start an AI request for `key` and wait for its `focus_ai_result`. One at a
+   * time per key (a second answers `busy`); a refused ack, a cancel, a lost
+   * connection or no answer within {@link AI_TIMEOUT_MS} end it with a code.
+   */
+  function aiRequest(key: string, build: (requestId: string) => CmdPayload): Promise<FocusAiResultKind | { ok: false; code: string }> {
+    if (state.aiRunning[key]) return Promise.resolve({ ok: false, code: 'busy' })
+    const requestId = newRequestId()
+    state.aiErrors = without(state.aiErrors, key)
+    state.aiRunning = { ...state.aiRunning, [key]: requestId }
+    return new Promise((resolve) => {
+      const settle = (r: FocusAiResultKind | { ok: false; code: string }): void => {
+        const pending = aiPending.get(requestId)
+        if (!pending) return
+        clearTimeout(pending.timer)
+        aiPending.delete(requestId)
+        if (state.aiRunning[key] === requestId) state.aiRunning = without(state.aiRunning, key)
+        const code = !r.ok ? ('code' in r ? r.code : focusErrorCode(r.error)) : null
+        if (code && code !== 'cancelled') state.aiErrors = { ...state.aiErrors, [key]: code }
+        resolve(r)
+      }
+      const timer = setTimeout(() => {
+        // The Host may still be working: ask it to stop, best effort.
+        send(focusAiCancelCmd(requestId))
+        settle({ ok: false, code: 'timeout' })
+      }, AI_TIMEOUT_MS)
+      aiPending.set(requestId, { key, settle, timer })
+      const sent = send(build(requestId), (accepted, reason) => {
+        if (accepted) return
+        settle({ ok: false, code: reason === 'host_ack_timeout' ? 'host_ack_timeout' : focusErrorCode(reason) })
+      })
+      if (!sent) settle({ ok: false, code: 'not_connected' })
+    })
+  }
+
+  function outcome<T>(r: FocusAiResultKind | { ok: false; code: string }, pick: (r: FocusAiResultKind & { ok: true }) => T | null): AiOutcome<T> {
+    if (!r.ok) return { ok: false, code: 'code' in r ? r.code : focusErrorCode(r.error) }
+    const v = pick(r)
+    return v === null ? { ok: false, code: 'failed' } : { ok: true, result: v }
+  }
+
+  function isAiRunning(key: string): boolean {
+    return !!state.aiRunning[key]
+  }
+
+  /** Stop the request running for `key`: it ends at once as `cancelled`; a
+   * late answer is ignored. */
+  function cancelAi(key: string): void {
+    const requestId = state.aiRunning[key]
+    if (!requestId) return
+    send(focusAiCancelCmd(requestId))
+    aiPending.get(requestId)?.settle({ ok: false, code: 'cancelled' })
+  }
+
+  /** Dismiss the failure shown for `key`. */
+  function clearAiError(key: string): void {
+    state.aiErrors = without(state.aiErrors, key)
+  }
+
+  /** ✨ Suggest from a source link: fills a form, nothing is saved. */
+  async function suggestTodo(sourceUrl: string, projectId: string | null, title: string | null): Promise<AiOutcome<AiSuggestion>> {
+    const url = sourceUrl.trim()
+    const r = await aiRequest(suggestAiKey(url), (id) => focusAiSuggestCmd(id, { sourceUrl: url, projectId, title }))
+    return outcome(r, (ok) => (ok.ai_kind === 'suggest' ? ok.result : null))
+  }
+
+  /** ✨ Analyze a todo; the Host stores its `ai_plan` and pushes the board. */
+  async function analyzeTodo(todoId: string): Promise<AiOutcome<AiAnalysis>> {
+    const r = await aiRequest(todoAiKey(todoId), (id) => focusAiAnalyzeCmd(id, todoId))
+    const out = outcome(r, (ok) => (ok.ai_kind === 'analyze' ? ok.result.analysis : null))
+    if (out.ok) state.analyses = { ...state.analyses, [todoId]: out.result }
+    return out
+  }
+
+  /** Plan today; the Host follows with a `focus_day_plan`. */
+  async function planToday(): Promise<AiOutcome<DayPlan>> {
+    const r = await aiRequest(PLAN_KEY, (id) => focusAiPlanTodayCmd(id))
+    const out = outcome(r, (ok) => (ok.ai_kind === 'plan_today' ? ok.result : null))
+    if (out.ok) state.dayPlan = { date: out.result.date, plan: out.result }
+    return out
+  }
+
+  /** A day's saved plan (default: today on the Host). */
+  function loadDayPlan(date?: string | null): void {
+    read(focusDayPlanGetCmd(date), 'plan')
+  }
+
+  /** Push blocks (all when absent) to Google Calendar. A partial success is
+   * kept: on a refusal the saved plan is re-read. */
+  async function planToCalendar(date: string, blockIds?: string[]): Promise<WriteOutcome> {
+    const out = await writeAck(focusPlanToCalendarCmd(date, blockIds))
+    if (!out.ok) loadDayPlan(date)
+    return out
+  }
+
+  /** 🚀 A new session on the todo; the ack's `run_id` is the new run. */
+  function startTodoAi(todoId: string): Promise<WriteOutcome> {
+    return writeAck(todoStartAiCmd(todoId))
+  }
+
+  /** BR-11 "how long did it take?" suggestion, answered as `state.actual`. */
+  function suggestActual(todoId: string): void {
+    state.actual = null
+    send(focusSuggestActualCmd(todoId))
+  }
+
+  function loadSettings(): void {
+    read(focusSettingsGetCmd(), 'settings')
+  }
+
+  /** Save the settings; the Host answers with them normalised. */
+  async function saveSettings(settings: FocusSettings): Promise<WriteOutcome> {
+    return writeAck(focusSettingsSetCmd(settings))
+  }
+
+  /** Drop the Host's Calendar cache; it answers with a fresh board. */
+  function refreshCalendar(): Promise<boolean> {
+    return write(focusCalendarRefreshCmd())
   }
 
   // ---- notes ----
@@ -374,6 +606,8 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     if (state.notes) loadNotes()
     if (state.togglesProjectId) loadToggles(state.togglesProjectId)
     if (state.noteId) loadNote(state.noteId)
+    if (state.settings) loadSettings()
+    if (state.dayPlan) loadDayPlan(state.dayPlan.date)
   }
 
   function clearError(): void {
@@ -386,7 +620,14 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     state.notes = null
     state.note = null
     state.noteId = null
-    state.failed = { todos: false, board: false, notes: false, toggles: false, note: false }
+    state.failed = emptyFailures()
+    for (const p of [...aiPending.values()]) p.settle({ ok: false, code: 'connection_lost' })
+    state.aiRunning = {}
+    state.aiErrors = {}
+    state.analyses = {}
+    state.dayPlan = null
+    state.actual = null
+    state.settings = null
     state.noteFilter = { projectId: null, query: '' }
     state.toggles = null
     state.togglesProjectId = null
@@ -403,6 +644,19 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     toggleTodo,
     deleteTodo,
     patchTodo,
+    isAiRunning,
+    cancelAi,
+    clearAiError,
+    suggestTodo,
+    analyzeTodo,
+    planToday,
+    loadDayPlan,
+    planToCalendar,
+    startTodoAi,
+    suggestActual,
+    loadSettings,
+    saveSettings,
+    refreshCalendar,
     loadNotes,
     loadNote,
     closeNote,

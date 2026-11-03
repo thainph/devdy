@@ -3,7 +3,8 @@
  * The Setting tab: a menu, each row opening its own screen. The first row
  * picks the project (the shared project picker); the rows under it act on
  * that project (their "on / total" counts come from its switches once
- * loaded); then this phone's look and notifications, and the connection
+ * loaded); then the Host's Focus settings (on a Focus Host), this phone's look
+ * and notifications, and the connection
  * itself (Refresh re-fetches every tab, Disconnect).
  */
 import { computed, type Component } from 'vue'
@@ -20,6 +21,7 @@ import {
   ScrollText,
   Server,
   Sparkles,
+  Target,
   UserRound,
 } from 'lucide-vue-next'
 import { FOLLOW_HOST } from '@/lib/controllerAppearance'
@@ -34,6 +36,8 @@ const props = defineProps<{
   toggles: ProjectTogglesKind | null
   /** Whether push is on for this phone; null when the Host has no push. */
   pushOn: boolean | null
+  /** The Host has Focus: offer its settings. */
+  focus?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -109,6 +113,17 @@ const row =
       </div>
     </template>
     <p v-else class="py-6 text-center text-sm text-foreground/50">{{ t('controller.projectToggles.noProjects') }}</p>
+
+    <template v-if="focus">
+      <h2 :class="heading">{{ t('focus.title') }}</h2>
+      <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
+        <button type="button" :class="row" @click="emit('open', 'focus')">
+          <Target class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
+          <span class="min-w-0 flex-1 truncate">{{ t('controller.focus.settings.row') }}</span>
+          <ChevronRight class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
+        </button>
+      </div>
+    </template>
 
     <h2 :class="heading">{{ t('controller.settingsMenu.device') }}</h2>
     <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
