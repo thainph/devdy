@@ -126,3 +126,43 @@ export function deviceLabel(userAgent: string, ios: boolean): string {
             : ''
   return browser ? `${device} · ${browser}` : device
 }
+
+/** A tapped Focus reminder: open the Todo tab, and `todoId` in the editor
+ * (null = just the tab, e.g. the morning summary). */
+export interface FocusOpen {
+  todoId: string | null
+}
+
+const FOCUS_OPEN = 'open'
+const FOCUS_TODO = 'todo'
+
+function cleanTodoId(v: unknown): string | null {
+  return typeof v === 'string' && v.trim() && v.length <= 128 ? v.trim() : null
+}
+
+/** The controller URL the service worker opens for a reminder when no window
+ * is open (`focusUrl` in public/controller-sw.js builds the same). */
+export function focusOpenUrl(todoId: string | null, base = '/controller.html'): string {
+  return todoId ? `${base}?${FOCUS_OPEN}=todo&${FOCUS_TODO}=${encodeURIComponent(todoId)}` : `${base}?${FOCUS_OPEN}=todo`
+}
+
+/** A reminder tap from the page URL's query (`location.search`), or null. */
+export function focusOpenFromSearch(search: string): FocusOpen | null {
+  const q = new URLSearchParams(search)
+  if (q.get(FOCUS_OPEN) !== 'todo') return null
+  return { todoId: cleanTodoId(q.get(FOCUS_TODO)) }
+}
+
+/** A reminder tap from a service worker message (`devdy:open-todo`), or null. */
+export function focusOpenFromMessage(msg: unknown): FocusOpen | null {
+  if (!msg || typeof msg !== 'object' || (msg as { type?: unknown }).type !== 'devdy:open-todo') return null
+  return { todoId: cleanTodoId((msg as { todo_id?: unknown }).todo_id) }
+}
+
+/** `href` without the reminder-tap query, so a reload does not reopen it. */
+export function withoutFocusOpen(href: string): string {
+  const url = new URL(href)
+  url.searchParams.delete(FOCUS_OPEN)
+  url.searchParams.delete(FOCUS_TODO)
+  return url.toString()
+}

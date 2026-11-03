@@ -521,6 +521,8 @@ export interface PushEventsWire {
   pending: boolean
   done: boolean
   failed: boolean
+  /** Focus reminders; absent from a Host without them. */
+  focus?: boolean
 }
 
 /** Web Push setup (`push_config`): the VAPID key to subscribe with, whether

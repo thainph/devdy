@@ -8,6 +8,10 @@ import vm from 'node:vm'
 import {
   base64UrlToBytes,
   deviceLabel,
+  focusOpenFromMessage,
+  focusOpenFromSearch,
+  focusOpenUrl,
+  withoutFocusOpen,
   isIosDevice,
   pushSupport,
   pushUiState,
@@ -199,4 +203,62 @@ test('a rotated subscription is renewed with the same key and reported to open w
   await w.fire('pushsubscriptionchange', { oldSubscription: { options: { applicationServerKey: 'KEY' } } })
   assert.deepEqual(w.calls, [['subscribe', 'KEY']])
   assert.deepEqual(msgs, ['devdy:subscription-changed'])
+})
+
+// ---- Focus reminders ----
+
+test('a Focus reminder shows the Host text and leaves the badge alone', () => {
+  const { compose } = loadServiceWorker()
+  const n = compose({ v: 1, t: 'focus', title: 'Focus', body: 'Quá hạn: Gửi báo cáo', todo_id: 't1' }, 'en')
+  assert.equal(n.title, 'Focus')
+  assert.equal(n.body, 'Quá hạn: Gửi báo cáo', 'worded by the Host, not re-translated')
+  assert.equal(n.badge, null)
+  assert.equal(n.focus.todoId, 't1')
+  const morning = compose({ v: 1, t: 'focus', title: 'Focus · Today', body: 'Today: 2 tasks' }, 'en')
+  assert.equal(morning.focus.todoId, null)
+  // Missing text still shows something; overlong text is cut.
+  const bare = compose({ v: 1, t: 'focus' }, 'vi')
+  assert.deepEqual([bare.title, bare.body], ['Focus', 'Có việc cần bạn xem.'])
+  assert.equal(compose({ v: 1, t: 'focus', title: 'x'.repeat(500), body: 'y'.repeat(5000) }, 'en').body.length, 600)
+})
+
+test('a Focus reminder keeps its own notification slot and the badge', async () => {
+  const w = fakeWorkerEnv()
+  w.calls.length = 0
+  await w.fire('push', { data: { json: () => ({ v: 1, t: 'focus', title: 'Focus', body: 'B', todo_id: 'a' }) } })
+  assert.deepEqual(w.calls, [['show', 'Focus', 'devdy-focus:a']])
+})
+
+test('tapping a Focus reminder opens that todo', async () => {
+  const w = fakeWorkerEnv()
+  const msgs = []
+  const notification = (todoId) => ({ close() {}, data: { url: '', focus: { todoId } } })
+  await w.fire('notificationclick', { notification: notification('a b') })
+  assert.deepEqual(w.calls.at(-1), ['openWindow', '/controller.html?open=todo&todo=a%20b'])
+  assert.deepEqual(w.calls.at(-1)[1], focusOpenUrl('a b'), 'worker and page agree on the URL')
+  await w.fire('notificationclick', { notification: notification(null) })
+  assert.deepEqual(w.calls.at(-1), ['openWindow', focusOpenUrl(null)])
+  w.windows.push({
+    url: 'https://relay.example/controller.html',
+    postMessage: (m) => msgs.push(JSON.parse(JSON.stringify(m))),
+    focus: async () => msgs.push('focus'),
+  })
+  await w.fire('notificationclick', { notification: notification('t1') })
+  assert.deepEqual(msgs, [{ type: 'devdy:open-todo', todo_id: 't1' }, 'focus'])
+  assert.deepEqual(focusOpenFromMessage(msgs[0]), { todoId: 't1' })
+})
+
+test('the page reads a reminder tap from its URL or a worker message', () => {
+  assert.deepEqual(focusOpenFromSearch('?open=todo&todo=a%20b'), { todoId: 'a b' })
+  assert.deepEqual(focusOpenFromSearch('?open=todo'), { todoId: null })
+  assert.equal(focusOpenFromSearch(''), null)
+  assert.equal(focusOpenFromSearch('?todo=x'), null)
+  assert.deepEqual(focusOpenFromMessage({ type: 'devdy:open-todo', todo_id: null }), { todoId: null })
+  assert.deepEqual(focusOpenFromMessage({ type: 'devdy:open-todo', todo_id: 'x'.repeat(200) }), { todoId: null })
+  assert.equal(focusOpenFromMessage({ type: 'devdy:open-inbox' }), null)
+  assert.equal(focusOpenFromMessage(null), null)
+  assert.equal(
+    withoutFocusOpen('https://r.example/controller.html?open=todo&todo=t1&x=1#k=v'),
+    'https://r.example/controller.html?x=1#k=v',
+  )
 })

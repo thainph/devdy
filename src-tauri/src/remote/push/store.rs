@@ -359,8 +359,13 @@ pub(crate) mod tests {
     async fn event_switches_default_on_and_persist() {
         let db = mem_db().await;
         assert_eq!(events(&db).await, PushEvents::default());
-        let off = PushEvents { pending: true, done: false, failed: true };
+        let off = PushEvents { pending: true, done: false, failed: true, focus: false };
         set_events(&db, off).await.unwrap();
         assert_eq!(events(&db).await, off);
+        // Saved before Focus reminders existed: they come on.
+        crate::remote::set_setting(&db, KEY_PUSH_EVENTS, r#"{"pending":false,"done":true,"failed":true}"#)
+            .await
+            .unwrap();
+        assert_eq!(events(&db).await, PushEvents { pending: false, done: true, failed: true, focus: true });
     }
 }

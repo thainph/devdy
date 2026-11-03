@@ -255,7 +255,8 @@
     "kindRows": {
       "pending": "Requests waiting for you",
       "done": "Finished runs",
-      "failed": "Failed runs"
+      "failed": "Failed runs",
+      "focus": "Focus reminders"
     },
     "state": {
       "on": "On — this phone is notified when something needs you or a run finishes.",
@@ -270,7 +271,7 @@
       "add": "Choose “Add to Home Screen”",
       "open": "Open Devdy from the Home Screen, sign in, and turn notifications on here"
     },
-    "privacy": "Notifications carry counts only — never commands, tool names or projects.",
+    "privacy": "Run notifications carry counts only — never commands, tool names or projects. Focus reminders show the todo's text, encrypted end to end to this phone.",
     "sendTest": "Send a test",
     "test": {
       "sent": "Sent — it should arrive in a moment.",

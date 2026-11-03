@@ -853,7 +853,7 @@ mod tests {
             v,
             serde_json::json!({
                 "kind": "push_config", "vapid_public_key": "BPk", "subscribed": true,
-                "events": { "pending": true, "done": true, "failed": true }
+                "events": { "pending": true, "done": true, "failed": true, "focus": true }
             })
         );
     }
