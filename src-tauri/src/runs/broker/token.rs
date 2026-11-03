@@ -1384,7 +1384,8 @@ pub async fn build_account_context(
          commands are blocked by policy (e.g. `gh auth token`, `gh auth login`, `aws configure`, \
          `az login`, `az account get-access-token`). \
          This machine should not rely on global credentials for these tools; outside this wiring \
-         calls may fail (fail-closed).",
+         calls may fail (fail-closed). Run these tools directly, never through a login shell \
+         (`zsh -l`, `bash -l`, `zsh -lc …`): it reorders PATH and skips the wiring.",
         lines.join("\n")
     );
 
