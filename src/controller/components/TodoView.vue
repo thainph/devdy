@@ -6,17 +6,19 @@
  * floating +) asks the parent to open the full-height todo editor.
  *
  * When the Host ranks todos (Focus board) the Active list is the board
- * instead: today's load, "Do now" and the time buckets, with a sheet of quick
- * actions (start, wait, snooze) per row.
+ * instead — by time, by project or this week — with today's load, a "Plan
+ * today" entry and a sheet of quick actions per row (start, wait, snooze,
+ * remind, AI, delete). Marking a started, estimated todo done asks how long
+ * it really took.
  *
  * Backend-agnostic like the other controller views: the list comes in as a
  * prop; `toggle` / `refresh` / `open` go out as events. The filter, search and
  * Active / Done switch are models owned by the parent, so they survive a trip
  * to the editor and back.
  */
-import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
+import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Loader2, X } from 'lucide-vue-next'
+import { Loader2, Sparkles, X } from 'lucide-vue-next'
 import { Banner, Button } from '@/components/ui'
 import { localYmd } from '@/lib/todoDue'
 import {
@@ -29,10 +31,13 @@ import {
   todoGroup,
   type TodoTab,
 } from '@/lib/remoteTodos'
-import type { FocusBoard, FocusItem } from '@/lib/focus'
+import type { AiAnalysis, FocusBoard, FocusItem, FocusTodo } from '@/lib/focus'
+import { PLAN_KEY, shouldAskActual, todoAiKey } from '@/lib/remoteFocus'
 import FabButton from './FabButton.vue'
 import FocusActionSheet from './FocusActionSheet.vue'
-import FocusBoardList from './FocusBoardList.vue'
+import FocusActualSheet from './FocusActualSheet.vue'
+import FocusBoardList, { type FocusBoardView } from './FocusBoardList.vue'
+import { useControllerErrors } from '../focusErrors'
 import SearchField from './SearchField.vue'
 import type { ProjectInfo, TodoInfo, TodoPatchWire } from '../protocol'
 
@@ -50,12 +55,31 @@ const props = defineProps<{
   board?: FocusBoard | null
   /** The board request failed: fall back to the plain list. */
   boardFailed?: boolean
+  /** Running Focus AI requests by key (see `@/lib/remoteFocus`). */
+  aiRunning?: Record<string, string>
+  /** The last AI failure code per key. */
+  aiErrors?: Record<string, string>
+  /** Analyses finished this session, by todo id. */
+  analyses?: Record<string, AiAnalysis>
+  /** The Host's last "how long did it take?" suggestion. */
+  actual?: { todoId: string; minutes: number | null } | null
+  /** Start of the working day (`HH:MM`), for the snooze presets. */
+  workStart?: string
 }>()
 
 const emit = defineEmits<{
   toggle: [id: string]
   /** A quick Focus action on one todo. */
   patch: [id: string, patch: TodoPatchWire]
+  remove: [id: string]
+  analyze: [id: string]
+  'cancel-analyze': [id: string]
+  'start-ai': [todo: FocusTodo]
+  /** Ask the Host for the BR-11 actual-time suggestion. */
+  'suggest-actual': [id: string]
+  'refresh-calendar': []
+  /** Open the "Plan today" screen. */
+  plan: []
   refresh: []
   /** Open the editor on this todo, or on a new one (null). */
   open: [todo: TodoInfo | null]
@@ -63,6 +87,7 @@ const emit = defineEmits<{
 }>()
 
 const { t, locale } = useI18n()
+const errors = useControllerErrors()
 
 /** Project filter ('' = every project), picked in the tab header. */
 const projectFilter = defineModel<string>('projectId', { required: true })
@@ -111,6 +136,7 @@ onMounted(() => {
 })
 onBeforeUnmount(() => {
   if (tick) clearInterval(tick)
+  if (calendarTimer) clearTimeout(calendarTimer)
   document.removeEventListener('visibilitychange', onVisibility)
 })
 
@@ -143,18 +169,82 @@ const isEmpty = computed(() =>
     : finished.value.length === 0,
 )
 
+// Time / Project / Week, remembered on this device.
+const VIEW_KEY = 'devdy.controller.focusView'
+const VIEWS: FocusBoardView[] = ['time', 'project', 'week']
+function readView(): FocusBoardView {
+  try {
+    return VIEWS.find((v) => v === localStorage.getItem(VIEW_KEY)) ?? 'time'
+  } catch {
+    return 'time'
+  }
+}
+const view = ref<FocusBoardView>(readView())
+watch(view, (v) => {
+  try {
+    localStorage.setItem(VIEW_KEY, v)
+  } catch {
+    // Storage unavailable: the view lasts for this visit only.
+  }
+})
+
+const aiRunning = computed(() => props.aiRunning ?? {})
+const planning = computed(() => !!aiRunning.value[PLAN_KEY])
+
+// Calendar refresh: spins until the Host's fresh board lands (or gives up).
+const calendarRefreshing = ref(false)
+let calendarTimer: ReturnType<typeof setTimeout> | null = null
+function onRefreshCalendar(): void {
+  calendarRefreshing.value = true
+  if (calendarTimer) clearTimeout(calendarTimer)
+  calendarTimer = setTimeout(() => (calendarRefreshing.value = false), 15_000)
+  emit('refresh-calendar')
+}
+watch(
+  () => props.board,
+  () => (calendarRefreshing.value = false),
+)
+
 // The quick-action sheet, by id so it follows the re-ranked board.
 const actionsId = ref<string | null>(null)
 const actionsItem = computed(() =>
   actionsId.value ? (props.board?.items.find((it) => it.todo.id === actionsId.value) ?? null) : null,
 )
+const actionsKey = computed(() => (actionsId.value ? todoAiKey(actionsId.value) : ''))
 function onAction(patch: TodoPatchWire): void {
   if (actionsId.value) emit('patch', actionsId.value, patch)
   actionsId.value = null
 }
 function onActionToggle(): void {
-  if (actionsId.value) emit('toggle', actionsId.value)
+  if (actionsId.value) onToggle(actionsId.value)
   actionsId.value = null
+}
+function onActionRemove(): void {
+  if (actionsId.value) emit('remove', actionsId.value)
+  actionsId.value = null
+}
+function onActionStartAi(): void {
+  const it = actionsItem.value
+  actionsId.value = null
+  if (it) emit('start-ai', it.todo)
+}
+
+// Done → "how long did it take?" for a started, estimated todo (BR-11).
+const actualFor = ref<FocusTodo | null>(null)
+const actualSuggestion = computed(() =>
+  actualFor.value && props.actual?.todoId === actualFor.value.id ? props.actual.minutes : undefined,
+)
+function onToggle(id: string): void {
+  const it = props.board?.items.find((x) => x.todo.id === id)
+  if (it && shouldAskActual(it.todo)) {
+    actualFor.value = { ...it.todo }
+    emit('suggest-actual', id)
+  }
+  emit('toggle', id)
+}
+function onActualSave(minutes: number): void {
+  if (actualFor.value) emit('patch', actualFor.value.id, { actual_min: minutes })
+  actualFor.value = null
 }
 function onActionEdit(): void {
   const it = actionsItem.value
@@ -231,6 +321,30 @@ const CHIP_TONES: Record<string, string> = {
         </button>
       </div>
 
+      <div v-if="useBoard" class="mb-3 flex items-center gap-2">
+        <div class="ui-segmented flex min-w-0 flex-1 gap-1 rounded-lg border border-border bg-card p-0.5">
+          <button
+            v-for="v in VIEWS"
+            :key="v"
+            class="flex-1 truncate rounded-md px-2 py-1.5 text-xs transition-colors cursor-pointer"
+            :class="view === v ? 'is-active bg-secondary font-semibold text-foreground' : 'text-muted-foreground'"
+            @click="view = v"
+          >
+            {{ t(`controller.focus.views.${v}`) }}
+          </button>
+        </div>
+        <button
+          type="button"
+          class="flex h-8 shrink-0 cursor-pointer items-center gap-1.5 rounded-lg border border-border bg-card px-2.5 text-xs font-medium"
+          :title="t('focus.plan.hint')"
+          @click="emit('plan')"
+        >
+          <Loader2 v-if="planning" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+          <Sparkles v-else class="h-3.5 w-3.5 text-primary" :stroke-width="2" />
+          {{ t('focus.plan.button') }}
+        </button>
+      </div>
+
       <div v-if="todos === null && failed" class="flex flex-col items-center gap-3 py-10 text-sm text-foreground/50">
         {{ t('controller.data.loadFailed') }}
         <Button
@@ -259,9 +373,13 @@ const CHIP_TONES: Record<string, string> = {
         :items="boardItems"
         :project-names="projectNames"
         :now="now"
-        @toggle="emit('toggle', $event)"
+        :view="view"
+        :ai-running="aiRunning"
+        :calendar-refreshing="calendarRefreshing"
+        @toggle="onToggle"
         @open="emit('open', $event)"
         @actions="actionsId = $event.todo.id"
+        @refresh-calendar="onRefreshCalendar"
       />
 
       <template v-else-if="tab === 'active'">
@@ -348,10 +466,26 @@ const CHIP_TONES: Record<string, string> = {
       v-if="actionsItem"
       :item="actionsItem"
       :now="now"
+      :work-start="workStart"
+      :analyzing="!!aiRunning[actionsKey]"
+      :analyzed="!!analyses?.[actionsItem.todo.id]"
+      :ai-error="errors.aiError(aiErrors?.[actionsKey])"
       @patch="onAction"
       @toggle="onActionToggle"
       @edit="onActionEdit"
+      @analyze="emit('analyze', actionsItem.todo.id)"
+      @cancel-analyze="emit('cancel-analyze', actionsItem.todo.id)"
+      @start-ai="onActionStartAi"
+      @remove="onActionRemove"
       @close="actionsId = null"
+    />
+
+    <FocusActualSheet
+      v-if="actualFor"
+      :todo="actualFor"
+      :suggestion="actualSuggestion"
+      @save="onActualSave"
+      @close="actualFor = null"
     />
   </div>
 </template>

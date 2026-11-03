@@ -299,5 +299,43 @@
     "others": "Other projects",
     "empty": "No matching project.",
     "open": "Project: {name} — change"
+  },
+  "focus": {
+    "views": {
+      "time": "Time",
+      "project": "Project",
+      "week": "Week"
+    },
+    "week": {
+      "nothingDue": "Nothing due"
+    },
+    "ai": {
+      "heading": "AI",
+      "analyze": "Analyze with AI",
+      "analyzedOpen": "Analysis ready — open the todo"
+    },
+    "remind": {
+      "set": "Pick a time…",
+      "apply": "Set",
+      "clear": "Clear the reminder"
+    },
+    "editor": {
+      "sourcePlaceholder": "Link to a Slack thread, issue, PR…"
+    },
+    "settings": {
+      "title": "Focus",
+      "row": "Working hours & reminders",
+      "notify": "Reminders",
+      "notifyHint": "Reminders are shown by the desktop app (and sent to this phone when its notifications are on).",
+      "desktopOnly": "The AI engine and the Google Calendar used for today's free time are set in Devdy on the desktop.",
+      "saved": "Saved"
+    },
+    "errors": {
+      "cancelled": "Cancelled.",
+      "timeout": "The AI took too long — try again.",
+      "failed": "The AI request failed — try again.",
+      "invalid": "The host refused these settings (invalid values).",
+      "no_source": "This link can't be read — check it and try again."
+    }
   }
 }

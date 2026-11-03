@@ -1,7 +1,7 @@
 /**
  * The Controller's Setting tab is a menu; each entry opens its own screen.
- * Project switch screens are a {@link ToggleGroup}; the rest belong to this
- * phone (look, notifications).
+ * Project switch screens are a {@link ToggleGroup}; `focus` is the Host's
+ * Focus settings; the rest belong to this phone (look, notifications).
  */
 import type { ToggleKind } from './protocol'
 
@@ -16,7 +16,7 @@ export const TOGGLE_GROUPS: Record<ToggleGroup, readonly ToggleKind[]> = {
   account: ['claude_account', 'github_account', 'gitlab_account', 'aws_account', 'azure_account'],
 }
 
-export type SettingsPage = ToggleGroup | 'theme' | 'push'
+export type SettingsPage = ToggleGroup | 'theme' | 'push' | 'focus'
 
 export function isToggleGroup(page: SettingsPage | null): page is ToggleGroup {
   return page !== null && page in TOGGLE_GROUPS
