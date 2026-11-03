@@ -650,6 +650,16 @@ pub async fn create_google_calendar_event(
     calendar_id: String,
     payload: EventPayload,
 ) -> Result<CalEvent, String> {
+    create_event_inner(db.inner(), account_id, calendar_id, payload).await
+}
+
+/// `create_google_calendar_event`, shared with Focus plan → Calendar.
+pub async fn create_event_inner(
+    db: &Db,
+    account_id: String,
+    calendar_id: String,
+    payload: EventPayload,
+) -> Result<CalEvent, String> {
     let client = reqwest::Client::new();
     let url = format!(
         "{EVENTS_BASE}/{}/events",
@@ -667,7 +677,7 @@ pub async fn create_google_calendar_event(
     .map_err(|e| format!("Create event request failed: {e}"))?;
 
     let ev = parse_event_response(resp, "Create").await?;
-    let label = account_label_for(db.inner(), &account_id).await;
+    let label = account_label_for(db, &account_id).await;
     map_event_entry(ev, &account_id, &label, &calendar_id, "", None)
         .ok_or_else(|| "Created event has no usable start.".to_string())
 }

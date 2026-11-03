@@ -437,12 +437,25 @@ pub async fn focus_ai_suggest(
     title: Option<String>,
     request_id: Option<String>,
 ) -> Result<ai::Suggestion, String> {
-    let db = db.inner().clone();
+    suggest_inner(&app, db.inner(), state.inner(), source_url, project_id, title, request_id).await
+}
+
+/// `focus_ai_suggest`, shared with Remote Control.
+pub async fn suggest_inner(
+    app: &AppHandle,
+    db: &Db,
+    state: &FocusAiState,
+    source_url: String,
+    project_id: Option<String>,
+    title: Option<String>,
+    request_id: Option<String>,
+) -> Result<ai::Suggestion, String> {
+    let db = db.clone();
     let settings = focus_settings::load(&db).await?;
-    let engine = engine_for(&app, &db, &state, &settings);
+    let engine = engine_for(app, &db, state, &settings);
     let key = format!("suggest:{}", source_url.trim());
     let turn = engine.turn.clone();
-    run_request(&state, key, request_id, turn, async move {
+    run_request(state, key, request_id, turn, async move {
         let source = source_ctx(
             &db,
             &source_url,
@@ -481,15 +494,26 @@ pub async fn focus_ai_analyze(
     todo_id: String,
     request_id: Option<String>,
 ) -> Result<AnalyzeResult, String> {
-    let db = db.inner().clone();
+    analyze_inner(&app, db.inner(), state.inner(), todo_id, request_id).await
+}
+
+/// `focus_ai_analyze`, shared with Remote Control.
+pub async fn analyze_inner(
+    app: &AppHandle,
+    db: &Db,
+    state: &FocusAiState,
+    todo_id: String,
+    request_id: Option<String>,
+) -> Result<AnalyzeResult, String> {
+    let db = db.clone();
     let settings = focus_settings::load(&db).await?;
-    let engine = engine_for(&app, &db, &state, &settings);
+    let engine = engine_for(app, &db, state, &settings);
     let key = format!("todo:{todo_id}");
     let app2 = app.clone();
     let id = todo_id.clone();
     let turn = engine.turn.clone();
     run_request(
-        &state,
+        state,
         key,
         request_id,
         turn,
@@ -625,12 +649,22 @@ pub async fn focus_ai_plan_today(
     state: State<'_, FocusAiState>,
     request_id: Option<String>,
 ) -> Result<DayPlan, String> {
-    let db = db.inner().clone();
+    plan_today_inner(&app, db.inner(), state.inner(), request_id).await
+}
+
+/// `focus_ai_plan_today`, shared with Remote Control.
+pub async fn plan_today_inner(
+    app: &AppHandle,
+    db: &Db,
+    state: &FocusAiState,
+    request_id: Option<String>,
+) -> Result<DayPlan, String> {
+    let db = db.clone();
     let settings = focus_settings::load(&db).await?;
-    let engine = engine_for(&app, &db, &state, &settings);
+    let engine = engine_for(app, &db, state, &settings);
     let turn = engine.turn.clone();
     run_request(
-        &state,
+        state,
         "plan".into(),
         request_id,
         turn,
@@ -690,8 +724,15 @@ pub async fn focus_day_plan_get(
     db: State<'_, Db>,
     date: Option<String>,
 ) -> Result<Option<DayPlan>, String> {
+    day_plan_get_inner(db.inner(), date).await.map(|(_, plan)| plan)
+}
+
+/// `focus_day_plan_get`, shared with Remote Control: the date it read (today
+/// when omitted) and its plan.
+pub async fn day_plan_get_inner(db: &Db, date: Option<String>) -> Result<(String, Option<DayPlan>), String> {
     let date = date.unwrap_or_else(|| local_now().format("%Y-%m-%d").to_string());
-    load_plan(db.inner(), &date).await
+    let plan = load_plan(db, &date).await?;
+    Ok((date, plan))
 }
 
 /// Create a Google Calendar event `[Devdy] <todo>` per block of `date` (all,
@@ -731,10 +772,19 @@ pub async fn focus_plan_to_calendar(
     date: String,
     block_ids: Option<Vec<String>>,
 ) -> Result<DayPlan, String> {
+    plan_to_calendar_inner(db.inner(), date, block_ids).await
+}
+
+/// `focus_plan_to_calendar`, shared with Remote Control.
+pub async fn plan_to_calendar_inner(
+    db: &Db,
+    date: String,
+    block_ids: Option<Vec<String>>,
+) -> Result<DayPlan, String> {
     // One push per day at a time: a double click must not create every
     // event twice.
     let _guard = PlanPushGuard::take(&date)?;
-    let pool = db.inner().clone();
+    let pool = db.clone();
     let mut plan = load_plan(&pool, &date)
         .await?
         .ok_or("no_plan: no plan for this day")?;
@@ -799,8 +849,8 @@ pub async fn focus_plan_to_calendar(
             }),
             ..Default::default()
         };
-        match crate::commands::gcalendar::create_google_calendar_event(
-            db.clone(),
+        match crate::commands::gcalendar::create_event_inner(
+            &pool,
             account.clone(),
             "primary".into(),
             payload,
@@ -841,13 +891,23 @@ pub async fn focus_start_with_ai(
     registry: State<'_, RunRegistry>,
     todo_id: String,
 ) -> Result<String, String> {
-    let pool = db.inner().clone();
+    start_with_ai_inner(&app, db.inner(), registry.inner(), todo_id).await
+}
+
+/// `focus_start_with_ai`, shared with Remote Control.
+pub async fn start_with_ai_inner(
+    app: &AppHandle,
+    db: &Db,
+    registry: &RunRegistry,
+    todo_id: String,
+) -> Result<String, String> {
+    let pool = db.clone();
     let todo = get_todo(&pool, &todo_id).await?;
     let project_id = todo
         .project_id
         .clone()
         .ok_or("project_required: pick a project for this todo first")?;
-    let run = crate::commands::runs::create_session_run(db.clone(), project_id, None).await?;
+    let run = crate::commands::runs::create_session_run_inner(&pool, project_id, None).await?;
     let prompt = ai::start_prompt(
         &todo.id,
         &todo.text,
@@ -876,7 +936,7 @@ pub async fn focus_start_with_ai(
         crate::commands::runs::start_run_inner(
             app.clone(),
             pool.clone(),
-            registry.inner().clone(),
+            registry.clone(),
             payload,
         )
         .await
@@ -905,7 +965,7 @@ pub async fn focus_start_with_ai(
     {
         tracing::warn!(event = "focus_start_status_failed", run_id = %run.id, error = %e);
     }
-    crate::focus::emit_todos_changed(&app);
+    crate::focus::emit_todos_changed(app);
     Ok(run.id)
 }
 
@@ -937,13 +997,17 @@ pub async fn focus_suggest_actual(
     db: State<'_, Db>,
     todo_id: String,
 ) -> Result<Option<i64>, String> {
-    let db = db.inner();
-    let todo = get_todo(db, &todo_id).await?;
+    suggest_actual_inner(db.inner(), &todo_id).await
+}
+
+/// `focus_suggest_actual`, shared with Remote Control.
+pub async fn suggest_actual_inner(db: &Db, todo_id: &str) -> Result<Option<i64>, String> {
+    let todo = get_todo(db, todo_id).await?;
     let runs: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
         "SELECT r.started_at, COALESCE(r.finished_at, r.last_activity_at) FROM todo_runs l \
          JOIN runs r ON r.id = l.run_id WHERE l.todo_id = ?",
     )
-    .bind(&todo_id)
+    .bind(todo_id)
     .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;

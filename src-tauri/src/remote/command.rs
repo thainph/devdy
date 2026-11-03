@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 34] = [
+pub const ALLOW_LIST: [&str; 45] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -57,7 +57,20 @@ pub const ALLOW_LIST: [&str; 34] = [
     "project_toggles_get",
     "project_toggle_set",
     "note_get",
+    // Focus; refused unless the client advertised both `data` and `focus`
+    // (see FOCUS_ACTIONS).
     "focus_board",
+    "focus_ai_suggest",
+    "focus_ai_analyze",
+    "focus_ai_plan_today",
+    "focus_ai_cancel",
+    "focus_day_plan_get",
+    "focus_plan_to_calendar",
+    "todo_start_ai",
+    "focus_suggest_actual",
+    "focus_settings_get",
+    "focus_settings_set",
+    "focus_calendar_refresh",
     // Web Push; refused unless the client advertised `push` (see PUSH_ACTIONS).
     "push_config",
     "push_visibility",
@@ -68,7 +81,7 @@ pub const ALLOW_LIST: [&str; 34] = [
 
 /// The data actions: allow-listed, but only for a Controller that advertised
 /// [`crate::remote::protocol::FEATURE_DATA`].
-pub const DATA_ACTIONS: [&str; 14] = [
+pub const DATA_ACTIONS: [&str; 13] = [
     "todo_list",
     "todo_add",
     "todo_update",
@@ -82,7 +95,6 @@ pub const DATA_ACTIONS: [&str; 14] = [
     "project_toggles_get",
     "project_toggle_set",
     "note_get",
-    "focus_board",
 ];
 
 /// Whether `action` is one of the [`DATA_ACTIONS`].
@@ -94,6 +106,35 @@ pub fn is_data_action(action: &str) -> bool {
 /// non-data action is unaffected by the flag.
 pub fn data_action_permitted(action: &str, data_enabled: bool) -> bool {
     data_enabled || !is_data_action(action)
+}
+
+/// The Focus actions: allow-listed, but only for a Controller that advertised
+/// both [`crate::remote::protocol::FEATURE_DATA`] and
+/// [`crate::remote::protocol::FEATURE_FOCUS`].
+pub const FOCUS_ACTIONS: [&str; 12] = [
+    "focus_board",
+    "focus_ai_suggest",
+    "focus_ai_analyze",
+    "focus_ai_plan_today",
+    "focus_ai_cancel",
+    "focus_day_plan_get",
+    "focus_plan_to_calendar",
+    "todo_start_ai",
+    "focus_suggest_actual",
+    "focus_settings_get",
+    "focus_settings_set",
+    "focus_calendar_refresh",
+];
+
+/// Whether `action` is one of the [`FOCUS_ACTIONS`].
+pub fn is_focus_action(action: &str) -> bool {
+    FOCUS_ACTIONS.contains(&action)
+}
+
+/// Whether a session may run `action` given whether it negotiated both
+/// `data` and `focus`.
+pub fn focus_action_permitted(action: &str, focus_enabled: bool) -> bool {
+    focus_enabled || !is_focus_action(action)
 }
 
 /// The Web Push actions: allow-listed, but only for a Controller that
@@ -127,7 +168,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 18] = [
+pub const READ_ONLY_ACTIONS: [&str; 21] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -146,7 +187,12 @@ pub const READ_ONLY_ACTIONS: [&str; 18] = [
     "note_search",
     "project_toggles_get",
     "note_get",
+    // Focus reads. AI requests, Calendar pushes, settings writes and
+    // "Start with AI" stay on the command budget.
     "focus_board",
+    "focus_day_plan_get",
+    "focus_settings_get",
+    "focus_suggest_actual",
     // Push: reading the VAPID key, and the phone saying it went to / came back
     // from the background (fires on every app switch). Subscribing, removing
     // and test sends stay on the command budget.
@@ -422,7 +468,6 @@ mod tests {
             "project_toggles_get",
             "project_toggle_set",
             "note_get",
-            "focus_board",
         ] {
             assert!(is_allowed_action(a), "{a} should be allowed");
             assert!(is_data_action(a), "{a} is a data action");
@@ -446,6 +491,54 @@ mod tests {
         for a in ["respond_permission", "start_run", "list_runs", "open_run"] {
             assert!(!is_data_action(a));
             assert!(data_action_permitted(a, false));
+        }
+    }
+
+    // ---- Focus ----
+    #[test]
+    fn focus_actions_are_allow_listed_and_need_data_and_focus() {
+        for a in FOCUS_ACTIONS {
+            assert!(is_allowed_action(a), "{a} must be allow-listed");
+            assert!(!is_data_action(a), "{a} is gated as Focus, not data");
+            assert!(!is_push_action(a));
+            assert!(!focus_action_permitted(a, false), "{a} needs data + focus");
+            assert!(focus_action_permitted(a, true));
+        }
+        assert!(FOCUS_ACTIONS.contains(&"focus_board"), "the board moved to the Focus gate");
+        // Todo writes stay plain data actions (they work without focus).
+        for a in ["todo_add", "todo_update", "todo_list", "respond_permission", "push_test"] {
+            assert!(focus_action_permitted(a, false), "{a} does not depend on focus");
+        }
+        for a in ["focus_ai_run", "focus_settings_reset", "Focus_board", "todo_start", "focus_take_open_todo"] {
+            assert!(!is_allowed_action(a), "{a} must be rejected");
+        }
+    }
+
+    #[test]
+    fn focus_reads_and_writes_use_the_right_budget() {
+        for a in ["focus_board", "focus_day_plan_get", "focus_settings_get", "focus_suggest_actual"] {
+            assert!(is_read_only_action(a), "{a} only reads");
+        }
+        for a in [
+            "focus_ai_suggest",
+            "focus_ai_analyze",
+            "focus_ai_plan_today",
+            "focus_ai_cancel",
+            "focus_plan_to_calendar",
+            "todo_start_ai",
+            "focus_settings_set",
+            "focus_calendar_refresh",
+        ] {
+            assert!(!is_read_only_action(a), "{a} is on the command budget");
+        }
+    }
+
+    #[test]
+    fn allow_list_has_no_duplicates() {
+        let set: HashSet<&str> = ALLOW_LIST.iter().copied().collect();
+        assert_eq!(set.len(), ALLOW_LIST.len());
+        for a in DATA_ACTIONS.iter().chain(FOCUS_ACTIONS.iter()).chain(PUSH_ACTIONS.iter()) {
+            assert!(is_allowed_action(a), "{a}");
         }
     }
 
@@ -477,7 +570,7 @@ mod tests {
 
     #[test]
     fn data_reads_and_writes_use_the_right_budget() {
-        for a in ["todo_list", "note_list", "note_search", "project_toggles_get", "note_get", "focus_board"] {
+        for a in ["todo_list", "note_list", "note_search", "project_toggles_get", "note_get"] {
             assert!(is_read_only_action(a), "{a} only reads");
         }
         for a in [
