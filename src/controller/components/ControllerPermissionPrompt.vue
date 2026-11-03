@@ -353,7 +353,7 @@ const inputPreview = computed(() => {
 
     <!-- AskUserQuestion submits `answers` (with allow_once). Other tools: an
          explicit scope on every decision (AC-17 / BR-016 v1.2). -->
-    <div v-if="isQuestions" class="border-t border-border shrink-0 flex flex-col gap-2 sm:flex-row sm:justify-end" :class="inbox ? 'px-3 py-2.5' : 'px-4 py-3'">
+    <div v-if="isQuestions" class="border-t border-border shrink-0 flex flex-col gap-2 sm:flex-row sm:justify-end" :class="inbox ? 'px-3 py-2.5' : 'px-4 pt-3 pb-[max(1.25rem,calc(env(safe-area-inset-bottom)+0.75rem))]'">
       <Button size="md" variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
         <X class="h-4 w-4" :stroke-width="2" /> {{ t('permission.controller.cancel') }}
       </Button>
@@ -381,8 +381,9 @@ const inputPreview = computed(() => {
     </div>
 
     <!-- Session: the two everyday answers, with Always on its own row so it is
-         never hit by accident. -->
-    <div v-else class="px-4 py-3 border-t border-border shrink-0 flex flex-col gap-2">
+         never hit by accident. Lifted clear of the home indicator / screen edge
+         so they are easy to reach with a thumb. -->
+    <div v-else class="px-4 pt-3 pb-[max(1.25rem,calc(env(safe-area-inset-bottom)+0.75rem))] border-t border-border shrink-0 flex flex-col gap-2">
       <div class="grid grid-cols-2 gap-2 sm:flex sm:justify-end">
         <Button size="md" variant="destructive" class="w-full sm:w-auto" @click="emit('decide', 'deny_once')">
           <X class="h-4 w-4" :stroke-width="2" /> {{ t('permission.deny') }}
