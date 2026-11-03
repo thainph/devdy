@@ -27,7 +27,7 @@ import type {
   TodoPriority,
   TodoStatus,
 } from '@/lib/focus'
-import { PLAN_KEY, focusErrorCode, newRequestId, suggestAiKey, todoAiKey } from '../lib/remoteFocus.ts'
+import { PLAN_KEY, focusErrorCode, newRequestId, phoneSettings, suggestAiKey, todoAiKey } from '../lib/remoteFocus.ts'
 import type { CommandAckHandler } from './connection'
 import {
   noteAddCmd,
@@ -479,7 +479,7 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
 
   /** Save the settings; the Host answers with them normalised. */
   async function saveSettings(settings: FocusSettings): Promise<WriteOutcome> {
-    return writeAck(focusSettingsSetCmd(settings))
+    return writeAck(focusSettingsSetCmd(phoneSettings(settings)))
   }
 
   /** Drop the Host's Calendar cache; it answers with a fresh board. */
@@ -601,6 +601,12 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
 
   /** After a reconnect: re-fetch whatever a screen has already loaded. */
   function reload(): void {
+    // The Host delivers an AI result to the session that asked; a reconnect is
+    // a new session, so those answers will never come. End them now (the work
+    // may still have landed: the board / plan re-reads below show it).
+    const planPending = [...aiPending.values()].some((p) => p.key === PLAN_KEY)
+    for (const p of [...aiPending.values()]) p.settle({ ok: false, code: 'connection_lost' })
+    if (planPending && !state.dayPlan) loadDayPlan()
     if (state.todos) loadTodos()
     if (state.board) loadBoard()
     if (state.notes) loadNotes()

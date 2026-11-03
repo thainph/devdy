@@ -72,10 +72,15 @@ fn engine_request_id(request_id: &str) -> String {
     format!("remote:{request_id}")
 }
 
+/// Settings only the desktop edits: a phone's copy of them may be stale (they
+/// are not pushed when changed on the desktop), so they are ignored on the wire.
+pub const DESKTOP_ONLY_SETTINGS: [&str; 4] = ["ai_engine", "ai_model", "calendar_account_id", "calendar_ids"];
+
 /// `current` with the keys of a `focus_settings_set` laid over it, so a phone
-/// that does not know a setting (AI engine, Calendar choice) leaves it as it
-/// is. An unknown key or a wrongly typed value is malformed; the value rules
-/// (`FocusSettings::validated`) are checked by the caller.
+/// that does not know a setting leaves it as it is; the
+/// [`DESKTOP_ONLY_SETTINGS`] are always kept. An unknown key or a wrongly typed
+/// value is malformed; the value rules (`FocusSettings::validated`) are checked
+/// by the caller.
 pub fn merge_settings(current: &FocusSettings, wire: Option<&Value>) -> Result<FocusSettings, RejectReason> {
     let patch = wire.and_then(Value::as_object).ok_or(RejectReason::Malformed)?;
     let Ok(Value::Object(mut merged)) = serde_json::to_value(current) else {
@@ -84,6 +89,9 @@ pub fn merge_settings(current: &FocusSettings, wire: Option<&Value>) -> Result<F
     for (key, val) in patch {
         if !merged.contains_key(key) {
             return Err(RejectReason::Malformed);
+        }
+        if DESKTOP_ONLY_SETTINGS.contains(&key.as_str()) {
+            continue;
         }
         merged.insert(key.clone(), val.clone());
     }
@@ -199,12 +207,15 @@ type FocusResult = Result<Outcome, Failure>;
 /// Run one Focus action (already allow-listed, rate-limited and flag-gated).
 pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: &CmdPayload) {
     let action = cmd.action.as_str();
+    if action == "focus_plan_to_calendar" {
+        // Acks from its own task.
+        return plan_to_calendar(ctx, cmd).await;
+    }
     let result = match action {
         "focus_board" => focus_board(ctx).await,
         "focus_ai_suggest" | "focus_ai_analyze" | "focus_ai_plan_today" => ai_request(ctx, cmd).await,
         "focus_ai_cancel" => ai_cancel(ctx, cmd).await,
         "focus_day_plan_get" => day_plan_get(ctx, cmd).await,
-        "focus_plan_to_calendar" => plan_to_calendar(ctx, cmd).await,
         "todo_start_ai" => start_ai(ctx, cmd).await,
         "focus_suggest_actual" => suggest_actual(ctx, cmd).await,
         "focus_settings_get" => settings_get(ctx).await,
@@ -408,22 +419,56 @@ async fn day_plan_get(ctx: &HandlerCtx, cmd: &CmdPayload) -> FocusResult {
     Ok(Outcome::default())
 }
 
-/// Awaited (a few Calendar calls). The stored plan is pushed either way: a
-/// partial failure still saved the events it created.
-async fn plan_to_calendar(ctx: &HandlerCtx, cmd: &CmdPayload) -> FocusResult {
-    let date = valid_date(cmd.date.as_deref())?.ok_or(RejectReason::Malformed)?;
-    let blocks = block_ids(cmd.block_ids.as_deref())?;
-    let out = focus_ai::plan_to_calendar_inner(&ctx.db, date.clone(), blocks).await;
-    if let Err(e) = send_day_plan(ctx, Some(date)).await {
-        tracing::debug!(event = "remote_focus_day_plan_failed", error = %e);
-    }
-    out.map_err(failed)?;
-    Ok(Outcome::default())
+/// One Calendar call per block: run in a task so the session's other commands
+/// (permission answers…) are not held behind it. The stored plan is pushed
+/// either way — a partial failure still saved the events it created — then
+/// the ack, so the phone sees the result before its write settles.
+async fn plan_to_calendar(ctx: &Arc<HandlerCtx>, cmd: &CmdPayload) {
+    let action = cmd.action.as_str();
+    let input = valid_date(cmd.date.as_deref())
+        .and_then(|d| d.ok_or(RejectReason::Malformed))
+        .and_then(|d| Ok((d, block_ids(cmd.block_ids.as_deref())?)));
+    let (date, blocks) = match input {
+        Ok(v) => v,
+        Err(reason) => {
+            reject(ctx, action, None, reason).await;
+            command_ack(ctx, cmd, false, Some(reason.as_str())).await;
+            return;
+        }
+    };
+    let weak = Arc::downgrade(ctx);
+    let db = ctx.db.clone();
+    let cmd = cmd.clone();
+    tokio::spawn(async move {
+        let out = focus_ai::plan_to_calendar_inner(&db, date.clone(), blocks).await;
+        let Some(ctx) = weak.upgrade() else { return };
+        if let Err(e) = send_day_plan(&ctx, Some(date)).await {
+            tracing::debug!(event = "remote_focus_day_plan_failed", error = %e);
+        }
+        let action = cmd.action.as_str();
+        match out {
+            Ok(_) => {
+                accept(&ctx, action, None, None).await;
+                command_ack(&ctx, &cmd, true, None).await;
+            }
+            Err(e) => {
+                let Failure::Failed(code) = failed(e) else { return };
+                audit::audit(&ctx.db, None, Some(&ctx.room_id), None, action, audit::RESULT_REJECTED, Some(&code))
+                    .await;
+                command_ack(&ctx, &cmd, false, Some(&code)).await;
+            }
+        }
+    });
 }
 
 /// A session working on the todo, streamed to this Controller from its first
 /// event (like a `start_run` that created one).
 async fn start_ai(ctx: &HandlerCtx, cmd: &CmdPayload) -> FocusResult {
+    // Like a `start_run` that creates a session: only a Controller that can
+    // navigate to a run other than its linked one.
+    if !ctx.multi_run {
+        return Err(RejectReason::NotAllowed.into());
+    }
     let todo_id = require_todo(ctx, cmd).await?;
     let run_id = focus_ai::start_with_ai_inner(&ctx.app, &ctx.db, &ctx.registry, todo_id)
         .await
@@ -575,6 +620,15 @@ mod tests {
         assert_eq!(s.ai_engine, "codex");
         assert_eq!(s.calendar_account_id.as_deref(), Some("g1"));
         assert_eq!(s.work_end, current.work_end);
+        // A phone's (possibly stale) copy of the desktop-only ones is ignored.
+        let s = merge_settings(
+            &current,
+            Some(&json!({ "ai_engine": "claude", "ai_model": "m", "calendar_account_id": null, "calendar_ids": ["x"] })),
+        )
+        .unwrap();
+        assert_eq!(s.ai_engine, "codex");
+        assert_eq!(s.calendar_account_id.as_deref(), Some("g1"));
+        assert_eq!(s.calendar_ids, current.calendar_ids);
 
         let bad = |v: Value| merge_settings(&current, Some(&v)).unwrap_err();
         assert_eq!(bad(json!({ "unknown": 1 })), RejectReason::Malformed);

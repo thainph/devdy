@@ -8,7 +8,8 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Loader2 } from 'lucide-vue-next'
 import { Button, Input } from '@/components/ui'
-import { formatEstimate, parseEstimate, type FocusTodo } from '@/lib/focus'
+import { formatEstimate, type FocusTodo } from '@/lib/focus'
+import { parseActual } from '@/lib/remoteFocus'
 import { splitTodoText } from '@/lib/remoteTodos'
 
 const props = defineProps<{
@@ -34,7 +35,8 @@ watch(
   },
   { immediate: true },
 )
-const minutes = computed(() => parseEstimate(value.value))
+// Actual time has a wider range than an estimate (BR-01: 1 min – 10 days).
+const minutes = computed(() => parseActual(value.value))
 
 function submit(): void {
   if (minutes.value != null) emit('save', minutes.value)

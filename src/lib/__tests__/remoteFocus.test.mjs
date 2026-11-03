@@ -116,3 +116,20 @@ test('parseAiSuggestion / parseAiAnalyzeResult', () => {
   assert.equal(r.todo.id, 't1')
   assert.equal(parseAiAnalyzeResult({ analysis: {} }), null)
 })
+
+test('phoneSettings drops the desktop-only keys', async () => {
+  const { phoneSettings } = await import('../remoteFocus.ts')
+  const out = phoneSettings({ work_start: '08:00', ai_engine: 'codex', ai_model: 'x', calendar_account_id: 'a', calendar_ids: ['c'] })
+  assert.deepEqual(out, { work_start: '08:00' })
+})
+
+test('parseActual takes 1 min to 10 days', async () => {
+  const { parseActual } = await import('../remoteFocus.ts')
+  assert.equal(parseActual(''), null)
+  assert.equal(parseActual('3'), 3)
+  assert.equal(parseActual('50h'), 3000)
+  assert.equal(parseActual('1h30'), 90)
+  assert.equal(parseActual('0'), undefined)
+  assert.equal(parseActual('241h'), undefined)
+  assert.equal(parseActual('soon'), undefined)
+})

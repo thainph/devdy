@@ -180,3 +180,33 @@ export function parseAiAnalyzeResult(v: unknown): AiAnalyzeResult | null {
     todo: v.todo as unknown as FocusTodo,
   }
 }
+
+/** Settings only the desktop edits (AI engine, Calendar choice); the Host
+ * ignores them from a phone, so they are never sent. */
+export const DESKTOP_ONLY_SETTINGS = ['ai_engine', 'ai_model', 'calendar_account_id', 'calendar_ids'] as const
+
+/** `settings` without the {@link DESKTOP_ONLY_SETTINGS}: what a phone saves. */
+export function phoneSettings<T extends object>(settings: T): Partial<T> {
+  const out: Partial<T> = { ...settings }
+  for (const k of DESKTOP_ONLY_SETTINGS) delete (out as Record<string, unknown>)[k]
+  return out
+}
+
+export const ACTUAL_MIN = 1
+export const ACTUAL_MAX = 14_400
+
+/** An actual time typed like an estimate (`30m`, `2h`, `1h30`, `90`) but in
+ * [1, 14400] minutes: null when empty, undefined when unreadable / out of range. */
+export function parseActual(input: string | null | undefined): number | null | undefined {
+  const s = (input ?? '').trim().toLowerCase().replace(/\s+/g, '').replace(',', '.')
+  if (!s) return null
+  let m: RegExpExecArray | null
+  let min: number
+  if ((m = /^(\d+)$/.exec(s))) min = +m[1]
+  else if ((m = /^(\d+(?:\.\d+)?)(?:m|min|p|ph|phút)$/.exec(s))) min = +m[1]
+  else if ((m = /^(\d+(?:\.\d+)?)(?:h|g|giờ)$/.exec(s))) min = +m[1] * 60
+  else if ((m = /^(\d+)(?:h|g)(\d{1,2})(?:m|min|p|ph)?$/.exec(s))) min = +m[1] * 60 + +m[2]
+  else return undefined
+  min = Math.round(min)
+  return min >= ACTUAL_MIN && min <= ACTUAL_MAX ? min : undefined
+}

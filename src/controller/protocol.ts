@@ -1183,8 +1183,8 @@ export interface CmdPayload {
   date?: string
   /** `focus_plan_to_calendar`: the blocks to push (absent = every block). */
   block_ids?: string[]
-  /** `focus_settings_set`: the whole settings object. */
-  settings?: FocusSettings
+  /** `focus_settings_set`: the settings the phone edits (desktop-only keys are left out). */
+  settings?: Partial<FocusSettings>
   /** `project_toggle_set`: which kind of switch. */
   toggle_kind?: ToggleKind
   /** `project_toggle_set`: the new state. */
@@ -1538,7 +1538,7 @@ export function focusSettingsGetCmd(): CmdPayload {
 }
 
 /** `focus_settings_set` — save (Host validates); answered with the normalised settings. */
-export function focusSettingsSetCmd(settings: FocusSettings): CmdPayload {
+export function focusSettingsSetCmd(settings: Partial<FocusSettings>): CmdPayload {
   return { kind: 'cmd', action: 'focus_settings_set', settings }
 }
 
