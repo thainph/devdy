@@ -42,10 +42,6 @@ export interface RemoteStatus {
   session_authenticated: boolean
   /** Unix seconds at which the idle session token expires (sliding 3h). */
   session_idle_expires_at: number | null
-  /** Whether another Devdy is driving this one over remote-desktop IPC. */
-  desktop_controlled: boolean
-  /** Unix seconds at which that remote-desktop controller attached. */
-  desktop_controlled_since: number | null
 }
 
 /**
@@ -211,8 +207,6 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
         'remote://auth-failed',
         'remote://disconnected',
         'remote://session-expired',
-        'remote://desktop-attached',
-        'remote://desktop-detached',
       ].map((ev) => listen(ev, refresh)),
     )
     // Stopped (or restarted) while the listeners were being registered.

@@ -3,14 +3,13 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useRoute, useRouter } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { PopoverContent, PopoverPortal, PopoverRoot, PopoverTrigger } from 'radix-vue'
-import { ChevronRight, MonitorSmartphone, Smartphone } from 'lucide-vue-next'
+import { ChevronRight, Smartphone } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 import { popoverContent } from '@/components/ui/calendarStyles'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { useToast } from '@/composables/useToast'
 import { useRemoteControlStore } from '@/stores/remoteControl'
 import { REMOTE_DOT_CLASS, isControlled, phoneControlled, remoteTone } from '@/lib/remoteIndicator'
-import { isRemoteMode } from '@/lib/ipc/remote'
 import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
 
 /**
@@ -20,23 +19,19 @@ import RemoteSessionModal from '@/components/remote/RemoteSessionModal.vue'
  * again), "Pair a device…" and a Settings link.
  *
  * `floating`: the bare dot pinned to a corner while the sidebar is hidden, shown only
- * while a Controller (another Devdy or a phone / web) drives this one, so that warning
- * is never invisible. The relay admits one Controller at a time, so the popover shows
- * one of the two.
+ * while a Controller (a phone / web) drives this one, so that warning is never
+ * invisible.
  *
- * Hidden while Remote Control is off, and in remote-desktop windows (every call there
- * goes to the controlled machine: it would show its state and let it kick itself; the
- * link dot there is components/remote/RemoteDesktopIndicator.vue).
+ * Hidden while Remote Control is off.
  */
 
 const props = defineProps<{ floating?: boolean }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const route = useRoute()
 const router = useRouter()
 const store = useRemoteControlStore()
 const { toast } = useToast()
-const enabled = !isRemoteMode()
 const open = ref(false)
 useEscapeClose(open)
 const busy = ref(false)
@@ -48,15 +43,8 @@ const pairRunId = ref<string | null>(null)
 const status = computed(() => store.status)
 const tone = computed(() => remoteTone(status.value))
 const visible = computed(() => {
-  if (!enabled || tone.value === 'off') return false
+  if (tone.value === 'off') return false
   return props.floating ? isControlled(tone.value) : true
-})
-
-const desktopSince = computed(() => {
-  const v = status.value?.desktop_controlled_since
-  return v == null
-    ? ''
-    : new Date(v * 1000).toLocaleTimeString(locale.value, { hour: '2-digit', minute: '2-digit' })
 })
 
 const relayLine = computed(() => {
@@ -69,14 +57,11 @@ const relayLine = computed(() => {
 const tooltip = computed(() => {
   const s = status.value
   const parts = [`${t('misc.remoteIndicator.title')}: ${relayLine.value}`]
-  if (s?.desktop_controlled) parts.push(t('misc.remoteIndicator.desktopSince', { time: desktopSince.value }))
   if (phoneControlled(s)) parts.push(t('misc.remoteIndicator.controller'))
   return parts.join('\n')
 })
 
-const label = computed(() =>
-  tone.value === 'desktop' ? t('misc.remoteIndicator.controlled') : t('misc.remoteIndicator.short'),
-)
+const label = computed(() => t('misc.remoteIndicator.short'))
 
 async function disconnect() {
   if (busy.value) return
@@ -84,7 +69,7 @@ async function disconnect() {
   try {
     await store.kickController()
   } catch (e) {
-    toast.error(t('misc.remoteDesktopHost.disconnectFailed', { error: String(e) }))
+    toast.error(t('misc.remoteIndicator.disconnectFailed', { error: String(e) }))
   } finally {
     busy.value = false
   }
@@ -104,7 +89,7 @@ function openSettings() {
 
 let stopWatch: (() => void) | null = null
 onMounted(() => {
-  if (enabled) stopWatch = store.watchStatus()
+  stopWatch = store.watchStatus()
 })
 onBeforeUnmount(() => stopWatch?.())
 </script>
@@ -117,7 +102,7 @@ onBeforeUnmount(() => stopWatch?.())
         class="flex items-center gap-1.5 rounded px-1 text-[10px] text-muted-foreground/70 hover:text-foreground"
         :class="floating && [
           'fixed bottom-3 left-3 z-[90] border bg-background/95 p-1.5 shadow-lg backdrop-blur',
-          tone === 'desktop' ? 'border-warning/40' : 'border-success/40',
+          'border-success/40',
         ]"
         :title="tooltip"
         :aria-label="tooltip"
@@ -150,10 +135,6 @@ onBeforeUnmount(() => stopWatch?.())
         </p>
 
         <div class="space-y-1 text-[11px]">
-          <p v-if="status?.desktop_controlled" class="flex items-center gap-1.5 text-warning">
-            <MonitorSmartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-            {{ t('misc.remoteIndicator.desktopSince', { time: desktopSince }) }}
-          </p>
           <p v-if="phoneControlled(status)" class="flex items-center gap-1.5 text-success">
             <Smartphone class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
             {{ t('misc.remoteIndicator.controller') }}
@@ -167,10 +148,10 @@ onBeforeUnmount(() => stopWatch?.())
           size="sm"
           class="w-full"
           :disabled="busy"
-          :title="t('misc.remoteDesktopHost.hint')"
+          :title="t('misc.remoteIndicator.disconnectHint')"
           @click="disconnect"
         >
-          {{ t('misc.remoteDesktopHost.disconnect') }}
+          {{ t('misc.remoteIndicator.disconnect') }}
         </Button>
         <Button v-else size="sm" variant="outline" class="w-full" :disabled="tone === 'error'" @click="pair">
           <Smartphone class="h-3.5 w-3.5" :stroke-width="1.75" />

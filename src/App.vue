@@ -19,8 +19,6 @@ import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import RemoteIndicator from '@/components/RemoteIndicator.vue'
-import RemoteDesktopIndicator from '@/components/remote/RemoteDesktopIndicator.vue'
-import RemoteDesktopAlert from '@/components/remote/RemoteDesktopAlert.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
 import ThemeDecorations from '@/components/ThemeDecorations.vue'
@@ -37,7 +35,6 @@ import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/p
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import FocusWindow from '@/views/FocusWindow.vue'
-import FileTransferWindow from '@/views/FileTransferWindow.vue'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -65,8 +62,6 @@ import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
-import { isRemoteMode } from '@/lib/ipc/remote'
-import { remoteFs } from '@/lib/ipc/native'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import IssuesGanttView from '@/views/IssuesGanttView.vue'
@@ -95,7 +90,6 @@ const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInbox
 const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
 const isFocusWindow = new URLSearchParams(window.location.search).get('focusWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
-const isFileTransferWindow = new URLSearchParams(window.location.search).get('fileTransferWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
 // stores + router — only the sidebar / nav / docks / app-wide notifiers are cut.
@@ -114,8 +108,7 @@ const isPopoutWindow =
   isPrInboxWindow ||
   isCalendarWindow ||
   isFocusWindow ||
-  isMascotWindow ||
-  isFileTransferWindow
+  isMascotWindow
 
 const route = useRoute()
 const router = useRouter()
@@ -438,10 +431,8 @@ function bindGlobalMenuActions() {
     registerMenuAction('help.reportIssue', () => void openUrl(NEW_ISSUE_URL).catch(() => {})),
     registerMenuAction('help.openLogs', async () => {
       try {
-        // Same folder lib.rs points the tracing file appender at. A remote
-        // window shows the controlled machine's (its paths are that machine's).
-        const dir = isRemoteMode() ? await remoteFs.logDir() : await join(await appDataDir(), 'logs')
-        await openPath(dir)
+        // Same folder lib.rs points the tracing file appender at.
+        await openPath(await join(await appDataDir(), 'logs'))
       } catch (e) {
         toast.error(String(e))
       }
@@ -804,9 +795,6 @@ onMounted(async () => {
   <!-- THE Focus window: the Focus board on its own OS window. -->
   <FocusWindow v-else-if="isFocusWindow" />
 
-  <!-- THE File Transfer window (remote desktop only): this machine ⇄ the controlled Devdy. -->
-  <FileTransferWindow v-else-if="isFileTransferWindow" />
-
   <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
   <!-- Gantt pop-out: the board plus the dialog / toast hosts its row menu
        ("+ Todo") needs, like PrInboxWindow. -->
@@ -1004,10 +992,8 @@ onMounted(async () => {
           <!-- Version footer -->
           <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
             <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
-            <!-- This machine's Remote Control dot, or (remote-desktop window) the
-                 link to the controlled Devdy; each hides itself elsewhere. -->
+            <!-- This machine's Remote Control dot; hidden while Remote Control is off. -->
             <RemoteIndicator />
-            <RemoteDesktopIndicator />
           </div>
         </div>
       </aside>
@@ -1059,12 +1045,8 @@ onMounted(async () => {
     <ToastHost />
 
     <!-- Sidebar hidden: the Remote Control dot moves to a corner while a
-         Controller drives this one, so that warning is never invisible; in a
-         remote-desktop window, the link dot does. -->
+         Controller drives this one, so that warning is never invisible. -->
     <RemoteIndicator v-if="!sidebarVisible" floating />
-    <RemoteDesktopIndicator v-if="!sidebarVisible" floating />
-    <!-- Remote-desktop window: shown only while the link is down -->
-    <RemoteDesktopAlert />
 
     <!-- App-wide side-by-side image comparison (banner + picker + compare view) -->
     <ImageCompareHost />

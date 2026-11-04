@@ -33,9 +33,8 @@ const pinned = ref(true)
 
 let syncUnlisten: UnlistenFn | null = null
 // Re-announce readiness until the main window has synced us once: a missed
-// first `window-ready` (it raced the main window subscribing — more likely in a
-// remote-desktop window, where events cross windows over a local bus) would
-// otherwise leave this window on "waiting" for good.
+// first `window-ready` (it raced the main window subscribing) would otherwise
+// leave this window on "waiting" for good.
 let readyTimer: ReturnType<typeof setInterval> | null = null
 let synced = false
 
