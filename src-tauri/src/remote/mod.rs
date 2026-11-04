@@ -128,6 +128,8 @@ pub fn instance_id() -> &'static str {
 struct AgentControl {
     stop: tokio::sync::watch::Sender<bool>,
     handle: tokio::task::JoinHandle<()>,
+    /// To tell the UI on stop (the conflict it showed is cleared).
+    app: AppHandle,
 }
 
 /// App-wide Remote Control state (Tauri managed).
@@ -234,20 +236,31 @@ impl RemoteState {
         *self.agent.lock().await = Some(AgentControl {
             stop: stop_tx,
             handle,
+            app: app.clone(),
         });
         Ok(())
     }
 
     /// Stop the agent task if running (signals its reconnect loop to exit).
     pub async fn stop(&self) {
-        if let Some(ctrl) = self.agent.lock().await.take() {
-            let _ = ctrl.stop.send(true);
-            ctrl.handle.abort();
-        }
+        let app = match self.agent.lock().await.take() {
+            Some(ctrl) => {
+                let _ = ctrl.stop.send(true);
+                ctrl.handle.abort();
+                Some(ctrl.app)
+            }
+            None => None,
+        };
         self.push.stop();
-        // Only meaningful while connected to the relay.
-        if let Ok(mut c) = self.device_conflict.lock() {
-            *c = None;
+        // Only meaningful while connected to the relay (and only ever set by a
+        // running agent, so there is an app to tell).
+        match &app {
+            Some(app) => set_device_conflict(app, &self.device_conflict, None),
+            None => {
+                if let Ok(mut c) = self.device_conflict.lock() {
+                    *c = None;
+                }
+            }
         }
         self.connected
             .store(false, std::sync::atomic::Ordering::SeqCst);
