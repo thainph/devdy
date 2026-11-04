@@ -109,6 +109,7 @@
   "tabs": {
     "inbox": "Inbox",
     "runs": "Sessions",
+    "focus": "Focus",
     "todo": "Todo",
     "note": "Notes",
     "project": "Setting"
@@ -313,12 +314,14 @@
     "ai": {
       "heading": "AI",
       "analyze": "Analyze with AI",
-      "analyzedOpen": "Analysis ready — open the todo"
+      "analyzedOpen": "Analysis ready — open the todo",
+      "viewAnalysis": "See analysis"
     },
     "remind": {
       "set": "Pick a time…",
       "apply": "Set",
-      "clear": "Clear the reminder"
+      "clear": "Clear the reminder",
+      "short": "Remind"
     },
     "editor": {
       "sourcePlaceholder": "Link to a Slack thread, issue, PR…"
@@ -337,6 +340,14 @@
       "failed": "The AI request failed — try again.",
       "invalid": "The host refused these settings (invalid values).",
       "no_source": "This link can't be read — check it and try again."
+    },
+    "pause": "Pause",
+    "wait": "Waiting",
+    "unwait": "Not waiting",
+    "confirmDelete": "Tap again",
+    "empty": "Nothing open here — tap + to add a todo.",
+    "today": {
+      "load": "Need {need} · free {free}"
     }
   }
 }

@@ -1,14 +1,15 @@
 <script setup lang="ts">
 /**
- * The controller's bottom navigation: Inbox · Sessions · Todo · Note · Setting.
+ * The controller's bottom navigation: Inbox · Sessions · Focus · Todo · Note ·
+ * Setting (Focus only on a Host that ranks todos).
  * Hidden while a session is open (that screen is full height). The Inbox tab
  * carries the count of prompts waiting for an answer.
  */
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CheckSquare, FileText, Inbox, MessageSquare, Settings2 } from 'lucide-vue-next'
+import { CheckSquare, Crosshair, FileText, Inbox, MessageSquare, Settings2 } from 'lucide-vue-next'
 
-export type ControllerTab = 'inbox' | 'runs' | 'todo' | 'note' | 'project'
+export type ControllerTab = 'inbox' | 'runs' | 'focus' | 'todo' | 'note' | 'project'
 
 const props = defineProps<{
   tab: ControllerTab
@@ -25,6 +26,7 @@ const { t } = useI18n()
 const TABS = [
   { id: 'inbox', icon: Inbox },
   { id: 'runs', icon: MessageSquare },
+  { id: 'focus', icon: Crosshair },
   { id: 'todo', icon: CheckSquare },
   { id: 'note', icon: FileText },
   { id: 'project', icon: Settings2 },

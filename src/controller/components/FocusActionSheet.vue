@@ -1,10 +1,13 @@
 <script setup lang="ts">
 /**
- * Bottom sheet of quick Focus actions for one todo on the phone: why it sits
- * where it does (the Host's reasons), then Done · Start / Back to to-do ·
- * Waiting on others · Edit; the AI (Start with AI, Analyze with its spinner
- * and Cancel); Snooze (presets, a picked time, or wake a snoozed one); Remind
- * me at (a picked time, or clear); Delete (two taps).
+ * Bottom sheet of one todo on the phone's Focus screen, sized to fit without
+ * scrolling:
+ *  - the title, its facts and why it sits where it does (the Host's reasons);
+ *  - four big tiles: Done · Start / Pause · Snooze · Waiting / Back to to-do;
+ *  - priority and estimate, set with one tap (the sheet stays open);
+ *  - AI: Start with AI, Analyze (spinner + Cancel);
+ *  - Remind me · Edit · Delete (two taps).
+ * Snooze and Remind open a second page of the sheet (presets / a picked time).
  *
  * Every todo action is one `todo_update` / `todo_toggle` / `todo_delete`; the
  * Host answers with the re-ranked board, so nothing is applied locally.
@@ -15,11 +18,12 @@ import {
   AlarmClockOff,
   Bell,
   BellOff,
-  CalendarClock,
   Check,
+  ChevronLeft,
   Clock,
   Hourglass,
   Loader2,
+  Pause,
   Pencil,
   Play,
   Rocket,
@@ -29,13 +33,21 @@ import {
   X,
 } from 'lucide-vue-next'
 import { Button, Input } from '@/components/ui'
-import { fromLocalInput, snoozePresets, toLocalInput, type FocusItem } from '@/lib/focus'
+import {
+  formatEstimate,
+  fromLocalInput,
+  snoozePresets,
+  toLocalInput,
+  type FocusItem,
+  type TodoPriority,
+} from '@/lib/focus'
 import { splitTodoText } from '@/lib/remoteTodos'
 import { useFocusText } from '@/components/focus/useFocusText'
 import type { TodoPatchWire } from '../protocol'
 
 const props = defineProps<{
   item: FocusItem
+  projectNames: Map<string, string>
   /** Epoch ms. */
   now: number
   /** Start of the working day (snooze presets), `HH:MM`. */
@@ -49,7 +61,10 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
+  /** A change that ends the visit (status, snooze, reminder): the sheet closes. */
   patch: [patch: TodoPatchWire]
+  /** A field set in place (priority, estimate): the sheet stays. */
+  set: [patch: TodoPatchWire]
   toggle: []
   edit: []
   analyze: []
@@ -66,38 +81,39 @@ const todo = computed(() => props.item.todo)
 const snoozed = computed(() => props.item.bucket === 'snoozed')
 const workStart = computed(() => props.workStart || '09:00')
 const presets = computed(() => snoozePresets(props.now, workStart.value))
+const due = computed(() => ft.due(props.item, props.now))
+const project = computed(() => (todo.value.project_id ? props.projectNames.get(todo.value.project_id) : null))
 
-function presetLabel(preset: string): string {
-  return t(`focus.snooze.${preset}`, { time: workStart.value })
-}
-
-// Picked times: open inline under their row.
-const customOpen = ref(false)
+type Page = 'main' | 'snooze' | 'remind'
+const page = ref<Page>('main')
 const customAt = ref('')
-const remindOpen = ref(false)
 const remindAt = ref('')
 const confirmingDelete = ref(false)
 watch(
   () => todo.value.id,
   () => {
-    customOpen.value = false
-    remindOpen.value = false
+    page.value = 'main'
     confirmingDelete.value = false
   },
 )
 
-function openCustom(): void {
-  // Default: tomorrow at the start of the working day.
+function openSnooze(): void {
+  // The picked time starts at tomorrow, start of the working day.
   const d = new Date(props.now)
   const [h, m] = workStart.value.split(':').map(Number)
   customAt.value = toLocalInput(new Date(d.getFullYear(), d.getMonth(), d.getDate() + 1, h || 9, m || 0).toISOString())
-  customOpen.value = !customOpen.value
+  page.value = 'snooze'
 }
 const customIso = computed(() => fromLocalInput(customAt.value))
+function presetLabel(preset: string): string {
+  return t(`focus.snooze.${preset}`, { time: workStart.value })
+}
 
 function openRemind(): void {
-  remindAt.value = todo.value.remind_at ? toLocalInput(todo.value.remind_at) : toLocalInput(new Date(props.now + 3_600_000).toISOString())
-  remindOpen.value = !remindOpen.value
+  remindAt.value = todo.value.remind_at
+    ? toLocalInput(todo.value.remind_at)
+    : toLocalInput(new Date(props.now + 3_600_000).toISOString())
+  page.value = 'remind'
 }
 const remindIso = computed(() => fromLocalInput(remindAt.value))
 
@@ -109,143 +125,239 @@ function onDelete(): void {
   emit('remove')
 }
 
-const row =
-  'flex w-full cursor-pointer items-center gap-2.5 px-3 py-3 border-b border-border/60 last:border-b-0 text-left text-sm font-medium'
-const heading = 'mt-3 mb-1.5 px-0.5 text-[10px] font-medium uppercase tracking-wider text-muted-foreground'
-const card = 'ui-card overflow-hidden rounded-xl border border-border bg-card'
-const inline = 'flex items-center gap-2 border-b border-border/60 px-3 py-2.5 last:border-b-0'
+const PRIORITIES: TodoPriority[] = [1, 2, 3]
+const ESTIMATES = [15, 30, 60, 120, 240]
+
+const tile =
+  'flex flex-col items-center justify-center gap-1 rounded-xl border border-border bg-background/40 py-3 text-[13px] font-semibold cursor-pointer active:bg-accent'
+const pill = 'flex-1 rounded-lg py-2 text-[13px] font-medium cursor-pointer transition-colors'
+const pillOn = 'bg-primary/20 text-foreground ring-1 ring-primary/50'
+const pillOff = 'bg-secondary text-muted-foreground active:bg-accent'
+const label = 'mb-1.5 text-[11px] font-semibold uppercase tracking-wider text-muted-foreground'
+const linkBtn =
+  'flex flex-1 items-center justify-center gap-1.5 rounded-lg py-2.5 text-[13px] font-medium cursor-pointer active:bg-accent'
+const listRow =
+  'flex w-full items-center gap-2.5 rounded-xl border border-border bg-background/40 px-3 py-3 text-left text-sm font-medium cursor-pointer active:bg-accent'
 </script>
 
 <template>
   <div class="absolute inset-0 z-20 flex flex-col justify-end">
     <div class="ui-backdrop absolute inset-0 bg-black/50" @click="emit('close')" />
     <div
-      class="ctl-sheet relative flex max-h-[85%] flex-col rounded-t-2xl border-t border-border bg-card pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl"
+      class="ctl-sheet relative flex max-h-[92%] flex-col rounded-t-2xl border-t border-border bg-card pt-2.5 pb-[max(1rem,env(safe-area-inset-bottom))] shadow-2xl"
     >
       <div class="mx-auto mb-2 h-1.5 w-10 shrink-0 rounded-full bg-foreground/20" />
-      <p class="px-4 text-sm font-semibold break-words">{{ splitTodoText(todo.text).title }}</p>
-      <p class="px-4 pt-1 text-[11px] leading-snug text-muted-foreground">
-        {{ t('focus.whyHere') }}: {{ ft.whyText(item, now) }}
-      </p>
 
-      <div class="min-h-0 overflow-auto px-3 pb-1">
-        <div class="mt-3" :class="card">
-          <button type="button" :class="row" @click="emit('toggle')">
-            <Check class="h-4 w-4 shrink-0 text-success" :stroke-width="2.5" />
-            {{ t('focus.actions.done') }}
-          </button>
-          <button
-            v-if="todo.status !== 'doing'"
-            type="button"
-            :class="row"
-            @click="emit('patch', { status: 'doing', snoozed_until: null })"
-          >
-            <Play class="h-4 w-4 shrink-0 text-primary" :stroke-width="2.5" />
-            {{ t('focus.actions.start') }}
-          </button>
-          <button v-if="todo.status !== 'todo'" type="button" :class="row" @click="emit('patch', { status: 'todo' })">
-            <Undo2 class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-            {{ t('focus.actions.backToTodo') }}
-          </button>
-          <button
-            v-if="todo.status !== 'waiting'"
-            type="button"
-            :class="row"
-            @click="emit('patch', { status: 'waiting' })"
-          >
-            <Hourglass class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-            {{ t('focus.actions.waiting') }}
-          </button>
-          <button type="button" :class="row" @click="emit('edit')">
-            <Pencil class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-            {{ t('focus.actions.edit') }}
-          </button>
-        </div>
-
-        <h2 :class="heading">{{ t('controller.focus.ai.heading') }}</h2>
-        <div :class="card">
-          <button type="button" :class="row" @click="emit('start-ai')">
-            <Rocket class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
-            {{ t('focus.ai.start') }}
-          </button>
-          <div v-if="analyzing" :class="inline">
-            <Loader2 class="h-4 w-4 shrink-0 animate-spin text-muted-foreground" :stroke-width="2" />
-            <span class="min-w-0 flex-1 text-sm font-medium">{{ t('focus.ai.analyzing') }}</span>
-            <Button variant="ghost" size="xs" @click="emit('cancel-analyze')">
-              <X class="h-3 w-3" :stroke-width="2" />
-              {{ t('focus.ai.cancel') }}
-            </Button>
-          </div>
-          <template v-else>
-            <button type="button" :class="row" @click="emit('analyze')">
-              <Sparkles class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-              <span class="min-w-0 flex-1">
-                {{ todo.ai_plan ? t('focus.ai.reanalyze') : t('controller.focus.ai.analyze') }}
+      <!-- Header: what it is, and why it sits here. -->
+      <div class="flex items-start gap-2 pl-4 pr-10">
+        <button
+          v-if="page !== 'main'"
+          type="button"
+          class="-ml-2 grid h-8 w-8 shrink-0 place-items-center rounded-md cursor-pointer active:bg-accent"
+          :aria-label="t('controller.data.back')"
+          @click="page = 'main'"
+        >
+          <ChevronLeft class="h-5 w-5" :stroke-width="2" />
+        </button>
+        <div class="min-w-0 flex-1">
+          <p class="text-base leading-snug font-semibold break-words">{{ splitTodoText(todo.text).title }}</p>
+          <p class="mt-0.5 text-xs text-muted-foreground">
+            <template v-if="due">
+              <span :class="due.tone === 'danger' ? 'text-destructive' : due.tone === 'warn' ? 'text-warning' : ''">
+                {{ due.text }}
               </span>
-            </button>
-            <button v-if="analyzed" type="button" :class="row" class="text-primary" @click="emit('edit')">
-              <Check class="h-4 w-4 shrink-0" :stroke-width="2.5" />
-              {{ t('controller.focus.ai.analyzedOpen') }}
-            </button>
-          </template>
-          <p v-if="aiError && !analyzing" class="px-3 py-2 text-xs text-destructive">{{ aiError }}</p>
+              ·
+            </template>
+            ~{{ formatEstimate(item.effective_estimate_min) }}<template v-if="item.estimate_missing">?</template>
+            <template v-if="project"> · {{ project }}</template>
+          </p>
         </div>
+      </div>
 
-        <h2 :class="heading">{{ t('focus.actions.snooze') }}</h2>
-        <div :class="card">
-          <button v-if="snoozed" type="button" :class="row" @click="emit('patch', { snoozed_until: null })">
-            <AlarmClockOff class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-            {{ t('focus.snooze.wake') }}
-          </button>
-          <button
-            v-for="p in presets"
-            :key="p.preset"
-            type="button"
-            :class="row"
-            @click="emit('patch', { snoozed_until: p.at })"
-          >
-            <Clock class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-            {{ presetLabel(p.preset) }}
-          </button>
-          <button type="button" :class="row" @click="openCustom">
-            <CalendarClock class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-            {{ t('focus.snooze.custom') }}
-          </button>
-          <div v-if="customOpen" :class="inline">
+      <div class="min-h-0 overflow-auto px-4 pb-1">
+        <!-- Main page -->
+        <template v-if="page === 'main'">
+          <p class="mt-1.5 text-[11px] leading-snug text-muted-foreground/80">
+            {{ t('focus.whyHere') }}: {{ ft.whyText(item, now) }}
+          </p>
+
+          <div class="mt-3 grid grid-cols-4 gap-2">
+            <button type="button" :class="tile" class="text-success" @click="emit('toggle')">
+              <Check class="h-5 w-5" :stroke-width="2.5" />
+              {{ t('focus.actions.done') }}
+            </button>
+            <button
+              v-if="todo.status !== 'doing'"
+              type="button"
+              :class="tile"
+              class="text-primary"
+              @click="emit('patch', { status: 'doing', snoozed_until: null })"
+            >
+              <Play class="h-5 w-5" :stroke-width="2.5" />
+              {{ t('focus.actions.start') }}
+            </button>
+            <button v-else type="button" :class="tile" @click="emit('patch', { status: 'todo' })">
+              <Pause class="h-5 w-5" :stroke-width="2.5" />
+              {{ t('controller.focus.pause') }}
+            </button>
+            <button type="button" :class="tile" @click="openSnooze">
+              <Clock class="h-5 w-5" :stroke-width="2" />
+              {{ t('focus.actions.snooze') }}
+            </button>
+            <button
+              v-if="todo.status !== 'waiting'"
+              type="button"
+              :class="tile"
+              @click="emit('patch', { status: 'waiting' })"
+            >
+              <Hourglass class="h-5 w-5" :stroke-width="2" />
+              {{ t('controller.focus.wait') }}
+            </button>
+            <button v-else type="button" :class="tile" @click="emit('patch', { status: 'todo' })">
+              <Undo2 class="h-5 w-5" :stroke-width="2" />
+              {{ t('controller.focus.unwait') }}
+            </button>
+          </div>
+
+          <p :class="label" class="mt-4">{{ t('focus.priority.label') }}</p>
+          <div class="flex gap-1.5">
+            <button
+              v-for="p in PRIORITIES"
+              :key="p"
+              type="button"
+              :class="[pill, todo.priority === p ? pillOn : pillOff]"
+              @click="todo.priority !== p && emit('set', { priority: p })"
+            >
+              P{{ p }}
+            </button>
+          </div>
+
+          <p :class="label" class="mt-3">{{ t('focus.drawer.estimate') }}</p>
+          <div class="flex gap-1.5">
+            <button
+              v-for="m in ESTIMATES"
+              :key="m"
+              type="button"
+              :class="[pill, todo.estimate_min === m ? pillOn : pillOff]"
+              @click="todo.estimate_min !== m && emit('set', { estimate_min: m })"
+            >
+              {{ formatEstimate(m) }}
+            </button>
+          </div>
+
+          <p :class="label" class="mt-3">{{ t('controller.focus.ai.heading') }}</p>
+          <div class="flex gap-2">
+            <button type="button" :class="listRow" class="flex-1 justify-center" @click="emit('start-ai')">
+              <Rocket class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
+              {{ t('focus.ai.start') }}
+            </button>
+            <button
+              v-if="analyzing"
+              type="button"
+              :class="listRow"
+              class="flex-1 justify-center"
+              @click="emit('cancel-analyze')"
+            >
+              <Loader2 class="h-4 w-4 shrink-0 animate-spin" :stroke-width="2" />
+              {{ t('focus.ai.cancel') }}
+            </button>
+            <button
+              v-else-if="analyzed"
+              type="button"
+              :class="listRow"
+              class="flex-1 justify-center text-primary"
+              @click="emit('edit')"
+            >
+              <Check class="h-4 w-4 shrink-0" :stroke-width="2.5" />
+              {{ t('controller.focus.ai.viewAnalysis') }}
+            </button>
+            <button v-else type="button" :class="listRow" class="flex-1 justify-center" @click="emit('analyze')">
+              <Sparkles class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
+              {{ todo.ai_plan ? t('focus.ai.reanalyze') : t('focus.ai.analyze') }}
+            </button>
+          </div>
+          <p v-if="aiError && !analyzing" class="mt-1.5 text-xs text-destructive">{{ aiError }}</p>
+
+          <div class="mt-3 flex gap-1 border-t border-border/60 pt-2">
+            <button type="button" :class="linkBtn" @click="openRemind">
+              <Bell class="h-4 w-4" :stroke-width="2" />
+              <span class="truncate">{{ todo.remind_at ? ft.stamp(todo.remind_at) : t('controller.focus.remind.short') }}</span>
+            </button>
+            <button type="button" :class="linkBtn" @click="emit('edit')">
+              <Pencil class="h-4 w-4" :stroke-width="2" />
+              {{ t('focus.actions.edit') }}
+            </button>
+            <button type="button" :class="linkBtn" class="text-destructive" @click="onDelete">
+              <Trash2 class="h-4 w-4" :stroke-width="2" />
+              {{ confirmingDelete ? t('controller.focus.confirmDelete') : t('focus.actions.delete') }}
+            </button>
+          </div>
+        </template>
+
+        <!-- Snooze page -->
+        <template v-else-if="page === 'snooze'">
+          <p :class="label" class="mt-3">{{ t('focus.actions.snooze') }}</p>
+          <div class="flex flex-col gap-2">
+            <button
+              v-if="snoozed"
+              type="button"
+              :class="listRow"
+              @click="emit('patch', { snoozed_until: null })"
+            >
+              <AlarmClockOff class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
+              {{ t('focus.snooze.wake') }}
+            </button>
+            <button
+              v-for="p in presets"
+              :key="p.preset"
+              type="button"
+              :class="listRow"
+              @click="emit('patch', { snoozed_until: p.at })"
+            >
+              <Clock class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
+              {{ presetLabel(p.preset) }}
+            </button>
+          </div>
+          <p :class="label" class="mt-4">{{ t('focus.snooze.custom') }}</p>
+          <div class="flex items-center gap-2">
             <Input v-model="customAt" type="datetime-local" size="md" class="min-w-0 flex-1" />
-            <Button size="sm" :disabled="!customIso" @click="customIso && emit('patch', { snoozed_until: customIso })">
+            <Button size="md" :disabled="!customIso" @click="customIso && emit('patch', { snoozed_until: customIso })">
               {{ t('focus.snooze.apply') }}
             </Button>
           </div>
-        </div>
+        </template>
 
-        <h2 :class="heading">{{ t('focus.drawer.remindAt') }}</h2>
-        <div :class="card">
-          <button type="button" :class="row" @click="openRemind">
-            <Bell class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
-            <span class="min-w-0 flex-1 truncate">
-              {{ todo.remind_at ? ft.stamp(todo.remind_at) : t('controller.focus.remind.set') }}
-            </span>
-          </button>
-          <div v-if="remindOpen" :class="inline">
+        <!-- Remind page -->
+        <template v-else>
+          <p :class="label" class="mt-3">{{ t('focus.drawer.remindAt') }}</p>
+          <div class="flex items-center gap-2">
             <Input v-model="remindAt" type="datetime-local" size="md" class="min-w-0 flex-1" />
-            <Button size="sm" :disabled="!remindIso" @click="remindIso && emit('patch', { remind_at: remindIso })">
+            <Button size="md" :disabled="!remindIso" @click="remindIso && emit('patch', { remind_at: remindIso })">
               {{ t('controller.focus.remind.apply') }}
             </Button>
           </div>
-          <button v-if="todo.remind_at" type="button" :class="row" @click="emit('patch', { remind_at: null })">
+          <button
+            v-if="todo.remind_at"
+            type="button"
+            :class="listRow"
+            class="mt-3"
+            @click="emit('patch', { remind_at: null })"
+          >
             <BellOff class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="2" />
             {{ t('controller.focus.remind.clear') }}
           </button>
-        </div>
-
-        <div class="mt-3" :class="card">
-          <button type="button" :class="row" class="text-destructive" @click="onDelete">
-            <Trash2 class="h-4 w-4 shrink-0" :stroke-width="2" />
-            {{ confirmingDelete ? t('controller.todo.sheet.confirmDelete') : t('focus.actions.delete') }}
-          </button>
-        </div>
+        </template>
       </div>
+
+      <button
+        v-if="page === 'main'"
+        type="button"
+        class="absolute top-2 right-2 grid h-8 w-8 place-items-center rounded-md text-muted-foreground cursor-pointer active:bg-accent"
+        :aria-label="t('controller.data.dismiss')"
+        @click="emit('close')"
+      >
+        <X class="h-4 w-4" :stroke-width="2" />
+      </button>
     </div>
   </div>
 </template>
