@@ -448,7 +448,6 @@ pub struct ResetResult {
 #[tauri::command]
 pub async fn reset_usage_stats(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
 ) -> Result<ResetResult, String> {
@@ -471,7 +470,7 @@ pub async fn reset_usage_stats(
         .await
         {
             runs_deleted += outcome.deleted;
-            crate::commands::runs::prune_run_audit(&webview, db.inner(), &outcome.deleted_ids).await;
+            crate::commands::runs::prune_run_audit(db.inner(), &outcome.deleted_ids).await;
             for path in outcome.leftover_files {
                 eprintln!("[reset_usage_stats] could not remove transcript {path}");
             }

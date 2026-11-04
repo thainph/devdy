@@ -232,7 +232,12 @@ pub async fn board_inputs(db: &Db) -> Result<(FocusSettings, Vec<Todo>, Vec<(i64
 
 #[tauri::command]
 pub async fn focus_board(app: AppHandle, db: State<'_, Db>) -> Result<Board, String> {
-    let db = db.inner();
+    load_board(app, db.inner()).await
+}
+
+/// The board at this instant with today's Calendar load. Shared by the
+/// `focus_board` command and Remote Control.
+pub async fn load_board(app: AppHandle, db: &Db) -> Result<Board, String> {
     let (settings, todos, samples) = board_inputs(db).await?;
     let now = chrono::Local::now();
     let wh = settings.work_hours();

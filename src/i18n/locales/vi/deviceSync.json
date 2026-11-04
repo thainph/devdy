@@ -1,0 +1,119 @@
+{
+  "open": "Đồng bộ từ máy khác",
+  "button": "Sync",
+  "title": "Đồng bộ từ máy khác",
+  "device": {
+    "help": "Các máy Devdy đang online trên relay của bạn. Chọn máy để lấy dữ liệu về.",
+    "refresh": "Làm mới danh sách máy",
+    "loading": "Đang tìm máy…",
+    "empty": "Không có máy nào online",
+    "emptyHint": "Chỉ máy dùng cùng relay, đã bật Remote Control và đặt master password (Cài đặt → Thiết bị) mới hiện ở đây. Thiết lập ở máy kia rồi làm mới.",
+    "version": "Devdy {version}",
+    "versionUnknown": "Không rõ phiên bản"
+  },
+  "options": {
+    "from": "Lấy từ {name}. Mỗi mục được tick sẽ ghi đè dữ liệu trên máy này.",
+    "what": "Mục cần đồng bộ",
+    "selectAll": "Chọn tất cả",
+    "selectNone": "Bỏ chọn tất cả",
+    "password": "Master password",
+    "passwordPlaceholder": "Master password của {name}",
+    "passwordHint": "Master password đặt ở máy nguồn (Cài đặt → Thiết bị). Toàn bộ dữ liệu được mã hoá đầu cuối.",
+    "overwriteWarning": "Đồng bộ sẽ ghi đè dữ liệu trên máy này ngay và không hoàn tác được. Mục chỉ có ở máy này được giữ nguyên."
+  },
+  "sections": {
+    "todos": "Todo",
+    "notes": "Note",
+    "secretNotes": "Secret note",
+    "slackThreads": "Slack thread",
+    "skillsRules": "Skill & Rule",
+    "projects": "Project",
+    "settings": "Cài đặt chung",
+    "mcpServers": "MCP server",
+    "vpsServers": "VPS server",
+    "accounts": "Tài khoản",
+    "skills": "Skill",
+    "rules": "Rule",
+    "skillGroups": "Nhóm skill",
+    "ruleGroups": "Nhóm rule",
+    "githubAccounts": "Tài khoản GitHub",
+    "gitlabAccounts": "Tài khoản GitLab",
+    "googleAccounts": "Tài khoản Google",
+    "claudeAccounts": "Tài khoản Claude",
+    "awsAccounts": "Tài khoản AWS",
+    "azureAccounts": "Tài khoản Azure"
+  },
+  "rules": {
+    "todos": "Ghi đè theo từng todo, đủ mọi thuộc tính (Focus, hạn, project).",
+    "notes": "Ghi đè theo từng note.",
+    "secretNotes": "Vẫn khoá bằng vault password; gộp như khi import vault.",
+    "slackThreads": "Thread, tin nhắn và bản dịch; file đính kèm sẽ tự tải lại.",
+    "skillsRules": "Khớp theo tên, kèm nhóm và file.",
+    "projects": "Chỉ project trùng tên với project ở máy này; đồng bộ cài đặt, không chép file.",
+    "settings": "Theme, ngôn ngữ, model, prompt đã lưu, dịch…",
+    "mcpServers": "Đầy đủ cài đặt, gồm env và header bí mật.",
+    "vpsServers": "Đầy đủ cài đặt, gồm passphrase và key do Devdy quản lý.",
+    "accounts": "GitHub, GitLab, Google kèm token. Claude/AWS/Azure chỉ tên, cần đăng nhập lại."
+  },
+  "phases": {
+    "connecting": "Đang kết nối tới máy",
+    "auth": "Đang kiểm tra master password",
+    "downloading": "Đang tải dữ liệu",
+    "applying": "Đang áp dụng trên máy này",
+    "done": "Xong"
+  },
+  "running": {
+    "title": "Đang đồng bộ từ {name}…",
+    "keepOpen": "Giữ cả hai máy không ngủ cho tới khi xong."
+  },
+  "result": {
+    "done": "Đã đồng bộ từ {name}.",
+    "created": "Mới",
+    "updated": "Cập nhật",
+    "unchanged": "Giữ nguyên",
+    "deleted": "Đã xoá",
+    "skipped": "Bỏ qua",
+    "nothing": "Không có gì thay đổi.",
+    "reloginHint": "Tài khoản Claude, AWS và Azure cần đăng nhập lại trên máy này.",
+    "reloadHint": "Tải lại Devdy để áp dụng theme và cài đặt vừa đồng bộ ở mọi nơi."
+  },
+  "errors": {
+    "wrong_password": "Sai master password.",
+    "device_offline": "{name} đã offline. Hãy chọn lại máy.",
+    "device_disconnected": "{name} bị ngắt kết nối giữa chừng. Hãy chọn lại máy.",
+    "rate_limited": "Nhập sai password quá nhiều lần. Thử lại sau khoảng 5 phút.",
+    "checksum_mismatch": "Dữ liệu tải về bị hỏng. Chưa có gì bị thay đổi — hãy thử lại.",
+    "timeout": "Máy kia phản hồi quá lâu. Hãy thử lại.",
+    "source_failed": "{name} không chuẩn bị được dữ liệu. Kiểm tra Devdy ở máy đó rồi thử lại.",
+    "bad_request": "{name} từ chối yêu cầu. Hãy cập nhật Devdy ở cả hai máy và kiểm tra {name} đã đặt master password.",
+    "bundle_corrupt": "Không mở được dữ liệu từ {name}. Chưa có gì bị thay đổi — hãy thử lại.",
+    "bundle_unsupported_version": "{name} đang chạy phiên bản Devdy khác. Hãy cập nhật Devdy ở cả hai máy.",
+    "bundle_too_large": "Dữ liệu trên {name} quá lớn để đồng bộ. Bỏ tick bớt mục rồi thử lại.",
+    "protocol_error": "Hai máy không hiểu nhau. Hãy cập nhật Devdy ở cả hai máy.",
+    "relay_not_configured": "Máy này chưa cấu hình relay. Cài đặt ở Cài đặt → Thiết bị.",
+    "relay_unreachable": "Không kết nối được relay. Kiểm tra mạng và URL relay.",
+    "relay_auth_failed": "Relay từ chối máy này. Kiểm tra auth token relay ở Cài đặt → Thiết bị.",
+    "relay_unsupported": "Relay đã cũ, chưa hỗ trợ đồng bộ thiết bị. Hãy cập nhật relay server.",
+    "busy": "Đang có một lần đồng bộ khác. Đợi nó xong rồi thử lại."
+  },
+  "actions": {
+    "cancel": "Huỷ",
+    "back": "Quay lại",
+    "next": "Tiếp",
+    "sync": "Đồng bộ",
+    "syncing": "Đang đồng bộ…",
+    "reload": "Tải lại app",
+    "close": "Đóng",
+    "mirrorSync": "Xoá và đồng bộ"
+  },
+  "mirror": {
+    "label": "Đồng bộ y hệt (xoá phần khác biệt)",
+    "hint": "Mục ở máy này không có trên máy nguồn sẽ bị XOÁ trong: Todo, Note, Skill, Rule (kèm nhóm), MCP, VPS, Tài khoản. Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá.",
+    "warning": "Đang bật đồng bộ y hệt: mục không có trên máy nguồn sẽ bị xoá ở máy này trong {parts}."
+  },
+  "confirm": {
+    "title": "Xoá các mục không có trên máy nguồn?",
+    "message": "Mọi mục ở máy này mà {name} không có sẽ bị xoá trong:",
+    "neverDeleted": "Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá. Không hoàn tác được."
+  }
+}

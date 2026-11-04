@@ -11,7 +11,7 @@
  * so nothing is duplicated (FR-012/AC-15).
  */
 import { reactive } from 'vue'
-import { i18n } from '@/i18n'
+import { i18n } from '@/i18n/core'
 import {
   applyStreamEvent,
   extractContextTokens,
@@ -229,6 +229,8 @@ export function createRunStore() {
   // gate makes sure only that sync's own ack may prune the queues.
   let resent: Set<string> | null = null
   const syncGate = createSyncGate()
+  // Runs whose history is being replayed over entries already on screen.
+  const rebuilding = new Set<string>()
 
   /** Replace the prompt queues and re-derive the per-run heads. */
   function setQueues(next: Record<string, PermissionRequest[]>): void {
@@ -405,13 +407,14 @@ export function createRunStore() {
 
   function applyHistory(runId: string, lines: string[], done: boolean): void {
     const run = ensureRun(runId)
-    // A fresh history stream (first batch after a (re)connect) resets the run so
-    // a reconnect rebuilds cleanly without duplicating entries.
+    // A fresh history stream (first batch after a (re)connect or a reopen)
+    // rebuilds the run without duplicating entries. The entries already shown
+    // stay up until the final batch replaces them, so a reopened run doesn't
+    // flash empty while its replay downloads.
     if (run.historyDone) {
-      run.entries = []
-      run.toolIndex = new Map()
       run.historyBuffer = []
       run.historyDone = false
+      rebuilding.add(runId)
     }
     run.historyBuffer.push(...lines)
     if (!done) return
@@ -443,7 +446,12 @@ export function createRunStore() {
           // ignore malformed history line
         }
       }
+    } else if (rebuilding.has(runId)) {
+      // An empty replay still replaces what was shown before it.
+      run.entries = []
+      run.toolIndex = new Map()
     }
+    rebuilding.delete(runId)
     run.historyBuffer = []
     run.historyDone = true
   }
@@ -474,16 +482,43 @@ export function createRunStore() {
     )
   }
 
+  // The run left most recently keeps its transcript, so Back → reopen shows it
+  // at once while the fresh history replay comes in.
+  let lastLeftRunId: string | null = null
+
+  /** Drop the transcripts of every run but the active one and the one just
+   * left. Opening a run always replays its history, so a closed run's entries
+   * are only memory — and on a phone a few long runs can get the tab killed. */
+  function releaseInactiveRuns(): void {
+    for (const id of state.runIds) {
+      if (id === state.activeRunId || id === lastLeftRunId) continue
+      const run = state.runs[id]
+      if (!run || (!run.entries.length && !run.historyBuffer.length)) continue
+      run.entries = []
+      run.toolIndex = new Map()
+      run.historyBuffer = []
+      run.historyDone = false
+    }
+  }
+
+  function switchActiveRun(next: string | null): void {
+    const prev = state.activeRunId
+    if (prev !== next && prev !== null) lastLeftRunId = prev
+    if (lastLeftRunId === next) lastLeftRunId = null
+    state.activeRunId = next
+    releaseInactiveRuns()
+  }
+
   /** Open a run (from the browse list or the seen set). Creates its view if the
    * run has not streamed anything yet, so history can be requested into it. */
   function setActiveRun(runId: string): void {
     ensureRun(runId)
-    state.activeRunId = runId
+    switchActiveRun(runId)
   }
 
   /** Return to the run browser (home). */
   function clearActiveRun(): void {
-    state.activeRunId = null
+    switchActiveRun(null)
   }
 
   /** Optimistically echo the user's own turn into the timeline. The live SDK
@@ -541,6 +576,8 @@ export function createRunStore() {
     state.runIds = []
     state.runs = {}
     state.activeRunId = null
+    lastLeftRunId = null
+    rebuilding.clear()
     state.runList = []
     state.projectList = []
     state.pendingByRun = {}

@@ -40,8 +40,6 @@ pub struct FileTreeWatchers(Mutex<HashMap<String, ProjectWatcher>>);
 /// expanded are unwatched. Idempotent: safe to call on every expand/collapse.
 #[tauri::command]
 pub async fn set_file_tree_watch(
-    webview: tauri::Webview,
-    db: State<'_, crate::db::Db>,
     project_path: String,
     rel_dirs: Vec<String>,
     app: AppHandle,
@@ -50,9 +48,6 @@ pub async fn set_file_tree_watch(
     let root = PathBuf::from(&project_path)
         .canonicalize()
         .map_err(|e| format!("invalid project path: {e}"))?;
-    // A remote desktop only watches what it may list.
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    crate::remote::fs_policy::read(policy.as_ref(), &root)?;
 
     // Resolve the desired dirs, confined to the project root and existing on disk.
     let mut desired: HashSet<PathBuf> = HashSet::new();

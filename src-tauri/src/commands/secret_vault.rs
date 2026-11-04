@@ -1,10 +1,7 @@
 //! Tauri commands of the secret notes vault (`crate::secret_vault`).
 //!
-//! Secret notes window only: every command refuses any other webview —
-//! remote-desktop windows and the windows that render agent output — except the
-//! Remote Control bridge, through which a paired remote desktop drives this
-//! vault like the person at the keyboard (its own Secret notes window calls
-//! here; the bridge cannot tell its windows apart). The other exception is
+//! Secret notes window only: every command refuses any other webview — such as
+//! the windows that render agent output. The one exception is
 //! `secret_note_from_note`, which the Notes window may also call ("Make
 //! secret"): it only writes into the vault, never reads it.
 //! Argon2id runs on the blocking pool; password attempts are serialized
@@ -24,12 +21,9 @@ pub const SECRET_VAULT_EVENT: &str = "secret-vault://changed";
 const SECRET_NOTES_WINDOW: &str = "secret-notes";
 /// The local Notes window (`itemListWindowLabel('note')` in src/lib/itemListWindow.ts).
 const NOTES_WINDOW: &str = "item-list-note";
-/// The Secret notes window of a remote desktop driving ANOTHER Devdy
-/// (`toRemoteLabel` in src/lib/ipc/windows.ts): only [`rd_copy_secret`] here.
-const REMOTE_SECRET_NOTES_WINDOW: &str = "remote-secret-notes";
 
 fn allowed(label: &str, extra: &[&str]) -> bool {
-    label == SECRET_NOTES_WINDOW || label == crate::remote::ipc::BRIDGE_LABEL || extra.contains(&label)
+    label == SECRET_NOTES_WINDOW || extra.contains(&label)
 }
 
 fn local_only(webview: &Webview) -> Result<(), String> {
@@ -264,25 +258,6 @@ pub async fn secret_note_copy(webview: Webview, id: String) -> Result<u64, Strin
     Ok(vault::CLIPBOARD_CLEAR.as_secs())
 }
 
-/// [`secret_note_copy`] for a remote desktop: its Secret notes window revealed
-/// a note of the controlled Devdy and copies it onto THIS machine's clipboard
-/// (the controlled one's is out of reach), concealed and cleared the same way.
-/// Local plumbing of the controlling side, never run over the bridge.
-#[tauri::command]
-pub async fn rd_copy_secret(webview: Webview, content: String) -> Result<u64, String> {
-    if webview.label() != REMOTE_SECRET_NOTES_WINDOW {
-        return Err("remote_denied".into());
-    }
-    let content = zeroize::Zeroizing::new(content);
-    let count = vault::clipboard_put(&content)?;
-    vault::clipboard_remember(count);
-    tauri::async_runtime::spawn(async move {
-        tokio::time::sleep(vault::CLIPBOARD_CLEAR).await;
-        vault::clipboard_clear_if(count);
-    });
-    Ok(vault::CLIPBOARD_CLEAR.as_secs())
-}
-
 #[tauri::command]
 pub async fn secret_note_create(
     app: AppHandle,
@@ -392,11 +367,9 @@ mod tests {
     use super::*;
 
     #[test]
-    fn only_the_secret_notes_window_and_the_bridge_are_allowed() {
+    fn only_the_secret_notes_window_is_allowed() {
         assert!(allowed(SECRET_NOTES_WINDOW, &[]));
-        // A paired remote desktop drives the vault through the bridge.
-        assert!(allowed(crate::remote::ipc::BRIDGE_LABEL, &[]));
-        for label in [NOTES_WINDOW, "main", REMOTE_SECRET_NOTES_WINDOW, "remote-bridge-x", "session-1", "item-list-todo"] {
+        for label in [NOTES_WINDOW, "main", "session-1", "item-list-todo"] {
             assert!(!allowed(label, &[]), "{label} must be refused");
         }
     }
@@ -405,6 +378,6 @@ mod tests {
     fn make_secret_is_also_allowed_from_the_notes_window() {
         assert!(allowed(NOTES_WINDOW, &[NOTES_WINDOW]));
         assert!(allowed(SECRET_NOTES_WINDOW, &[NOTES_WINDOW]));
-        assert!(!allowed("remote-item-list-note", &[NOTES_WINDOW]));
+        assert!(!allowed("main", &[NOTES_WINDOW]));
     }
 }

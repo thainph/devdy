@@ -9,7 +9,6 @@
 // monitor so a window always appears where work is happening.
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { currentMonitor } from '@tauri-apps/api/window'
-import { fromRemoteLabel } from '@/lib/ipc/windows'
 
 const POP_OUT_PREFIXES = ['item-create', 'fileviewer-']
 const STEP = 32 // logical px between successive windows
@@ -49,8 +48,7 @@ export async function nextCascadePosition(): Promise<{ x: number; y: number }> {
   let count = 0
   try {
     const all = await WebviewWindow.getAll()
-    // Remote-desktop pop-outs (`remote-…`) cascade the same way.
-    count = all.filter((w) => POP_OUT_PREFIXES.some((p) => fromRemoteLabel(w.label).startsWith(p))).length
+    count = all.filter((w) => POP_OUT_PREFIXES.some((p) => w.label.startsWith(p))).length
   } catch {
     /* fall back to the base corner */
   }

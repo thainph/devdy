@@ -249,7 +249,8 @@
     "kindRows": {
       "pending": "Requests waiting for you",
       "done": "Finished runs",
-      "failed": "Failed runs"
+      "failed": "Failed runs",
+      "focus": "Focus reminders"
     },
     "state": {
       "on": "On — this phone is notified when something needs you or a run finishes.",
@@ -264,7 +265,7 @@
       "add": "Choose “Add to Home Screen”",
       "open": "Open Devdy from the Home Screen, sign in, and turn notifications on here"
     },
-    "privacy": "Notifications carry counts only — never commands, tool names or projects.",
+    "privacy": "Run notifications carry counts only — never commands, tool names or projects. Focus reminders show the todo's text, encrypted end to end to this phone.",
     "sendTest": "Send a test",
     "test": {
       "sent": "Sent — it should arrive in a moment.",
@@ -293,5 +294,43 @@
     "others": "Other projects",
     "empty": "No matching project.",
     "open": "Project: {name} — change"
+  },
+  "focus": {
+    "views": {
+      "time": "Time",
+      "project": "Project",
+      "week": "Week"
+    },
+    "week": {
+      "nothingDue": "Nothing due"
+    },
+    "ai": {
+      "heading": "AI",
+      "analyze": "Analyze with AI",
+      "analyzedOpen": "Analysis ready — open the todo"
+    },
+    "remind": {
+      "set": "Pick a time…",
+      "apply": "Set",
+      "clear": "Clear the reminder"
+    },
+    "editor": {
+      "sourcePlaceholder": "Link to a Slack thread, issue, PR…"
+    },
+    "settings": {
+      "title": "Focus",
+      "row": "Working hours & reminders",
+      "notify": "Reminders",
+      "notifyHint": "Reminders are shown by the desktop app (and sent to this phone when its notifications are on).",
+      "desktopOnly": "The AI engine and the Google Calendar used for today's free time are set in Devdy on the desktop.",
+      "saved": "Saved"
+    },
+    "errors": {
+      "cancelled": "Cancelled.",
+      "timeout": "The AI took too long — try again.",
+      "failed": "The AI request failed — try again.",
+      "invalid": "The host refused these settings (invalid values).",
+      "no_source": "This link can't be read — check it and try again."
+    }
   }
 }

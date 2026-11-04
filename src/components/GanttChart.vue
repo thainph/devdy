@@ -17,7 +17,7 @@ const props = defineProps<{
   /** Lane grouping: by milestone (default) or by assignee. */
   groupMode?: 'milestone' | 'assignee'
   /** Ordering of issues within each lane. */
-  sortBy?: 'start' | 'assignee'
+  sortBy?: 'start' | 'deadline' | 'status' | 'assignee'
   /** Milestone titles (lowercased) currently showing their closed issues. */
   expanded?: Set<string>
   /** Milestone titles (lowercased) whose closed issues are being fetched. */
@@ -67,6 +67,20 @@ function barEnd(issue: IssueRow): string | null {
   return store.effectiveDeadline(issue)
 }
 
+// Workflow order for "sort by status": active work first, then review, not
+// started, unknown/custom statuses, no status, and done/closed last.
+function statusRank(issue: IssueRow): number {
+  if (issue.state === 'CLOSED') return 6
+  const s = (issue.status ?? '').toLowerCase().trim()
+  if (!s) return 5
+  if (/done|complete|closed|shipped|hoàn thành/.test(s)) return 6
+  if (/block|stuck|hold/.test(s)) return 0
+  if (/progress|doing|develop|wip|đang/.test(s)) return 1
+  if (/review|qa|test|verify/.test(s)) return 2
+  if (/todo|to do|backlog|triage|ready|new|chưa/.test(s)) return 3
+  return 4
+}
+
 // A bar needs an end (see barEnd). When the Start date is missing we infer it
 // from the issue's creation date so milestone-based projects still render; such
 // bars are flagged as inferred.
@@ -91,6 +105,15 @@ const lanes = computed<Lane[]>(() => {
           const ka = assigneeKey(a)
           const kb = assigneeKey(b)
           if (ka !== kb) return ka < kb ? -1 : 1
+        } else if (props.sortBy === 'deadline') {
+          const d = a.end - b.end
+          if (d !== 0) return d
+        } else if (props.sortBy === 'status') {
+          const r = statusRank(a.issue) - statusRank(b.issue)
+          if (r !== 0) return r
+          const sa = (a.issue.status ?? '').toLowerCase()
+          const sb = (b.issue.status ?? '').toLowerCase()
+          if (sa !== sb) return sa < sb ? -1 : 1
         }
         return a.start - b.start || a.end - b.end
       })

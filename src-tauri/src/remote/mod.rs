@@ -23,21 +23,15 @@ pub mod bus;
 pub mod command;
 pub mod commands;
 pub mod data;
-pub mod file_proxy;
+pub mod focus;
 pub mod forwarder;
-pub mod fs_bridge;
-pub mod fs_policy;
-pub mod guard;
 pub mod handler;
-pub mod ipc;
 pub mod login;
 pub mod meta;
 pub mod outbound;
 pub mod protocol;
 pub mod push;
 pub mod session;
-pub mod transfer;
-pub mod upload;
 
 pub use bus::{RemoteBus, RemoteRunEvent};
 pub use meta::{apply_run_meta, RunMetaStore};
@@ -101,8 +95,6 @@ pub struct RemoteState {
     pub subscriptions: RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: FocusRun,
-    /// Remote-desktop IPC routing (another Devdy driving this one).
-    pub ipc: ipc::IpcHub,
     /// Web Push to subscribed phones; its dispatcher runs with the agent.
     pub push: push::PushHub,
     agent: Arc<TokioMutex<Option<AgentControl>>>,
@@ -125,7 +117,6 @@ impl RemoteState {
             kick_signal: Arc::new(tokio::sync::Notify::new()),
             subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
             focus_run_id: Arc::new(TokioMutex::new(None)),
-            ipc: ipc::IpcHub::default(),
             push: push::PushHub::default(),
             agent: Arc::new(TokioMutex::new(None)),
         }
@@ -170,7 +161,6 @@ impl RemoteState {
             kick_signal: self.kick_signal.clone(),
             subscriptions: self.subscriptions.clone(),
             focus_run_id: self.focus_run_id.clone(),
-            ipc: self.ipc.clone(),
         };
         let config = agent::AgentConfig {
             relay_url,

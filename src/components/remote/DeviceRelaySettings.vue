@@ -10,6 +10,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
 import { DEVICE_ALIAS_RE } from '@/lib/remoteLogin'
 import { KeyRound } from 'lucide-vue-next'
+import DeviceSyncButton from '@/components/deviceSync/DeviceSyncButton.vue'
 
 const store = useRemoteControlStore()
 const { t } = useI18n()
@@ -98,6 +99,7 @@ async function clearMasterPassword() {
     <template #header>
       <KeyRound class="h-4 w-4 text-primary" :stroke-width="1.75" />
       <h3 class="text-sm font-semibold flex-1">{{ t('remote.settings.identity.title') }}</h3>
+      <DeviceSyncButton />
     </template>
     <div class="p-4 space-y-4">
       <p class="text-xs text-muted-foreground">{{ t('remote.settings.identity.intro') }}</p>

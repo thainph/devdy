@@ -4,13 +4,11 @@
 // focuses it and re-points it (project scope and / or the note to select).
 //
 // The vault commands (src-tauri/src/commands/secret_vault.rs) refuse every other
-// local webview. From a remote-desktop window it opens as `remote-secret-notes`,
-// driving the controlled Devdy's vault through its bridge.
+// local webview.
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { emit } from '@tauri-apps/api/event'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
-import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /** Window label; the backend allows the vault commands from this window only. */
 export const SECRET_NOTES_WINDOW_LABEL = 'secret-notes'
@@ -36,7 +34,7 @@ export async function openSecretNotesWindow(
   opts: OpenSecretNotesWindowOptions = {},
 ): Promise<WebviewWindow> {
   const projectId = opts.projectId ?? null
-  const label = popoutLabel(SECRET_NOTES_WINDOW_LABEL)
+  const label = SECRET_NOTES_WINDOW_LABEL
 
   const existing = await WebviewWindow.getByLabel(label)
   if (existing) {
@@ -61,7 +59,7 @@ export async function openSecretNotesWindow(
   const width = 1000
   const height = 720
   const win = new WebviewWindow(label, {
-    url: popoutUrl(`index.html?${params.toString()}`),
+    url: `index.html?${params.toString()}`,
     title: 'Secret notes — Devdy',
     width,
     height,

@@ -249,7 +249,8 @@
     "kindRows": {
       "pending": "Việc cần duyệt",
       "done": "Phiên đã xong",
-      "failed": "Phiên bị lỗi"
+      "failed": "Phiên bị lỗi",
+      "focus": "Nhắc việc Focus"
     },
     "state": {
       "on": "Đang bật — điện thoại sẽ báo khi có việc cần duyệt hoặc phiên chạy xong.",
@@ -264,7 +265,7 @@
       "add": "Chọn “Thêm vào MH chính”",
       "open": "Mở Devdy từ Màn hình chính, đăng nhập rồi bật thông báo tại đây"
     },
-    "privacy": "Thông báo chỉ chứa số lượng — không có lệnh, tên tool hay project.",
+    "privacy": "Thông báo về phiên chạy chỉ chứa số lượng — không có lệnh, tên tool hay project. Nhắc việc Focus hiện nội dung việc, được mã hoá đầu-cuối tới điện thoại này.",
     "sendTest": "Gửi thử",
     "test": {
       "sent": "Đã gửi — thông báo sẽ đến trong giây lát.",
@@ -293,5 +294,43 @@
     "others": "Project khác",
     "empty": "Không có project phù hợp.",
     "open": "Project: {name} — đổi"
+  },
+  "focus": {
+    "views": {
+      "time": "Thời gian",
+      "project": "Dự án",
+      "week": "Tuần"
+    },
+    "week": {
+      "nothingDue": "Không có việc đến hạn"
+    },
+    "ai": {
+      "heading": "AI",
+      "analyze": "Phân tích với AI",
+      "analyzedOpen": "Đã phân tích xong — mở todo"
+    },
+    "remind": {
+      "set": "Chọn thời gian…",
+      "apply": "Đặt",
+      "clear": "Bỏ nhắc"
+    },
+    "editor": {
+      "sourcePlaceholder": "Link Slack thread, issue, PR…"
+    },
+    "settings": {
+      "title": "Focus",
+      "row": "Giờ làm việc & nhắc việc",
+      "notify": "Nhắc việc",
+      "notifyHint": "Nhắc việc do ứng dụng desktop hiển thị (và gửi tới điện thoại này khi bật thông báo).",
+      "desktopOnly": "Engine AI và Google Calendar dùng để tính giờ trống hôm nay được chỉnh trong Devdy trên desktop.",
+      "saved": "Đã lưu"
+    },
+    "errors": {
+      "cancelled": "Đã huỷ.",
+      "timeout": "AI phản hồi quá lâu — hãy thử lại.",
+      "failed": "Yêu cầu AI thất bại — hãy thử lại.",
+      "invalid": "Host từ chối cài đặt này (giá trị không hợp lệ).",
+      "no_source": "Không đọc được link này — kiểm tra lại rồi thử lại."
+    }
   }
 }

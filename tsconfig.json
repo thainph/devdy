@@ -22,9 +22,7 @@
 
     /* Path aliases */
     "paths": {
-      "@/*": ["./src/*"],
-      "@tauri-real/core": ["./node_modules/@tauri-apps/api/core.d.ts"],
-      "@tauri-real/event": ["./node_modules/@tauri-apps/api/event.d.ts"]
+      "@/*": ["./src/*"]
     }
   },
   "include": ["src/**/*.ts", "src/**/*.d.ts", "src/**/*.tsx", "src/**/*.vue"],

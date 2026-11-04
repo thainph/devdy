@@ -20,6 +20,8 @@
   "groupAssignee": "Người phụ trách",
   "sortBy": "Sắp xếp:",
   "sortStart": "Ngày bắt đầu",
+  "sortDeadline": "Deadline",
+  "sortStatus": "Trạng thái",
   "assigneesLabel": "Người phụ trách:",
   "unassigned": "Chưa gán",
   "noOpenIssues": "Không có issue nào đang mở",

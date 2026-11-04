@@ -1,4 +1,4 @@
-// WCAG contrast checks for the color themes in src/assets/main.css and
+// WCAG contrast checks for the color themes in src/assets/base.css and
 // src/assets/themes/*.css. Pure logic, no DOM: the CSS is passed in as text
 // (see __tests__/themeContrast.test.mjs, which runs it over every theme).
 
@@ -149,7 +149,7 @@ export function parseThemeBlocks(css: string): ThemeBlocks {
   return blocks
 }
 
-/** Merge several parsed files (e.g. main.css + every themes/*.css) in order. */
+/** Merge several parsed files (e.g. base.css + every themes/*.css) in order. */
 export function mergeThemeBlocks(list: ThemeBlocks[]): ThemeBlocks {
   const out: ThemeBlocks = { root: {}, dark: {}, themes: {} }
   for (const b of list) {

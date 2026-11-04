@@ -8,13 +8,12 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
 import { nextCascadePosition } from '@/lib/windowCascade'
-import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 // Small deterministic string hash (djb2) → safe, stable window label per file.
 function hashLabel(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0
-  return popoutLabel(`fileviewer-${h.toString(36)}`)
+  return `fileviewer-${h.toString(36)}`
 }
 
 function basename(path: string): string {
@@ -52,7 +51,7 @@ export async function openFileWindow(
   if (line != null) params.set('line', String(line))
 
   const win = new WebviewWindow(label, {
-    url: popoutUrl(`index.html?${params.toString()}`),
+    url: `index.html?${params.toString()}`,
     title: basename(path),
     width: 900,
     height: 820,

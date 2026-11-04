@@ -475,9 +475,13 @@ pub async fn reorder_groups(
 #[tauri::command]
 pub async fn delete_group(db: State<'_, Db>, kind: String, group_id: String) -> Result<(), String> {
     let kind = GroupKind::parse(&kind)?;
+    delete_group_inner(db.inner(), kind, &group_id).await
+}
+
+pub async fn delete_group_inner(db: &Db, kind: GroupKind, group_id: &str) -> Result<(), String> {
     sqlx::query(&format!("DELETE FROM {} WHERE id = ?", kind.groups_table()))
-        .bind(&group_id)
-        .execute(db.inner())
+        .bind(group_id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

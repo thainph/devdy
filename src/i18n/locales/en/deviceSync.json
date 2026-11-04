@@ -1,0 +1,119 @@
+{
+  "open": "Sync from another device",
+  "button": "Sync",
+  "title": "Sync from another device",
+  "device": {
+    "help": "Devdy devices online on your relay. Pick the one to pull data from.",
+    "refresh": "Refresh device list",
+    "loading": "Looking for devices…",
+    "empty": "No device is online",
+    "emptyHint": "Only devices on the same relay that have Remote Control turned on and a master password set (Settings → Devices) show up here. Set them up on the other machine, then refresh.",
+    "version": "Devdy {version}",
+    "versionUnknown": "Unknown version"
+  },
+  "options": {
+    "from": "Pull from {name}. Each ticked item overwrites what is on this machine.",
+    "what": "What to sync",
+    "selectAll": "Select all",
+    "selectNone": "Select none",
+    "password": "Master password",
+    "passwordPlaceholder": "Master password of {name}",
+    "passwordHint": "The master password set on the source device (Settings → Devices). Everything is encrypted end to end.",
+    "overwriteWarning": "Syncing overwrites local data right away and cannot be undone. Items only on this machine are kept."
+  },
+  "sections": {
+    "todos": "Todos",
+    "notes": "Notes",
+    "secretNotes": "Secret notes",
+    "slackThreads": "Slack threads",
+    "skillsRules": "Skills & Rules",
+    "projects": "Projects",
+    "settings": "General settings",
+    "mcpServers": "MCP servers",
+    "vpsServers": "VPS servers",
+    "accounts": "Accounts",
+    "skills": "Skills",
+    "rules": "Rules",
+    "skillGroups": "Skill groups",
+    "ruleGroups": "Rule groups",
+    "githubAccounts": "GitHub accounts",
+    "gitlabAccounts": "GitLab accounts",
+    "googleAccounts": "Google accounts",
+    "claudeAccounts": "Claude accounts",
+    "awsAccounts": "AWS accounts",
+    "azureAccounts": "Azure accounts"
+  },
+  "rules": {
+    "todos": "Overwritten by todo, every field included (Focus, due date, project).",
+    "notes": "Overwritten by note.",
+    "secretNotes": "Stay sealed with their vault password; merged like a vault import.",
+    "slackThreads": "Threads, messages and translations; attachments are downloaded again.",
+    "skillsRules": "Matched by name, with their groups and files.",
+    "projects": "Only projects with the same name as one here; their settings, not their files.",
+    "settings": "Theme, language, models, saved prompts, translation…",
+    "mcpServers": "Full settings, secret env and headers included.",
+    "vpsServers": "Full settings, passphrases and Devdy-managed keys included.",
+    "accounts": "GitHub, GitLab, Google with tokens. Claude/AWS/Azure names only — sign in again."
+  },
+  "phases": {
+    "connecting": "Connecting to the device",
+    "auth": "Checking the master password",
+    "downloading": "Downloading data",
+    "applying": "Applying on this machine",
+    "done": "Done"
+  },
+  "running": {
+    "title": "Syncing from {name}…",
+    "keepOpen": "Keep both devices awake until it finishes."
+  },
+  "result": {
+    "done": "Synced from {name}.",
+    "created": "New",
+    "updated": "Updated",
+    "unchanged": "Same",
+    "deleted": "Deleted",
+    "skipped": "Skipped",
+    "nothing": "Nothing was changed.",
+    "reloginHint": "Claude, AWS and Azure accounts need to sign in again on this machine.",
+    "reloadHint": "Reload Devdy to apply the synced theme and settings everywhere."
+  },
+  "errors": {
+    "wrong_password": "Wrong master password.",
+    "device_offline": "{name} went offline. Pick a device again.",
+    "device_disconnected": "{name} disconnected during the sync. Pick a device again.",
+    "rate_limited": "Too many wrong passwords. Try again in about 5 minutes.",
+    "checksum_mismatch": "The downloaded data was corrupted. Nothing was changed — try again.",
+    "timeout": "The device took too long to answer. Try again.",
+    "source_failed": "{name} could not prepare its data. Check Devdy on that machine and try again.",
+    "bad_request": "{name} refused the request. Update Devdy on both machines and check that {name} has a master password set.",
+    "bundle_corrupt": "The data from {name} could not be opened. Nothing was changed — try again.",
+    "bundle_unsupported_version": "{name} runs a different Devdy version. Update Devdy on both machines.",
+    "bundle_too_large": "The data on {name} is too large to sync. Untick some items and try again.",
+    "protocol_error": "The two devices could not understand each other. Update Devdy on both machines.",
+    "relay_not_configured": "No relay is set up on this machine. Configure it in Settings → Devices.",
+    "relay_unreachable": "Cannot reach the relay. Check the network and the relay URL.",
+    "relay_auth_failed": "The relay rejected this machine. Check the relay auth token in Settings → Devices.",
+    "relay_unsupported": "The relay is too old for device sync. Update the relay server.",
+    "busy": "Another sync is already running. Wait for it to finish."
+  },
+  "actions": {
+    "cancel": "Cancel",
+    "back": "Back",
+    "next": "Next",
+    "sync": "Sync",
+    "syncing": "Syncing…",
+    "reload": "Reload app",
+    "close": "Close",
+    "mirrorSync": "Delete and sync"
+  },
+  "mirror": {
+    "label": "Mirror exactly (delete differences)",
+    "hint": "Items on this machine that the source doesn't have are DELETED in: Todos, Notes, Skills, Rules (with groups), MCP, VPS, Accounts. Secret notes, Slack threads, projects and general settings are never deleted.",
+    "warning": "Mirror is on: items missing on the source device will be deleted here in {parts}."
+  },
+  "confirm": {
+    "title": "Delete items missing on the source?",
+    "message": "Everything on this machine that {name} doesn't have will be deleted in:",
+    "neverDeleted": "Secret notes, Slack threads, projects and general settings are never deleted. This cannot be undone."
+  }
+}

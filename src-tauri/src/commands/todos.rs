@@ -522,11 +522,18 @@ pub async fn delete_todos(
     db: State<'_, Db>,
     ids: Vec<String>,
 ) -> Result<(), String> {
+    delete_todos_inner(db.inner(), &ids).await?;
+    focus::emit_todos_changed(&app);
+    Ok(())
+}
+
+/// Delete todos `ids` (and their item links) in one transaction; the caller emits the change.
+pub async fn delete_todos_inner(db: &Db, ids: &[String]) -> Result<(), String> {
     if ids.is_empty() {
         return Ok(());
     }
-    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
-    for id in &ids {
+    let mut tx = db.begin().await.map_err(|e| e.to_string())?;
+    for id in ids {
         item_links::delete_for_items(&mut *tx, ItemKind::Todo, id)
             .await
             .map_err(|e| e.to_string())?;
@@ -537,7 +544,6 @@ pub async fn delete_todos(
             .map_err(|e| e.to_string())?;
     }
     tx.commit().await.map_err(|e| e.to_string())?;
-    focus::emit_todos_changed(&app);
     Ok(())
 }
 

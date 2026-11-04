@@ -131,7 +131,7 @@ function repoActive(repo: string) {
 
 // ── Assignee filter + grouping ───────────────────────────────────────────────
 type GroupMode = 'milestone' | 'assignee'
-type SortMode = 'start' | 'assignee'
+type SortMode = 'start' | 'deadline' | 'status' | 'assignee'
 const UNASSIGNED = '__unassigned__'
 const groupMode = ref<GroupMode>('milestone')
 const sortMode = ref<SortMode>('start')
@@ -181,6 +181,8 @@ const groupModeOptions = computed<{ value: GroupMode, label: string }[]>(() => [
 ])
 const sortModeOptions = computed<{ value: SortMode, label: string }[]>(() => [
   { value: 'start', label: t('gantt.sortStart') },
+  { value: 'deadline', label: t('gantt.sortDeadline') },
+  { value: 'status', label: t('gantt.sortStatus') },
   { value: 'assignee', label: t('gantt.groupAssignee') },
 ])
 

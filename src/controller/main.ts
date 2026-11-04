@@ -2,9 +2,9 @@
 // deployed statically on the VPS next to the relay and runs in a plain browser
 // (phone / other PC) — it MUST NOT import any `@tauri-apps/*` API.
 import { createApp } from 'vue'
-import '@/assets/main.css'
+import './controller.css'
 import './skin.css'
-import { i18n } from '@/i18n'
+import { i18n } from '@/i18n/controller'
 import App from './App.vue'
 import { restoreAppearance } from './appearance'
 import { registerControllerServiceWorker } from './pushStore'
