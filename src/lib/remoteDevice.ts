@@ -14,6 +14,7 @@ export interface DeviceStatus {
   enabled: boolean
   running: boolean
   connected: boolean
+  relay_online: boolean
   reconnecting: boolean
   relay_url: string
   has_auth_token: boolean
@@ -64,7 +65,7 @@ export function deviceState(s: DeviceStatus | null | undefined): DeviceState {
   if (s.session_authenticated) return 'phone'
   if (s.deviceConflict?.kind === 'alias') return 'aliasConflict'
   if (!s.running) return 'error'
-  if (s.connected) return 'ready'
+  if (s.relay_online) return 'ready'
   return s.last_error ? 'error' : 'connecting'
 }
 

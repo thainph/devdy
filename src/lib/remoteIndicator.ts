@@ -8,6 +8,7 @@ export interface RemoteDotStatus {
   enabled: boolean
   running: boolean
   connected: boolean
+  relay_online: boolean
   reconnecting: boolean
   session_authenticated: boolean
   relay_url?: string
@@ -31,7 +32,7 @@ export function remoteTone(s: RemoteDotStatus | null | undefined): RemoteTone {
   if (!s.running) return 'error'
   if (s.session_authenticated) return 'phone'
   if (s.deviceConflict) return 'conflict'
-  return s.connected ? 'online' : 'offline'
+  return s.relay_online ? 'online' : 'offline'
 }
 
 /** Dot colour per tone; `phone` also pulses. */

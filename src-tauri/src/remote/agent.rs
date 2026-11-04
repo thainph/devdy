@@ -155,8 +155,10 @@ pub struct AgentDeps {
     pub bus: RemoteBus,
     /// The single bound remote session (set by `remote_create_session_link`).
     pub bound: Arc<TokioMutex<Option<BoundSession>>>,
-    /// Whether a relay connection is currently up + authenticated.
+    /// Whether a phone / web controller is attached and authenticated.
     pub connected: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the host socket is up and the relay acked `register_host`.
+    pub relay_online: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the host↔relay socket is down and the agent is retrying (backoff),
     /// surfaced to the desktop badge as "reconnecting…".
     pub reconnecting: Arc<std::sync::atomic::AtomicBool>,
@@ -194,6 +196,7 @@ pub async fn run_agent(
             ConnectOutcome::Stopped => break,
             ConnectOutcome::DeviceConflict => {
                 deps.connected.store(false, Ordering::SeqCst);
+                deps.relay_online.store(false, Ordering::SeqCst);
                 deps.reconnecting.store(false, Ordering::SeqCst);
                 conflict_refusals += 1;
                 let (wait, report) = device_conflict_wait(conflict_refusals);
@@ -218,6 +221,7 @@ pub async fn run_agent(
             ConnectOutcome::Disconnected => {
                 conflict_refusals = 0;
                 deps.connected.store(false, Ordering::SeqCst);
+                deps.relay_online.store(false, Ordering::SeqCst);
                 // The socket is down and we're about to wait+retry — surface this
                 // as "reconnecting…" on the desktop (cleared once we reconnect).
                 deps.reconnecting.store(true, Ordering::SeqCst);
@@ -234,6 +238,7 @@ pub async fn run_agent(
         }
     }
     deps.connected.store(false, Ordering::SeqCst);
+    deps.relay_online.store(false, Ordering::SeqCst);
     deps.reconnecting.store(false, Ordering::SeqCst);
     tracing::info!(event = "remote_agent_stopped");
 }
@@ -460,6 +465,8 @@ async fn connect_once(
                 // The relay acked `register_host`: whatever clash it reported
                 // before is over (an alias clash, if still there, follows).
                 if env.t == FrameType::Control && env.room_id.is_empty() && env.code.as_deref() == Some("ok") {
+                    deps.relay_online.store(true, Ordering::SeqCst);
+                    deps.reconnecting.store(false, Ordering::SeqCst);
                     crate::remote::set_device_conflict(&deps.app, &deps.device_conflict, None);
                     crate::remote::set_last_error(&deps.last_error, None);
                 }

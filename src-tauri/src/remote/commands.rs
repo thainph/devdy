@@ -21,8 +21,10 @@ pub struct RemoteStatus {
     pub enabled: bool,
     /// Whether the agent task is running.
     pub running: bool,
-    /// Whether a relay connection is currently up + authenticated.
+    /// Whether a phone / web controller is attached and authenticated.
     pub connected: bool,
+    /// Whether the host socket is up and the relay acked its registration.
+    pub relay_online: bool,
     /// Whether the host↔relay socket is down and the agent is retrying (backoff).
     /// Distinct from `connected`: lets the UI show "reconnecting…" during a blip.
     pub reconnecting: bool,
@@ -395,6 +397,7 @@ pub async fn remote_status(
         enabled,
         running: state.is_running().await,
         connected: state.connected.load(std::sync::atomic::Ordering::SeqCst),
+        relay_online: state.relay_online.load(std::sync::atomic::Ordering::SeqCst),
         reconnecting: state.reconnecting.load(std::sync::atomic::Ordering::SeqCst),
         relay_url,
         has_auth_token: crate::secrets::has_remote_auth_token(),

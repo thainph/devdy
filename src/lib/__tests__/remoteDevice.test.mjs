@@ -11,7 +11,8 @@ import {
 const ready = {
   enabled: true,
   running: true,
-  connected: true,
+  connected: false,
+  relay_online: true,
   reconnecting: false,
   relay_url: 'wss://relay.example.com/ws',
   has_auth_token: true,
@@ -43,10 +44,10 @@ test('off: setup until only the switch is left', () => {
 
 test('enabled: relay state, conflicts and an attached phone', () => {
   assert.equal(deviceState(ready), 'ready')
-  assert.equal(deviceState({ ...ready, connected: false }), 'connecting')
-  assert.equal(deviceState({ ...ready, connected: false, reconnecting: true }), 'connecting')
-  assert.equal(deviceState({ ...ready, connected: false, last_error: 'relay_auth_failed' }), 'error')
-  assert.equal(deviceState({ ...ready, running: false, connected: false }), 'error')
+  assert.equal(deviceState({ ...ready, relay_online: false }), 'connecting')
+  assert.equal(deviceState({ ...ready, relay_online: false, reconnecting: true }), 'connecting')
+  assert.equal(deviceState({ ...ready, relay_online: false, last_error: 'relay_auth_failed' }), 'error')
+  assert.equal(deviceState({ ...ready, running: false, relay_online: false }), 'error')
   assert.equal(deviceState({ ...ready, session_authenticated: true }), 'phone')
   assert.equal(deviceState({ ...ready, deviceConflict: { kind: 'alias', alias: 'macbook' } }), 'aliasConflict')
   // A phone beats a name clash; a device id clash beats everything.
@@ -55,7 +56,7 @@ test('enabled: relay state, conflicts and an attached phone', () => {
     'phone',
   )
   assert.equal(deviceState({ ...ready, session_authenticated: true, deviceConflict: { kind: 'device_id' } }), 'idConflict')
-  assert.equal(deviceState({ ...ready, connected: false, last_error: 'device_id_conflict' }), 'idConflict')
+  assert.equal(deviceState({ ...ready, relay_online: false, last_error: 'device_id_conflict' }), 'idConflict')
 })
 
 test('errorReason maps known codes, else agent_stopped / unknown', () => {
@@ -92,4 +93,10 @@ test('every code and label has a message in both locales', () => {
     for (const a of AUDIT_ACTION_LABELS) assert.ok(remote.activity.actions[a], `${loc}: activity.actions.${a}`)
     for (const r of AUDIT_REASON_LABELS) assert.ok(remote.activity.reasons[r], `${loc}: activity.reasons.${r}`)
   }
+})
+
+test('ready once the relay acked the host, with no phone attached', () => {
+  // `connected` means a phone is signed in, not that the relay is up.
+  assert.equal(deviceState({ ...ready, connected: false, relay_online: true }), 'ready')
+  assert.equal(deviceState({ ...ready, relay_online: false }), 'connecting')
 })
