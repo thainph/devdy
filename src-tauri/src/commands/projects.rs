@@ -1180,14 +1180,21 @@ pub async fn apply_skill_to_project(
     let prev_claude: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_claude"));
     let prev_codex: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_codex"));
 
-    let (hash_claude, hash_codex) = write_skill_artifacts(
-        &project_path,
-        &skill_name,
-        &target,
-        &source_path,
-        prev_claude.as_deref(),
-        prev_codex.as_deref(),
-    )?;
+    // The link is a project setting: it is recorded even when the folder isn't on this machine
+    // (yet). Nothing is written there — and the folder isn't recreated; a later sync / re-apply
+    // installs the skill once it exists.
+    let (hash_claude, hash_codex) = if std::path::Path::new(&project_path).is_dir() {
+        write_skill_artifacts(
+            &project_path,
+            &skill_name,
+            &target,
+            &source_path,
+            prev_claude.as_deref(),
+            prev_codex.as_deref(),
+        )?
+    } else {
+        (prev_claude, prev_codex)
+    };
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(

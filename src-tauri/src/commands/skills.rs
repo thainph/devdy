@@ -814,6 +814,11 @@ pub async fn sync_skill_to_projects(db: &Db, skill_id: &str) -> Result<Vec<Strin
         let project_id: String = row.get("project_id");
         let project_path: String = row.get("path");
         let project_name: String = row.get("project_name");
+        // Folder not on this machine: nothing to refresh (and nothing to recreate). The link and
+        // its last-sync hashes stay, so the skill is installed once the folder shows up.
+        if !Path::new(&project_path).is_dir() {
+            continue;
+        }
 
         let prev_claude: Option<String> = row.get("synced_hash_claude");
         let prev_codex: Option<String> = row.get("synced_hash_codex");

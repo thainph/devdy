@@ -753,15 +753,21 @@ pub async fn apply_rule_to_project(
     let prev_claude: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_claude"));
     let prev_codex: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_codex"));
 
-    let (hash_claude, hash_codex) = write_rule_artifacts(
-        &project_path,
-        &name,
-        &description,
-        &target,
-        &source_path,
-        prev_claude.as_deref(),
-        prev_codex.as_deref(),
-    )?;
+    // The link is a project setting: recorded even when the folder isn't on this machine (yet),
+    // see `apply_skill_to_project`.
+    let (hash_claude, hash_codex) = if Path::new(&project_path).is_dir() {
+        write_rule_artifacts(
+            &project_path,
+            &name,
+            &description,
+            &target,
+            &source_path,
+            prev_claude.as_deref(),
+            prev_codex.as_deref(),
+        )?
+    } else {
+        (prev_claude, prev_codex)
+    };
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -1147,6 +1153,11 @@ pub async fn sync_rule_to_projects(db: &Db, rule_id: &str) -> Result<Vec<String>
         let prev_codex: Option<String> = row.get("synced_hash_codex");
         let project_path: String = row.get("path");
         let project_name: String = row.get("project_name");
+        // Folder not on this machine: nothing to refresh (and nothing to recreate). The link and
+        // its last-sync hashes stay, so the rule is installed once the folder shows up.
+        if !Path::new(&project_path).is_dir() {
+            continue;
+        }
         let mut errors = Vec::new();
 
         // ---- Claude ----
@@ -1550,5 +1561,56 @@ mod tests {
         remove_skill_from_project_inner(&db, "p1", "review").await.unwrap();
         assert!(!is_symlink(&project.join(".claude/skills/review")));
         assert!(source.join("SKILL.md").exists(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn missing_project_folder_keeps_the_link_and_installs_once_it_exists() {
+        let (db, project, lib) = setup("missing").await;
+        fs::remove_dir_all(&project).unwrap();
+        let rule_source = add_rule(&db, &lib, "git", "both", "---\nname: git\n---\n\nCommit in English.\n").await;
+        let skill_source = lib.join("skills/review");
+        fs::create_dir_all(&skill_source).unwrap();
+        fs::write(skill_source.join("SKILL.md"), "---\nname: review\n---\nbody\n").unwrap();
+        sqlx::query(
+            "INSERT INTO skills (id, name, description, target, source_path, updated_at)
+             VALUES ('review', 'review', 'Review PRs', 'both', ?, '2026-01-01')",
+        )
+        .bind(skill_source.to_string_lossy().to_string())
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Folder not on this machine: the links are settings and still get recorded, nothing is
+        // written and the folder isn't recreated.
+        apply_rule_to_project(&db, "p1", "git", true).await.unwrap();
+        apply_skill_to_project(&db, "p1", "review", false).await.unwrap();
+        assert!(!project.exists());
+        let links: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM project_rules WHERE project_id = 'p1' AND rule_id = 'git' AND manual = 1),
+                    (SELECT COUNT(*) FROM project_skills WHERE project_id = 'p1' AND skill_id = 'review' AND manual = 0)",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(links, (1, 1));
+        // Updating the library skips it quietly.
+        assert!(sync_rule_to_projects(&db, "git").await.unwrap().is_empty());
+        assert!(sync_skill_to_projects(&db, "review").await.unwrap().is_empty());
+        assert!(!project.exists());
+
+        // The folder shows up (cloned later): the next sync installs both.
+        fs::create_dir_all(&project).unwrap();
+        assert!(sync_rule_to_projects(&db, "git").await.unwrap().is_empty());
+        assert!(sync_skill_to_projects(&db, "review").await.unwrap().is_empty());
+        assert_eq!(fs::read_link(project.join(".claude/rules/git.md")).unwrap(), rule_source);
+        assert!(fs::read_to_string(project.join("AGENTS.md")).unwrap().contains("Commit in English."));
+        assert_eq!(fs::read_link(project.join(".claude/skills/review")).unwrap(), skill_source);
+        // As does a re-apply (what "Re-apply" in the UI runs).
+        fs::remove_dir_all(&project).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        apply_rule_to_project(&db, "p1", "git", false).await.unwrap();
+        apply_skill_to_project(&db, "p1", "review", false).await.unwrap();
+        assert_eq!(fs::read_link(project.join(".claude/rules/git.md")).unwrap(), rule_source);
+        assert_eq!(fs::read_link(project.join(".agents/skills/review")).unwrap(), skill_source);
     }
 }
