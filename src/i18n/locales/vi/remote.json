@@ -21,20 +21,17 @@
     "authTokenHint": "Lưu trong keychain của hệ điều hành, không bao giờ lưu dạng thô trên đĩa.",
     "deviceName": "Tên thiết bị này",
     "deviceNamePlaceholder": "vd. mac-mini",
-    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng mật khẩu chính để đăng nhập vào máy này (từ Devdy khác hoặc web controller). Giúp nhiều host dùng chung một relay.",
+    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng mật khẩu chính để đăng nhập vào máy này từ web controller. Giúp nhiều host dùng chung một relay.",
     "masterPassword": "Mật khẩu chính",
     "set": "(đã đặt)",
     "masterPasswordReplace": "Nhập mật khẩu mới để thay thế mật khẩu hiện tại",
     "masterPasswordSet": "Đặt mật khẩu để bỏ qua OTP mỗi lần",
-    "masterPasswordHint": "Nhập mật khẩu này trên điện thoại hoặc Devdy khác thay cho mã OTP. Lưu trong keychain của hệ điều hành. Cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập.",
+    "masterPasswordHint": "Nhập mật khẩu này trên điện thoại thay cho mã OTP. Lưu trong keychain của hệ điều hành. Cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập.",
     "saveSettings": "Lưu cài đặt",
     "hostLabel": "host: {id}",
     "perRunHint": "Phiên điều khiển từ xa giờ được tạo theo từng run: mở một run và nhấn nút {remote} trên thanh công cụ để tạo link. Nhập {masterPassword} (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.",
     "remote": "Remote",
     "masterPasswordInline": "mật khẩu chính",
-    "controlOther": "Điều khiển Devdy khác",
-    "controlOtherHint": "Mở cửa sổ điều khiển một Devdy khác qua relay này, đăng nhập bằng tên thiết bị và master password của nó.",
-    "controlOtherOpen": "Mở",
     "auditLog": "Nhật ký kiểm toán",
     "clearLog": "Xóa nhật ký",
     "table": {
@@ -66,7 +63,7 @@
     },
     "identity": {
       "title": "Thiết bị này & Relay",
-      "intro": "Dùng cho Điều khiển từ xa. Devdy khác hoặc web controller nhập tên thiết bị và mật khẩu chính này để điều khiển máy này."
+      "intro": "Dùng cho Điều khiển từ xa. Web controller nhập tên thiết bị và mật khẩu chính này để điều khiển máy này."
     }
   },
   "session": {
@@ -97,47 +94,6 @@
     "disabledNoRelay": "Remote Control chưa được bật. Hãy cấu hình relay URL trong Settings trước, sau đó bật lên.",
     "enableNow": "Bật Remote Control",
     "openSettings": "Mở Settings"
-  },
-  "desktop": {
-    "login": {
-      "title": "Điều khiển Devdy khác",
-      "subtitle": "Đăng nhập bằng tên thiết bị kia và master password Remote Control của nó.",
-      "device": "Tên thiết bị",
-      "devicePlaceholder": "Để trống nếu thiết bị chưa đặt tên",
-      "password": "Master password",
-      "passwordPlaceholder": "Master password remote",
-      "submit": "Kết nối",
-      "working": "Đang kết nối…",
-      "passwordFirst": "Hãy nhập mật khẩu trước.",
-      "deviceInvalid": "Tên thiết bị chỉ gồm chữ thường, số và '-' (tối đa 32 ký tự).",
-      "wrongPassword": "Sai mật khẩu (hoặc thử quá nhiều lần — đợi vài phút).",
-      "hostOffline": "Không kết nối được Devdy đó: kiểm tra tên thiết bị, và Devdy đó đang chạy, đã bật Remote Control và đặt master password.",
-      "network": "Không kết nối được relay. Kiểm tra mạng và thử lại.",
-      "noRelay": "Hãy đặt Relay URL trong Settings → Remote Control trên máy này trước.",
-      "relayVia": "Qua relay {url}"
-    },
-    "banner": {
-      "controlling": "Đang điều khiển {device}",
-      "unnamed": "Devdy từ xa",
-      "connected": "Đã kết nối",
-      "connecting": "Đang kết nối…",
-      "reconnecting": "Đang kết nối lại…",
-      "disconnected": "Mất kết nối",
-      "error": "Lỗi kết nối",
-      "authFailed": "Đã bị đăng xuất",
-      "superseded": "Thiết bị khác đã giành quyền điều khiển",
-      "reconnect": "Kết nối lại",
-      "signInAgain": "Đăng nhập lại",
-      "signOut": "Đăng xuất",
-      "files": "Tệp",
-      "filesHint": "Chép tệp giữa máy này và Devdy đang điều khiển"
-    },
-    "upload": {
-      "progress": "Đang chép {name} sang Devdy đang điều khiển… {percent}%",
-      "progressMany": "Đang chép {count} tệp sang Devdy đang điều khiển… {percent}%",
-      "failed": "Không chép được {name} sang Devdy đang điều khiển: {error}",
-      "folderSkipped": "Chưa thể thả thư mục vào Devdy đang điều khiển ({name})."
-    }
   },
   "push": {
     "title": "Thông báo điện thoại",

@@ -81,24 +81,20 @@
     "run": "Run",
     "project": "Dự án"
   },
-  "remoteDesktopHost": {
-    "hint": "Một Devdy khác đang điều khiển ứng dụng này qua Remote Control. Ngắt kết nối sẽ cắt ngay và đăng xuất thiết bị đó: nó phải đăng nhập lại bằng mật khẩu chính hoặc mã ghép nối. Để chặn hẳn, hãy đổi mật khẩu chính.",
-    "disconnect": "Ngắt kết nối và đăng xuất",
-    "disconnectFailed": "Không thể ngắt kết nối: {error}"
-  },
   "remoteIndicator": {
     "title": "Điều khiển từ xa",
     "short": "Remote",
-    "controlled": "Đang bị điều khiển",
     "relayOnline": "Relay đang kết nối",
     "relayOffline": "Relay mất kết nối",
     "relayReconnecting": "Đang kết nối lại relay…",
     "agentStopped": "Không chạy — kiểm tra cấu hình relay",
-    "desktopSince": "Devdy khác từ {time}",
     "controller": "Điện thoại / web controller đã đăng nhập",
     "nobody": "Chưa có controller nào kết nối",
     "pair": "Ghép thiết bị…",
-    "settings": "Cài đặt Điều khiển từ xa"
+    "settings": "Cài đặt Điều khiển từ xa",
+    "disconnect": "Ngắt kết nối và đăng xuất",
+    "disconnectHint": "Một điện thoại / web controller đang điều khiển ứng dụng này qua Remote Control. Ngắt kết nối sẽ cắt ngay và đăng xuất thiết bị đó: nó phải đăng nhập lại bằng mật khẩu chính hoặc mã ghép nối. Để chặn hẳn, hãy đổi mật khẩu chính.",
+    "disconnectFailed": "Không thể ngắt kết nối: {error}"
   },
   "ide": {
     "openFile": "Mở {path}",
