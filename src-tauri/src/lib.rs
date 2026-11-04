@@ -3,6 +3,7 @@ mod azure_sandbox;
 mod commands;
 mod conductor;
 mod db;
+mod device_sync;
 mod focus;
 mod github;
 mod gitlab;
@@ -754,6 +755,8 @@ pub fn run() {
             remote_reveal_otp,
             remote_set_master_password,
             remote_set_device_alias,
+            device_sync::commands::device_sync_list_devices,
+            device_sync::commands::device_sync_pull,
             remote_get_audit,
             remote_clear_audit,
             remote_status,
