@@ -96,15 +96,49 @@ pub fn sync_code(device_id: &str) -> String {
     format!("{SYNC_CODE}/{device_id}")
 }
 
+/// The device pulling, as told to the host for its audit. Self-declared
+/// (the password is the only proof), so it is a label, never an authorization.
+#[derive(Debug, Clone, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct Puller {
+    pub device_id: String,
+    pub alias: String,
+}
+
+impl Puller {
+    /// Longest device id kept (a UUID is 36).
+    const MAX_ID_LEN: usize = 64;
+
+    /// Only well-formed values survive; anything else becomes empty, so the
+    /// audit never stores free text from the wire.
+    pub fn sanitized(self) -> Self {
+        let id_ok = self.device_id.len() <= Self::MAX_ID_LEN
+            && self
+                .device_id
+                .bytes()
+                .all(|b| b.is_ascii_alphanumeric() || b == b'-');
+        Self {
+            device_id: if id_ok { self.device_id } else { String::new() },
+            alias: if crate::remote::login::valid_alias(&self.alias) {
+                self.alias
+            } else {
+                String::new()
+            },
+        }
+    }
+}
+
 /// Sealed payloads of the sync room, `{ "kind": ... }`.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case")]
 pub enum SyncMsg {
-    /// B → A (`cmd`): what to pull. `nonce` is B's fresh randomness (hex).
+    /// B → A (`cmd`): what to pull, and who asks. `nonce` is B's fresh
+    /// randomness (hex).
     Request {
         v: u32,
         categories: SyncCategories,
         nonce: String,
+        puller: Puller,
     },
     /// A → B (`stream`): the bundle that follows. `salt` hex, `sha256` hex of
     /// the bundle bytes.
@@ -382,10 +416,12 @@ pub struct Pulled {
 
 /// Pull a bundle from `device_id`. `psk` is the login PSK of the master
 /// password the user typed (derive it with `login::derive_login_psk` off the
-/// async runtime). `progress` sees every phase up to `downloading`.
+/// async runtime). `puller` is this device, for the host's audit. `progress`
+/// sees every phase up to `downloading`.
 pub async fn pull(
     relay_url: &str,
     device_id: &str,
+    puller: &Puller,
     categories: &SyncCategories,
     psk: &[u8; 32],
     progress: &(dyn Fn(Progress) + Send + Sync),
@@ -396,7 +432,7 @@ pub async fn pull(
         total: 0,
     });
     let mut ws = dial(relay_url).await?;
-    let result = pull_on(&mut ws, device_id, categories, psk, progress).await;
+    let result = pull_on(&mut ws, device_id, puller, categories, psk, progress).await;
     let _ = ws.close(None).await;
     result
 }
@@ -404,6 +440,7 @@ pub async fn pull(
 async fn pull_on(
     ws: &mut Ws,
     device_id: &str,
+    puller: &Puller,
     categories: &SyncCategories,
     psk: &[u8; 32],
     progress: &(dyn Fn(Progress) + Send + Sync),
@@ -464,6 +501,7 @@ async fn pull_on(
         v: PROTOCOL_VERSION,
         categories: categories.clone(),
         nonce: pairing_hex(&nonce),
+        puller: puller.clone(),
     };
     let frame = seal_msg(&session, FrameType::Cmd, &room_id, next_seq(), &request)
         .ok_or_else(|| ERR_PROTOCOL.to_string())?;
@@ -728,6 +766,25 @@ mod tests {
         assert_eq!(got.len(), 1);
         assert_eq!(got[0].device_id, "other");
         assert_eq!(got[0].alias, "other-alias");
+    }
+
+    #[test]
+    fn the_puller_label_is_sanitized() {
+        let ok = Puller {
+            device_id: "0b7e4a52-1c9d-4f7e-9a51-3f2d6c1e8b40".into(),
+            alias: "macbook-2".into(),
+        };
+        assert_eq!(ok.clone().sanitized(), ok);
+        let bad = Puller {
+            device_id: "id\nwith newline".into(),
+            alias: "Bob's <Mac>".into(),
+        };
+        assert_eq!(bad.sanitized(), Puller::default());
+        let long = Puller {
+            device_id: "a".repeat(65),
+            alias: String::new(),
+        };
+        assert_eq!(long.sanitized().device_id, "");
     }
 
     #[test]

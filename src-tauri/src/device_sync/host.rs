@@ -19,7 +19,7 @@ use crate::db::Db;
 use crate::device_sync::bundle::{build_sync_bundle, SyncCategories};
 use crate::device_sync::transport::{
     bundle_key, chunk_count, control_frame, open_msg, random_bytes, seal_msg, sha256_hex,
-    sync_code, SyncMsg, ACK_WINDOW, CHUNK_BYTES, ERR_BAD_REQUEST, ERR_RATE_LIMITED,
+    sync_code, Puller, SyncMsg, ACK_WINDOW, CHUNK_BYTES, ERR_BAD_REQUEST, ERR_RATE_LIMITED,
     ERR_SOURCE_FAILED, ERR_TOO_LARGE, ERR_WRONG_PASSWORD, MAX_BUNDLE_BYTES, PROTOCOL_VERSION,
     RANDOM_LEN, SYNC_SLOT,
 };
@@ -109,6 +109,8 @@ pub struct Authorized {
     pub session: Session,
     pub categories: SyncCategories,
     pub nonce: Vec<u8>,
+    /// Who asked, sanitized.
+    pub puller: Puller,
 }
 
 /// Gate the puller's first sealed frame: refused outright while the failure
@@ -138,6 +140,7 @@ pub fn authorize(
             v,
             categories,
             nonce,
+            puller,
         }) if v == PROTOCOL_VERSION => {
             let nonce = pairing_unhex(&nonce)
                 .filter(|n| n.len() == RANDOM_LEN)
@@ -146,6 +149,7 @@ pub fn authorize(
                 session,
                 categories,
                 nonce,
+                puller: puller.sanitized(),
             })
         }
         _ => Err(Refusal::BadRequest),
@@ -299,12 +303,12 @@ pub async fn handle_frame(
             let what = category_list(&auth.categories);
             audit::audit(
                 db,
-                None,
+                puller_id(&auth.puller),
                 Some(&room_id),
                 None,
                 AUDIT_ACTION,
                 audit::RESULT_ACCEPTED,
-                Some(&what),
+                Some(&audit_detail(&what, &auth.puller)),
             )
             .await;
             tracing::info!(event = "device_sync_authorized", room_id = %room_id, categories = %what);
@@ -399,12 +403,12 @@ async fn serve(
         }
         audit::audit(
             &db,
-            None,
+            puller_id(&auth.puller),
             Some(&room_id),
             None,
             AUDIT_ACTION,
             audit::RESULT_REJECTED,
-            Some(reason),
+            Some(&audit_detail(reason, &auth.puller)),
         )
         .await;
         return;
@@ -476,6 +480,20 @@ async fn next_ack(
     }
 }
 
+/// The puller's device id for the audit's device column, when it sent one.
+fn puller_id(p: &Puller) -> Option<&str> {
+    Some(p.device_id.as_str()).filter(|id| !id.is_empty())
+}
+
+/// An audit reason naming the puller: `todos,notes from macbook`.
+pub fn audit_detail(what: &str, p: &Puller) -> String {
+    if p.alias.is_empty() {
+        what.to_string()
+    } else {
+        format!("{what} from {}", p.alias)
+    }
+}
+
 /// The requested categories as a short list for the audit (names only).
 pub fn category_list(c: &SyncCategories) -> String {
     let all = [
@@ -515,6 +533,10 @@ mod tests {
                 ..Default::default()
             },
             nonce: pairing_hex(&random_bytes()),
+            puller: Puller {
+                device_id: "dev-b".into(),
+                alias: "Not Valid!".into(),
+            },
         };
         (puller, s.seal(&serde_json::to_vec(&req).unwrap()))
     }
@@ -537,6 +559,14 @@ mod tests {
         .unwrap();
         assert!(a.categories.todos && !a.categories.notes);
         assert_eq!(a.nonce.len(), RANDOM_LEN);
+        assert_eq!(
+            a.puller,
+            Puller {
+                device_id: "dev-b".into(),
+                alias: String::new()
+            },
+            "the identity is kept, sanitized"
+        );
     }
 
     #[test]
@@ -745,6 +775,14 @@ mod tests {
         };
         assert_eq!(category_list(&c), "todos,accounts");
         assert_eq!(category_list(&SyncCategories::default()), "none");
+        let from = Puller {
+            device_id: "dev-b".into(),
+            alias: "macbook".into(),
+        };
+        assert_eq!(audit_detail("todos", &from), "todos from macbook");
+        assert_eq!(puller_id(&from), Some("dev-b"));
+        assert_eq!(audit_detail("todos", &Puller::default()), "todos");
+        assert_eq!(puller_id(&Puller::default()), None);
     }
 
     /// How the fake relay + host behaves.
@@ -841,6 +879,7 @@ mod tests {
                     return;
                 }
             };
+            assert_eq!(auth.puller, me(), "the host learns who pulls");
             let salt = random_bytes();
             let key = bundle_key(
                 &host_psk,
@@ -913,6 +952,13 @@ mod tests {
         (url, key_rx)
     }
 
+    fn me() -> Puller {
+        Puller {
+            device_id: "dev-b".into(),
+            alias: "laptop".into(),
+        }
+    }
+
     fn cats() -> SyncCategories {
         SyncCategories {
             notes: true,
@@ -930,9 +976,10 @@ mod tests {
         let (url, key_rx) = fake_host(Mode::Serve, psk, bundle.clone()).await;
         let phases = std::sync::Mutex::new(Vec::new());
         let progress = |p: crate::device_sync::transport::Progress| phases.lock().unwrap().push(p);
-        let pulled = crate::device_sync::transport::pull(&url, "dev-a", &cats(), &psk, &progress)
-            .await
-            .unwrap();
+        let pulled =
+            crate::device_sync::transport::pull(&url, "dev-a", &me(), &cats(), &psk, &progress)
+                .await
+                .unwrap();
         assert_eq!(pulled.bytes, bundle);
         assert_eq!(
             pulled.key,
@@ -953,20 +1000,22 @@ mod tests {
     #[tokio::test]
     async fn a_wrong_password_pull_fails_clearly() {
         let (url, _) = fake_host(Mode::Serve, [9u8; 32], vec![1, 2, 3]).await;
-        let err = crate::device_sync::transport::pull(&url, "dev-a", &cats(), &[8u8; 32], &|_| {})
-            .await
-            .err()
-            .unwrap();
+        let err =
+            crate::device_sync::transport::pull(&url, "dev-a", &me(), &cats(), &[8u8; 32], &|_| {})
+                .await
+                .err()
+                .unwrap();
         assert_eq!(err, "wrong_password");
     }
 
     #[tokio::test]
     async fn an_offline_device_fails_clearly() {
         let (url, _) = fake_host(Mode::Offline, [9u8; 32], vec![]).await;
-        let err = crate::device_sync::transport::pull(&url, "dev-a", &cats(), &[9u8; 32], &|_| {})
-            .await
-            .err()
-            .unwrap();
+        let err =
+            crate::device_sync::transport::pull(&url, "dev-a", &me(), &cats(), &[9u8; 32], &|_| {})
+                .await
+                .err()
+                .unwrap();
         assert_eq!(err, "device_offline");
     }
 
@@ -974,10 +1023,11 @@ mod tests {
     async fn a_corrupted_bundle_fails_the_checksum() {
         let bundle = vec![5u8; 1000];
         let (url, _) = fake_host(Mode::TamperSha, [9u8; 32], bundle).await;
-        let err = crate::device_sync::transport::pull(&url, "dev-a", &cats(), &[9u8; 32], &|_| {})
-            .await
-            .err()
-            .unwrap();
+        let err =
+            crate::device_sync::transport::pull(&url, "dev-a", &me(), &cats(), &[9u8; 32], &|_| {})
+                .await
+                .err()
+                .unwrap();
         assert_eq!(err, "checksum_mismatch");
     }
 }

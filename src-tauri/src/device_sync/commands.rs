@@ -7,7 +7,7 @@ use tauri::{AppHandle, Emitter, State};
 
 use crate::db::Db;
 use crate::device_sync::bundle::{apply_sync_bundle, SyncCategories, SyncReport};
-use crate::device_sync::transport::{self, OnlineDevice, Phase, Progress};
+use crate::device_sync::transport::{self, OnlineDevice, Phase, Progress, Puller};
 use crate::remote;
 
 /// Event carrying [`Progress`] during a pull.
@@ -70,7 +70,11 @@ pub async fn device_sync_pull(
     let psk = tokio::task::spawn_blocking(move || remote::login::derive_login_psk(&password))
         .await
         .map_err(|_| transport::ERR_PROTOCOL.to_string())?;
-    let pulled = transport::pull(&url, &device_id, &categories, &psk, &emit).await?;
+    let puller = Puller {
+        device_id: my_id,
+        alias: remote::device_alias(db.inner()).await.unwrap_or_default(),
+    };
+    let pulled = transport::pull(&url, &device_id, &puller, &categories, &psk, &emit).await?;
     let total = pulled.bytes.len() as u64;
     emit(Progress {
         phase: Phase::Applying,
