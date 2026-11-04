@@ -19,8 +19,9 @@ use crate::db::Db;
 use crate::device_sync::bundle::{build_sync_bundle, SyncCategories};
 use crate::device_sync::transport::{
     bundle_key, chunk_count, control_frame, open_msg, random_bytes, seal_msg, sha256_hex,
-    sync_code, SyncMsg, CHUNK_BYTES, ERR_BAD_REQUEST, ERR_RATE_LIMITED, ERR_SOURCE_FAILED,
-    ERR_TOO_LARGE, ERR_WRONG_PASSWORD, MAX_BUNDLE_BYTES, PROTOCOL_VERSION, RANDOM_LEN, SYNC_SLOT,
+    sync_code, SyncMsg, ACK_WINDOW, CHUNK_BYTES, ERR_BAD_REQUEST, ERR_RATE_LIMITED,
+    ERR_SOURCE_FAILED, ERR_TOO_LARGE, ERR_WRONG_PASSWORD, MAX_BUNDLE_BYTES, PROTOCOL_VERSION,
+    RANDOM_LEN, SYNC_SLOT,
 };
 use crate::remote::audit;
 use crate::remote::forwarder::SeqCounter;
@@ -32,8 +33,14 @@ use crate::remote::{pairing_hex, pairing_unhex};
 /// Audit action of a pull.
 pub const AUDIT_ACTION: &str = "device_sync_pull";
 /// Outbound depth above which the serve task waits before the next chunk, so a
-/// pull never buries the live Remote Control traffic sharing the socket.
+/// pull yields to a busy Remote Control session sharing the socket. The ack
+/// window already caps the pull itself at [`ACK_WINDOW`] chunks in the queue.
 const SERVE_HIGH_WATER: usize = 16;
+/// Longest wait for the puller to acknowledge a chunk (its own chunk timeout).
+const ACK_TIMEOUT: Duration = Duration::from_secs(60);
+/// Sealed frames from the puller buffered for the serve task; only acks are
+/// expected, at most [`ACK_WINDOW`] at a time.
+const ACK_QUEUE: usize = 8;
 
 /// A pull in progress on the sync slot.
 pub struct SyncPending {
@@ -42,6 +49,8 @@ pub struct SyncPending {
     puller_pub: Option<Vec<u8>>,
     /// Set once authorized: builds and streams the bundle.
     task: Option<tokio::task::JoinHandle<()>>,
+    /// The puller's later sealed frames (its acks), for the serve task.
+    acks: Option<tokio::sync::mpsc::Sender<String>>,
 }
 
 impl Drop for SyncPending {
@@ -157,6 +166,7 @@ pub fn offer(room_id: &str, seq: u64) -> Option<(SyncPending, Envelope)> {
             keypair,
             puller_pub: None,
             task: None,
+            acks: None,
         },
         frame,
     ))
@@ -233,6 +243,11 @@ pub async fn handle_frame(
         FrameType::Cmd => {
             let Some(p) = pending.as_mut() else { return };
             if p.task.is_some() {
+                // Serving: the puller's acks go to the serve task; a puller
+                // flooding past the window only loses its own extra frames.
+                if let (Some(acks), Some(cipher)) = (&p.acks, env.cipher) {
+                    let _ = acks.try_send(cipher);
+                }
                 return;
             }
             let (Some(puller_pub), Some(cipher)) = (p.puller_pub.clone(), env.cipher) else {
@@ -294,6 +309,8 @@ pub async fn handle_frame(
             .await;
             tracing::info!(event = "device_sync_authorized", room_id = %room_id, categories = %what);
             let host_pub = p.keypair.public;
+            let (acks_tx, acks_rx) = tokio::sync::mpsc::channel(ACK_QUEUE);
+            p.acks = Some(acks_tx);
             let task = tokio::spawn(serve(
                 app.clone(),
                 db.clone(),
@@ -304,6 +321,7 @@ pub async fn handle_frame(
                 room_id,
                 out_tx.clone(),
                 seq.clone(),
+                acks_rx,
             ));
             p.task = Some(task);
         }
@@ -344,8 +362,7 @@ async fn refuse(
     .await;
 }
 
-/// Build the bundle under the pull's key and stream it, pacing on the shared
-/// outbound queue.
+/// Build the bundle under the pull's key and stream it under the ack window.
 #[allow(clippy::too_many_arguments)]
 async fn serve(
     app: AppHandle,
@@ -357,6 +374,7 @@ async fn serve(
     room_id: String,
     out_tx: OutboundTx,
     seq: Arc<SeqCounter>,
+    mut acks: tokio::sync::mpsc::Receiver<String>,
 ) {
     let salt = random_bytes();
     let built = match bundle_key(&psk, &salt, &auth.nonce, &host_pub, &puller_pub) {
@@ -392,16 +410,70 @@ async fn serve(
         return;
     }
     let Ok(bundle) = built else { return };
-    for frame in bundle_frames(&auth.session, &room_id, &seq, &salt, &bundle) {
-        while out_tx.depth() > SERVE_HIGH_WATER {
-            tokio::time::sleep(Duration::from_millis(20)).await;
+    let sent = stream_bundle(
+        &auth.session,
+        &room_id,
+        &seq,
+        &salt,
+        &bundle,
+        &out_tx,
+        &mut acks,
+    )
+    .await;
+    match sent {
+        Ok(()) => {
+            tracing::info!(event = "device_sync_served", room_id = %room_id, bytes = bundle.len())
         }
-        let Some(frame) = frame else { return };
-        if out_tx.send(frame).is_err() {
-            return;
+        Err(reason) => {
+            tracing::warn!(event = "device_sync_stream_stopped", room_id = %room_id, reason)
         }
     }
-    tracing::info!(event = "device_sync_served", room_id = %room_id, bytes = bundle.len());
+}
+
+/// Send `start`, then the chunks, never more than [`ACK_WINDOW`] ahead of the
+/// puller's acks. Stops when the puller goes quiet, acks out of order, or the
+/// socket is gone.
+pub async fn stream_bundle(
+    session: &Session,
+    room_id: &str,
+    seq: &SeqCounter,
+    salt: &[u8],
+    bundle: &[u8],
+    out_tx: &OutboundTx,
+    acks: &mut tokio::sync::mpsc::Receiver<String>,
+) -> Result<(), &'static str> {
+    let mut acked = 0u32;
+    // Frame 0 is `start`; frame i > 0 is chunk i - 1.
+    for (i, frame) in bundle_frames(session, room_id, seq, salt, bundle).enumerate() {
+        if let Some(index) = (i as u32).checked_sub(1) {
+            while index >= acked + ACK_WINDOW {
+                acked = next_ack(session, acks, acked).await?;
+            }
+            while out_tx.depth() > SERVE_HIGH_WATER {
+                tokio::time::sleep(Duration::from_millis(20)).await;
+            }
+        }
+        let frame = frame.ok_or("seal_failed")?;
+        out_tx.send(frame).map_err(|()| "socket_closed")?;
+    }
+    Ok(())
+}
+
+/// Wait for the ack of chunk `acked`; returns the new acknowledged count.
+async fn next_ack(
+    session: &Session,
+    acks: &mut tokio::sync::mpsc::Receiver<String>,
+    acked: u32,
+) -> Result<u32, &'static str> {
+    let cipher = match tokio::time::timeout(ACK_TIMEOUT, acks.recv()).await {
+        Err(_) => return Err("ack_timeout"),
+        Ok(None) => return Err("puller_gone"),
+        Ok(Some(c)) => c,
+    };
+    match open_msg(session, &cipher) {
+        Some(SyncMsg::Ack { index }) if index == acked => Ok(acked + 1),
+        _ => Err("bad_ack"),
+    }
 }
 
 /// The requested categories as a short list for the audit (names only).
@@ -567,6 +639,59 @@ mod tests {
         assert_eq!(a.finish().unwrap_err(), ERR_CHECKSUM);
     }
 
+    #[tokio::test]
+    async fn the_host_stays_within_the_ack_window() {
+        let psk = [4u8; 32];
+        let (host, puller) = (Keypair::generate(), Keypair::generate());
+        let host_s = Session::new(&psk, &host, &puller.public).unwrap();
+        let puller_s = Session::new(&psk, &puller, &host.public).unwrap();
+        let bundle = vec![7u8; 3 * CHUNK_BYTES + 1];
+        let (out_tx, mut out_rx) = crate::remote::outbound::channel();
+        let (acks_tx, mut acks_rx) = tokio::sync::mpsc::channel(ACK_QUEUE);
+        let task = tokio::spawn(async move {
+            let seq = SeqCounter::default();
+            stream_bundle(
+                &host_s,
+                "rm_w",
+                &seq,
+                &random_bytes(),
+                &bundle,
+                &out_tx,
+                &mut acks_rx,
+            )
+            .await
+        });
+        let chunk_of = |e: Envelope| match open_msg(&puller_s, e.cipher.as_deref().unwrap()) {
+            Some(SyncMsg::Chunk { index, .. }) => index,
+            other => panic!("expected a chunk, got {other:?}"),
+        };
+        let ack = |index: u32| puller_s.seal(&serde_json::to_vec(&SyncMsg::Ack { index }).unwrap());
+        let settle = || tokio::time::sleep(Duration::from_millis(100));
+
+        settle().await;
+        let start = out_rx.try_recv().unwrap();
+        assert!(matches!(
+            open_msg(&puller_s, start.cipher.as_deref().unwrap()),
+            Some(SyncMsg::Start { chunks: 4, .. })
+        ));
+        assert_eq!(chunk_of(out_rx.try_recv().unwrap()), 0);
+        assert_eq!(chunk_of(out_rx.try_recv().unwrap()), 1);
+        assert!(
+            out_rx.try_recv().is_err(),
+            "nothing past the window unacked"
+        );
+
+        acks_tx.send(ack(0)).await.unwrap();
+        settle().await;
+        assert_eq!(chunk_of(out_rx.try_recv().unwrap()), 2);
+        assert!(out_rx.try_recv().is_err(), "one ack opens one chunk");
+
+        // An ack out of order stops the stream.
+        acks_tx.send(ack(5)).await.unwrap();
+        assert_eq!(task.await.unwrap(), Err("bad_ack"));
+        assert!(out_rx.try_recv().is_err());
+    }
+
     #[test]
     fn sync_frames_never_reach_the_session_or_login_paths() {
         let mut ready = Envelope::data(FrameType::Control, "rm_x", String::new(), 0);
@@ -726,6 +851,46 @@ mod tests {
             )
             .unwrap();
             let _ = key_tx.send(key);
+            if matches!(mode, Mode::Serve) {
+                // The real flow-controlled path: acks from the socket feed the
+                // window, the outbound queue drains into the socket.
+                use futures_util::SinkExt;
+                let (mut sink, mut stream) = ws.split();
+                let (acks_tx, mut acks_rx) = tokio::sync::mpsc::channel(ACK_QUEUE);
+                tokio::spawn(async move {
+                    while let Some(Ok(m)) = stream.next().await {
+                        let Ok(text) = m.into_text() else { continue };
+                        let Ok(env) = serde_json::from_str::<Envelope>(&text) else {
+                            continue;
+                        };
+                        if env.t == FrameType::Cmd {
+                            let _ = acks_tx.try_send(env.cipher.unwrap_or_default());
+                        }
+                    }
+                });
+                let (out_tx, mut out_rx) = crate::remote::outbound::channel();
+                tokio::spawn(async move {
+                    while let Some(e) = out_rx.recv().await {
+                        let text = serde_json::to_string(&e).unwrap();
+                        let msg = tokio_tungstenite::tungstenite::Message::Text(text);
+                        if sink.send(msg).await.is_err() {
+                            return;
+                        }
+                    }
+                });
+                stream_bundle(
+                    &auth.session,
+                    "rm_t",
+                    &seq,
+                    &salt,
+                    &bundle,
+                    &out_tx,
+                    &mut acks_rx,
+                )
+                .await
+                .unwrap();
+                return;
+            }
             let mut out: Vec<Envelope> = bundle_frames(&auth.session, "rm_t", &seq, &salt, &bundle)
                 .map(Option::unwrap)
                 .collect();
@@ -758,7 +923,10 @@ mod tests {
     #[tokio::test]
     async fn a_pull_downloads_the_bundle_and_derives_the_same_key() {
         let psk = [9u8; 32];
-        let bundle: Vec<u8> = (0..(CHUNK_BYTES + 1234)).map(|i| (i % 241) as u8).collect();
+        // Past the ack window, so the pull waits on its own acks.
+        let bundle: Vec<u8> = (0..(3 * CHUNK_BYTES + 1234))
+            .map(|i| (i % 241) as u8)
+            .collect();
         let (url, key_rx) = fake_host(Mode::Serve, psk, bundle.clone()).await;
         let phases = std::sync::Mutex::new(Vec::new());
         let progress = |p: crate::device_sync::transport::Progress| phases.lock().unwrap().push(p);

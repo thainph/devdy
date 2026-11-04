@@ -18,7 +18,11 @@
 //!    unsealed `control` `sync_reject`. On success A sends sealed `stream`
 //!    frames: [`SyncMsg::Start`] (salt, size, chunk count, SHA-256), then
 //!    [`SyncMsg::Chunk`]s of at most [`CHUNK_BYTES`].
-//! 4. B reassembles, checks size + SHA-256, closes the socket.
+//! 4. B answers every chunk with a sealed `cmd` [`SyncMsg::Ack`]; A sends chunk
+//!    `i` only once chunk `i - ACK_WINDOW` is acknowledged. The window is
+//!    end-to-end flow control: the relay and A's shared outbound queue never
+//!    hold more than [`ACK_WINDOW`] chunks of a pull, whatever B's link speed.
+//! 5. B reassembles, checks size + SHA-256, closes the socket.
 //!
 //! The bundle itself is sealed by the bundle module under [`bundle_key`], a
 //! second key derived from the same PSK and a per-pull host salt, so it stays
@@ -51,8 +55,11 @@ pub const SYNC_SLOT: &str = "sync";
 pub const CHUNK_BYTES: usize = 4 * 1024 * 1024;
 /// Largest bundle either side accepts.
 pub const MAX_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
-/// Sync wire version, carried in `request` and `start`.
-pub const PROTOCOL_VERSION: u32 = 1;
+/// Sync wire version, carried in `request` and `start`. v2 added [`SyncMsg::Ack`]
+/// and the puller's identity in the request.
+pub const PROTOCOL_VERSION: u32 = 2;
+/// Chunks the host may have sent that the puller has not acknowledged yet.
+pub const ACK_WINDOW: u32 = 2;
 /// Random bytes in the host salt and the puller nonce.
 pub const RANDOM_LEN: usize = 32;
 const BUNDLE_KEY_INFO: &[u8] = b"devdy-device-sync-bundle-v1";
@@ -111,6 +118,8 @@ pub enum SyncMsg {
     Chunk { index: u32, data: String },
     /// A → B (`stream`): the pull was accepted but could not be served.
     Failed { reason: String },
+    /// B → A (`cmd`): chunk `index` arrived; opens the window for one more.
+    Ack { index: u32 },
 }
 
 /// Seal a [`SyncMsg`] into a data frame.
@@ -510,6 +519,15 @@ async fn pull_on(
             Some(SyncMsg::Chunk { index, data }) => {
                 let data = B64.decode(data).map_err(|_| ERR_PROTOCOL.to_string())?;
                 assembler.push(index, &data)?;
+                let ack = seal_msg(
+                    &session,
+                    FrameType::Cmd,
+                    &room_id,
+                    next_seq(),
+                    &SyncMsg::Ack { index },
+                )
+                .ok_or_else(|| ERR_PROTOCOL.to_string())?;
+                send(ws, &ack).await?;
                 progress(Progress {
                     phase: Phase::Downloading,
                     received: assembler.received(),
