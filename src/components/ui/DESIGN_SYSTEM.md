@@ -107,7 +107,11 @@ Every icon-only button needs `:title` and `:aria-label`.
 - **Dropdowns**: `AppSelect` for values, `DropdownMenu` + `DropdownItem` for actions.
 - **Dialogs**: `Modal`, `ConfirmModal`, `PromptModal`, `Drawer` — never a custom overlay.
 - **On/off**: `ToggleSwitch` — `size="sm"` in list rows/cards, `size="md"` in
-  settings rows; `:checked="'mixed'"` for partially-enabled groups.
+  settings rows; `:checked="'mixed'"` for partially-enabled groups. A switch applies
+  at once; for picking items in a form (applied by a later button) use `Checkbox`.
+- **Checkboxes**: `Checkbox` (`v-model`, label in the default slot — the whole row is
+  the hit area; `'mixed'` for a group header; `tone="destructive"` for a dangerous
+  option). Never a raw `<input type="checkbox">`.
 - **Status pill**: `Badge` / `StatusBadge`; count pill: the one in `PageHeader`
   (`#leading` slot for a back button or page icon).
 - **Inline messages**: `Banner tone="destructive|warning|success|info"` (+ `#actions`
@@ -146,6 +150,7 @@ A **skin** (group `skin`) also changes shape, material and motion, not just colo
 | `.ui-field` | Input / Textarea / AppSelect trigger |
 | `.ui-menu-item` | DropdownMenu row (DropdownItem) |
 | `.ui-switch` · `.ui-switch-knob` | ToggleSwitch track (`aria-checked`) · knob |
+| `.ui-checkbox` | Checkbox box |
 | `.ui-segmented` + `.is-active` | SegmentedControl group · selected segment |
 | `.ui-badge` + `.ui-badge-<tone>` | Badge (`neutral`, `running`, `success`, `error`, `warning`, `info`, `primary`) |
 | `.ui-backdrop` | Modal / Drawer scrim |
