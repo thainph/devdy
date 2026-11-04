@@ -109,6 +109,7 @@
   "tabs": {
     "inbox": "Cần xử lý",
     "runs": "Sessions",
+    "focus": "Focus",
     "todo": "Todo",
     "note": "Note",
     "project": "Setting"
@@ -313,12 +314,14 @@
     "ai": {
       "heading": "AI",
       "analyze": "Phân tích với AI",
-      "analyzedOpen": "Đã phân tích xong — mở todo"
+      "analyzedOpen": "Đã phân tích xong — mở todo",
+      "viewAnalysis": "Xem phân tích"
     },
     "remind": {
       "set": "Chọn thời gian…",
       "apply": "Đặt",
-      "clear": "Bỏ nhắc"
+      "clear": "Bỏ nhắc",
+      "short": "Nhắc"
     },
     "editor": {
       "sourcePlaceholder": "Link Slack thread, issue, PR…"
@@ -337,6 +340,14 @@
       "failed": "Yêu cầu AI thất bại — hãy thử lại.",
       "invalid": "Host từ chối cài đặt này (giá trị không hợp lệ).",
       "no_source": "Không đọc được link này — kiểm tra lại rồi thử lại."
+    },
+    "pause": "Tạm dừng",
+    "wait": "Chờ",
+    "unwait": "Hết chờ",
+    "confirmDelete": "Bấm lần nữa",
+    "empty": "Không còn việc nào — bấm + để thêm todo.",
+    "today": {
+      "load": "Cần {need} · trống {free}"
     }
   }
 }

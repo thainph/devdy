@@ -21,6 +21,7 @@ import SessionView from './components/SessionView.vue'
 import RunBrowserView from './components/RunBrowserView.vue'
 import InboxView from './components/InboxView.vue'
 import TodoView from './components/TodoView.vue'
+import FocusView from './components/FocusView.vue'
 import TodoEditorView from './components/TodoEditorView.vue'
 import FocusPlanView from './components/FocusPlanView.vue'
 import FocusSettingsView from './components/FocusSettingsView.vue'
@@ -97,7 +98,7 @@ const noteEditorOpen = ref(false)
 // `focus` is the todo's board row as it was when the editor opened (the diff
 // base for the Focus fields).
 const todoEditor = ref<{ todo: TodoInfo | null; focus: FocusTodo | null; today: string } | null>(null)
-// The "Plan today" screen (Focus), over the Todo tab.
+// The "Plan today" screen, over the Focus tab.
 const planOpen = ref(false)
 // A todo to start a session on once it has a project (the project picker).
 const aiProjectFor = ref<FocusTodo | null>(null)
@@ -154,10 +155,13 @@ const hasPush = computed(() => hostHas(hostFeatures.value, 'push'))
 const hasFocus = computed(() => hostHas(hostFeatures.value, 'focus'))
 // Setting stays: it also holds this phone's look, notifications and Disconnect.
 const DATA_TABS: ControllerTab[] = ['todo', 'note']
-const hiddenTabs = computed<ControllerTab[]>(() =>
-  // Unknown until the token arrives: show everything rather than flicker.
-  hostFeatures.value === null || hasData.value ? [] : DATA_TABS,
-)
+const hiddenTabs = computed<ControllerTab[]>(() => {
+  // Unknown until the token arrives: show the long-standing tabs rather than
+  // flicker; Focus only appears once the Host says it ranks todos.
+  const hidden: ControllerTab[] = hostFeatures.value === null || hasData.value ? [] : [...DATA_TABS]
+  if (!(hasFocus.value && hasData.value)) hidden.push('focus')
+  return hidden
+})
 watch(hiddenTabs, (hidden) => {
   if (hidden.includes(tab.value)) tab.value = 'inbox'
 })
@@ -169,9 +173,12 @@ function openNoteEditor(note: NoteSummary | null): void {
   else data.closeNote()
   noteEditorOpen.value = true
 }
+/** The editor on a todo (or a new one). Opened from Focus it also edits the
+ * Focus fields; from the Todo tab it is the plain editor. */
 function openTodoEditor(todo: TodoInfo | null): void {
   data.clearError()
-  const row = todo ? data.state.board?.items.find((it) => it.todo.id === todo.id) : null
+  const row =
+    todo && tab.value === 'focus' ? data.state.board?.items.find((it) => it.todo.id === todo.id) : null
   todoEditor.value = { todo, focus: row ? { ...row.todo } : null, today: localYmd() }
 }
 /** Open the editor on a todo by id (from the day plan). */
@@ -180,14 +187,15 @@ function openTodoById(id: string): void {
     data.state.todos?.find((x) => x.id === id) ?? data.state.board?.items.find((it) => it.todo.id === id)?.todo
   if (todo) openTodoEditor(todo)
 }
-/** Todo tab (re)load: the list, and the ranked board on a Focus Host (plus
- * its settings once, for the working day the snooze presets start at). */
 function loadTodoTab(): void {
   data.loadTodos()
-  if (hasFocus.value) {
-    data.loadBoard()
-    if (!data.state.settings) data.loadSettings()
-  }
+}
+/** Focus tab (re)load: the ranked board, plus the settings once (the working
+ * day the snooze presets start at). */
+function loadFocusTab(): void {
+  if (!hasFocus.value) return
+  data.loadBoard()
+  if (!data.state.settings) data.loadSettings()
 }
 /** The editor's view of its todo as the board has it now (the AI plan
  * follows an analysis). */
@@ -627,10 +635,11 @@ watch(
     focusOpen.value = null
     if (!hasData.value) return
     if (runId.value || draftProjectId.value) backToBrowser()
-    onTab('todo')
+    onTab(hasFocus.value ? 'focus' : 'todo')
     closeTodoEditor()
     focusOpenWait = target.todoId ? { todoId: target.todoId, todos: data.state.todos, board: data.state.board } : null
     loadTodoTab()
+    loadFocusTab()
   },
 )
 watch(
@@ -647,7 +656,7 @@ watch(
     focusOpenWait = null
     // Gone meanwhile (deleted / done elsewhere): the tab alone.
     const todo = todos?.find((x) => x.id === wait.todoId)
-    if (todo && tab.value === 'todo') openTodoEditor(todo)
+    if (todo && (tab.value === 'todo' || tab.value === 'focus')) openTodoEditor(todo)
   },
 )
 
@@ -672,6 +681,7 @@ function onTab(next: ControllerTab): void {
 const TAB_TITLES: Record<ControllerTab, string> = {
   inbox: 'controller.inbox.title',
   runs: 'controller.browser.title',
+  focus: 'controller.tabs.focus',
   todo: 'controller.todo.title',
   note: 'controller.notes.title',
   project: 'controller.projectToggles.title',
@@ -745,6 +755,7 @@ function refreshAll(): void {
   refreshRuns()
   if (hasData.value) {
     loadTodoTab()
+    loadFocusTab()
     data.loadNotes()
     if (toggleProjectId.value) data.loadToggles(toggleProjectId.value)
   }
@@ -1025,7 +1036,7 @@ function onRequestFiles(): void {
 
   <!-- The todo editor too: full height, like the note editor. -->
   <TodoEditorView
-    v-else-if="!runId && !draftProjectId && tab === 'todo' && todoEditor"
+    v-else-if="!runId && !draftProjectId && (tab === 'todo' || tab === 'focus') && todoEditor"
     :todo="todoEditor.todo"
     :projects="store.state.projectList"
     :default-project-id="todoProjectId"
@@ -1034,7 +1045,7 @@ function onRequestFiles(): void {
     :error="data.state.error"
     :save="data.saveTodo"
     :remove="data.deleteTodo"
-    :focus="hasFocus"
+    :focus="hasFocus && tab === 'focus'"
     :focus-todo="todoEditor.focus"
     :live-todo="liveFocusTodo"
     :render-text="renderText"
@@ -1051,7 +1062,7 @@ function onRequestFiles(): void {
 
   <!-- Plan today: full height too; a todo opened from it comes back here. -->
   <FocusPlanView
-    v-else-if="!runId && !draftProjectId && tab === 'todo' && planOpen && hasFocus"
+    v-else-if="!runId && !draftProjectId && tab === 'focus' && planOpen && hasFocus"
     :day-plan="data.state.dayPlan"
     :failed="data.state.failed.plan"
     :planning="data.isAiRunning(PLAN_KEY)"
@@ -1104,18 +1115,13 @@ function onRequestFiles(): void {
         @open="openRun"
         @new-session="startNewSession"
       />
-      <TodoView
-        v-else-if="tab === 'todo'"
-        v-model:project-id="todoProjectId"
-        v-model:tab="todoTab"
-        v-model:query="todoQuery"
-        :todos="data.state.todos"
+      <FocusView
+        v-else-if="tab === 'focus'"
+        :board="data.state.board"
+        :failed="data.state.failed.board"
         :projects="store.state.projectList"
+        :project-id="projectScope"
         :error="data.state.error"
-        :failed="data.state.failed.todos"
-        :focus="hasFocus"
-        :board="hasFocus ? data.state.board : null"
-        :board-failed="data.state.failed.board"
         :ai-running="data.state.aiRunning"
         :ai-errors="data.state.aiErrors"
         :analyses="data.state.analyses"
@@ -1131,6 +1137,20 @@ function onRequestFiles(): void {
         @suggest-actual="data.suggestActual"
         @refresh-calendar="void data.refreshCalendar()"
         @plan="planOpen = true"
+        @refresh="loadFocusTab"
+        @clear-error="data.clearError()"
+      />
+      <TodoView
+        v-else-if="tab === 'todo'"
+        v-model:project-id="todoProjectId"
+        v-model:tab="todoTab"
+        v-model:query="todoQuery"
+        :todos="data.state.todos"
+        :projects="store.state.projectList"
+        :error="data.state.error"
+        :failed="data.state.failed.todos"
+        @open="openTodoEditor"
+        @toggle="data.toggleTodo"
         @refresh="loadTodoTab"
         @clear-error="data.clearError()"
       />
