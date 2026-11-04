@@ -6,14 +6,16 @@
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { ArchiveRestore, Download, FileUp, KeyRound, Loader2, Upload } from 'lucide-vue-next'
-import { Button, Card, Input, ToggleSwitch } from '@/components/ui'
+import { ArchiveRestore, ArrowDownToLine, Download, FileUp, KeyRound, Loader2, Upload } from 'lucide-vue-next'
+import { Button, Card, Checkbox, Input, ToggleSwitch } from '@/components/ui'
 import BackupContents from '@/components/BackupContents.vue'
 import BackupImportReport from '@/components/BackupImportReport.vue'
-import DeviceSyncButton from '@/components/deviceSync/DeviceSyncButton.vue'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
 import { formatExportedAt, type BackupInfo, type ImportReport } from '@/lib/settingsBackup'
+
+/** "Sync from another device" lives in Settings → Devices. */
+const emit = defineEmits<{ openDevices: [] }>()
 
 const MIN_PASSWORD = 8
 const FILE_EXT = 'devdy-backup'
@@ -114,12 +116,21 @@ function cancelImport() {
 <template>
   <Card body-class="p-4 space-y-5">
     <template #header>
-      <ArchiveRestore class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-      <span class="text-xs font-semibold flex-1">{{ t('settings.backup.title') }}</span>
-      <DeviceSyncButton />
+      <ArchiveRestore class="h-4 w-4 text-primary" :stroke-width="1.75" />
+      <h3 class="text-sm font-semibold flex-1">{{ t('settings.backup.title') }}</h3>
     </template>
 
     <p class="text-[11px] text-muted-foreground">{{ t('settings.backup.help') }}</p>
+    <p class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
+      <ArrowDownToLine class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+      <i18n-t keypath="settings.backup.syncInstead" tag="span">
+        <template #link>
+          <button type="button" class="text-primary hover:underline cursor-pointer" @click="emit('openDevices')">
+            {{ t('deviceSync.open') }}
+          </button>
+        </template>
+      </i18n-t>
+    </p>
 
     <!-- Export -->
     <section class="space-y-3">
@@ -201,13 +212,10 @@ function cancelImport() {
         </div>
         <p v-else class="text-[11px] text-muted-foreground">{{ t('settings.backup.import.noSecrets') }}</p>
 
-        <label v-if="importInfo.counts.projects" class="flex items-start gap-2 text-xs">
-          <input v-model="createMissingDirs" type="checkbox" class="mt-0.5 accent-primary">
-          <span>
-            {{ t('settings.backup.import.createMissingDirs') }}
-            <span class="block text-[11px] text-muted-foreground">{{ t('settings.backup.import.createMissingDirsHint') }}</span>
-          </span>
-        </label>
+        <Checkbox v-if="importInfo.counts.projects" v-model="createMissingDirs">
+          <span class="block text-xs">{{ t('settings.backup.import.createMissingDirs') }}</span>
+          <span class="block text-[11px] text-muted-foreground">{{ t('settings.backup.import.createMissingDirsHint') }}</span>
+        </Checkbox>
 
         <div class="flex items-center gap-2">
           <Button size="sm" :disabled="importing" @click="runImport">

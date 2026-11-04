@@ -2976,7 +2976,7 @@ watch(() => settings.value.language, (v) => {
 
         <!-- Backup: export / import the whole Devdy configuration as a file -->
         <div v-if="!loading && activeSection === 'backup'" class="max-w-3xl">
-          <SettingsBackup />
+          <SettingsBackup @open-devices="activeSection = 'devices'" />
         </div>
 
         <!-- Focus board: working hours. Mounted only while shown so it reads the live settings. -->

@@ -453,6 +453,7 @@
       "todos": "Todo",
       "slackThreads": "Slack thread",
       "projects": "Project"
-    }
+    },
+    "syncInstead": "Hai máy đều đang online? Dùng {link} thay vì file."
   }
 }

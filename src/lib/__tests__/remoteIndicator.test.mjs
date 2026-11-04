@@ -10,10 +10,13 @@ const base = {
   connected: true,
   reconnecting: false,
   session_authenticated: false,
+  relay_url: 'wss://relay.example.com/ws',
 }
 
-test('disabled or unknown status hides the dot', () => {
-  assert.equal(remoteTone(null), 'off')
+test('no relay hides the dot; a relay shows it even while off', () => {
+  assert.equal(remoteTone(null), 'hidden')
+  assert.equal(remoteTone({ ...base, enabled: false, relay_url: '' }), 'hidden')
+  assert.equal(remoteTone({ ...base, enabled: false, relay_url: '  ' }), 'hidden')
   assert.equal(remoteTone({ ...base, enabled: false, session_authenticated: true }), 'off')
 })
 
@@ -25,6 +28,16 @@ test('relay connectivity', () => {
   assert.equal(remoteTone(base), 'online')
   assert.equal(remoteTone({ ...base, connected: false }), 'offline')
   assert.equal(remoteTone({ ...base, connected: false, reconnecting: true }), 'offline')
+})
+
+test('a reported clash wins over the relay state, not over a controller', () => {
+  assert.equal(remoteTone({ ...base, deviceConflict: { kind: 'alias', alias: 'mac' } }), 'conflict')
+  assert.equal(remoteTone({ ...base, connected: false, deviceConflict: { kind: 'device_id' } }), 'conflict')
+  assert.equal(remoteTone({ ...base, deviceConflict: null }), 'online')
+  assert.equal(
+    remoteTone({ ...base, session_authenticated: true, deviceConflict: { kind: 'alias', alias: 'mac' } }),
+    'phone',
+  )
 })
 
 test('an attached controller wins', () => {

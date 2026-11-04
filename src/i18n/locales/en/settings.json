@@ -453,6 +453,7 @@
       "todos": "Todos",
       "slackThreads": "Slack threads",
       "projects": "Projects"
-    }
+    },
+    "syncInstead": "Both machines online? Use {link} instead of a file."
   }
 }
