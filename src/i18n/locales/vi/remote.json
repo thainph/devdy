@@ -1,102 +1,206 @@
 {
-  "settings": {
-    "title": "Remote Control",
-    "connected": "Đã kết nối",
-    "reconnecting": "Đang kết nối lại…",
-    "waiting": "Đang chờ",
-    "off": "Tắt",
-    "intro": "Điều khiển host này từ thiết bị từ xa thông qua relay tự vận hành của bạn. Relay chỉ nhìn thấy lưu lượng đã mã hóa đầu cuối.",
-    "enable": "Bật Remote Control",
+  "device": {
+    "title": "Máy này",
+    "unnamed": "Chưa đặt tên",
+    "toggle": "Điều khiển từ xa",
     "state": {
-      "connected": "Đã kết nối tới thiết bị điều khiển.",
-      "running": "Đang chạy — chờ thiết bị kết nối.",
-      "needsRelay": "Lưu Relay URL ở thẻ phía trên trước khi bật.",
-      "off": "Đang tắt. Bật lên để cho phép điều khiển từ xa."
+      "setup": "Chưa thiết lập",
+      "off": "Đang tắt",
+      "connecting": "Đang kết nối…",
+      "error": "Lỗi kết nối",
+      "ready": "Sẵn sàng",
+      "phone": "Điện thoại đang điều khiển",
+      "aliasConflict": "Trùng tên máy",
+      "idConflict": "Trùng mã máy"
     },
-    "relayUrl": "Relay URL",
-    "relayUrlPlaceholder": "wss://relay.example.com/ws",
-    "authToken": "Auth token",
-    "saved": "(đã lưu)",
-    "authTokenPlaceholder": "Để trống để giữ token hiện tại",
-    "authTokenHint": "Lưu trong keychain của hệ điều hành, không bao giờ lưu dạng thô trên đĩa.",
-    "deviceName": "Tên thiết bị này",
-    "deviceNamePlaceholder": "vd. mac-mini",
-    "deviceNameHint": "Chữ thường, số và '-' (tối đa 32 ký tự). Nhập tên này cùng mật khẩu chính để đăng nhập vào máy này từ web controller. Giúp nhiều host dùng chung một relay.",
-    "masterPassword": "Mật khẩu chính",
-    "set": "(đã đặt)",
-    "masterPasswordReplace": "Nhập mật khẩu mới để thay thế mật khẩu hiện tại",
-    "masterPasswordSet": "Đặt mật khẩu để bỏ qua OTP mỗi lần",
-    "masterPasswordHint": "Nhập mật khẩu này trên điện thoại thay cho mã OTP. Lưu trong keychain của hệ điều hành. Cố định — chỉ dùng nếu bạn là người dùng duy nhất. Đổi hoặc xoá mật khẩu sẽ đăng xuất mọi thiết bị đã đăng nhập.",
-    "saveSettings": "Lưu cài đặt",
-    "hostLabel": "host: {id}",
-    "perRunHint": "Phiên điều khiển từ xa giờ được tạo theo từng run: mở một run và nhấn nút {remote} trên thanh công cụ để tạo link. Nhập {masterPassword} (nếu đã đặt) hoặc mã OTP trên điện thoại để kết nối.",
-    "remote": "Remote",
-    "masterPasswordInline": "mật khẩu chính",
-    "auditLog": "Nhật ký kiểm toán",
-    "clearLog": "Xóa nhật ký",
-    "table": {
-      "time": "Thời gian",
-      "action": "Hành động",
-      "result": "Kết quả",
-      "run": "Run"
+    "line": {
+      "setup": "Xong {done}/{total} bước · hoàn tất để điều khiển máy này từ điện thoại và đồng bộ với máy khác",
+      "off": "Điều khiển từ xa đang tắt — điện thoại và máy khác không thấy máy này.",
+      "connecting": "Đang kết nối tới {host}…",
+      "error": "Chưa kết nối được tới {host}.",
+      "idConflict": "Relay đang từ chối máy này — Devdy sẽ tự thử lại sau ít phút.",
+      "phone": "Một điện thoại đang điều khiển máy này.",
+      "ready": "Đã kết nối {host} · chưa có điện thoại nào điều khiển"
     },
-    "noActivity": "Chưa ghi nhận hoạt động từ xa nào.",
-    "confirmClearMaster": {
-      "title": "Xóa mật khẩu chính",
-      "message": "Xóa mật khẩu chính đã lưu?\nBạn sẽ dùng lại mã OTP cho mỗi lần tham gia.",
-      "confirmLabel": "Xóa"
+    "actions": {
+      "continueSetup": "Tiếp tục thiết lập",
+      "enable": "Bật điều khiển từ xa",
+      "retry": "Thử kết nối lại",
+      "editRelay": "Sửa relay",
+      "pair": "Ghép điện thoại…",
+      "disconnectPhone": "Ngắt kết nối điện thoại"
     },
-    "confirmClearAudit": {
-      "title": "Xóa nhật ký kiểm toán",
-      "message": "Xóa vĩnh viễn tất cả bản ghi kiểm toán remote-control?\nKhông thể hoàn tác.",
-      "confirmLabel": "Xóa nhật ký"
+    "disconnectHint": "Điện thoại phải đăng nhập lại bằng mật khẩu chính.",
+    "errors": {
+      "relay_unreachable": "Không kết nối được relay. Kiểm tra mạng và URL relay — Devdy vẫn tự thử lại.",
+      "relay_bad_url": "URL relay không trỏ tới relay Devdy (sai địa chỉ hoặc đường dẫn). Kiểm tra lại URL, vd. wss://relay.example.com/ws.",
+      "relay_auth_failed": "Relay từ chối auth token của máy này. Nhập lại host token của relay.",
+      "relay_unsupported": "Relay đã cũ, không hợp với bản Devdy này. Hãy cập nhật relay server.",
+      "relay_rate_limited": "Relay đang giới hạn máy này. Devdy sẽ tự thử lại sau ít phút.",
+      "device_id_conflict": "Một máy Devdy khác đang chạy với cùng mã máy nên relay từ chối máy này.",
+      "relay_not_configured": "Chưa có URL relay. Nhập ở thẻ Kết nối.",
+      "token_missing": "Không thấy auth token relay trong Keychain. Hãy nhập lại.",
+      "agent_stopped": "Điều khiển từ xa đã dừng. Thử kết nối lại hoặc kiểm tra cài đặt relay.",
+      "unknown": "Chưa kết nối được relay."
     },
     "toast": {
-      "relayRequired": "Relay URL là bắt buộc",
-      "settingsSaved": "Đã lưu cài đặt relay",
-      "disabled": "Đã tắt Remote Control",
-      "enabled": "Đã bật Remote Control",
-      "masterCleared": "Đã xóa mật khẩu chính",
-      "auditCleared": "Đã xóa {count} bản ghi kiểm toán",
-      "auditAlreadyEmpty": "Nhật ký kiểm toán đã trống",
-      "deviceNameInvalid": "Tên thiết bị: chỉ dùng chữ thường, số và '-' (tối đa 32 ký tự)"
+      "enabled": "Đã bật điều khiển từ xa",
+      "disabled": "Đã tắt điều khiển từ xa",
+      "phoneDisconnected": "Đã ngắt kết nối và đăng xuất điện thoại"
+    }
+  },
+  "conflict": {
+    "alias": "Tên “{name}” đang được một máy khác dùng trên relay này. Đồng bộ sẽ không phân biệt được hai máy, và hai máy giành nhau đăng nhập web controller. Hãy đặt tên khác.",
+    "rename": "Đổi tên",
+    "deviceId": "Một máy Devdy khác đang chạy với cùng mã máy — thường do chép dữ liệu Devdy (~/.devdy) hoặc clone ổ đĩa. Relay từ chối máy này và Devdy sẽ tự thử lại sau ít phút. Dùng mã máy mới để kết nối ngay.",
+    "newId": "Dùng mã máy mới",
+    "newIdDone": "Đã dùng mã máy mới — đang kết nối lại",
+    "confirmTitle": "Dùng mã máy mới?",
+    "confirmMessage": "Máy này nhận mã máy mới và kết nối lại relay (gián đoạn vài giây).\nĐiện thoại đã ghép và thông báo đẩy vẫn hoạt động bình thường.\nCác máy khác sẽ thấy máy này như một máy mới trong danh sách đồng bộ."
+  },
+  "setup": {
+    "title": "Thiết lập điều khiển từ xa",
+    "steps": {
+      "relay": "Relay",
+      "name": "Tên máy",
+      "password": "Mật khẩu chính",
+      "enable": "Bật điều khiển từ xa"
     },
-    "identity": {
-      "title": "Thiết bị này & Relay",
-      "intro": "Dùng cho Điều khiển từ xa. Web controller nhập tên thiết bị và mật khẩu chính này để điều khiển máy này."
+    "hints": {
+      "relay": "Relay tự vận hành của bạn: URL và host auth token.",
+      "name": "Tên để điện thoại và máy khác nhận ra máy này.",
+      "password": "Điện thoại dùng để đăng nhập vào máy này; máy khác dùng để đồng bộ từ máy này.",
+      "enable": "Máy này sẽ kết nối relay và hiện với điện thoại và các máy khác."
+    },
+    "relaySummary": "{url} · token đã lưu",
+    "passwordSummary": "Đã đặt",
+    "enable": "Bật"
+  },
+  "connection": {
+    "title": "Kết nối",
+    "relay": "Relay",
+    "change": "Đổi",
+    "rename": "Đổi tên",
+    "deviceId": "mã máy {id}"
+  },
+  "relay": {
+    "url": "URL relay",
+    "urlPlaceholder": "wss://relay.example.com/ws",
+    "urlRequired": "Nhập URL relay.",
+    "urlInvalid": "URL phải bắt đầu bằng wss:// (hoặc ws://).",
+    "token": "Auth token",
+    "tokenSaved": "đã lưu",
+    "tokenKeep": "Để trống để giữ token hiện tại",
+    "tokenRequired": "Nhập host auth token của relay.",
+    "tokenHint": "Lưu trong Keychain của hệ điều hành, không bao giờ ghi ra đĩa dạng thô.",
+    "tokenInKeychain": "Đã lưu trong Keychain",
+    "tokenMissing": "Chưa có",
+    "saved": "Đã lưu relay"
+  },
+  "name": {
+    "label": "Tên máy",
+    "placeholder": "vd. macbook",
+    "hint": "Chữ thường, số và “-” (tối đa 32). Nhập tên này cùng mật khẩu chính trên điện thoại để đăng nhập vào máy này.",
+    "invalid": "Chỉ dùng chữ thường, số và “-” (tối đa 32 ký tự).",
+    "saved": "Đã lưu tên máy"
+  },
+  "password": {
+    "label": "Mật khẩu chính",
+    "confirm": "Nhập lại",
+    "hint": "Lưu trong Keychain. Đổi hoặc xoá sẽ đăng xuất mọi điện thoại.",
+    "tooShort": "Mật khẩu cần ít nhất {n} ký tự.",
+    "mismatch": "Hai mật khẩu không khớp.",
+    "save": "Lưu mật khẩu",
+    "saved": "Đã lưu mật khẩu chính",
+    "isSet": "Đã đặt",
+    "clear": "Xoá mật khẩu chính",
+    "clearTitle": "Xoá mật khẩu chính?",
+    "clearMessage": "Điện thoại sẽ không đăng nhập được, và máy khác không đồng bộ được từ máy này cho tới khi bạn đặt mật khẩu mới.",
+    "cleared": "Đã xoá mật khẩu chính"
+  },
+  "phone": {
+    "title": "Điện thoại",
+    "controlling": "Một điện thoại đang điều khiển máy này.",
+    "none": "Chưa có điện thoại nào đang điều khiển. Ghép điện thoại để quét mã QR.",
+    "off": "Điều khiển từ xa đang tắt: điện thoại không kết nối được, thông báo chỉ gửi khi đang bật."
+  },
+  "activity": {
+    "title": "Hoạt động gần đây",
+    "summary": "{count} sự kiện · gần nhất {at} — {action}",
+    "empty": "Chưa có hoạt động từ xa nào.",
+    "time": "Thời gian",
+    "action": "Hành động",
+    "result": "Kết quả",
+    "accepted": "Cho phép",
+    "rejected": "Từ chối",
+    "clear": "Xoá hoạt động",
+    "clearTitle": "Xoá nhật ký hoạt động?",
+    "clearMessage": "Xoá vĩnh viễn mọi bản ghi hoạt động của điều khiển từ xa?\nKhông thể hoàn tác.",
+    "cleared": "Đã xoá {count} bản ghi",
+    "alreadyEmpty": "Nhật ký hoạt động đã trống",
+    "actions": {
+      "login": "Đăng nhập bằng mật khẩu chính",
+      "authenticate": "Đăng nhập bằng link ghép",
+      "kick_controller": "Ngắt kết nối điện thoại",
+      "set_master_password": "Đặt mật khẩu chính",
+      "clear_master_password": "Xoá mật khẩu chính",
+      "device_sync_pull": "Máy khác đồng bộ từ máy này",
+      "start_run": "Chạy run",
+      "cancel_run": "Dừng run",
+      "send_chat_message": "Gửi tin nhắn",
+      "respond_permission": "Trả lời yêu cầu quyền",
+      "open_run": "Mở run",
+      "close_run": "Đóng run",
+      "list_runs": "Xem danh sách run",
+      "request_history": "Tải lịch sử run"
+    },
+    "reasons": {
+      "bad_password": "sai mật khẩu",
+      "bad_otp": "sai mã ghép",
+      "throttled": "thử quá nhiều lần",
+      "rate_limited": "gửi quá nhiều yêu cầu",
+      "malformed": "yêu cầu sai định dạng",
+      "unauthorized": "chưa đăng nhập",
+      "action_not_allowed": "không được phép",
+      "wrong_run": "sai run",
+      "not_found": "không tìm thấy",
+      "bad_request": "yêu cầu không hợp lệ"
     }
   },
   "session": {
-    "title": "Điều khiển từ điện thoại",
-    "heading": "Điều khiển các run từ điện thoại",
+    "title": "Ghép điện thoại",
+    "needsPasswordTitle": "Cần đặt mật khẩu chính trước",
+    "needsPasswordDesc": "Điện thoại đăng nhập vào {name} bằng mật khẩu chính. Đặt một lần, dùng cho mọi lần ghép và cho Đồng bộ.",
+    "saveAndPair": "Lưu và tạo mã QR",
     "creating": "Đang tạo link…",
-    "scanCaption": "Quét bằng điện thoại hoặc copy link để mở controller.",
+    "step1": "Quét mã bằng camera điện thoại, hoặc copy link mở trên điện thoại.",
+    "step2": "Nhập tên máy {name} và mật khẩu chính.",
+    "expiresIn": "Mã hết hạn sau {time} · hết hạn sẽ tự tạo mã mới",
+    "newCode": "Tạo mã mới",
     "copyLink": "Copy link",
-    "cannotDeriveController": "Không xác định được địa chỉ controller từ relay URL. Copy các trường dưới đây và dán vào controller thủ công.",
+    "cannotDeriveController": "Không xác định được địa chỉ controller từ URL relay. Copy các trường dưới đây và dán vào controller.",
     "copied": "Đã copy!",
     "copyFields": "Copy các trường",
-    "enterMasterOnPhone": "Nhập {masterPassword} trên điện thoại để kết nối. (Đặt mật khẩu ở Settings → Remote Control.)",
-    "masterPassword": "mật khẩu chính",
+    "copyFailed": "Không copy được vào clipboard",
+    "qrFailed": "Không vẽ được mã QR",
     "connecting": "Điện thoại đang kết nối…",
     "enterMasterToFinish": "Nhập mật khẩu chính trên điện thoại để hoàn tất.",
-    "connectedLive": "Đang kết nối — điều khiển trực tiếp",
+    "connectedLive": "Đã kết nối — đang điều khiển trực tiếp",
     "phoneControlling": "Điện thoại đã ghép và điều khiển được mọi run. Đóng cửa sổ này không ngắt kết nối.",
-    "idleExpiry": "Phiên hết hạn nếu không thao tác trong ~{time}",
-    "stopControl": "Dừng điều khiển",
-    "authFailed": "Xác thực thất bại",
+    "idleExpiry": "Tự đăng xuất nếu không thao tác trong ~{time}",
+    "authFailed": "Đăng nhập thất bại",
     "attemptsLeft": "Còn {count} lần thử",
     "createNewLink": "Tạo link mới",
-    "expired": "Phiên đã hết hạn",
+    "expired": "Link đã hết hạn",
     "errorOccurred": "Đã xảy ra lỗi",
-    "copyFailed": "Không thể copy vào clipboard",
-    "disabledTitle": "Remote Control đang tắt",
-    "disabledDesc": "Remote Control chưa được bật. Bật lên để tạo link cho điện thoại.",
-    "disabledNoRelay": "Remote Control chưa được bật. Hãy cấu hình relay URL trong Settings trước, sau đó bật lên.",
-    "enableNow": "Bật Remote Control",
-    "openSettings": "Mở Settings"
+    "disabledTitle": "Điều khiển từ xa đang tắt",
+    "disabledDesc": "Bật lên để tạo link cho điện thoại.",
+    "disabledNoRelay": "Hãy thiết lập relay ở Cài đặt → Thiết bị trước, rồi bật điều khiển từ xa.",
+    "enableNow": "Bật điều khiển từ xa",
+    "openSettings": "Mở Cài đặt"
   },
   "push": {
-    "title": "Thông báo điện thoại",
+    "title": "Thông báo đẩy",
     "intro": "Điện thoại đã ghép cặp và bật thông báo (nút chuông ở tab Cần xử lý) sẽ được báo khi Remote Control đang bật và điện thoại không mở app. Thông báo về phiên chạy chỉ chứa số lượng; nhắc việc Focus có nội dung việc, được mã hoá đầu-cuối tới điện thoại.",
     "kinds": {
       "pending": "Cần duyệt",
@@ -110,7 +214,7 @@
       "failed": "Một run kết thúc với lỗi.",
       "focus": "Nhắc việc Focus của máy tính (nên bắt đầu, sắp đến hạn, quá hạn, nhắc tôi, tóm tắt buổi sáng), kèm nội dung việc. Gửi cả khi điện thoại đang mở app."
     },
-    "devices": "Thiết bị",
+    "devices": "Thiết bị nhận thông báo",
     "noDevices": "Chưa có thiết bị. Trên điện thoại, mở tab Cần xử lý và bấm nút chuông.",
     "unnamed": "Thiết bị không tên",
     "added": "Thêm lúc {at}",
@@ -122,6 +226,8 @@
       "testSent": "Đã gửi thông báo thử tới {label}.",
       "testFailed": "Gửi thông báo thử thất bại: {reason}",
       "gone": "Push service không còn nhận thiết bị này — đã gỡ."
-    }
+    },
+    "removeTitle": "Gỡ điện thoại này?",
+    "removeMessage": "{label} sẽ không nhận thông báo nữa. Có thể đăng ký lại từ điện thoại."
   }
 }

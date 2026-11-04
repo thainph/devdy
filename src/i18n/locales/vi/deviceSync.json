@@ -1,25 +1,30 @@
 {
   "open": "Đồng bộ từ máy khác",
-  "button": "Sync",
   "title": "Đồng bộ từ máy khác",
   "device": {
-    "help": "Các máy Devdy đang online trên relay của bạn. Chọn máy để lấy dữ liệu về.",
+    "help": "Máy Devdy đang online trên {host}",
     "refresh": "Làm mới danh sách máy",
     "loading": "Đang tìm máy…",
-    "empty": "Không có máy nào online",
-    "emptyHint": "Chỉ máy dùng cùng relay, đã bật Remote Control và đặt master password (Cài đặt → Thiết bị) mới hiện ở đây. Thiết lập ở máy kia rồi làm mới.",
+    "empty": "Không thấy máy nào online",
     "version": "Devdy {version}",
-    "versionUnknown": "Không rõ phiên bản"
+    "versionUnknown": "Không rõ phiên bản",
+    "helpNoHost": "Máy Devdy đang online trên relay của bạn",
+    "emptyCheck": "Trên máy cần lấy dữ liệu, kiểm tra:",
+    "needs": {
+      "relay": "Dùng cùng relay ({host})",
+      "remote": "Đã bật điều khiển từ xa",
+      "password": "Đã đặt mật khẩu chính"
+    },
+    "polling": "Tự tìm lại mỗi 5 giây…"
   },
   "options": {
-    "from": "Lấy từ {name}. Mỗi mục được tick sẽ ghi đè dữ liệu trên máy này.",
-    "what": "Mục cần đồng bộ",
+    "from": "Từ {name} · mục được chọn sẽ ghi đè dữ liệu trên máy này",
     "selectAll": "Chọn tất cả",
     "selectNone": "Bỏ chọn tất cả",
-    "password": "Master password",
-    "passwordPlaceholder": "Master password của {name}",
-    "passwordHint": "Master password đặt ở máy nguồn (Cài đặt → Thiết bị). Toàn bộ dữ liệu được mã hoá đầu cuối.",
-    "overwriteWarning": "Đồng bộ sẽ ghi đè dữ liệu trên máy này ngay và không hoàn tác được. Mục chỉ có ở máy này được giữ nguyên."
+    "password": "Mật khẩu chính của",
+    "passwordHint": "Mật khẩu chính đặt ở {name} (Cài đặt → Thiết bị). Dữ liệu được mã hoá đầu cuối.",
+    "failed": "Đồng bộ từ {name} thất bại — chưa có gì bị thay đổi.",
+    "keepLocal": "Mục chỉ có ở máy này được giữ nguyên."
   },
   "sections": {
     "todos": "Todo",
@@ -56,36 +61,48 @@
     "accounts": "GitHub, GitLab, Google kèm token. Claude/AWS/Azure chỉ tên, cần đăng nhập lại."
   },
   "phases": {
-    "connecting": "Đang kết nối tới máy",
-    "auth": "Đang kiểm tra master password",
-    "downloading": "Đang tải dữ liệu",
-    "applying": "Đang áp dụng trên máy này",
+    "connecting": "Kết nối tới {name}",
+    "auth": "Kiểm tra mật khẩu chính",
+    "downloading": "Tải dữ liệu",
+    "applying": "Áp dụng trên máy này",
     "done": "Xong"
   },
   "running": {
-    "title": "Đang đồng bộ từ {name}…",
-    "keepOpen": "Giữ cả hai máy không ngủ cho tới khi xong."
+    "title": "Đang đồng bộ {n} mục từ {name}…",
+    "keepOpen": "Giữ cả hai máy không ngủ cho tới khi xong.",
+    "size": "{percent}% · {received} / {total} MB",
+    "slow": "Đang chờ {name} phản hồi…"
   },
   "result": {
-    "done": "Đã đồng bộ từ {name}.",
+    "done": "Đã đồng bộ từ {name} lúc {time}.",
     "created": "Mới",
     "updated": "Cập nhật",
     "unchanged": "Giữ nguyên",
-    "deleted": "Đã xoá",
+    "deleted": "Xoá",
     "skipped": "Bỏ qua",
     "nothing": "Không có gì thay đổi.",
     "reloginHint": "Tài khoản Claude, AWS và Azure cần đăng nhập lại trên máy này.",
-    "reloadHint": "Tải lại Devdy để áp dụng theme và cài đặt vừa đồng bộ ở mọi nơi."
+    "reloadHint": "Tải lại Devdy để áp dụng theme và cài đặt vừa đồng bộ ở mọi nơi.",
+    "showMore": "Xem thêm {n}",
+    "showLess": "Thu gọn",
+    "hidden": "Ẩn {n} mục không thay đổi.",
+    "attention": "Cần lưu ý ({n})",
+    "total": {
+      "created": "Thêm {n}",
+      "updated": "Cập nhật {n}",
+      "deleted": "Xoá {n}",
+      "skipped": "Bỏ qua {n}"
+    }
   },
   "errors": {
-    "wrong_password": "Sai master password.",
-    "device_offline": "{name} đã offline. Hãy chọn lại máy.",
+    "wrong_password": "Mật khẩu chính của {name} không đúng. Nhập mật khẩu chính đặt ở Cài đặt → Thiết bị của máy {name} (không phải của máy này). Sai 5 lần trong 5 phút thì {name} sẽ khoá đồng bộ khoảng 5 phút.",
+    "device_offline": "Không kết nối được tới {name}. Mở app trên máy đó, kiểm tra điều khiển từ xa đang bật; nếu vẫn lỗi hãy tắt/bật lại điều khiển từ xa trên {name}.",
     "device_disconnected": "{name} bị ngắt kết nối giữa chừng. Hãy chọn lại máy.",
-    "rate_limited": "Nhập sai password quá nhiều lần. Thử lại sau khoảng 5 phút.",
+    "rate_limited": "Nhập sai mật khẩu chính quá nhiều lần: {name} đang khoá khoảng 5 phút. Hãy đợi khoảng 5 phút rồi thử lại. Trong thời gian đó đăng nhập web controller của {name} cũng bị khoá.",
     "checksum_mismatch": "Dữ liệu tải về bị hỏng. Chưa có gì bị thay đổi — hãy thử lại.",
     "timeout": "Máy kia phản hồi quá lâu. Hãy thử lại.",
     "source_failed": "{name} không chuẩn bị được dữ liệu. Kiểm tra Devdy ở máy đó rồi thử lại.",
-    "bad_request": "{name} từ chối yêu cầu. Hãy cập nhật Devdy ở cả hai máy và kiểm tra {name} đã đặt master password.",
+    "bad_request": "{name} từ chối yêu cầu. Hãy cập nhật Devdy ở cả hai máy và kiểm tra {name} đã đặt mật khẩu chính.",
     "bundle_corrupt": "Không mở được dữ liệu từ {name}. Chưa có gì bị thay đổi — hãy thử lại.",
     "bundle_unsupported_version": "{name} đang chạy phiên bản Devdy khác. Hãy cập nhật Devdy ở cả hai máy.",
     "bundle_too_large": "Dữ liệu trên {name} quá lớn để đồng bộ. Bỏ tick bớt mục rồi thử lại.",
@@ -100,20 +117,86 @@
     "cancel": "Huỷ",
     "back": "Quay lại",
     "next": "Tiếp",
-    "sync": "Đồng bộ",
     "syncing": "Đang đồng bộ…",
     "reload": "Tải lại app",
     "close": "Đóng",
-    "mirrorSync": "Xoá và đồng bộ"
+    "mirrorSync": "Xoá và đồng bộ",
+    "syncN": "Đồng bộ {n} mục từ {name}",
+    "confirmDelete": "Tiếp: xác nhận xoá"
   },
   "mirror": {
-    "label": "Đồng bộ y hệt (xoá phần khác biệt)",
-    "hint": "Mục ở máy này không có trên máy nguồn sẽ bị XOÁ trong: Todo, Note, Skill, Rule (kèm nhóm), MCP, VPS, Tài khoản. Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá.",
-    "warning": "Đang bật đồng bộ y hệt: mục không có trên máy nguồn sẽ bị xoá ở máy này trong {parts}."
+    "label": "Đồng bộ y hệt (xoá phần thừa)",
+    "hint": "Mục chỉ có ở máy này sẽ bị XOÁ trong: Todo, Note, Skill & Rule (kèm nhóm), MCP, VPS, Tài khoản. Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá."
   },
   "confirm": {
-    "title": "Xoá các mục không có trên máy nguồn?",
-    "message": "Mọi mục ở máy này mà {name} không có sẽ bị xoá trong:",
+    "title": "Xoá các mục không có trên {name}?",
+    "message": "Mục chỉ có ở máy này sẽ bị xoá trong:",
     "neverDeleted": "Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá. Không hoàn tác được."
+  },
+  "warningGroups": {
+    "problems": "Lỗi ({n})",
+    "folders": "Thư mục project không có trên máy này ({n})",
+    "links": "Liên kết tới mục không có trên máy này ({n})",
+    "mirror": "Không xoá khi đồng bộ y hệt ({n})"
+  },
+  "warnings": {
+    "project_folder_missing": "Project '{project}': thư mục {path} không có trên máy này — đã lưu cài đặt, chưa chép skill/rule vào thư mục.",
+    "link_target_missing": "Project '{project}': {kind} '{name}' không có trên máy này nên chưa được liên kết.",
+    "link_failed": "Project '{project}': không bật được '{name}': {error}",
+    "project_failed": "Project '{project}': {error}",
+    "item_failed": "{section} '{name}': {error}",
+    "project_sync_failed": "{section} '{name}': chưa cập nhật được vào project {detail}",
+    "category_not_sent": "{section}: máy kia không gửi mục này, không xoá gì.",
+    "category_empty_no_mirror": "{section}: máy kia không có mục nào, để an toàn không xoá gì.",
+    "delete_failed": "{section} '{name}': không xoá được: {error}",
+    "other": "{message}"
+  },
+  "linkKinds": {
+    "mcpServer": "MCP server",
+    "vpsServer": "VPS server",
+    "githubAccount": "tài khoản GitHub",
+    "gitlabAccount": "tài khoản GitLab",
+    "awsAccount": "tài khoản AWS",
+    "azureAccount": "tài khoản Azure",
+    "skillGroup": "nhóm skill",
+    "ruleGroup": "nhóm rule",
+    "skill": "skill",
+    "rule": "rule"
+  },
+  "stepOf": "Bước {n}/{total}",
+  "groups": {
+    "work": "Công việc",
+    "library": "Thư viện & project",
+    "config": "Cấu hình & tài khoản"
+  },
+  "short": {
+    "todos": "Đủ thuộc tính, Focus và hạn",
+    "notes": "Theo từng note",
+    "secretNotes": "Vẫn khoá bằng vault password",
+    "slackThreads": "Kèm bản dịch; file tải lại",
+    "skillsRules": "Theo tên, kèm nhóm và file",
+    "projects": "Project trùng tên; không chép file",
+    "settings": "Theme, ngôn ngữ, model, prompt…",
+    "mcpServers": "Gồm env và header bí mật",
+    "vpsServers": "Gồm passphrase và key",
+    "accounts": "GitHub/GitLab/Google kèm token"
+  },
+  "advanced": {
+    "title": "Nâng cao",
+    "mirrorOn": "Đồng bộ y hệt: bật",
+    "mirrorOff": "Đồng bộ y hệt: tắt"
+  },
+  "card": {
+    "title": "Đồng bộ giữa các máy",
+    "help": "Máy khác lấy được dữ liệu từ máy này bằng mật khẩu chính khi điều khiển từ xa đang bật.",
+    "needsRelay": "Thiết lập relay trước (thẻ Kết nối) để đồng bộ với máy khác."
+  },
+  "last": {
+    "line": "Lần đồng bộ gần nhất: {when} từ {name}",
+    "today": "hôm nay {time}",
+    "yesterday": "hôm qua {time}",
+    "earlier": "{date} {time}",
+    "counts": "{n} mục · thêm {created}, cập nhật {updated}",
+    "never": "Chưa đồng bộ từ máy khác lần nào."
   }
 }

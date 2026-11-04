@@ -68,16 +68,26 @@
   "remoteIndicator": {
     "title": "Remote Control",
     "short": "Remote",
-    "relayOnline": "Relay online",
-    "relayOffline": "Relay offline",
-    "relayReconnecting": "Reconnecting to the relay…",
-    "agentStopped": "Not running — check the relay settings",
+    "state": {
+      "hidden": "Not set up",
+      "off": "Off",
+      "error": "Stopped — check the relay settings",
+      "conflict": "Device clash",
+      "offline": "Connecting to the relay…",
+      "online": "Ready",
+      "phone": "Phone in control"
+    },
     "controller": "A phone / web controller is signed in",
-    "nobody": "No controller connected",
-    "pair": "Pair a device…",
-    "settings": "Remote Control settings",
-    "disconnect": "Disconnect and sign out",
-    "disconnectHint": "A phone / web controller is driving this app through Remote Control. Disconnecting cuts it off now and signs it out: it has to sign in again with the master password or a pairing code. To keep it out, change the master password.",
-    "disconnectFailed": "Could not disconnect: {error}"
+    "aliasConflict": "Another machine on the relay is also named “{name}”.",
+    "idConflict": "Another running Devdy has this device ID.",
+    "view": "View",
+    "settings": "Device settings",
+    "disconnectHint": "A phone / web controller is driving this app through Remote Control. Disconnecting cuts it off at once and signs it out: it must sign in again with the master password. To keep it out for good, change the master password.",
+    "disconnectFailed": "Couldn't disconnect: {error}",
+    "enableFailed": "Couldn't turn on Remote Control: {error}"
+  },
+  "savedWithoutFolder": {
+    "one": "Saved for {project} — its folder isn't on this machine yet; it will be installed when the folder appears.",
+    "many": "Saved for {projects} — no folder on this machine yet; installed when the folder appears."
   }
 }

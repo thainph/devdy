@@ -2,6 +2,7 @@ import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref } from 'vue'
 import type { GroupApplyOutcome, GroupDisableOutcome, GroupKind, ProjectGroupState } from '@/stores/groups'
+import type { ApplyOneOutcome } from '@/lib/savedWithoutFolder'
 
 export interface Project {
   id: string
@@ -280,8 +281,8 @@ export const useProjectsStore = defineStore('projects', () => {
     return invoke<AppliedSkill[]>('get_applied_skills', { projectId: project_id })
   }
 
-  async function applySkill(project_id: string, skill_id: string): Promise<void> {
-    await invoke('apply_skill', { projectId: project_id, skillId: skill_id })
+  async function applySkill(project_id: string, skill_id: string): Promise<ApplyOneOutcome> {
+    return invoke<ApplyOneOutcome>('apply_skill', { projectId: project_id, skillId: skill_id })
   }
 
   async function removeSkillFromProject(project_id: string, skill_id: string): Promise<void> {
@@ -360,8 +361,8 @@ export const useProjectsStore = defineStore('projects', () => {
     return invoke<AppliedRule[]>('get_applied_rules', { projectId: project_id })
   }
 
-  async function applyRule(project_id: string, rule_id: string): Promise<void> {
-    await invoke('apply_rule', { projectId: project_id, ruleId: rule_id })
+  async function applyRule(project_id: string, rule_id: string): Promise<ApplyOneOutcome> {
+    return invoke<ApplyOneOutcome>('apply_rule', { projectId: project_id, ruleId: rule_id })
   }
 
   async function removeRuleFromProject(project_id: string, rule_id: string): Promise<void> {

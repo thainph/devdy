@@ -150,8 +150,9 @@ use commands::models::{get_model_caches, refresh_codex_models, validate_claude_m
 use commands::translate::{cancel_translate, prewarm_translate, translate_text, TranslateState};
 use remote::commands::{
     remote_clear_audit, remote_create_session_link, remote_disable, remote_enable,
-    remote_end_session, remote_get_audit, remote_kick_controller, remote_reveal_otp,
-    remote_set_config, remote_set_device_alias, remote_set_master_password, remote_status,
+    remote_end_session, remote_get_audit, remote_kick_controller, remote_regenerate_device_id,
+    remote_reveal_otp, remote_set_config, remote_set_device_alias, remote_set_master_password,
+    remote_status,
 };
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
@@ -235,6 +236,14 @@ pub fn run() {
                     if let Err(e) = runs::model_usage::rebuild_from_logs(&db).await {
                         eprintln!("[usage] ledger rebuild from logs failed: {e}");
                     }
+                });
+            }
+            // Skills / rules linked while a project folder was missing (device
+            // sync, another machine's layout): install them now that it exists.
+            {
+                let db = db.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::projects::install_pending_links(&db).await;
                 });
             }
             // Background-process tracker: sweeps what a previous session left
@@ -742,9 +751,11 @@ pub fn run() {
             remote_set_device_alias,
             device_sync::commands::device_sync_list_devices,
             device_sync::commands::device_sync_pull,
+            device_sync::commands::device_sync_last,
             remote_get_audit,
             remote_clear_audit,
             remote_status,
+            remote_regenerate_device_id,
             remote::push::commands::remote_push_overview,
             remote::push::commands::remote_push_remove,
             remote::push::commands::remote_push_set_events,

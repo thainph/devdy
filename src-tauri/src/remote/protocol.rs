@@ -60,6 +60,12 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
 
+    /// `register_host`: random id of this app launch, so the relay can tell a
+    /// reconnect of this app from another machine using the same `device_id`.
+    /// Older relays ignore it.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
 
@@ -112,6 +118,7 @@ impl Envelope {
             seq: None,
             cipher: None,
             device_id: None,
+            instance_id: None,
             auth_token: None,
             pair_code: None,
             persistent: None,
@@ -141,6 +148,7 @@ impl Envelope {
         listing: Option<(String, String)>,
     ) -> Self {
         let mut e = Self::register_host(device_id, auth_token);
+        e.instance_id = Some(crate::remote::instance_id().to_string());
         if let Some((alias, app_version)) = listing {
             e.alias = Some(alias);
             e.app_version = Some(app_version);

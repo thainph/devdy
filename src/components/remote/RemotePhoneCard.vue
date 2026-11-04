@@ -1,14 +1,15 @@
 <script setup lang="ts">
-// Web Push to paired phones (docs/remote-mobile-push-spec.md): which kinds of
-// event this Host notifies about, the devices that subscribed from the phone
-// controller, and a test send. Devices subscribe themselves from the phone's
-// Inbox; here they can only be removed.
-import { onMounted, onUnmounted, ref } from 'vue'
+// Settings → Devices, "Phone" card: whether a phone is driving this machine, which events
+// Web Push notifies about (docs/remote-mobile-push-spec.md) and the phones that subscribed
+// from the controller's Inbox (they can only be removed here).
+import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { Loader2, Send, Smartphone, Trash2 } from 'lucide-vue-next'
 import { Button, Card, ToggleSwitch } from '@/components/ui'
+import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
-import { BellRing, Loader2, Send, Smartphone, Trash2 } from 'lucide-vue-next'
+import { useRemoteControlStore } from '@/stores/remoteControl'
 
 interface PushEvents {
   pending: boolean
@@ -29,13 +30,20 @@ interface PushOverview {
 
 const KINDS = ['pending', 'done', 'failed', 'focus'] as const
 
+const emit = defineEmits<{ pair: [] }>()
+
 const { t } = useI18n()
 const { toast } = useToast()
+const { confirm } = useConfirm()
+const store = useRemoteControlStore()
 
+const enabled = computed(() => !!store.status?.enabled)
+const phone = computed(() => !!store.status?.session_authenticated)
 const devices = ref<PushDevice[]>([])
 const events = ref<PushEvents>({ pending: true, done: true, failed: true, focus: true })
 const loaded = ref(false)
 const busyId = ref<string | null>(null)
+const kicking = ref(false)
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
 async function load() {
@@ -89,6 +97,13 @@ async function test(d: PushDevice) {
 }
 
 async function remove(d: PushDevice) {
+  const ok = await confirm({
+    title: t('remote.push.removeTitle'),
+    message: t('remote.push.removeMessage', { label: d.label || t('remote.push.unnamed') }),
+    confirmLabel: t('remote.push.remove'),
+    variant: 'destructive',
+  })
+  if (!ok) return
   busyId.value = d.id
   try {
     await invoke('remote_push_remove', { id: d.id })
@@ -97,6 +112,18 @@ async function remove(d: PushDevice) {
     toast.error(String(e))
   } finally {
     busyId.value = null
+  }
+}
+
+async function disconnect() {
+  kicking.value = true
+  try {
+    await store.kickController()
+    toast.success(t('remote.device.toast.phoneDisconnected'))
+  } catch (e) {
+    toast.error(String(e))
+  } finally {
+    kicking.value = false
   }
 }
 
@@ -110,25 +137,41 @@ function fmtTime(ts: string | null): string {
 <template>
   <Card>
     <template #header>
-      <BellRing class="h-4 w-4 text-primary" :stroke-width="1.75" />
-      <h3 class="text-sm font-semibold flex-1">{{ t('remote.push.title') }}</h3>
+      <Smartphone class="h-4 w-4 text-primary" :stroke-width="1.75" />
+      <h3 class="text-sm font-semibold flex-1">{{ t('remote.phone.title') }}</h3>
     </template>
     <div class="p-4 space-y-4">
-      <p class="text-xs text-muted-foreground">{{ t('remote.push.intro') }}</p>
+      <div class="flex items-center gap-3">
+        <p class="flex-1 text-xs" :class="phone ? 'text-success' : 'text-muted-foreground'">
+          <template v-if="phone">{{ t('remote.phone.controlling') }}</template>
+          <template v-else-if="enabled">{{ t('remote.phone.none') }}</template>
+          <template v-else>{{ t('remote.phone.off') }}</template>
+        </p>
+        <Button v-if="phone" variant="destructive" size="xs" :disabled="kicking" @click="disconnect">
+          {{ t('remote.device.actions.disconnectPhone') }}
+        </Button>
+        <Button v-else-if="enabled" variant="outline" size="xs" @click="emit('pair')">
+          {{ t('remote.device.actions.pair') }}
+        </Button>
+      </div>
 
-      <div class="space-y-2">
-        <div v-for="k in KINDS" :key="k" class="flex items-center justify-between gap-4">
-          <div class="min-w-0">
-            <p class="text-xs font-medium text-foreground">{{ t(`remote.push.kinds.${k}`) }}</p>
-            <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t(`remote.push.kindHints.${k}`) }}</p>
+      <div class="border-t border-border/50 pt-3">
+        <p class="mb-0.5 text-xs font-medium text-foreground">{{ t('remote.push.title') }}</p>
+        <p class="mb-2.5 text-[11px] text-muted-foreground">{{ t('remote.push.intro') }}</p>
+        <div class="grid grid-cols-2 gap-x-6 gap-y-2.5">
+          <div v-for="k in KINDS" :key="k" class="flex items-center justify-between gap-3">
+            <div class="min-w-0">
+              <p class="text-xs text-foreground">{{ t(`remote.push.kinds.${k}`) }}</p>
+              <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t(`remote.push.kindHints.${k}`) }}</p>
+            </div>
+            <ToggleSwitch
+              size="md"
+              :checked="events[k]"
+              :label="t(`remote.push.kinds.${k}`)"
+              :disabled="!loaded"
+              @toggle="toggleKind(k)"
+            />
           </div>
-          <ToggleSwitch
-            size="md"
-            :checked="events[k]"
-            :label="t(`remote.push.kinds.${k}`)"
-            :disabled="!loaded"
-            @toggle="toggleKind(k)"
-          />
         </div>
       </div>
 

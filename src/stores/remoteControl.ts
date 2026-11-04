@@ -2,6 +2,8 @@ import { defineStore } from 'pinia'
 import { ref } from 'vue'
 import { invoke } from '@/lib/tauri'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { DeviceConflict } from '@/lib/remoteDevice'
+import type { LastSync } from '@/lib/deviceSync'
 
 /**
  * Host-side Remote Control state. Wraps the `remote_*` Tauri commands from the
@@ -42,7 +44,14 @@ export interface RemoteStatus {
   session_authenticated: boolean
   /** Unix seconds at which the idle session token expires (sliding 3h). */
   session_idle_expires_at: number | null
+  /** A device id / name clash the relay reported (also the `remote://device-conflict` event). */
+  deviceConflict: DeviceConflict | null
+  /** Why the agent is not connected right now (`remote::last_error` code), else null. */
+  last_error: string | null
 }
+
+/** Tauri event carrying the current `DeviceConflict` (`null` once cleared). */
+export const DEVICE_CONFLICT_EVENT = 'remote://device-conflict'
 
 /**
  * Mirror of the backend `LinkPayload` (agent.rs), returned once by
@@ -79,6 +88,21 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
   const status = ref<RemoteStatus | null>(null)
   const audit = ref<AuditEntry[]>([])
   const loaded = ref(false)
+  /** The last successful device sync pull on this machine (null = never). */
+  const lastSync = ref<LastSync | null>(null)
+
+  async function refreshLastSync(): Promise<LastSync | null> {
+    lastSync.value = await invoke<LastSync | null>('device_sync_last')
+    return lastSync.value
+  }
+
+  /** Give this machine a new device id (after a `device_id` clash); reconnects when on. */
+  async function regenerateDeviceId(): Promise<string> {
+    const id = await invoke<string>('remote_regenerate_device_id')
+    if (status.value) status.value = { ...status.value, deviceConflict: null }
+    await refreshStatus()
+    return id
+  }
 
   /** Fetch the current status snapshot (feature on?, socket up?, bound run). */
   async function refreshStatus(): Promise<RemoteStatus> {
@@ -209,6 +233,11 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
         'remote://session-expired',
       ].map((ev) => listen(ev, refresh)),
     )
+    // A clash comes with its payload (null = cleared): apply it right away.
+    fns.push(await listen<DeviceConflict | null>(DEVICE_CONFLICT_EVENT, (e) => {
+      if (status.value) status.value = { ...status.value, deviceConflict: e.payload ?? null }
+      void refresh()
+    }))
     // Stopped (or restarted) while the listeners were being registered.
     if (gen !== feedGen) fns.forEach((un) => un())
     else unlisteners = fns
@@ -237,6 +266,9 @@ export const useRemoteControlStore = defineStore('remoteControl', () => {
     status,
     audit,
     loaded,
+    lastSync,
+    refreshLastSync,
+    regenerateDeviceId,
     refreshStatus,
     refreshAudit,
     refreshAll,

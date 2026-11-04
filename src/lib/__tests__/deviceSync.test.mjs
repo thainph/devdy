@@ -6,11 +6,19 @@ import { readFileSync } from 'node:fs'
 import {
   MIRROR_DELETE_KEYS,
   SYNC_CATEGORY_KEYS,
+  SYNC_GROUPS,
+  compactReport,
+  deviceLabels,
+  groupState,
+  needsRelogin,
+  syncDay,
   SYNC_ERROR_CODES,
   defaultCategories,
   deviceLabel,
+  groupWarnings,
   isDeviceGone,
   mirrorDeletions,
+  normalizeWarning,
   progressPercent,
   reportRows,
   reportTotals,
@@ -115,4 +123,103 @@ test('reportTotals sums every row', () => {
   })
   assert.deepEqual(total, { created: 3, updated: 2, unchanged: 1, deleted: 4, skipped: 1 })
   assert.deepEqual(reportTotals({ counts: {}, warnings: [] }), { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 })
+})
+
+test('groupWarnings: problems first, then folders / links / mirror, repeats dropped', () => {
+  const folder = (project) => ({ code: 'project_folder_missing', params: { project, path: `/x/${project}` } })
+  const groups = groupWarnings([
+    { code: 'category_empty_no_mirror', params: { section: 'skills' } },
+    folder('pms'),
+    { code: 'link_target_missing', params: { project: 'pms', kind: 'vpsServer', name: 'prod' } },
+    folder('sora'),
+    folder('pms'),
+    { code: 'item_failed', params: { section: 'notes', name: 'n', error: 'e' } },
+    'legacy text',
+    'legacy text',
+  ])
+  assert.deepEqual(groups.map(g => [g.group, g.items.length]), [
+    ['problems', 2], ['folders', 2], ['links', 1], ['mirror', 1],
+  ])
+  assert.deepEqual(groups[0].items[1], { code: 'other', params: { message: 'legacy text' } })
+  assert.deepEqual(groups[1].items.map(w => w.params.project), ['pms', 'sora'])
+  // Param order doesn't make a repeat look new.
+  const same = groupWarnings([
+    { code: 'other', params: { a: '1', b: '2' } },
+    { code: 'other', params: { b: '2', a: '1' } },
+  ])
+  assert.equal(same[0].items.length, 1)
+  assert.deepEqual(groupWarnings([]), [])
+})
+
+test('normalizeWarning fills missing params', () => {
+  assert.deepEqual(normalizeWarning({ code: 'x' }), { code: 'x', params: {} })
+  assert.deepEqual(normalizeWarning('m'), { code: 'other', params: { message: 'm' } })
+})
+
+test('deviceLabels tells devices with the same name apart', () => {
+  const labels = deviceLabels([
+    { deviceId: 'aaaaaaaa-1111', alias: 'macbook' },
+    { deviceId: 'bbbbbbbb-2222', alias: 'macbook' },
+    { deviceId: 'cccccccc-3333', alias: 'mac-mini' },
+    { deviceId: 'dddddddd-4444', alias: '' },
+  ])
+  assert.deepEqual(labels, {
+    'aaaaaaaa-1111': 'macbook · aaaaaaaa',
+    'bbbbbbbb-2222': 'macbook · bbbbbbbb',
+    'cccccccc-3333': 'mac-mini',
+    'dddddddd-4444': 'Devdy · dddddddd',
+  })
+})
+
+test('SYNC_GROUPS covers every category exactly once', () => {
+  const all = SYNC_GROUPS.flatMap(g => g.items)
+  assert.deepEqual([...all].sort(), [...SYNC_CATEGORY_KEYS].sort())
+  assert.equal(new Set(all).size, all.length)
+  for (const locale of ['en', 'vi']) {
+    const url = new URL(`../../i18n/locales/${locale}/deviceSync.json`, import.meta.url)
+    const groups = JSON.parse(readFileSync(url, 'utf8')).groups
+    for (const g of SYNC_GROUPS) assert.ok(groups[g.key], `${locale}: groups.${g.key}`)
+  }
+})
+
+test('groupState: all, none or mixed', () => {
+  const c = defaultCategories()
+  const items = ['settings', 'mcpServers', 'vpsServers', 'accounts']
+  assert.equal(groupState(c, items), true)
+  c.accounts = false
+  assert.equal(groupState(c, items), 'mixed')
+  for (const k of items) c[k] = false
+  assert.equal(groupState(c, items), false)
+})
+
+test('compactReport keeps rows and columns where something happened', () => {
+  const z = { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 }
+  const { rows, columns, hidden } = compactReport({
+    counts: {
+      todos: { ...z, created: 3, updated: 14, unchanged: 2 },
+      notes: { ...z, unchanged: 7 },
+      projects: { ...z, updated: 2, skipped: 1 },
+      secretNotes: { ...z },
+    },
+    warnings: [],
+  })
+  assert.deepEqual(rows.map(r => r.key), ['todos', 'projects'])
+  assert.deepEqual(columns, ['created', 'updated', 'skipped'])
+  assert.equal(hidden, 2)
+  assert.deepEqual(compactReport({ counts: {}, warnings: [] }), { rows: [], columns: [], hidden: 0 })
+})
+
+test('needsRelogin only when a Claude / AWS / Azure account came in', () => {
+  const z = { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 }
+  assert.equal(needsRelogin({ counts: { githubAccounts: { ...z, created: 1 } }, warnings: [] }), false)
+  assert.equal(needsRelogin({ counts: { claudeAccounts: { ...z, unchanged: 2 } }, warnings: [] }), false)
+  assert.equal(needsRelogin({ counts: { awsAccounts: { ...z, updated: 1 } }, warnings: [] }), true)
+})
+
+test('syncDay buckets a time relative to now', () => {
+  const now = new Date(2026, 10, 4, 10, 0)
+  assert.equal(syncDay(new Date(2026, 10, 4, 0, 5).toISOString(), now), 'today')
+  assert.equal(syncDay(new Date(2026, 10, 3, 14, 32).toISOString(), now), 'yesterday')
+  assert.equal(syncDay(new Date(2026, 10, 2, 23, 59).toISOString(), now), 'earlier')
+  assert.equal(syncDay('not a date', now), null)
 })

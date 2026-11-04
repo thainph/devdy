@@ -78,6 +78,14 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub device_id: Option<String>,
 
+    /// `register_host` (optional, newer Hosts): random id minted each time the
+    /// app starts. Tells a reconnect of the same running app (same id: takes
+    /// over its stale socket) from another machine using the same `device_id`
+    /// (different id while the first is connected: refused with
+    /// `device_id_conflict`).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub instance_id: Option<String>,
+
     /// `register_host`: shared secret to authenticate the Host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub auth_token: Option<String>,
@@ -104,6 +112,9 @@ pub struct Envelope {
     /// `register_host` (optional, newer Hosts): the device alias to list this
     /// Host under. Its presence (with `app_version`) opts the Host into
     /// `list_hosts`; a re-register without it withdraws the Host from the list.
+    /// Also on `error{alias_conflict}` (relay → the registering Host): the
+    /// caller's own alias as it registered it, which another listed device
+    /// already uses (compared trimmed and case-insensitively).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 
@@ -133,6 +144,7 @@ impl Envelope {
             seq: None,
             cipher: None,
             device_id: None,
+            instance_id: None,
             auth_token: None,
             pair_code: None,
             persistent: None,
@@ -223,6 +235,15 @@ pub enum ErrorCode {
     Forbidden,
     /// Too many frames in the rate-limit window.
     RateLimited,
+    /// `register_host`: another live connection of a different app instance
+    /// already uses this `device_id`. The newcomer is refused and closed.
+    DeviceIdConflict,
+    /// `register_host`: another listed Host (another device) uses the same
+    /// alias. Only a warning: the registration still went through.
+    AliasConflict,
+    /// Relay → Host: another connection now listens on a code this Host
+    /// listened on (in `slot`); this Host no longer gets its joins.
+    ListenSuperseded,
 }
 
 impl ErrorCode {
@@ -238,6 +259,9 @@ impl ErrorCode {
             ErrorCode::Superseded => "superseded",
             ErrorCode::Forbidden => "forbidden",
             ErrorCode::RateLimited => "rate_limited",
+            ErrorCode::DeviceIdConflict => "device_id_conflict",
+            ErrorCode::AliasConflict => "alias_conflict",
+            ErrorCode::ListenSuperseded => "listen_superseded",
         }
     }
 }

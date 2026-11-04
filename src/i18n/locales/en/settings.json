@@ -13,14 +13,11 @@
     "google": "Google Account",
     "usage": "Usage & Budget",
     "devices": "Devices",
+    "backup": "Backup",
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
     "azure": "Azure Accounts",
     "focus": "Focus"
-  },
-  "devicesTabs": {
-    "remote": "Remote Control",
-    "backup": "Backup"
   },
   "general": {
     "theme": "Theme",
@@ -456,6 +453,7 @@
       "todos": "Todos",
       "slackThreads": "Slack threads",
       "projects": "Projects"
-    }
+    },
+    "syncInstead": "Both machines online? Use {link} instead of a file."
   }
 }

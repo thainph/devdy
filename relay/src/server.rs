@@ -27,7 +27,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::Config;
-use crate::presence::{clean_field, HostPresence, PresenceRegistry};
+use crate::presence::{clean_field, HostPresence, PresenceRegistry, Registration};
 use crate::protocol::{Envelope, ErrorCode, FrameType};
 use crate::ratelimit::RateLimiter;
 use crate::room::{ConnId, JoinOutcome, Notice, Outbound, RoomRegistry};
@@ -156,7 +156,14 @@ impl tokio::io::AsyncWrite for ActivityStream {
 /// every peer sees notices and `room_ready`s in the order the registry changed.
 fn deliver(notices: Vec<Notice>) {
     for n in notices {
-        if n.superseded {
+        if let Some(slot) = n.lost_slot {
+            let mut e = Envelope::error(
+                ErrorCode::ListenSuperseded,
+                "another connection now listens on this code",
+            );
+            e.slot = (!slot.is_empty()).then_some(slot);
+            let _ = n.out.send(e);
+        } else if n.superseded {
             let mut e = Envelope::error(ErrorCode::Superseded, "replaced by a newer connection");
             e.room_id = n.room_id;
             let _ = n.out.send(e);
@@ -337,17 +344,41 @@ async fn dispatch(
                 let _ = out_tx.send(Envelope::error(ErrorCode::AuthFailed, "invalid auth token"));
                 return true;
             }
-            *role = Role::Host;
             let presence = presence_of(&env);
-            tracing::info!(
-                event = "host_registered",
-                conn = conn_id,
-                device_id = env.device_id.as_deref().unwrap_or(""),
-                listed = presence.is_some()
+            let listed = presence.is_some();
+            let device_id = clean_field(env.device_id.as_deref().unwrap_or(""));
+            let instance_id = env.instance_id.as_deref().map(clean_field);
+            let registration = shared.presence.lock().await.register(
+                conn_id,
+                &device_id,
+                instance_id.as_deref(),
+                presence,
             );
-            shared.presence.lock().await.set(conn_id, presence);
-            let _ = out_tx.send(Envelope::control_ack(String::new()));
-            false
+            match registration {
+                Registration::DeviceIdConflict => {
+                    tracing::warn!(event = "register_device_id_conflict", conn = conn_id, device_id = %device_id);
+                    let _ = out_tx.send(Envelope::error(
+                        ErrorCode::DeviceIdConflict,
+                        "another running Devdy is connected with this device id",
+                    ));
+                    // The live Host keeps its listens; this one never becomes a Host.
+                    true
+                }
+                Registration::Accepted { alias_conflict } => {
+                    *role = Role::Host;
+                    tracing::info!(event = "host_registered", conn = conn_id, device_id = %device_id, listed);
+                    let _ = out_tx.send(Envelope::control_ack(String::new()));
+                    if let Some(alias) = alias_conflict {
+                        let mut e = Envelope::error(
+                            ErrorCode::AliasConflict,
+                            "another online device uses this name",
+                        );
+                        e.alias = Some(alias);
+                        let _ = out_tx.send(e);
+                    }
+                    false
+                }
+            }
         }
 
         // Owner's Devdy desktops (they all hold the host token) ask who else is

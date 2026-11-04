@@ -22,36 +22,93 @@ pub struct HostPresence {
     pub app_version: String,
 }
 
-/// Online Hosts by connection.
+/// What one registered Host connection announced.
+struct HostEntry {
+    device_id: String,
+    /// Random per app launch (newer Hosts); see `Envelope::instance_id`.
+    instance_id: Option<String>,
+    /// `Some` when the Host opted into `list_hosts`.
+    listed: Option<HostPresence>,
+}
+
+/// Outcome of [`PresenceRegistry::register`].
+#[derive(Debug, PartialEq, Eq)]
+pub enum Registration {
+    /// Registered. `alias_conflict`: another listed device uses the same alias.
+    Accepted { alias_conflict: Option<String> },
+    /// Another live connection of a different app instance has this device id:
+    /// refused, nothing recorded.
+    DeviceIdConflict,
+}
+
+/// Registered Hosts by connection (listed or not).
 #[derive(Default)]
 pub struct PresenceRegistry {
-    by_conn: HashMap<ConnId, HostPresence>,
+    by_conn: HashMap<ConnId, HostEntry>,
+}
+
+/// Aliases compare trimmed and case-insensitively.
+fn same_alias(a: &str, b: &str) -> bool {
+    let (a, b) = (a.trim(), b.trim());
+    !a.is_empty() && a.to_lowercase() == b.to_lowercase()
 }
 
 impl PresenceRegistry {
-    /// Record (or, with `None`, withdraw) what `conn` announces. A Host
-    /// re-registers on the same socket when its alias or capabilities change.
-    pub fn set(&mut self, conn: ConnId, presence: Option<HostPresence>) {
-        match presence.filter(|p| !p.device_id.is_empty()) {
-            Some(p) => {
-                self.by_conn.insert(conn, p);
-            }
-            None => {
-                self.by_conn.remove(&conn);
+    /// Record what `conn` announces on `register_host` (a Host re-registers on
+    /// the same socket when its alias or capabilities change).
+    ///
+    /// Another connection with the same `device_id` is refused only when both
+    /// carry an `instance_id` and they differ: the same instance is the same
+    /// app reconnecting before its old socket timed out, and a Host without an
+    /// instance id (older app) keeps the old "newest wins" behavior.
+    pub fn register(
+        &mut self,
+        conn: ConnId,
+        device_id: &str,
+        instance_id: Option<&str>,
+        presence: Option<HostPresence>,
+    ) -> Registration {
+        let instance_id = instance_id.filter(|i| !i.is_empty());
+        if !device_id.is_empty() {
+            let clash = self.by_conn.iter().any(|(c, e)| {
+                *c != conn
+                    && e.device_id == device_id
+                    && matches!((&e.instance_id, instance_id), (Some(a), Some(b)) if a != b)
+            });
+            if clash {
+                return Registration::DeviceIdConflict;
             }
         }
+        let listed = presence.filter(|p| !p.device_id.is_empty());
+        let alias_conflict = listed.as_ref().and_then(|p| {
+            self.by_conn
+                .iter()
+                .filter(|(c, _)| **c != conn)
+                .filter_map(|(_, e)| e.listed.as_ref())
+                .any(|other| other.device_id != p.device_id && same_alias(&other.alias, &p.alias))
+                .then(|| p.alias.clone())
+        });
+        self.by_conn.insert(
+            conn,
+            HostEntry {
+                device_id: device_id.to_string(),
+                instance_id: instance_id.map(str::to_string),
+                listed,
+            },
+        );
+        Registration::Accepted { alias_conflict }
     }
 
     pub fn remove(&mut self, conn: ConnId) {
         self.by_conn.remove(&conn);
     }
 
-    /// Online Hosts except `exclude_device`, one entry per device (its newest
+    /// Listed Hosts except `exclude_device`, one entry per device (its newest
     /// connection wins over a stale socket that has not timed out yet), sorted
     /// by alias then device id.
     pub fn list(&self, exclude_device: Option<&str>) -> Vec<HostPresence> {
         let mut newest: HashMap<&str, (ConnId, &HostPresence)> = HashMap::new();
-        for (conn, p) in &self.by_conn {
+        for (conn, p) in self.by_conn.iter().filter_map(|(c, e)| Some((c, e.listed.as_ref()?))) {
             if exclude_device.is_some_and(|d| d == p.device_id) {
                 continue;
             }
@@ -95,12 +152,18 @@ mod tests {
         }
     }
 
+    /// Register `p` (listed) on `conn` with no instance id; must be accepted.
+    fn set(reg: &mut PresenceRegistry, conn: ConnId, p: HostPresence) {
+        let device = p.device_id.clone();
+        assert!(matches!(reg.register(conn, &device, None, Some(p)), Registration::Accepted { .. }));
+    }
+
     #[test]
     fn list_excludes_the_caller_and_dedupes_by_device() {
         let mut reg = PresenceRegistry::default();
-        reg.set(1, Some(p("a", "old-name")));
-        reg.set(2, Some(p("b", "mini")));
-        reg.set(3, Some(p("a", "air")));
+        set(&mut reg, 1, p("a", "old-name"));
+        set(&mut reg, 2, p("b", "mini"));
+        set(&mut reg, 3, p("a", "air"));
         let all = reg.list(None);
         assert_eq!(
             all,
@@ -113,15 +176,69 @@ mod tests {
     #[test]
     fn withdrawing_or_disconnecting_unlists() {
         let mut reg = PresenceRegistry::default();
-        reg.set(1, Some(p("a", "air")));
-        reg.set(2, Some(p("b", "mini")));
-        reg.set(1, None);
+        set(&mut reg, 1, p("a", "air"));
+        set(&mut reg, 2, p("b", "mini"));
+        reg.register(1, "a", None, None);
         reg.remove(2);
         assert!(reg.list(None).is_empty());
-        reg.set(3, Some(p("", "no-id")));
+        reg.register(3, "", None, Some(p("", "no-id")));
         assert!(
             reg.list(None).is_empty(),
             "a host without device id is never listed"
+        );
+    }
+
+    #[test]
+    fn another_instance_on_a_live_device_id_is_refused() {
+        let mut reg = PresenceRegistry::default();
+        let ok = Registration::Accepted { alias_conflict: None };
+        assert_eq!(reg.register(1, "dev", Some("run-1"), Some(p("dev", "air"))), ok);
+        // Another machine with a copied device id.
+        assert_eq!(
+            reg.register(2, "dev", Some("run-2"), Some(p("dev", "air"))),
+            Registration::DeviceIdConflict
+        );
+        assert_eq!(reg.list(None), vec![p("dev", "air")], "the newcomer is not listed");
+        // The same app reconnecting while its old socket is half-open.
+        assert_eq!(reg.register(3, "dev", Some("run-1"), Some(p("dev", "air"))), ok);
+        // Older Hosts (no instance id) on either side: newest wins, as before.
+        assert_eq!(reg.register(4, "dev", None, None), ok);
+        let mut old = PresenceRegistry::default();
+        assert_eq!(old.register(1, "dev", None, None), ok);
+        assert_eq!(old.register(2, "dev", Some("run-2"), None), ok);
+        // Once the first connection is gone, another instance may register.
+        reg.remove(1);
+        reg.remove(3);
+        assert_eq!(reg.register(5, "dev", Some("run-2"), None), ok);
+        // Re-registering on the same socket is never a conflict.
+        assert_eq!(reg.register(5, "dev", Some("run-2"), Some(p("dev", "x"))), ok);
+    }
+
+    #[test]
+    fn a_listed_alias_used_by_another_device_is_reported() {
+        let mut reg = PresenceRegistry::default();
+        set(&mut reg, 1, p("a", "Mac Mini"));
+        assert_eq!(
+            reg.register(2, "b", None, Some(p("b", " mac mini "))),
+            Registration::Accepted { alias_conflict: Some(" mac mini ".into()) },
+            "still accepted, with a warning"
+        );
+        assert_eq!(reg.list(None).len(), 2);
+        // Same device (stale socket), unlisted hosts and empty aliases don't count.
+        assert_eq!(
+            reg.register(3, "a", None, Some(p("a", "mac mini"))),
+            Registration::Accepted { alias_conflict: Some("mac mini".into()) },
+            "b still has it"
+        );
+        reg.remove(2);
+        assert_eq!(
+            reg.register(4, "a", None, Some(p("a", "Mac Mini"))),
+            Registration::Accepted { alias_conflict: None }
+        );
+        reg.register(5, "c", None, None);
+        assert_eq!(
+            reg.register(6, "d", None, Some(p("d", ""))),
+            Registration::Accepted { alias_conflict: None }
         );
     }
 

@@ -8,6 +8,7 @@
 // draft) so a reload or a link reopens it.
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { useRoute, useRouter } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Layers, RefreshCw, ScrollText, Upload } from 'lucide-vue-next'
@@ -228,12 +229,16 @@ async function handleApplyToAll(rule: Rule) {
   applyingId.value = rule.id
   try {
     const result = await store.applyRuleToAllProjects(rule.id)
-    if (result.failures.length === 0) {
+    const pending = savedWithoutFolderNames(result.saved_without_folder)
+    if (result.failures.length === 0 && result.applied === 0 && pending.length) {
+      // Only projects without a folder here: the info toast below says it all.
+    } else if (result.failures.length === 0) {
       toast.success(t('rules.list.toastApplied', { name: rule.name, count: result.applied, project: t(result.applied === 1 ? 'rules.list.project' : 'rules.list.projects') }))
     } else {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
       toast.error(t('rules.list.toastAppliedPartial', { applied: result.applied, project: t(result.applied === 1 ? 'rules.list.project' : 'rules.list.projects'), failed: result.failures.length, details }))
     }
+    if (pending.length) toast.info(t('misc.savedWithoutFolder.many', { projects: pending.join(', ') }), 5000)
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -252,7 +257,10 @@ async function handleReapply(rule?: Rule) {
   reapplyingId.value = rule?.id ?? 'all'
   try {
     const result = await store.reapplyRules(rule?.id)
-    if (result.applied === 0 && result.failures.length === 0) {
+    const pending = savedWithoutFolderNames(result.saved_without_folder)
+    if (result.applied === 0 && result.failures.length === 0 && pending.length) {
+      // Only projects without a folder here: the info toast below says it all.
+    } else if (result.applied === 0 && result.failures.length === 0) {
       toast.info(t('rules.list.toastNothingToReapply'))
     } else if (result.failures.length === 0) {
       toast.success(t('rules.list.toastReapplied', { count: result.applied }))
@@ -260,6 +268,7 @@ async function handleReapply(rule?: Rule) {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
       toast.error(t('rules.list.toastReappliedPartial', { applied: result.applied, failed: result.failures.length, details }))
     }
+    if (pending.length) toast.info(t('misc.savedWithoutFolder.many', { projects: pending.join(', ') }), 5000)
   } catch (e) {
     toast.error(String(e))
   } finally {

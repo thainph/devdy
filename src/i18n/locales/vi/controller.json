@@ -73,7 +73,7 @@
     "passwordLogin": "Đăng nhập",
     "passwordWorking": "Đang đăng nhập…",
     "passwordFirst": "Nhập mật khẩu trước đã.",
-    "passwordHint": "Mất link? Master password đặt trong Devdy (Settings → Remote Control) kết nối thẳng tới host. Sai 5 lần sẽ bị khóa 5 phút.",
+    "passwordHint": "Mất link? Mật khẩu chính đặt trong Devdy (Cài đặt → Thiết bị) kết nối thẳng tới host. Sai 5 lần sẽ bị khóa 5 phút.",
     "loginWrongPassword": "Sai mật khẩu (hoặc thử quá nhiều lần — đợi vài phút).",
     "loginHostOffline": "Không kết nối được tới Devdy: kiểm tra app đang chạy, đã bật Remote Control và đặt master password.",
     "loginNetwork": "Không kết nối được tới relay. Kiểm tra mạng rồi thử lại.",

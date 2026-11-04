@@ -2066,8 +2066,18 @@ pub(crate) async fn import_group(
     if members.len() != before {
         let applied = set_group_members_inner(db, kind, &group_id, members).await?;
         if !applied.failures.is_empty() {
-            let names: Vec<String> = applied.failures.into_iter().map(|f| f.item_name).collect();
-            return Err(format!("could not apply to projects: {}", names.join(", ")));
+            // One failure per (project, member): name each member once, with its first error.
+            let mut seen = std::collections::BTreeSet::new();
+            let failures: Vec<String> = applied
+                .failures
+                .into_iter()
+                .filter(|f| seen.insert(f.item_name.clone()))
+                .map(|f| format!("{} ({})", f.item_name, f.error))
+                .collect();
+            return Err(format!(
+                "members saved, but could not apply to projects: {}",
+                failures.join(", ")
+            ));
         }
         if outcome == Upsert::Unchanged {
             outcome = Upsert::Updated;
@@ -3078,7 +3088,9 @@ async fn import_project(
         touched = true;
     }
 
-    touched |= apply_project_links(db, &id, entry, &mut warnings).await?;
+    let mut links = Vec::new();
+    touched |= apply_project_links(db, &id, entry, &mut links).await?;
+    warnings.extend(links.iter().map(ToString::to_string));
 
     if touched && outcome == Upsert::Unchanged {
         outcome = Upsert::Updated;
@@ -3144,6 +3156,36 @@ pub(crate) async fn update_project_row(
     Ok(q.execute(db).await.map_err(err)?.rows_affected() > 0)
 }
 
+/// A project link `apply_project_links` could not switch on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LinkWarning {
+    /// `mcpServer`, `vpsServer`, `githubAccount`, `skillGroup`, `skill`, `rule`…; empty for a
+    /// failure applying an item that exists.
+    pub kind: &'static str,
+    pub name: String,
+    /// `None`: the linked item doesn't exist here.
+    pub error: Option<String>,
+}
+
+impl LinkWarning {
+    fn missing(kind: &'static str, name: &str) -> Self {
+        Self { kind, name: name.to_string(), error: None }
+    }
+
+    fn failed(name: &str, error: String) -> Self {
+        Self { kind: "", name: name.to_string(), error: Some(error) }
+    }
+}
+
+impl std::fmt::Display for LinkWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.error {
+            None => write!(f, "{} '{}' not found", self.kind, self.name),
+            Some(e) => write!(f, "'{}': {e}", self.name),
+        }
+    }
+}
+
 /// Switch on for project `id` everything `entry` links to (MCP / VPS servers, git and cloud
 /// accounts, skill / rule groups, skills, rules), matched by name / label. Links are added, never
 /// removed; a link to something missing here becomes a warning. Returns whether anything changed.
@@ -3151,7 +3193,7 @@ pub(crate) async fn apply_project_links(
     db: &Db,
     id: &str,
     entry: &ProjectEntry,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<LinkWarning>,
 ) -> Result<bool, String> {
     let err = |e: sqlx::Error| e.to_string();
     let id = id.to_string();
@@ -3173,7 +3215,7 @@ pub(crate) async fn apply_project_links(
                 .rows_affected()
                     > 0;
             }
-            None => warnings.push(format!("MCP server '{name}' not found")),
+            None => warnings.push(LinkWarning::missing("mcpServer", name)),
         }
     }
 
@@ -3194,7 +3236,7 @@ pub(crate) async fn apply_project_links(
                 .rows_affected()
                     > 0;
             }
-            None => warnings.push(format!("VPS server '{}' not found", link.server)),
+            None => warnings.push(LinkWarning::missing("vpsServer", &link.server)),
         }
     }
 
@@ -3230,13 +3272,19 @@ pub(crate) async fn apply_project_links(
         let mut labels = labels;
         labels.sort();
         labels.dedup();
+        let kind = match table {
+            "github_accounts" => "githubAccount",
+            "gitlab_accounts" => "gitlabAccount",
+            "aws_accounts" => "awsAccount",
+            _ => "azureAccount",
+        };
         for label in labels {
             match id_by(db, table, "label", label).await? {
                 Some(account_id) => {
                     touched |= super::project_git_accounts::enable(db, provider, &id, &account_id)
                         .await?;
                 }
-                None => warnings.push(format!("account '{label}' not found in {table}")),
+                None => warnings.push(LinkWarning::missing(kind, label)),
             }
         }
         super::project_git_accounts::repair_defaults(db, provider, Some(&id)).await?;
@@ -3247,13 +3295,13 @@ pub(crate) async fn apply_project_links(
         (GroupKind::Skill, &entry.skill_groups),
         (GroupKind::Rule, &entry.rule_groups),
     ] {
-        let (groups_table, link_table) = match kind {
-            GroupKind::Skill => ("skill_groups", "project_skill_groups"),
-            GroupKind::Rule => ("rule_groups", "project_rule_groups"),
+        let (groups_table, link_table, missing_kind) = match kind {
+            GroupKind::Skill => ("skill_groups", "project_skill_groups", "skillGroup"),
+            GroupKind::Rule => ("rule_groups", "project_rule_groups", "ruleGroup"),
         };
         for name in names {
             let Some(group_id) = id_by(db, groups_table, "name", name).await? else {
-                warnings.push(format!("group '{name}' not found"));
+                warnings.push(LinkWarning::missing(missing_kind, name));
                 continue;
             };
             let enabled: Option<i64> = sqlx::query_scalar(&format!(
@@ -3269,21 +3317,21 @@ pub(crate) async fn apply_project_links(
             }
             let applied = crate::commands::groups::enable_group(db, kind, &id, &group_id).await?;
             for failure in applied.failures {
-                warnings.push(format!("'{}': {}", failure.item_name, failure.error));
+                warnings.push(LinkWarning::failed(&failure.item_name, failure.error));
             }
             touched = true;
         }
     }
 
     for (is_skill, items) in [(true, &entry.skills), (false, &entry.rules)] {
-        let (items_table, link_table, item_col) = if is_skill {
-            ("skills", "project_skills", "skill_id")
+        let (items_table, link_table, item_col, missing_kind) = if is_skill {
+            ("skills", "project_skills", "skill_id", "skill")
         } else {
-            ("rules", "project_rules", "rule_id")
+            ("rules", "project_rules", "rule_id", "rule")
         };
         for item in items {
             let Some(item_id) = id_by(db, items_table, "name", &item.name).await? else {
-                warnings.push(format!("{items_table} '{}' not found", item.name));
+                warnings.push(LinkWarning::missing(missing_kind, &item.name));
                 continue;
             };
             let manual: Option<i64> = sqlx::query_scalar(&format!(
@@ -3306,7 +3354,7 @@ pub(crate) async fn apply_project_links(
             };
             match applied {
                 Ok(()) => touched = true,
-                Err(e) => warnings.push(format!("'{}': {e}", item.name)),
+                Err(e) => warnings.push(LinkWarning::failed(&item.name, e)),
             }
         }
     }

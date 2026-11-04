@@ -40,6 +40,8 @@ export interface GroupItemFailure {
 export interface GroupApplyOutcome {
   applied: number
   failures: GroupItemFailure[]
+  /** `enable_group_for_project`: links saved, but the project folder isn't on this machine. */
+  folder_missing?: boolean
 }
 
 export interface GroupDisableOutcome {

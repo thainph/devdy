@@ -615,15 +615,47 @@ pub async fn apply_rule(
     db: State<'_, Db>,
     project_id: String,
     rule_id: String,
-) -> Result<(), String> {
-    apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await
+) -> Result<ApplyOneOutcome, String> {
+    let folder_missing = project_folder_missing(db.inner(), &project_id).await;
+    apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await?;
+    Ok(ApplyOneOutcome { folder_missing })
+}
+
+/// Result of switching one skill / rule on for one project.
+#[derive(Debug, Serialize)]
+pub struct ApplyOneOutcome {
+    /// The project folder isn't on this machine: the link is saved, nothing was
+    /// written; it is installed once the folder exists (next app start, sync or
+    /// re-apply).
+    pub folder_missing: bool,
 }
 
 /// Summary returned by "apply to all projects" bulk operations (rules & skills).
 #[derive(Debug, Serialize)]
 pub struct ApplyAllOutcome {
+    /// Applied, files written.
     pub applied: usize,
     pub failures: Vec<ApplyFailure>,
+    /// Link saved but the project folder isn't on this machine (nothing written).
+    pub saved_without_folder: Vec<SavedWithoutFolder>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SavedWithoutFolder {
+    pub project_id: String,
+    pub project_name: String,
+}
+
+/// Whether project `project_id` has no folder on this machine (an unknown
+/// project counts as present: the apply itself reports it).
+pub(crate) async fn project_folder_missing(db: &Db, project_id: &str) -> bool {
+    sqlx::query_scalar::<_, String>("SELECT path FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|path| !Path::new(&path).is_dir())
 }
 
 #[derive(Debug, Serialize)]
@@ -646,15 +678,18 @@ pub async fn apply_rule_to_all_projects(
 
     let mut applied = 0;
     let mut failures = Vec::new();
+    let mut saved_without_folder = Vec::new();
     for row in &rows {
         let project_id: String = row.get("id");
         let project_name: String = row.get("name");
+        let missing = project_folder_missing(db.inner(), &project_id).await;
         match apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await {
+            Ok(()) if missing => saved_without_folder.push(SavedWithoutFolder { project_id, project_name }),
             Ok(()) => applied += 1,
             Err(error) => failures.push(ApplyFailure { project_id, project_name, error }),
         }
     }
-    Ok(ApplyAllOutcome { applied, failures })
+    Ok(ApplyAllOutcome { applied, failures, saved_without_folder })
 }
 
 /// Re-write a rule (or every rule when `rule_id` is None) into each project that already has it
@@ -681,18 +716,20 @@ pub async fn reapply_rules(
 
     let mut applied = 0;
     let mut failures = Vec::new();
+    let mut saved_without_folder = Vec::new();
     for row in &rows {
         let project_id: String = row.get("project_id");
         let rid: String = row.get("rule_id");
         let project_name: String = row.get("project_name");
         let project_path: String = row.get("path");
         let rule_name: String = row.get("rule_name");
-        // Don't recreate a project folder that was moved or deleted on disk.
-        let result = if !Path::new(&project_path).is_dir() {
-            Err(format!("Project folder not found: {}", project_path))
-        } else {
-            apply_rule_to_project(db.inner(), &project_id, &rid, false).await
-        };
+        // No folder on this machine: the link stays saved, nothing to write (and
+        // the folder isn't recreated).
+        if !Path::new(&project_path).is_dir() {
+            saved_without_folder.push(SavedWithoutFolder { project_id, project_name });
+            continue;
+        }
+        let result = apply_rule_to_project(db.inner(), &project_id, &rid, false).await;
         match result {
             Ok(()) => {
                 applied += 1;
@@ -711,7 +748,8 @@ pub async fn reapply_rules(
             }),
         }
     }
-    Ok(ApplyAllOutcome { applied, failures })
+    saved_without_folder.dedup_by(|a, b| a.project_id == b.project_id);
+    Ok(ApplyAllOutcome { applied, failures, saved_without_folder })
 }
 
 /// Core apply logic shared by `apply_rule`, `apply_rule_to_all_projects` and group enablement.
@@ -753,15 +791,21 @@ pub async fn apply_rule_to_project(
     let prev_claude: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_claude"));
     let prev_codex: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_codex"));
 
-    let (hash_claude, hash_codex) = write_rule_artifacts(
-        &project_path,
-        &name,
-        &description,
-        &target,
-        &source_path,
-        prev_claude.as_deref(),
-        prev_codex.as_deref(),
-    )?;
+    // The link is a project setting: recorded even when the folder isn't on this machine (yet),
+    // see `apply_skill_to_project`.
+    let (hash_claude, hash_codex) = if Path::new(&project_path).is_dir() {
+        write_rule_artifacts(
+            &project_path,
+            &name,
+            &description,
+            &target,
+            &source_path,
+            prev_claude.as_deref(),
+            prev_codex.as_deref(),
+        )?
+    } else {
+        (prev_claude, prev_codex)
+    };
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(
@@ -1147,6 +1191,11 @@ pub async fn sync_rule_to_projects(db: &Db, rule_id: &str) -> Result<Vec<String>
         let prev_codex: Option<String> = row.get("synced_hash_codex");
         let project_path: String = row.get("path");
         let project_name: String = row.get("project_name");
+        // Folder not on this machine: nothing to refresh (and nothing to recreate). The link and
+        // its last-sync hashes stay, so the rule is installed once the folder shows up.
+        if !Path::new(&project_path).is_dir() {
+            continue;
+        }
         let mut errors = Vec::new();
 
         // ---- Claude ----
@@ -1550,5 +1599,80 @@ mod tests {
         remove_skill_from_project_inner(&db, "p1", "review").await.unwrap();
         assert!(!is_symlink(&project.join(".claude/skills/review")));
         assert!(source.join("SKILL.md").exists(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn pending_links_install_at_start_once_the_folder_exists() {
+        let (db, project, lib) = setup("pending").await;
+        fs::remove_dir_all(&project).unwrap();
+        let source = add_rule(&db, &lib, "git", "claude", "Commit in English.\n").await;
+        apply_rule_to_project(&db, "p1", "git", true).await.unwrap();
+        assert!(project_folder_missing(&db, "p1").await);
+        // Still no folder: nothing to do, nothing recreated.
+        assert_eq!(crate::commands::projects::install_pending_links(&db).await, 0);
+        assert!(!project.exists());
+
+        fs::create_dir_all(&project).unwrap();
+        assert!(!project_folder_missing(&db, "p1").await);
+        assert_eq!(crate::commands::projects::install_pending_links(&db).await, 1);
+        assert_eq!(fs::read_link(project.join(".claude/rules/git.md")).unwrap(), source);
+        let manual: i64 = sqlx::query_scalar("SELECT manual FROM project_rules WHERE rule_id = 'git'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(manual, 1, "a hand-picked link stays hand-picked");
+        // Installed now: the next start has nothing left to do.
+        assert_eq!(crate::commands::projects::install_pending_links(&db).await, 0);
+    }
+
+    #[tokio::test]
+    async fn missing_project_folder_keeps_the_link_and_installs_once_it_exists() {
+        let (db, project, lib) = setup("missing").await;
+        fs::remove_dir_all(&project).unwrap();
+        let rule_source = add_rule(&db, &lib, "git", "both", "---\nname: git\n---\n\nCommit in English.\n").await;
+        let skill_source = lib.join("skills/review");
+        fs::create_dir_all(&skill_source).unwrap();
+        fs::write(skill_source.join("SKILL.md"), "---\nname: review\n---\nbody\n").unwrap();
+        sqlx::query(
+            "INSERT INTO skills (id, name, description, target, source_path, updated_at)
+             VALUES ('review', 'review', 'Review PRs', 'both', ?, '2026-01-01')",
+        )
+        .bind(skill_source.to_string_lossy().to_string())
+        .execute(&db)
+        .await
+        .unwrap();
+
+        // Folder not on this machine: the links are settings and still get recorded, nothing is
+        // written and the folder isn't recreated.
+        apply_rule_to_project(&db, "p1", "git", true).await.unwrap();
+        apply_skill_to_project(&db, "p1", "review", false).await.unwrap();
+        assert!(!project.exists());
+        let links: (i64, i64) = sqlx::query_as(
+            "SELECT (SELECT COUNT(*) FROM project_rules WHERE project_id = 'p1' AND rule_id = 'git' AND manual = 1),
+                    (SELECT COUNT(*) FROM project_skills WHERE project_id = 'p1' AND skill_id = 'review' AND manual = 0)",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(links, (1, 1));
+        // Updating the library skips it quietly.
+        assert!(sync_rule_to_projects(&db, "git").await.unwrap().is_empty());
+        assert!(sync_skill_to_projects(&db, "review").await.unwrap().is_empty());
+        assert!(!project.exists());
+
+        // The folder shows up (cloned later): the next sync installs both.
+        fs::create_dir_all(&project).unwrap();
+        assert!(sync_rule_to_projects(&db, "git").await.unwrap().is_empty());
+        assert!(sync_skill_to_projects(&db, "review").await.unwrap().is_empty());
+        assert_eq!(fs::read_link(project.join(".claude/rules/git.md")).unwrap(), rule_source);
+        assert!(fs::read_to_string(project.join("AGENTS.md")).unwrap().contains("Commit in English."));
+        assert_eq!(fs::read_link(project.join(".claude/skills/review")).unwrap(), skill_source);
+        // As does a re-apply (what "Re-apply" in the UI runs).
+        fs::remove_dir_all(&project).unwrap();
+        fs::create_dir_all(&project).unwrap();
+        apply_rule_to_project(&db, "p1", "git", false).await.unwrap();
+        apply_skill_to_project(&db, "p1", "review", false).await.unwrap();
+        assert_eq!(fs::read_link(project.join(".claude/rules/git.md")).unwrap(), rule_source);
+        assert_eq!(fs::read_link(project.join(".agents/skills/review")).unwrap(), skill_source);
     }
 }

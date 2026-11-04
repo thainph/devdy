@@ -13,14 +13,11 @@
     "google": "Tài khoản Google",
     "usage": "Sử dụng & Ngân sách",
     "devices": "Thiết bị",
+    "backup": "Sao lưu",
     "prompts": "Mẫu Prompt",
     "inbox": "Inbox API",
     "azure": "Tài khoản Azure",
     "focus": "Focus"
-  },
-  "devicesTabs": {
-    "remote": "Điều khiển từ xa",
-    "backup": "Sao lưu"
   },
   "general": {
     "theme": "Giao diện",
@@ -456,6 +453,7 @@
       "todos": "Todo",
       "slackThreads": "Slack thread",
       "projects": "Project"
-    }
+    },
+    "syncInstead": "Hai máy đều đang online? Dùng {link} thay vì file."
   }
 }

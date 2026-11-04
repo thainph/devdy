@@ -35,7 +35,59 @@ export interface SyncCounts {
 
 export interface SyncReport {
   counts: Record<string, SyncCounts>
-  warnings: string[]
+  warnings: SyncWarning[]
+}
+
+/**
+ * One report line as `code` + `params` (i18n `deviceSync.warnings.<code>`). Codes:
+ * `project_folder_missing` {project, path}, `link_target_missing` {project, kind, name},
+ * `link_failed` {project, name, error}, `project_failed` {project, error},
+ * `item_failed` {section, name, error}, `project_sync_failed` {section, name, detail},
+ * `category_not_sent` / `category_empty_no_mirror` {section},
+ * `delete_failed` {section, name, error}, `other` {message}.
+ */
+export interface SyncWarning {
+  code: string
+  params: Record<string, string>
+}
+
+export type SyncWarningGroup = 'folders' | 'links' | 'mirror' | 'problems'
+
+const WARNING_GROUP: Record<string, SyncWarningGroup> = {
+  project_folder_missing: 'folders',
+  link_target_missing: 'links',
+  link_failed: 'links',
+  category_not_sent: 'mirror',
+  category_empty_no_mirror: 'mirror',
+}
+
+const WARNING_GROUP_ORDER: SyncWarningGroup[] = ['problems', 'folders', 'links', 'mirror']
+
+/** Warnings shown per group before "show N more". */
+export const WARNING_PREVIEW = 3
+
+/** A plain string (older report shape) reads as an `other` warning. */
+export function normalizeWarning(w: SyncWarning | string): SyncWarning {
+  if (typeof w === 'string') return { code: 'other', params: { message: w } }
+  return { code: w.code || 'other', params: w.params ?? {} }
+}
+
+/**
+ * Warnings by group, real problems first, then folder notes, missing link targets and
+ * mirror notes; empty groups dropped, order inside a group kept. Exact repeats are dropped.
+ */
+export function groupWarnings(warnings: (SyncWarning | string)[]): { group: SyncWarningGroup, items: SyncWarning[] }[] {
+  const seen = new Set<string>()
+  const byGroup = new Map<SyncWarningGroup, SyncWarning[]>()
+  for (const raw of warnings ?? []) {
+    const w = normalizeWarning(raw)
+    const key = JSON.stringify([w.code, Object.entries(w.params).sort()])
+    if (seen.has(key)) continue
+    seen.add(key)
+    const group = WARNING_GROUP[w.code] ?? 'problems'
+    byGroup.set(group, [...(byGroup.get(group) ?? []), w])
+  }
+  return WARNING_GROUP_ORDER.filter(g => byGroup.has(g)).map(group => ({ group, items: byGroup.get(group)! }))
 }
 
 export type SyncPhase = 'connecting' | 'auth' | 'downloading' | 'applying' | 'done'
@@ -82,7 +134,7 @@ export function syncErrorCode(err: unknown): SyncErrorCode | null {
   return (SYNC_ERROR_CODES as readonly string[]).includes(s) ? (s as SyncErrorCode) : null
 }
 
-/** Codes after which the picked device is gone: back to the device list. */
+/** Codes after which the picked device may be gone: the device list is refreshed. */
 export function isDeviceGone(code: SyncErrorCode | null): boolean {
   return code === 'device_offline' || code === 'device_disconnected'
 }
@@ -90,6 +142,46 @@ export function isDeviceGone(code: SyncErrorCode | null): boolean {
 /** Display name of a device; the alias may be empty. */
 export function deviceLabel(d: Pick<SyncDevice, 'alias' | 'deviceId'>): string {
   return d.alias.trim() || `Devdy · ${d.deviceId.slice(0, 8)}`
+}
+
+/**
+ * Display names for a device list, by device id. Devices sharing a name get their short
+ * id appended (`macbook · a1b2c3d4`) so the user can tell them apart.
+ */
+export function deviceLabels(devices: Pick<SyncDevice, 'alias' | 'deviceId'>[]): Record<string, string> {
+  const count = new Map<string, number>()
+  for (const d of devices) {
+    const l = deviceLabel(d)
+    count.set(l, (count.get(l) ?? 0) + 1)
+  }
+  return Object.fromEntries(devices.map((d) => {
+    const l = deviceLabel(d)
+    return [d.deviceId, (count.get(l) ?? 0) > 1 && d.alias.trim() ? `${l} · ${d.deviceId.slice(0, 8)}` : l]
+  }))
+}
+
+/** Categories as the dialog groups them (i18n `deviceSync.groups.<key>`). */
+export const SYNC_GROUPS: { key: 'work' | 'library' | 'config', items: SyncCategory[] }[] = [
+  { key: 'work', items: ['todos', 'notes', 'secretNotes', 'slackThreads'] },
+  { key: 'library', items: ['skillsRules', 'projects'] },
+  { key: 'config', items: ['settings', 'mcpServers', 'vpsServers', 'accounts'] },
+]
+
+/** Group checkbox state: every item ticked, none, or `mixed`. */
+export function groupState(c: SyncCategories, items: readonly SyncCategory[]): boolean | 'mixed' {
+  const on = items.filter(k => c[k]).length
+  return on === items.length ? true : on === 0 ? false : 'mixed'
+}
+
+/** The last successful pull on this device (`device_sync_last`). */
+export interface LastSync {
+  at: string
+  sourceDeviceId: string
+  sourceAlias: string
+  categories: number
+  created: number
+  updated: number
+  deleted: number
 }
 
 /** 0–100 for the progress bar; download progress only counts once the size is known. */
@@ -122,6 +214,42 @@ export function reportRows(report: SyncReport): SyncReportRow[] {
     ...keys.filter(k => !known.has(k)).sort(),
   ]
   return ordered.map(key => ({ key, counts: { ...EMPTY_COUNTS, ...report.counts[key] } }))
+}
+
+/** How far back `at` is from `now`, for "today 14:32" / "yesterday 14:32" / a date. */
+export function syncDay(at: string, now: Date = new Date()): 'today' | 'yesterday' | 'earlier' | null {
+  const d = new Date(at)
+  if (Number.isNaN(d.getTime())) return null
+  const start = new Date(now.getFullYear(), now.getMonth(), now.getDate()).getTime()
+  if (d.getTime() >= start) return 'today'
+  if (d.getTime() >= start - 86_400_000) return 'yesterday'
+  return 'earlier'
+}
+
+/** The report columns shown in the result table: Same is never a column. */
+export const REPORT_COLUMNS = ['created', 'updated', 'deleted', 'skipped'] as const
+export type ReportColumn = (typeof REPORT_COLUMNS)[number]
+
+/**
+ * The compact result table: rows where something happened, the columns that are not
+ * all zero there, and how many rows were left out because nothing changed in them.
+ */
+export function compactReport(report: SyncReport): { rows: SyncReportRow[], columns: ReportColumn[], hidden: number } {
+  const all = reportRows(report)
+  const rows = all.filter(r => REPORT_COLUMNS.some(c => r.counts[c] > 0))
+  const columns = REPORT_COLUMNS.filter(c => rows.some(r => r.counts[c] > 0))
+  return { rows, columns, hidden: all.length - rows.length }
+}
+
+/** Account kinds whose sign-in does not travel: they need a new login once synced. */
+const RELOGIN_SECTIONS = ['claudeAccounts', 'awsAccounts', 'azureAccounts']
+
+/** Whether the pull added or updated an account that needs signing in again here. */
+export function needsRelogin(report: SyncReport): boolean {
+  return RELOGIN_SECTIONS.some((k) => {
+    const c = report.counts?.[k]
+    return !!c && (c.created > 0 || c.updated > 0)
+  })
 }
 
 export function reportTotals(report: SyncReport): SyncCounts {

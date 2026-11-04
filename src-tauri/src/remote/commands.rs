@@ -49,6 +49,17 @@ pub struct RemoteStatus {
     pub session_authenticated: bool,
     /// Sliding idle expiry (Unix secs) of the bound session, when known.
     pub session_idle_expires_at: Option<u64>,
+    /// A clash the relay reported: `{ kind: "device_id" }` (another running
+    /// Devdy uses this device id; this one is refused) or
+    /// `{ kind: "alias", alias }` (another online device has the same name).
+    /// Also pushed as the `remote://device-conflict` event.
+    #[serde(rename = "deviceConflict")]
+    pub device_conflict: Option<remote::DeviceConflict>,
+    /// Why the agent is not connected right now, as a stable code
+    /// (`remote::last_error`): `relay_unreachable`, `relay_bad_url`,
+    /// `relay_auth_failed`, `relay_unsupported`, `relay_rate_limited`,
+    /// `device_id_conflict`, `relay_not_configured`, `token_missing`.
+    pub last_error: Option<&'static str>,
 }
 
 /// Persist relay config (DATA-001). `auth_token`, when provided (non-empty), is
@@ -395,5 +406,35 @@ pub async fn remote_status(
         subscribed_run_ids,
         session_authenticated,
         session_idle_expires_at,
+        device_conflict: state.device_conflict.lock().ok().and_then(|c| c.clone()),
+        last_error: state.last_error.lock().ok().and_then(|c| *c),
     })
+}
+
+/// Give this Host a new device id, for when the relay reports a `device_id`
+/// conflict (this machine's data was copied from another one). Clears the
+/// conflict and, when Remote Control runs, reconnects with the new id. Returns
+/// the new id.
+///
+/// The id only names this Host on the relay (its listing and its device-sync
+/// code): paired phones (session link, password login), Web Push subscriptions
+/// and the audit don't depend on it. Other devices see this one as a new entry
+/// in their sync device list.
+#[tauri::command]
+pub async fn remote_regenerate_device_id(
+    app: AppHandle,
+    db: State<'_, Db>,
+    registry: State<'_, RunRegistry>,
+    broker_approvals: State<'_, BrokerApprovals>,
+    state: State<'_, RemoteState>,
+) -> Result<String, String> {
+    let id = remote::regenerate_device_id(db.inner()).await?;
+    remote::set_device_conflict(&app, &state.device_conflict, None);
+    if state.is_running().await {
+        state.stop().await;
+        state
+            .start(&app, db.inner(), registry.inner(), broker_approvals.inner())
+            .await?;
+    }
+    Ok(id)
 }

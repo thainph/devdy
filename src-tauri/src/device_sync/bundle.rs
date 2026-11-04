@@ -16,8 +16,8 @@
 
 use crate::commands::groups::GroupKind;
 use crate::commands::settings_backup::{
-    self as backup, Bundle, ImportReport, ProjectEntry, ProjectMatch, SecretPayload, Sections,
-    Upsert,
+    self as backup, Bundle, ImportReport, LinkWarning, ProjectEntry, ProjectMatch, SecretPayload,
+    Sections, Upsert,
 };
 use crate::commands::{
     aws_accounts, azure_accounts, claude_accounts, github_accounts, gitlab_accounts, google, mcp,
@@ -72,8 +72,78 @@ pub struct SyncCategories {
 pub struct SyncReport {
     /// Per section (`todos`, `skills`, `githubAccounts`, `projects`…).
     pub counts: BTreeMap<String, SyncCounts>,
-    /// Per-item problems; the rest of the sync still went through.
-    pub warnings: Vec<String>,
+    /// Notes and per-item problems; the rest of the sync still went through.
+    pub warnings: Vec<SyncWarning>,
+}
+
+/// One line of the sync report, as a stable `code` + `params` the UI translates:
+///
+/// - `project_folder_missing` {project, path}: settings and links saved, nothing written to disk
+/// - `link_target_missing` {project, kind, name}: the project links to something not here
+/// - `link_failed` {project, name, error}
+/// - `project_failed` {project, error}
+/// - `item_failed` {section, name, error}
+/// - `project_sync_failed` {section, name, detail}: updated skill / rule not refreshed in a project
+/// - `category_not_sent` / `category_empty_no_mirror` {section}: mirror deleted nothing there
+/// - `delete_failed` {section, name, error}
+/// - `other` {message}
+#[derive(Debug, Clone, PartialEq, Eq, Serialize)]
+pub struct SyncWarning {
+    pub code: String,
+    pub params: BTreeMap<String, String>,
+}
+
+impl SyncWarning {
+    fn new(code: &str, params: &[(&str, &str)]) -> Self {
+        Self {
+            code: code.to_string(),
+            params: params
+                .iter()
+                .map(|(k, v)| (k.to_string(), v.to_string()))
+                .collect(),
+        }
+    }
+
+    fn other(message: impl Into<String>) -> Self {
+        Self::new("other", &[("message", &message.into())])
+    }
+}
+
+/// Tally an upsert, or warn `item_failed`.
+fn record(
+    report: &mut ImportReport,
+    warnings: &mut Vec<SyncWarning>,
+    section: &str,
+    name: &str,
+    result: Result<Upsert, String>,
+) {
+    match result {
+        Ok(outcome) => report.tally(section, outcome),
+        Err(e) => warnings.push(SyncWarning::new(
+            "item_failed",
+            &[("section", section), ("name", name), ("error", &e)],
+        )),
+    }
+}
+
+/// `record` for a skill / rule upsert that also re-synced the projects using it.
+fn record_with_sync(
+    report: &mut ImportReport,
+    warnings: &mut Vec<SyncWarning>,
+    section: &str,
+    name: &str,
+    result: Result<(Upsert, Vec<String>), String>,
+) {
+    let result = result.map(|(outcome, failures)| {
+        for detail in failures {
+            warnings.push(SyncWarning::new(
+                "project_sync_failed",
+                &[("section", section), ("name", name), ("detail", &detail)],
+            ));
+        }
+        outcome
+    });
+    record(report, warnings, section, name, result);
 }
 
 #[derive(Debug, Clone, Default, Serialize)]
@@ -288,7 +358,11 @@ async fn apply_payload(
     let secret = &payload.secrets;
     let mut report = ImportReport::default();
     let mut extra = Extra::default();
+    let mut warnings: Vec<SyncWarning> = Vec::new();
+    let w = &mut warnings;
     let app_data = env.app_data.as_deref();
+    // Local projects whose folder is checked once at the end (one note each, if missing).
+    let mut touched_projects: BTreeSet<String> = BTreeSet::new();
 
     if cats.settings && src.settings {
         backup::import_settings(db, bundle, &mut report).await;
@@ -299,7 +373,7 @@ async fn apply_payload(
             Some(app) => {
                 for entry in &bundle.skills {
                     let result = backup::import_skill(app, db, entry).await;
-                    backup::record_with_sync(&mut report, "skills", &entry.name, result);
+                    record_with_sync(&mut report, w, "skills", &entry.name, result);
                 }
                 for entry in &bundle.rules {
                     let result = rules::import_backup_rule(
@@ -312,28 +386,33 @@ async fn apply_payload(
                         &entry.content,
                     )
                     .await;
-                    backup::record_with_sync(&mut report, "rules", &entry.name, result);
+                    record_with_sync(&mut report, w, "rules", &entry.name, result);
                 }
             }
-            None => report
-                .warnings
-                .push("Skills and rules need the app; skipped".to_string()),
+            None => w.push(SyncWarning::other("Skills and rules need the app; skipped")),
         }
         for entry in &bundle.skill_groups {
             let result = backup::import_group(db, GroupKind::Skill, entry).await;
-            report.record("skillGroups", &entry.name, result);
+            record(&mut report, w, "skillGroups", &entry.name, result);
         }
         for entry in &bundle.rule_groups {
             let result = backup::import_group(db, GroupKind::Rule, entry).await;
-            report.record("ruleGroups", &entry.name, result);
+            record(&mut report, w, "ruleGroups", &entry.name, result);
         }
+        let names: BTreeSet<&str> = bundle
+            .skills
+            .iter()
+            .map(|e| e.name.as_str())
+            .chain(bundle.rules.iter().map(|e| e.name.as_str()))
+            .collect();
+        touched_projects.extend(projects_using(db, &names).await);
     }
 
     if cats.mcp_servers && src.mcp_servers {
         for server in &bundle.mcp_servers {
             let result =
                 mcp::import_backup_mcp(db, &server.id, server, secret.mcp.get(&server.id)).await;
-            report.record("mcpServers", &server.name, result);
+            record(&mut report, w, "mcpServers", &server.name, result);
         }
     }
 
@@ -345,28 +424,28 @@ async fn apply_payload(
                 }
                 None => Err("needs the app".to_string()),
             };
-            report.record("vpsServers", &entry.label, result);
+            record(&mut report, w, "vpsServers", &entry.label, result);
         }
     }
 
     if cats.accounts && src.accounts {
         for entry in &bundle.github_accounts {
             let result = backup::import_github(db, entry, secret.github.get(&entry.id)).await;
-            report.record("githubAccounts", &entry.label, result);
+            record(&mut report, w, "githubAccounts", &entry.label, result);
         }
         for entry in &bundle.gitlab_accounts {
             let result = backup::import_gitlab(db, entry, secret.gitlab.get(&entry.id)).await;
-            report.record("gitlabAccounts", &entry.label, result);
+            record(&mut report, w, "gitlabAccounts", &entry.label, result);
         }
         // Claude / AWS / Azure: metadata only. A new one arrives logged out; an existing one keeps
         // its local credentials.
         for entry in &bundle.aws_accounts {
             let result = backup::import_aws(db, entry).await;
-            report.record("awsAccounts", &entry.label, result);
+            record(&mut report, w, "awsAccounts", &entry.label, result);
         }
         for entry in &bundle.azure_accounts {
             let result = backup::import_azure(app_data, db, entry).await;
-            report.record("azureAccounts", &entry.label, result);
+            record(&mut report, w, "azureAccounts", &entry.label, result);
         }
         if let Some(client) = &secret.google_client {
             let same = secrets::get_google_client().is_some_and(|c| {
@@ -375,18 +454,22 @@ async fn apply_payload(
             if !same {
                 if let Err(e) = secrets::set_google_client(&client.client_id, &client.client_secret)
                 {
-                    report.warnings.push(format!("Google OAuth client: {e}"));
+                    let e = e.to_string();
+                    w.push(SyncWarning::new(
+                        "item_failed",
+                        &[("section", "googleAccounts"), ("name", "OAuth client"), ("error", &e)],
+                    ));
                 }
             }
         }
         for entry in &bundle.google_accounts {
             let result =
                 backup::import_google(db, entry, secret.google_accounts.get(&entry.id)).await;
-            report.record("googleAccounts", &entry.label, result);
+            record(&mut report, w, "googleAccounts", &entry.label, result);
         }
         for entry in &bundle.claude_accounts {
             let result = backup::import_claude(app_data, db, entry).await;
-            report.record("claudeAccounts", &entry.label, result);
+            record(&mut report, w, "claudeAccounts", &entry.label, result);
         }
     }
 
@@ -400,7 +483,10 @@ async fn apply_payload(
                         .or_default()
                         .updated += n
                 }
-                Err(e) => report.warnings.push(format!("Secret notes: {e}")),
+                Err(e) => w.push(SyncWarning::new(
+                    "item_failed",
+                    &[("section", "secretNotes"), ("name", ""), ("error", &e)],
+                )),
             }
         }
     }
@@ -414,21 +500,31 @@ async fn apply_payload(
                 .map(Vec::as_slice)
                 .unwrap_or(&[]);
             match sync_project(db, entry, disabled).await {
-                Ok(Some((outcome, id, warnings))) => {
+                Ok(Some((outcome, id, links))) => {
                     report.tally("projects", outcome);
-                    for warning in warnings {
-                        report
-                            .warnings
-                            .push(format!("projects '{}': {warning}", entry.name));
+                    for link in links {
+                        let project = entry.name.as_str();
+                        w.push(match &link.error {
+                            None => SyncWarning::new(
+                                "link_target_missing",
+                                &[("project", project), ("kind", link.kind), ("name", &link.name)],
+                            ),
+                            Some(e) => SyncWarning::new(
+                                "link_failed",
+                                &[("project", project), ("name", &link.name), ("error", e)],
+                            ),
+                        });
                     }
                     if let Some(dir) = app_data {
                         crate::aws_sandbox::write_project_aws_config(db, dir, &id).await;
                     }
+                    touched_projects.insert(id);
                 }
                 Ok(None) => *extra.skipped.entry("projects".to_string()).or_default() += 1,
-                Err(e) => report
-                    .warnings
-                    .push(format!("projects '{}': {e}", entry.name)),
+                Err(e) => w.push(SyncWarning::new(
+                    "project_failed",
+                    &[("project", &entry.name), ("error", &e)],
+                )),
             }
         }
     }
@@ -436,7 +532,7 @@ async fn apply_payload(
     if cats.notes && src.notes {
         for entry in &bundle.notes {
             let result = backup::import_note_matching(db, entry, ProjectMatch::NameOnly).await;
-            report.record("notes", &entry.title, result);
+            record(&mut report, w, "notes", &entry.title, result);
         }
     }
 
@@ -451,7 +547,7 @@ async fn apply_payload(
                 None => None,
             };
             let result = backup::write_todo(db, entry, project_id, true).await;
-            report.record("todos", &entry.text, result);
+            record(&mut report, w, "todos", &entry.text, result);
         }
     }
 
@@ -467,7 +563,7 @@ async fn apply_payload(
                     }
                     outcome
                 });
-            report.record("slackThreads", &entry.title, result);
+            record(&mut report, w, "slackThreads", &entry.title, result);
         }
         if let Some(app) = env.app {
             if let Some(state) = app.try_state::<SlackThreadsState>() {
@@ -480,14 +576,71 @@ async fn apply_payload(
     }
 
     if cats.mirror {
-        let plan = plan_mirror(db, &payload, cats, &mut report.warnings).await;
-        execute_mirror(env, db, plan, &mut extra, &mut report.warnings).await;
+        let plan = plan_mirror(db, &payload, cats, w).await;
+        execute_mirror(env, db, plan, &mut extra, w).await;
     }
 
-    into_sync_report(report, extra)
+    // Folder notes first: they explain why nothing landed on disk for those projects.
+    let mut out = missing_folders(db, &touched_projects).await;
+    out.extend(warnings);
+    // The backup helpers still report plain strings.
+    out.extend(report.warnings.drain(..).map(SyncWarning::other));
+    into_sync_report(report, extra, dedup(out))
 }
 
-fn into_sync_report(report: ImportReport, extra: Extra) -> SyncReport {
+/// Local projects linked to any of the skills / rules `names`.
+async fn projects_using(db: &Db, names: &BTreeSet<&str>) -> Vec<String> {
+    if names.is_empty() {
+        return Vec::new();
+    }
+    let rows: Vec<(String, String)> = sqlx::query_as(
+        "SELECT ps.project_id, s.name FROM project_skills ps JOIN skills s ON s.id = ps.skill_id \
+         UNION SELECT pr.project_id, r.name FROM project_rules pr JOIN rules r ON r.id = pr.rule_id",
+    )
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
+    rows.into_iter()
+        .filter(|(_, name)| names.contains(name.as_str()))
+        .map(|(id, _)| id)
+        .collect()
+}
+
+/// One `project_folder_missing` per project in `ids` whose folder isn't on this machine: its
+/// settings and links are saved, but no skill / rule could be written there.
+async fn missing_folders(db: &Db, ids: &BTreeSet<String>) -> Vec<SyncWarning> {
+    let mut rows: Vec<(String, String)> = Vec::new();
+    for id in ids {
+        if let Ok(Some(row)) =
+            sqlx::query_as::<_, (String, String)>("SELECT name, path FROM projects WHERE id = ?")
+                .bind(id)
+                .fetch_optional(db)
+                .await
+        {
+            rows.push(row);
+        }
+    }
+    rows.sort();
+    rows.into_iter()
+        .filter(|(_, path)| !std::path::Path::new(path).is_dir())
+        .map(|(project, path)| {
+            SyncWarning::new("project_folder_missing", &[("project", &project), ("path", &path)])
+        })
+        .collect()
+}
+
+/// Drop repeated warnings, keeping the first of each.
+fn dedup(warnings: Vec<SyncWarning>) -> Vec<SyncWarning> {
+    let mut out: Vec<SyncWarning> = Vec::with_capacity(warnings.len());
+    for warning in warnings {
+        if !out.contains(&warning) {
+            out.push(warning);
+        }
+    }
+    out
+}
+
+fn into_sync_report(report: ImportReport, extra: Extra, warnings: Vec<SyncWarning>) -> SyncReport {
     let mut counts: BTreeMap<String, SyncCounts> = report
         .counts
         .into_iter()
@@ -510,20 +663,19 @@ fn into_sync_report(report: ImportReport, extra: Extra) -> SyncReport {
     for (section, n) in extra.skipped {
         counts.entry(section).or_default().skipped += n;
     }
-    SyncReport {
-        counts,
-        warnings: report.warnings,
-    }
+    SyncReport { counts, warnings }
 }
 
 /// Apply a source project to the local project of the same NAME: its settings, links (added,
 /// never removed) and built-in MCP switches. `None` when there is no such project — nothing is
-/// created and no path or repo is touched. Returns the local id and per-link warnings.
+/// created and no path or repo is touched; whether its folder exists here doesn't matter (links
+/// are settings, written to disk only when the folder is there). Returns the local id and the
+/// links that could not be switched on.
 async fn sync_project(
     db: &Db,
     entry: &ProjectEntry,
     builtin_disabled: &[String],
-) -> Result<Option<(Upsert, String, Vec<String>)>, String> {
+) -> Result<Option<(Upsert, String, Vec<LinkWarning>)>, String> {
     let Some(id) = backup::id_by(db, "projects", "name", &entry.name).await? else {
         return Ok(None);
     };
@@ -587,7 +739,7 @@ async fn plan_mirror(
     db: &Db,
     payload: &SyncPayload,
     cats: &SyncCategories,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<SyncWarning>,
 ) -> Vec<Deletion> {
     let src = &payload.categories;
     let b = &payload.bundle;
@@ -728,14 +880,13 @@ async fn plan_mirror(
             continue;
         }
         if !sent {
-            warnings.push(format!(
-                "{section}: the other device did not send this category; nothing deleted"
-            ));
+            warnings.push(SyncWarning::new("category_not_sent", &[("section", section)]));
             continue;
         }
         if wanted.is_empty() {
-            warnings.push(format!(
-                "{section}: the other device has none; nothing deleted to be safe"
+            warnings.push(SyncWarning::new(
+                "category_empty_no_mirror",
+                &[("section", section)],
             ));
             continue;
         }
@@ -745,7 +896,7 @@ async fn plan_mirror(
                     .filter(|(_, key, _)| !wanted.contains(key))
                     .map(|(id, _, label)| Deletion { section, id, label }),
             ),
-            Err(e) => warnings.push(format!("{section}: {e}")),
+            Err(e) => warnings.push(SyncWarning::other(format!("{section}: {e}"))),
         }
     }
     plan
@@ -758,7 +909,7 @@ async fn execute_mirror(
     db: &Db,
     plan: Vec<Deletion>,
     extra: &mut Extra,
-    warnings: &mut Vec<String>,
+    warnings: &mut Vec<SyncWarning>,
 ) {
     let app_data = env.app_data.as_deref();
     let todo_ids: Vec<String> = plan
@@ -771,7 +922,10 @@ async fn execute_mirror(
             Ok(()) => {
                 *extra.deleted.entry("todos".to_string()).or_default() += todo_ids.len() as u32
             }
-            Err(e) => warnings.push(format!("todos: could not delete: {e}")),
+            Err(e) => warnings.push(SyncWarning::new(
+                "delete_failed",
+                &[("section", "todos"), ("name", ""), ("error", &e)],
+            )),
         }
     }
     for d in plan.iter().filter(|d| d.section != "todos") {
@@ -798,9 +952,9 @@ async fn execute_mirror(
         };
         match result {
             Ok(()) => *extra.deleted.entry(d.section.to_string()).or_default() += 1,
-            Err(e) => warnings.push(format!(
-                "{} '{}': could not delete: {e}",
-                d.section, d.label
+            Err(e) => warnings.push(SyncWarning::new(
+                "delete_failed",
+                &[("section", d.section), ("name", &d.label), ("error", &e)],
             )),
         }
     }
@@ -1096,11 +1250,111 @@ mod tests {
         .unwrap();
         assert_eq!(off, vec!["google".to_string()]);
         // The VPS server doesn't exist here: a warning, not an error.
-        assert!(
-            report
-                .warnings
-                .iter()
-                .any(|w| w.contains("VPS server 'prod' not found")),
+        let vps_missing = SyncWarning::new(
+            "link_target_missing",
+            &[("project", "shop"), ("kind", "vpsServer"), ("name", "prod")],
+        );
+        assert!(report.warnings.contains(&vps_missing), "{:?}", report.warnings);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn project_links_are_saved_when_its_folder_is_missing() {
+        let db = test_db().await;
+        let dir = temp_dir();
+        let pms = dir.join("sora-techs/pms");
+        let sora = dir.join("sora-techs/sora");
+        let lib = dir.join("lib");
+        std::fs::create_dir_all(&lib).unwrap();
+        let rule_src = lib.join("agent-delegation-rule.md");
+        std::fs::write(&rule_src, "Delegate.\n").unwrap();
+        let git_src = lib.join("git-rule.md");
+        std::fs::write(&git_src, "Commit in English.\n").unwrap();
+        let skill_src = lib.join("devops-infra-review");
+        std::fs::create_dir_all(&skill_src).unwrap();
+        std::fs::write(skill_src.join("SKILL.md"), "body\n").unwrap();
+        let ins = |sql: String| sql;
+        let sqls = [
+            ins(format!("INSERT INTO projects (id, name, path, created_at) VALUES ('p-pms', 'pms', '{}', 'c')", pms.display())),
+            ins(format!("INSERT INTO projects (id, name, path, created_at) VALUES ('p-sora', 'sora', '{}', 'c')", sora.display())),
+            ins(format!("INSERT INTO skills (id, name, description, target, source_path, updated_at) \
+                 VALUES ('s1', 'devops-infra-review', 'd', 'both', '{}', 'u')", skill_src.display())),
+            ins(format!("INSERT INTO rules (id, name, description, target, source_path, updated_at) \
+                 VALUES ('r1', 'agent-delegation-rule', 'd', 'both', '{}', 'u')", rule_src.display())),
+            ins(format!("INSERT INTO rules (id, name, description, target, source_path, updated_at) \
+                 VALUES ('r2', 'git-rule', 'd', 'both', '{}', 'u')", git_src.display())),
+            ins("INSERT INTO rule_groups (id, name, created_at, updated_at) VALUES ('g1', 'Common', 'c', 'u')".into()),
+            // 'sora' already runs 'Common'; the source adds a member to it.
+            ins("INSERT INTO project_rule_groups (project_id, group_id, enabled_at) VALUES ('p-sora', 'g1', 'c')".into()),
+            ins("INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m1', 'slack', 'stdio', 'c')".into()),
+            ins("INSERT INTO servers (id, label, host, username, auth_method, created_at) VALUES ('v1', 'prod', 'h', 'u', 'agent', 'c')".into()),
+            ins("INSERT INTO github_accounts (id, label, created_at) VALUES ('gh1', 'work', 'c')".into()),
+            ins("INSERT INTO aws_accounts (id, label, auth_method, region, created_at) VALUES ('a1', 'cloud', 'keys', 'r', 'c')".into()),
+        ];
+        let refs: Vec<&str> = sqls.iter().map(String::as_str).collect();
+        exec(&db, &refs).await;
+
+        let cats = SyncCategories {
+            projects: true,
+            skills_rules: true,
+            ..Default::default()
+        };
+        let project = |id: &str, name: &str| {
+            json!({
+                "id": id, "name": name, "path": format!("/source/{name}"), "default_engine": "claude",
+                "created_at": "c",
+                "skills": [{ "name": "devops-infra-review", "manual": true }],
+                "rules": [{ "name": "git-rule", "manual": true }],
+                "rule_groups": ["Common"],
+                "mcp_servers": ["slack"],
+                "servers": [{ "server": "prod", "role": "production" }],
+                "github_accounts": ["work"], "github_account": "work",
+                "aws_accounts": ["cloud"],
+            })
+        };
+        let mut p = payload(
+            cats.clone(),
+            json!({
+                "projects": [project("x1", "pms"), project("x2", "sora")],
+                "rule_groups": [{ "name": "Common", "members": ["agent-delegation-rule"] }],
+            }),
+        );
+        p.builtin_mcp_disabled.insert("pms".into(), vec!["google".into()]);
+        let report = apply_payload(&env(&dir), &db, p, &cats).await;
+
+        for pid in ["p-pms", "p-sora"] {
+            let q = |sql: &str| sql.replace("?P", &format!("'{pid}'"));
+            for (what, sql) in [
+                ("skill", "SELECT COUNT(*) FROM project_skills WHERE project_id = ?P AND skill_id = 's1'"),
+                ("rule", "SELECT COUNT(*) FROM project_rules WHERE project_id = ?P AND rule_id = 'r2'"),
+                ("group", "SELECT COUNT(*) FROM project_rule_groups WHERE project_id = ?P AND group_id = 'g1'"),
+                ("group member", "SELECT COUNT(*) FROM project_rules WHERE project_id = ?P AND rule_id = 'r1'"),
+                ("mcp", "SELECT COUNT(*) FROM project_mcp_servers WHERE project_id = ?P AND server_id = 'm1'"),
+                ("vps", "SELECT COUNT(*) FROM project_servers WHERE project_id = ?P AND server_id = 'v1'"),
+                ("github", "SELECT COUNT(*) FROM project_github_accounts WHERE project_id = ?P AND account_id = 'gh1'"),
+                ("aws", "SELECT COUNT(*) FROM project_aws_accounts WHERE project_id = ?P AND account_id = 'a1'"),
+            ] {
+                assert_eq!(count(&db, &q(sql)).await, 1, "{pid}: {what}");
+            }
+        }
+        assert_eq!(
+            count(&db, "SELECT COUNT(*) FROM project_builtin_mcp_disabled WHERE project_id = 'p-pms' AND name = 'google'").await,
+            1
+        );
+        // Nothing written, no folder recreated.
+        assert!(!pms.exists() && !sora.exists());
+        // One note per project, nothing else (bar the test env lacking the app for the library).
+        let notes: Vec<&SyncWarning> = report
+            .warnings
+            .iter()
+            .filter(|w| w.code != "other")
+            .collect();
+        assert_eq!(
+            notes,
+            vec![
+                &SyncWarning::new("project_folder_missing", &[("project", "pms"), ("path", &pms.to_string_lossy())]),
+                &SyncWarning::new("project_folder_missing", &[("project", "sora"), ("path", &sora.to_string_lossy())]),
+            ],
             "{:?}",
             report.warnings
         );
@@ -1334,7 +1588,8 @@ mod tests {
             1
         );
         assert!(
-            report.warnings.iter().any(|w| w.starts_with("skills:")),
+            report.warnings.iter().any(|w| w.code == "category_empty_no_mirror"
+                && w.params.get("section").map(String::as_str) == Some("skills")),
             "{:?}",
             report.warnings
         );
@@ -1428,7 +1683,7 @@ mod tests {
             assert!(
                 warnings
                     .iter()
-                    .any(|w| w.starts_with(&format!("{section}:"))),
+                    .any(|w| w.params.get("section").map(String::as_str) == Some(section)),
                 "{section}: {warnings:?}"
             );
         }

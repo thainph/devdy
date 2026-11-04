@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref } from 'vue'
+import type { SavedWithoutFolder } from '@/lib/savedWithoutFolder'
 
 export type RuleTarget = 'claude' | 'codex' | 'both'
 
@@ -27,6 +28,8 @@ export interface ApplyFailure {
 export interface ApplyAllOutcome {
   applied: number
   failures: ApplyFailure[]
+  /** Link saved, but the project folder isn't on this machine (installed when it appears). */
+  saved_without_folder: SavedWithoutFolder[]
 }
 
 export const useRulesStore = defineStore('rules', () => {

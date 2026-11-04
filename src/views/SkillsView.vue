@@ -4,6 +4,7 @@
 // The selection lives in the URL — `?id=<id>` or `?new=1` for a draft.
 import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Layers, Plus, Puzzle, RefreshCw, Upload } from 'lucide-vue-next'
@@ -218,12 +219,16 @@ async function handleApplyToAll(skill: Skill) {
   applyingId.value = skill.id
   try {
     const result = await store.applySkillToAllProjects(skill.id)
-    if (result.failures.length === 0) {
+    const pending = savedWithoutFolderNames(result.saved_without_folder)
+    if (result.failures.length === 0 && result.applied === 0 && pending.length) {
+      // Only projects without a folder here: the info toast below says it all.
+    } else if (result.failures.length === 0) {
       toast.success(t('skills.list.toastApplied', { name: skill.name, count: result.applied, project: t(result.applied === 1 ? 'skills.list.project' : 'skills.list.projects') }))
     } else {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
       toast.error(t('skills.list.toastAppliedPartial', { applied: result.applied, project: t(result.applied === 1 ? 'skills.list.project' : 'skills.list.projects'), failed: result.failures.length, details }))
     }
+    if (pending.length) toast.info(t('misc.savedWithoutFolder.many', { projects: pending.join(', ') }), 5000)
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -242,7 +247,10 @@ async function handleReapply(skill?: Skill) {
   reapplyingId.value = skill?.id ?? 'all'
   try {
     const result = await store.reapplySkills(skill?.id)
-    if (result.applied === 0 && result.failures.length === 0) {
+    const pending = savedWithoutFolderNames(result.saved_without_folder)
+    if (result.applied === 0 && result.failures.length === 0 && pending.length) {
+      // Only projects without a folder here: the info toast below says it all.
+    } else if (result.applied === 0 && result.failures.length === 0) {
       toast.info(t('skills.list.toastNothingToReapply'))
     } else if (result.failures.length === 0) {
       toast.success(t('skills.list.toastReapplied', { count: result.applied }))
@@ -250,6 +258,7 @@ async function handleReapply(skill?: Skill) {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
       toast.error(t('skills.list.toastReappliedPartial', { applied: result.applied, failed: result.failures.length, details }))
     }
+    if (pending.length) toast.info(t('misc.savedWithoutFolder.many', { projects: pending.join(', ') }), 5000)
   } catch (e) {
     toast.error(String(e))
   } finally {
