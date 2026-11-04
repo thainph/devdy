@@ -149,7 +149,6 @@
   "drawer": {
     "text": "Tiêu đề",
     "project": "Dự án",
-    "due": "Hạn",
     "dueTime": "Giờ (tuỳ chọn)",
     "clearDue": "Xoá hạn",
     "estimate": "Estimate",

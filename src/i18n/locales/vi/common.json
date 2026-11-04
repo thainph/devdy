@@ -7,13 +7,11 @@
   "new": "Mới",
   "close": "Đóng",
   "clear": "Xóa hết",
-  "confirm": "Xác nhận",
   "loading": "Đang tải…",
   "search": "Tìm kiếm",
   "noResults": "Không có kết quả phù hợp",
   "refresh": "Làm mới",
   "remove": "Gỡ bỏ",
-  "active": "Đang hoạt động",
   "back": "Quay lại",
   "date": {
     "pick": "Chọn ngày",

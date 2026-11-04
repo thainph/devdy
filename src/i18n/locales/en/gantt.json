@@ -6,7 +6,6 @@
   "days": "days",
   "noBoardTitle": "No project has a GitHub Project board",
   "noBoardHint": "Link a board in a project's Settings → GitHub Project to plot its issues on a Gantt.",
-  "noBoardHintSettings": "Settings → GitHub Project",
   "bannerNoBoardPrefix": "No GitHub Project board linked — Start date / Deadline / Status will be empty. Configure it in",
   "bannerNoBoardLink": "Settings → GitHub Project",
   "bannerSkippedNonGithub": "Skipped non-GitHub repos (GitLab not supported yet).",

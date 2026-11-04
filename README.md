@@ -92,7 +92,7 @@ Manage **Model Context Protocol** servers in one place and enable them per proje
 - **Stats dashboard** — daily token & cost charts (Chart.js), with doughnut breakdowns by engine / project / model and time-range filters (7 / 30 / 90 days / all-time).
 - **Real rate-limit utilization** of your claude.ai plan (from `/usage` data), including 5h and 7-day windows with reset countdowns.
 - **Per-run usage ledger** — prefers the real cost from the Claude SDK, estimates for Codex; rows are self-contained so they survive deletion of the run or project.
-- **Token budget guardrail** — monthly / weekly / rolling window limit with a soft warning threshold and a hard block; sourced from the real plan first, falling back to a self-imposed token limit.
+- **Usage guardrail** — blocks new runs once the engine's real 5-hour or weekly plan utilization reaches a configurable percentage.
 - **Context meter** — real-time context-window usage vs. the model's limit, with a `/compact` quick action.
 - **Backfill** usage from existing run logs, or **reset** the ledger.
 

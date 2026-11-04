@@ -7,13 +7,11 @@
   "new": "New",
   "close": "Close",
   "clear": "Clear",
-  "confirm": "Confirm",
   "loading": "Loading…",
   "search": "Search",
   "noResults": "No matches",
   "refresh": "Refresh",
   "remove": "Remove",
-  "active": "Active",
   "back": "Back",
   "date": {
     "pick": "Pick a date",

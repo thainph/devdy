@@ -65,22 +65,6 @@
     "compactTitle": "Compact the conversation to free up context (sends /compact)",
     "fiveHourTitle": "claude.ai subscription 5-hour usage window"
   },
-  "activeRuns": {
-    "heading": "Active runs",
-    "review": "Review",
-    "stopped": "Stopped",
-    "failed": "Failed",
-    "done": "Done",
-    "run": "Run",
-    "project": "Project"
-  },
-  "activeRemote": {
-    "heading": "Active remote",
-    "live": "Live",
-    "pairing": "Pairing",
-    "run": "Run",
-    "project": "Project"
-  },
   "remoteIndicator": {
     "title": "Remote Control",
     "short": "Remote",
@@ -95,18 +79,5 @@
     "disconnect": "Disconnect and sign out",
     "disconnectHint": "A phone / web controller is driving this app through Remote Control. Disconnecting cuts it off now and signs it out: it has to sign in again with the master password or a pairing code. To keep it out, change the master password.",
     "disconnectFailed": "Could not disconnect: {error}"
-  },
-  "ide": {
-    "openFile": "Open {path}",
-    "selected": "Selected",
-    "opened": "Opened"
-  },
-  "backToRun": {
-    "title": "Back to AI run",
-    "label": "Run AI"
-  },
-  "modal": {
-    "close": "Close",
-    "closeEsc": "Close (Esc)"
   }
 }

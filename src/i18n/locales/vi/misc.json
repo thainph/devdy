@@ -65,22 +65,6 @@
     "compactTitle": "Nén hội thoại để giải phóng context (gửi /compact)",
     "fiveHourTitle": "Cửa sổ mức dùng 5 giờ của gói đăng ký claude.ai"
   },
-  "activeRuns": {
-    "heading": "Run đang hoạt động",
-    "review": "Duyệt",
-    "stopped": "Đã dừng",
-    "failed": "Thất bại",
-    "done": "Xong",
-    "run": "Run",
-    "project": "Dự án"
-  },
-  "activeRemote": {
-    "heading": "Remote đang hoạt động",
-    "live": "Trực tiếp",
-    "pairing": "Đang ghép nối",
-    "run": "Run",
-    "project": "Dự án"
-  },
   "remoteIndicator": {
     "title": "Điều khiển từ xa",
     "short": "Remote",
@@ -95,18 +79,5 @@
     "disconnect": "Ngắt kết nối và đăng xuất",
     "disconnectHint": "Một điện thoại / web controller đang điều khiển ứng dụng này qua Remote Control. Ngắt kết nối sẽ cắt ngay và đăng xuất thiết bị đó: nó phải đăng nhập lại bằng mật khẩu chính hoặc mã ghép nối. Để chặn hẳn, hãy đổi mật khẩu chính.",
     "disconnectFailed": "Không thể ngắt kết nối: {error}"
-  },
-  "ide": {
-    "openFile": "Mở {path}",
-    "selected": "Đã chọn",
-    "opened": "Đã mở"
-  },
-  "backToRun": {
-    "title": "Về lại AI run",
-    "label": "Run AI"
-  },
-  "modal": {
-    "close": "Đóng",
-    "closeEsc": "Đóng (Esc)"
   }
 }

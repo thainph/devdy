@@ -149,7 +149,6 @@
   "drawer": {
     "text": "Title",
     "project": "Project",
-    "due": "Deadline",
     "dueTime": "Time (optional)",
     "clearDue": "Clear deadline",
     "estimate": "Estimate",

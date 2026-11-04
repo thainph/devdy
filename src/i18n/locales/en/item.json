@@ -1,5 +1,4 @@
 {
-  "panelTitle": "Todos & Notes",
   "navTodos": "Todos",
   "navNotes": "Notes",
   "tabTodo": "Todo",
@@ -20,8 +19,6 @@
   "emptyTodo": "No tasks yet.",
   "emptyNote": "No notes yet.",
   "noResults": "Nothing matches that search.",
-  "createWindowTitle": "New — Devdy",
-  "editWindowTitle": "Edit — Devdy",
   "addTodo": "Add todo",
   "saveNote": "Save note",
   "reload": "Reload latest content",
@@ -85,7 +82,6 @@
   "deletedTodoDraftCopied": "This task was deleted elsewhere — your unsaved text was copied to the clipboard.",
   "deletedNoteDraftLost": "This note was deleted elsewhere and your unsaved text could not be copied.",
   "deletedTodoDraftLost": "This task was deleted elsewhere and your unsaved text could not be copied.",
-  "dueDate": "Deadline",
   "setDueDate": "Set a deadline",
   "clearDueDate": "Clear the deadline",
   "fieldProject": "Project",

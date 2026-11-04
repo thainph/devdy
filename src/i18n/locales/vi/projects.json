@@ -3,7 +3,6 @@
   "detecting": "Đang dò tìm…",
   "adding": "Đang thêm…",
   "addProject": "Thêm dự án",
-  "error": "Đã có lỗi xảy ra",
   "emptyTitle": "Chưa có dự án nào",
   "emptyHint": "Thêm một thư mục cục bộ để bắt đầu quản lý AI skill và chạy phân tích",
   "openInVscode": "Mở dự án trong VS Code",
