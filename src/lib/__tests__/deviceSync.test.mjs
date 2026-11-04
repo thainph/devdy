@@ -2,6 +2,7 @@
 // Run: node --test src/lib/__tests__/deviceSync.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
+import { readFileSync } from 'node:fs'
 import {
   MIRROR_DELETE_KEYS,
   SYNC_CATEGORY_KEYS,
@@ -54,6 +55,17 @@ test('syncErrorCode recognises every backend code, anything else is null', () =>
   assert.equal(syncErrorCode('relay closed'), null)
   assert.equal(syncErrorCode(new Error('wrong_password')), null)
   assert.equal(syncErrorCode(undefined), null)
+})
+
+test('every backend error code is translated in both locales', () => {
+  for (const code of ['bad_request', 'bundle_corrupt', 'bundle_unsupported_version']) {
+    assert.ok(SYNC_ERROR_CODES.includes(code), code)
+  }
+  for (const locale of ['en', 'vi']) {
+    const url = new URL(`../../i18n/locales/${locale}/deviceSync.json`, import.meta.url)
+    const errors = JSON.parse(readFileSync(url, 'utf8')).errors
+    for (const code of SYNC_ERROR_CODES) assert.ok(errors[code], `${locale}: ${code}`)
+  }
 })
 
 test('isDeviceGone only for offline / disconnected', () => {

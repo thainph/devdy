@@ -24,6 +24,7 @@ use crate::commands::{
     notes, rules, skills, todos, vps_servers,
 };
 use crate::db::Db;
+use crate::device_sync::transport::{ERR_BUNDLE_CORRUPT, ERR_BUNDLE_VERSION, ERR_TOO_LARGE};
 use crate::item_links::ItemKind;
 use crate::secrets;
 use crate::slack_threads::SlackThreadsState;
@@ -190,36 +191,43 @@ fn seal_payload(payload: &SyncPayload, key: &[u8; 32]) -> Result<Vec<u8>, String
     Ok(out)
 }
 
+/// Open a sealed bundle. Errors are stable codes the UI translates; a wrong key reads as
+/// corrupted data, since the transport already proved the password.
 fn open_payload(bytes: &[u8], key: &[u8; 32]) -> Result<SyncPayload, String> {
+    let corrupt = || ERR_BUNDLE_CORRUPT.to_string();
     let header = MAGIC.len() + NONCE_LEN;
-    if bytes.len() < header + TAG_LEN || &bytes[..MAGIC.len()] != MAGIC {
-        return Err("Not Devdy sync data (or made by an incompatible version)".to_string());
+    if bytes.len() < header + TAG_LEN {
+        return Err(corrupt());
+    }
+    if &bytes[..MAGIC.len()] != MAGIC {
+        // Another sync format version ("DDS2"…) rather than garbage.
+        return Err(if bytes.starts_with(&MAGIC[..3]) {
+            ERR_BUNDLE_VERSION.to_string()
+        } else {
+            corrupt()
+        });
     }
     let nonce: Nonce = bytes[MAGIC.len()..header]
         .try_into()
-        .map_err(|_| "Corrupted sync data".to_string())?;
+        .map_err(|_| corrupt())?;
     let cipher = &bytes[header..];
     let mut plain = vec![0u8; cipher.len() - TAG_LEN];
     crypto_aead_xchacha20poly1305_ietf_decrypt(&mut plain, cipher, Some(AAD), &nonce, key)
-        .map_err(|_| "Wrong master password, or the sync data is corrupted".to_string())?;
+        .map_err(|_| corrupt())?;
     let mut json = Vec::new();
     flate2::read::ZlibDecoder::new(plain.as_slice())
         .take(MAX_PLAIN_LEN + 1)
         .read_to_end(&mut json)
-        .map_err(|_| "Corrupted sync data".to_string())?;
+        .map_err(|_| corrupt())?;
     if json.len() as u64 > MAX_PLAIN_LEN {
-        return Err("The sync data is too large".to_string());
+        return Err(ERR_TOO_LARGE.to_string());
     }
-    let payload: SyncPayload =
-        serde_json::from_slice(&json).map_err(|_| "Corrupted sync data".to_string())?;
+    let payload: SyncPayload = serde_json::from_slice(&json).map_err(|_| corrupt())?;
     if payload.format != FORMAT {
-        return Err("Not Devdy sync data".to_string());
+        return Err(corrupt());
     }
     if payload.version > VERSION {
-        return Err(format!(
-            "The other device runs a newer Devdy (sync format v{}); update Devdy first",
-            payload.version
-        ));
+        return Err(ERR_BUNDLE_VERSION.to_string());
     }
     Ok(payload)
 }
@@ -239,7 +247,7 @@ pub async fn apply_sync_bundle(
     let key = *key;
     let payload = tokio::task::spawn_blocking(move || open_payload(&bytes, &key))
         .await
-        .map_err(|e| e.to_string())??;
+        .map_err(|_| ERR_BUNDLE_CORRUPT.to_string())??;
     let env = ApplyEnv {
         app: Some(app),
         app_data: app.path().app_data_dir().ok(),
@@ -889,12 +897,19 @@ mod tests {
         );
         assert!(opened.categories.todos && !opened.categories.notes);
 
-        let err = open_payload(&sealed, &[8u8; 32]).err().unwrap();
-        assert!(err.contains("Wrong master password"), "{err}");
+        let err = |b: &[u8], k: &[u8; 32]| open_payload(b, k).err().unwrap();
+        assert_eq!(err(&sealed, &[8u8; 32]), ERR_BUNDLE_CORRUPT);
         let mut tampered = sealed.clone();
         *tampered.last_mut().unwrap() ^= 1;
-        assert!(open_payload(&tampered, &key).is_err());
-        assert!(open_payload(b"DDS1short", &key).is_err());
+        assert_eq!(err(&tampered, &key), ERR_BUNDLE_CORRUPT);
+        assert_eq!(err(b"DDS1short", &key), ERR_BUNDLE_CORRUPT);
+        let mut newer = sealed.clone();
+        newer[3] = b'2';
+        assert_eq!(err(&newer, &key), ERR_BUNDLE_VERSION);
+        p.version = VERSION + 1;
+        let from_newer = seal_payload(&p, &key).unwrap();
+        p.version = VERSION;
+        assert_eq!(err(&from_newer, &key), ERR_BUNDLE_VERSION);
         // Two seals of the same data differ (random nonce).
         assert_ne!(seal_payload(&p, &key).unwrap(), sealed);
     }

@@ -69,7 +69,8 @@ export function mirrorDeletions(c: SyncCategories): SyncCategory[] {
 /** Error codes the `device_sync_*` commands return as plain strings (i18n `deviceSync.errors.<code>`). */
 export const SYNC_ERROR_CODES = [
   'wrong_password', 'device_offline', 'rate_limited', 'checksum_mismatch', 'timeout',
-  'device_disconnected', 'source_failed', 'bundle_too_large', 'protocol_error',
+  'device_disconnected', 'source_failed', 'bad_request', 'bundle_too_large', 'bundle_corrupt',
+  'bundle_unsupported_version', 'protocol_error',
   'relay_not_configured', 'relay_unreachable', 'relay_auth_failed', 'relay_unsupported', 'busy',
 ] as const
 
