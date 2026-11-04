@@ -112,7 +112,9 @@ pub struct Envelope {
     /// `register_host` (optional, newer Hosts): the device alias to list this
     /// Host under. Its presence (with `app_version`) opts the Host into
     /// `list_hosts`; a re-register without it withdraws the Host from the list.
-    /// Also on `error{alias_conflict}`: the alias another listed Host has.
+    /// Also on `error{alias_conflict}` (relay → the registering Host): the
+    /// caller's own alias as it registered it, which another listed device
+    /// already uses (compared trimmed and case-insensitively).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub alias: Option<String>,
 

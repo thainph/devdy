@@ -54,6 +54,22 @@ const BACKOFF_MAX: Duration = Duration::from_secs(15);
 /// restarts the agent straight away.
 const DEVICE_CONFLICT_RETRY: Duration = Duration::from_secs(300);
 
+/// Wait after a FIRST `device_id_conflict` before checking again, unreported:
+/// longer than the relay's peer liveness timeout (45 s), so the half-open
+/// socket of this same machine's previous launch (killed app, lost network)
+/// is gone by then. Only a second refusal in a row is a real conflict.
+const DEVICE_CONFLICT_RECHECK: Duration = Duration::from_secs(60);
+
+/// After `refusals` `device_id_conflict`s in a row: how long to wait, and
+/// whether to report the conflict.
+fn device_conflict_wait(refusals: u32) -> (Duration, bool) {
+    if refusals <= 1 {
+        (DEVICE_CONFLICT_RECHECK, false)
+    } else {
+        (DEVICE_CONFLICT_RETRY, true)
+    }
+}
+
 /// How often the device-sync listen is re-armed while serving. Re-arming the
 /// same code is a no-op for the relay, and it restores a listen the relay
 /// dropped without telling us (older relays, when another connection took the
@@ -167,6 +183,7 @@ pub async fn run_agent(
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut backoff = BACKOFF_MIN;
+    let mut conflict_refusals = 0u32;
     loop {
         if *stop.borrow() {
             break;
@@ -178,14 +195,28 @@ pub async fn run_agent(
             ConnectOutcome::DeviceConflict => {
                 deps.connected.store(false, Ordering::SeqCst);
                 deps.reconnecting.store(false, Ordering::SeqCst);
-                tracing::warn!(event = "remote_device_id_conflict_wait", secs = DEVICE_CONFLICT_RETRY.as_secs());
+                conflict_refusals += 1;
+                let (wait, report) = device_conflict_wait(conflict_refusals);
+                if report {
+                    crate::remote::set_last_error(
+                        &deps.last_error,
+                        Some(crate::remote::last_error::DEVICE_ID_CONFLICT),
+                    );
+                    crate::remote::set_device_conflict(
+                        &deps.app,
+                        &deps.device_conflict,
+                        Some(crate::remote::DeviceConflict::device_id()),
+                    );
+                }
+                tracing::warn!(event = "remote_device_id_conflict_wait", secs = wait.as_secs(), report);
                 tokio::select! {
-                    _ = tokio::time::sleep(DEVICE_CONFLICT_RETRY) => {}
+                    _ = tokio::time::sleep(wait) => {}
                     _ = stop.changed() => { if *stop.borrow() { break; } }
                 }
                 backoff = BACKOFF_MIN;
             }
             ConnectOutcome::Disconnected => {
+                conflict_refusals = 0;
                 deps.connected.store(false, Ordering::SeqCst);
                 // The socket is down and we're about to wait+retry — surface this
                 // as "reconnecting…" on the desktop (cleared once we reconnect).
@@ -422,16 +453,8 @@ async fn connect_once(
                 };
                 // Another running Devdy holds this device id: stop dialing fast.
                 if env.t == FrameType::Error && env.code.as_deref() == Some("device_id_conflict") {
+                    // Reported by `run_agent` only if it happens again.
                     tracing::warn!(event = "remote_device_id_conflict");
-                    crate::remote::set_last_error(
-                        &deps.last_error,
-                        Some(crate::remote::last_error::DEVICE_ID_CONFLICT),
-                    );
-                    crate::remote::set_device_conflict(
-                        &deps.app,
-                        &deps.device_conflict,
-                        Some(crate::remote::DeviceConflict::device_id()),
-                    );
                     break ConnectOutcome::DeviceConflict;
                 }
                 // The relay acked `register_host`: whatever clash it reported
@@ -1414,8 +1437,20 @@ struct Disconnected {
 
 #[cfg(test)]
 mod tests {
-    use super::{login_listen_frame, should_ignore_handshake};
+    use super::{
+        device_conflict_wait, login_listen_frame, should_ignore_handshake, DEVICE_CONFLICT_RETRY,
+    };
+    use std::time::Duration;
     use crate::remote::protocol::FrameType;
+
+    #[test]
+    fn a_first_device_id_conflict_is_rechecked_before_it_is_reported() {
+        // The relay drops a dead socket after 45 s: the recheck waits longer.
+        let (wait, report) = device_conflict_wait(1);
+        assert!(wait > Duration::from_secs(45) && !report);
+        assert_eq!(device_conflict_wait(2), (DEVICE_CONFLICT_RETRY, true));
+        assert_eq!(device_conflict_wait(7), (DEVICE_CONFLICT_RETRY, true));
+    }
 
     #[test]
     fn login_listen_follows_the_login_code() {

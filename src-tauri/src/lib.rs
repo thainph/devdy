@@ -238,6 +238,14 @@ pub fn run() {
                     }
                 });
             }
+            // Skills / rules linked while a project folder was missing (device
+            // sync, another machine's layout): install them now that it exists.
+            {
+                let db = db.clone();
+                tauri::async_runtime::spawn(async move {
+                    commands::projects::install_pending_links(&db).await;
+                });
+            }
             // Background-process tracker: sweeps what a previous session left
             // behind, then follows every process Devdy spawns from here on.
             procs::commands::install(app, &app_data_dir);
