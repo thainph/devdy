@@ -110,7 +110,6 @@ impl OutboundTx {
     }
 
     /// Current queue depth (frames enqueued but not yet written to the socket).
-    #[cfg(test)]
     pub fn depth(&self) -> usize {
         self.depth.load(Ordering::Relaxed)
     }

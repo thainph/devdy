@@ -1,6 +1,6 @@
 //! The serving side of device sync (device A), driven by the Remote Control
 //! agent: it shares the agent's relay socket but lives in its own listen slot
-//! and room, so a pull never touches the phone / remote-desktop session.
+//! and room, so a pull never touches the phone (web controller) session.
 //!
 //! See `transport.rs` for the protocol. Served only while the agent runs
 //! (Remote Control on) and a master password is set; wrong passwords count
