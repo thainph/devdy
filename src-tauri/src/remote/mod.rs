@@ -117,6 +117,59 @@ pub fn set_device_conflict(app: &AppHandle, slot: &ConflictSlot, conflict: Optio
     }
 }
 
+/// Why the agent is not connected to the relay right now, as a stable code the
+/// UI maps to a message (`remote_status.last_error`). Cleared once the relay
+/// accepts `register_host`, and when the agent stops.
+pub mod last_error {
+    /// DNS / TCP / TLS failure or no answer in time.
+    pub const RELAY_UNREACHABLE: &str = "relay_unreachable";
+    /// The URL is malformed, or the server answered but is not a relay
+    /// WebSocket endpoint (HTTP status instead of an upgrade).
+    pub const RELAY_BAD_URL: &str = "relay_bad_url";
+    /// The relay refused the host auth token.
+    pub const RELAY_AUTH_FAILED: &str = "relay_auth_failed";
+    /// The relay rejected a frame it does not understand (an older relay).
+    pub const RELAY_UNSUPPORTED: &str = "relay_unsupported";
+    /// The relay throttled this Host.
+    pub const RELAY_RATE_LIMITED: &str = "relay_rate_limited";
+    /// Another running Devdy is connected with this device id.
+    pub const DEVICE_ID_CONFLICT: &str = "device_id_conflict";
+    /// Enabled, but the relay URL is missing.
+    pub const RELAY_NOT_CONFIGURED: &str = "relay_not_configured";
+    /// Enabled, but the relay auth token is missing from the Keychain.
+    pub const TOKEN_MISSING: &str = "token_missing";
+
+    /// The code for a failed dial.
+    pub fn for_dial_error(e: &tokio_tungstenite::tungstenite::Error) -> &'static str {
+        use tokio_tungstenite::tungstenite::Error;
+        match e {
+            Error::Url(_) | Error::Http(_) | Error::HttpFormat(_) => RELAY_BAD_URL,
+            _ => RELAY_UNREACHABLE,
+        }
+    }
+
+    /// The code for an `error` frame from the relay, `None` when that error
+    /// does not stop this Host from serving.
+    pub fn for_relay_error(code: Option<&str>) -> Option<&'static str> {
+        match code? {
+            "auth_failed" | "forbidden" => Some(RELAY_AUTH_FAILED),
+            "bad_request" => Some(RELAY_UNSUPPORTED),
+            "rate_limited" => Some(RELAY_RATE_LIMITED),
+            "device_id_conflict" => Some(DEVICE_ID_CONFLICT),
+            _ => None,
+        }
+    }
+}
+
+/// Shared slot for [`last_error`].
+pub type ErrorSlot = Arc<std::sync::Mutex<Option<&'static str>>>;
+
+pub fn set_last_error(slot: &ErrorSlot, code: Option<&'static str>) {
+    if let Ok(mut current) = slot.lock() {
+        *current = code;
+    }
+}
+
 /// Random id of this app launch, sent on `register_host` (see
 /// `protocol::Envelope::instance_id`). Never persisted.
 pub fn instance_id() -> &'static str {
@@ -158,6 +211,8 @@ pub struct RemoteState {
     pub push: push::PushHub,
     /// The device id / alias clash the relay last reported, if any.
     pub device_conflict: ConflictSlot,
+    /// Why the agent is not connected right now (see [`last_error`]).
+    pub last_error: ErrorSlot,
     agent: Arc<TokioMutex<Option<AgentControl>>>,
 }
 
@@ -180,6 +235,7 @@ impl RemoteState {
             focus_run_id: Arc::new(TokioMutex::new(None)),
             push: push::PushHub::default(),
             device_conflict: Arc::new(std::sync::Mutex::new(None)),
+            last_error: Arc::new(std::sync::Mutex::new(None)),
             agent: Arc::new(TokioMutex::new(None)),
         }
     }
@@ -203,10 +259,14 @@ impl RemoteState {
         }
         let relay_url = get_setting(db, KEY_RELAY_URL).await.unwrap_or_default();
         if relay_url.trim().is_empty() {
+            set_last_error(&self.last_error, Some(last_error::RELAY_NOT_CONFIGURED));
             return Err("relay URL is not configured".to_string());
         }
-        let auth_token = crate::secrets::get_remote_auth_token()
-            .ok_or_else(|| "relay auth token is not set (enable requires a token)".to_string())?;
+        let Some(auth_token) = crate::secrets::get_remote_auth_token() else {
+            set_last_error(&self.last_error, Some(last_error::TOKEN_MISSING));
+            return Err("relay auth token is not set (enable requires a token)".to_string());
+        };
+        set_last_error(&self.last_error, None);
         let device_id = ensure_device_id(db).await?;
 
         let (stop_tx, stop_rx) = tokio::sync::watch::channel(false);
@@ -224,6 +284,7 @@ impl RemoteState {
             subscriptions: self.subscriptions.clone(),
             focus_run_id: self.focus_run_id.clone(),
             device_conflict: self.device_conflict.clone(),
+            last_error: self.last_error.clone(),
         };
         let config = agent::AgentConfig {
             relay_url,
@@ -249,6 +310,7 @@ impl RemoteState {
         if let Ok(mut c) = self.device_conflict.lock() {
             *c = None;
         }
+        set_last_error(&self.last_error, None);
         self.connected
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.reconnecting
@@ -339,6 +401,35 @@ pub(crate) async fn ensure_device_id(db: &Db) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn relay_errors_map_to_stable_codes() {
+        assert_eq!(last_error::for_relay_error(Some("auth_failed")), Some("relay_auth_failed"));
+        assert_eq!(last_error::for_relay_error(Some("forbidden")), Some("relay_auth_failed"));
+        assert_eq!(last_error::for_relay_error(Some("bad_request")), Some("relay_unsupported"));
+        assert_eq!(last_error::for_relay_error(Some("rate_limited")), Some("relay_rate_limited"));
+        assert_eq!(
+            last_error::for_relay_error(Some("device_id_conflict")),
+            Some("device_id_conflict")
+        );
+        // Room-level errors don't stop the Host from serving.
+        assert_eq!(last_error::for_relay_error(Some("pair_invalid")), None);
+        assert_eq!(last_error::for_relay_error(Some("alias_conflict")), None);
+        assert_eq!(last_error::for_relay_error(None), None);
+    }
+
+    #[test]
+    fn dial_errors_tell_a_bad_url_from_an_unreachable_relay() {
+        use tokio_tungstenite::tungstenite::error::{Error, UrlError};
+        assert_eq!(last_error::for_dial_error(&Error::Url(UrlError::NoHostName)), "relay_bad_url");
+        let not_ws = tokio_tungstenite::tungstenite::http::Response::builder()
+            .status(404)
+            .body(None)
+            .unwrap();
+        assert_eq!(last_error::for_dial_error(&Error::Http(not_ws)), "relay_bad_url");
+        let io = std::io::Error::new(std::io::ErrorKind::ConnectionRefused, "refused");
+        assert_eq!(last_error::for_dial_error(&Error::Io(io)), "relay_unreachable");
+    }
 
     #[test]
     fn device_conflict_is_camel_case_json() {

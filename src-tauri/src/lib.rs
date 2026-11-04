@@ -743,6 +743,7 @@ pub fn run() {
             remote_set_device_alias,
             device_sync::commands::device_sync_list_devices,
             device_sync::commands::device_sync_pull,
+            device_sync::commands::device_sync_last,
             remote_get_audit,
             remote_clear_audit,
             remote_status,

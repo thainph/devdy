@@ -155,6 +155,8 @@ pub struct AgentDeps {
     pub focus_run_id: crate::remote::FocusRun,
     /// Device id / alias clash reported by the relay (see `remote_status`).
     pub device_conflict: crate::remote::ConflictSlot,
+    /// Why this Host is not connected right now (see `remote::last_error`).
+    pub last_error: crate::remote::ErrorSlot,
 }
 
 /// Run the agent until `stop` fires. Reconnect loop with capped backoff.
@@ -229,10 +231,18 @@ async fn connect_once(
             Ok(Ok((ws, _resp))) => ws,
             Ok(Err(e)) => {
                 tracing::warn!(event = "remote_connect_failed", error = %e);
+                crate::remote::set_last_error(
+                    &deps.last_error,
+                    Some(crate::remote::last_error::for_dial_error(&e)),
+                );
                 return ConnectOutcome::Disconnected;
             }
             Err(_) => {
                 tracing::warn!(event = "remote_connect_timeout");
+                crate::remote::set_last_error(
+                    &deps.last_error,
+                    Some(crate::remote::last_error::RELAY_UNREACHABLE),
+                );
                 return ConnectOutcome::Disconnected;
             }
         },
@@ -413,6 +423,10 @@ async fn connect_once(
                 // Another running Devdy holds this device id: stop dialing fast.
                 if env.t == FrameType::Error && env.code.as_deref() == Some("device_id_conflict") {
                     tracing::warn!(event = "remote_device_id_conflict");
+                    crate::remote::set_last_error(
+                        &deps.last_error,
+                        Some(crate::remote::last_error::DEVICE_ID_CONFLICT),
+                    );
                     crate::remote::set_device_conflict(
                         &deps.app,
                         &deps.device_conflict,
@@ -424,6 +438,7 @@ async fn connect_once(
                 // before is over (an alias clash, if still there, follows).
                 if env.t == FrameType::Control && env.room_id.is_empty() && env.code.as_deref() == Some("ok") {
                     crate::remote::set_device_conflict(&deps.app, &deps.device_conflict, None);
+                    crate::remote::set_last_error(&deps.last_error, None);
                 }
                 if env.t == FrameType::Error && env.code.as_deref() == Some("alias_conflict") {
                     let alias = env.alias.as_deref().unwrap_or_default();
@@ -453,6 +468,10 @@ async fn connect_once(
                 // Re-dial so the listen is re-established instead of sitting on
                 // a socket no controller can reach.
                 if env.t == FrameType::Error && relay_error_needs_redial(env.code.as_deref()) {
+                    crate::remote::set_last_error(
+                        &deps.last_error,
+                        crate::remote::last_error::for_relay_error(env.code.as_deref()),
+                    );
                     tracing::warn!(
                         event = "remote_relay_error_redial",
                         code = env.code.as_deref().unwrap_or(""),

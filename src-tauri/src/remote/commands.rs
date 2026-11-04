@@ -55,6 +55,11 @@ pub struct RemoteStatus {
     /// Also pushed as the `remote://device-conflict` event.
     #[serde(rename = "deviceConflict")]
     pub device_conflict: Option<remote::DeviceConflict>,
+    /// Why the agent is not connected right now, as a stable code
+    /// (`remote::last_error`): `relay_unreachable`, `relay_bad_url`,
+    /// `relay_auth_failed`, `relay_unsupported`, `relay_rate_limited`,
+    /// `device_id_conflict`, `relay_not_configured`, `token_missing`.
+    pub last_error: Option<&'static str>,
 }
 
 /// Persist relay config (DATA-001). `auth_token`, when provided (non-empty), is
@@ -402,6 +407,7 @@ pub async fn remote_status(
         session_authenticated,
         session_idle_expires_at,
         device_conflict: state.device_conflict.lock().ok().and_then(|c| c.clone()),
+        last_error: state.last_error.lock().ok().and_then(|c| *c),
     })
 }
 
