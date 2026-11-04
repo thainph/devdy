@@ -340,7 +340,6 @@ async fn sync_run_usage(
 /// engine's `parse` fn. This reconciles the shared transcript store with runs:
 /// - existing run for the session → refresh its rendered log on disk;
 /// - no run yet → import it as a `session` run (history + token usage);
-/// - the transcript was written by two-way sync → skip (it is already mirrored);
 /// - the session is owned by a *running* Devdy run → leave it to the live
 ///   stream; and if any run in the project is still `running` we defer importing
 ///   *new* sessions, since that run may just not have captured its `session_id`
