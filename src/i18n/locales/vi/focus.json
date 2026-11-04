@@ -149,6 +149,7 @@
   "drawer": {
     "text": "Tiêu đề",
     "project": "Dự án",
+    "dueTime": "Giờ (tuỳ chọn)",
     "clearDue": "Xoá hạn",
     "estimate": "Estimate",
     "estimatePlaceholder": "30m, 2h, 1h30",
@@ -157,6 +158,7 @@
     "snoozedUntil": "Hoãn đến",
     "remindAt": "Nhắc lúc",
     "clear": "Xoá",
+    "source": "Nguồn",
     "actual": "Thời gian thực tế",
     "aiPlan": "Kế hoạch AI",
     "aiAnalyzedAt": "Phân tích lúc {time}",
