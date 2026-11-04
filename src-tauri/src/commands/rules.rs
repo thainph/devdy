@@ -615,15 +615,47 @@ pub async fn apply_rule(
     db: State<'_, Db>,
     project_id: String,
     rule_id: String,
-) -> Result<(), String> {
-    apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await
+) -> Result<ApplyOneOutcome, String> {
+    let folder_missing = project_folder_missing(db.inner(), &project_id).await;
+    apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await?;
+    Ok(ApplyOneOutcome { folder_missing })
+}
+
+/// Result of switching one skill / rule on for one project.
+#[derive(Debug, Serialize)]
+pub struct ApplyOneOutcome {
+    /// The project folder isn't on this machine: the link is saved, nothing was
+    /// written; it is installed once the folder exists (next app start, sync or
+    /// re-apply).
+    pub folder_missing: bool,
 }
 
 /// Summary returned by "apply to all projects" bulk operations (rules & skills).
 #[derive(Debug, Serialize)]
 pub struct ApplyAllOutcome {
+    /// Applied, files written.
     pub applied: usize,
     pub failures: Vec<ApplyFailure>,
+    /// Link saved but the project folder isn't on this machine (nothing written).
+    pub saved_without_folder: Vec<SavedWithoutFolder>,
+}
+
+#[derive(Debug, Serialize)]
+pub struct SavedWithoutFolder {
+    pub project_id: String,
+    pub project_name: String,
+}
+
+/// Whether project `project_id` has no folder on this machine (an unknown
+/// project counts as present: the apply itself reports it).
+pub(crate) async fn project_folder_missing(db: &Db, project_id: &str) -> bool {
+    sqlx::query_scalar::<_, String>("SELECT path FROM projects WHERE id = ?")
+        .bind(project_id)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten()
+        .is_some_and(|path| !Path::new(&path).is_dir())
 }
 
 #[derive(Debug, Serialize)]
@@ -646,15 +678,18 @@ pub async fn apply_rule_to_all_projects(
 
     let mut applied = 0;
     let mut failures = Vec::new();
+    let mut saved_without_folder = Vec::new();
     for row in &rows {
         let project_id: String = row.get("id");
         let project_name: String = row.get("name");
+        let missing = project_folder_missing(db.inner(), &project_id).await;
         match apply_rule_to_project(db.inner(), &project_id, &rule_id, true).await {
+            Ok(()) if missing => saved_without_folder.push(SavedWithoutFolder { project_id, project_name }),
             Ok(()) => applied += 1,
             Err(error) => failures.push(ApplyFailure { project_id, project_name, error }),
         }
     }
-    Ok(ApplyAllOutcome { applied, failures })
+    Ok(ApplyAllOutcome { applied, failures, saved_without_folder })
 }
 
 /// Re-write a rule (or every rule when `rule_id` is None) into each project that already has it
@@ -681,18 +716,20 @@ pub async fn reapply_rules(
 
     let mut applied = 0;
     let mut failures = Vec::new();
+    let mut saved_without_folder = Vec::new();
     for row in &rows {
         let project_id: String = row.get("project_id");
         let rid: String = row.get("rule_id");
         let project_name: String = row.get("project_name");
         let project_path: String = row.get("path");
         let rule_name: String = row.get("rule_name");
-        // Don't recreate a project folder that was moved or deleted on disk.
-        let result = if !Path::new(&project_path).is_dir() {
-            Err(format!("Project folder not found: {}", project_path))
-        } else {
-            apply_rule_to_project(db.inner(), &project_id, &rid, false).await
-        };
+        // No folder on this machine: the link stays saved, nothing to write (and
+        // the folder isn't recreated).
+        if !Path::new(&project_path).is_dir() {
+            saved_without_folder.push(SavedWithoutFolder { project_id, project_name });
+            continue;
+        }
+        let result = apply_rule_to_project(db.inner(), &project_id, &rid, false).await;
         match result {
             Ok(()) => {
                 applied += 1;
@@ -711,7 +748,8 @@ pub async fn reapply_rules(
             }),
         }
     }
-    Ok(ApplyAllOutcome { applied, failures })
+    saved_without_folder.dedup_by(|a, b| a.project_id == b.project_id);
+    Ok(ApplyAllOutcome { applied, failures, saved_without_folder })
 }
 
 /// Core apply logic shared by `apply_rule`, `apply_rule_to_all_projects` and group enablement.
@@ -1561,6 +1599,30 @@ mod tests {
         remove_skill_from_project_inner(&db, "p1", "review").await.unwrap();
         assert!(!is_symlink(&project.join(".claude/skills/review")));
         assert!(source.join("SKILL.md").exists(), "source untouched");
+    }
+
+    #[tokio::test]
+    async fn pending_links_install_at_start_once_the_folder_exists() {
+        let (db, project, lib) = setup("pending").await;
+        fs::remove_dir_all(&project).unwrap();
+        let source = add_rule(&db, &lib, "git", "claude", "Commit in English.\n").await;
+        apply_rule_to_project(&db, "p1", "git", true).await.unwrap();
+        assert!(project_folder_missing(&db, "p1").await);
+        // Still no folder: nothing to do, nothing recreated.
+        assert_eq!(crate::commands::projects::install_pending_links(&db).await, 0);
+        assert!(!project.exists());
+
+        fs::create_dir_all(&project).unwrap();
+        assert!(!project_folder_missing(&db, "p1").await);
+        assert_eq!(crate::commands::projects::install_pending_links(&db).await, 1);
+        assert_eq!(fs::read_link(project.join(".claude/rules/git.md")).unwrap(), source);
+        let manual: i64 = sqlx::query_scalar("SELECT manual FROM project_rules WHERE rule_id = 'git'")
+            .fetch_one(&db)
+            .await
+            .unwrap();
+        assert_eq!(manual, 1, "a hand-picked link stays hand-picked");
+        // Installed now: the next start has nothing left to do.
+        assert_eq!(crate::commands::projects::install_pending_links(&db).await, 0);
     }
 
     #[tokio::test]

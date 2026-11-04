@@ -14,6 +14,7 @@
 use crate::commands::projects::{apply_skill_to_project, remove_skill_from_project_inner};
 use crate::commands::rules::{
     apply_rule_to_project, remove_rule_from_project_inner, ApplyAllOutcome, ApplyFailure,
+    SavedWithoutFolder,
 };
 use crate::db::Db;
 use serde::{Deserialize, Serialize};
@@ -137,6 +138,9 @@ pub struct GroupItemFailure {
 pub struct GroupApplyOutcome {
     pub applied: usize,
     pub failures: Vec<GroupItemFailure>,
+    /// `enable_group_for_project`: the project folder isn't on this machine,
+    /// so the links are saved but nothing was written yet.
+    pub folder_missing: bool,
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -671,7 +675,10 @@ pub async fn enable_group_for_project(
 ) -> Result<GroupApplyOutcome, String> {
     let kind = GroupKind::parse(&kind)?;
     let db = db.inner();
-    enable_group(db, kind, &project_id, &group_id).await
+    let folder_missing = crate::commands::rules::project_folder_missing(db, &project_id).await;
+    let mut outcome = enable_group(db, kind, &project_id, &group_id).await?;
+    outcome.folder_missing = folder_missing;
+    Ok(outcome)
 }
 
 pub(crate) async fn enable_group(
@@ -760,10 +767,18 @@ pub async fn apply_group_to_all_projects(
 
     let mut applied = 0;
     let mut failures = Vec::new();
+    let mut saved_without_folder = Vec::new();
     for row in &rows {
         let project_id: String = row.get("id");
         let project_name: String = row.get("name");
+        let missing = crate::commands::rules::project_folder_missing(db, &project_id).await;
         match enable_group(db, kind, &project_id, &group_id).await {
+            Ok(outcome) if outcome.failures.is_empty() && missing => {
+                saved_without_folder.push(SavedWithoutFolder {
+                    project_id,
+                    project_name,
+                })
+            }
             Ok(outcome) if outcome.failures.is_empty() => applied += 1,
             Ok(outcome) => failures.push(ApplyFailure {
                 project_id,
@@ -782,7 +797,11 @@ pub async fn apply_group_to_all_projects(
             }),
         }
     }
-    Ok(ApplyAllOutcome { applied, failures })
+    Ok(ApplyAllOutcome {
+        applied,
+        failures,
+        saved_without_folder,
+    })
 }
 
 #[cfg(test)]
