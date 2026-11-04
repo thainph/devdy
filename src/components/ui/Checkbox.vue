@@ -7,6 +7,8 @@ import { computed } from 'vue'
 import { Check, Minus } from 'lucide-vue-next'
 import { cn } from '@/lib/utils'
 
+defineOptions({ name: 'UiCheckbox' })
+
 const props = withDefaults(defineProps<{
   modelValue: boolean | 'mixed'
   disabled?: boolean
