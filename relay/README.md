@@ -37,7 +37,7 @@ Control frames handled by the relay:
 
 | `t`              | Direction        | Purpose |
 |------------------|------------------|---------|
-| `register_host`  | Host → Relay     | Authenticate with `auth_token`; hold long-lived. Optional `alias` + `app_version` list the Host in `list_hosts` (re-register without them to unlist). |
+| `register_host`  | Host → Relay     | Authenticate with `auth_token`; hold long-lived. Optional `alias` + `app_version` list the Host in `list_hosts` (re-register without them to unlist). Optional `instance_id` (random per app launch): while another connection with the same `device_id` and a different `instance_id` is alive, the newcomer gets `error{device_id_conflict}` and is closed; the same `instance_id` (a reconnect) takes over as before. A listed `alias` another listed device already uses (trimmed, case-insensitive) is accepted, then warned with `error{alias_conflict, alias}`. |
 | `create_pair`    | Host → Relay     | Listen on a rendezvous `pair_code` until this connection closes (a new code replaces the old one in the same `slot`). Acked with `room_ready{code:"armed"}`. Optional `slot`: absent = the session, `"login"` = password login (well-known code `devdy-login-v1`), `"sync"` = device sync (`devdy-sync-v1/<device_id>`). |
 | `join`           | Controller → Relay | Join the Host listening on `pair_code`. A newer join replaces the previous Controller (`error{superseded}` to the old one). |
 | `room_ready`     | Relay → both     | Room opened, carries `room_id`. |
@@ -45,7 +45,7 @@ Control frames handled by the relay:
 | `revoke`         | Host → Relay     | Close a room; empty `room_id` = stop listening in `slot` (default: the session) and close its room. |
 | `list_hosts`     | Client → Relay   | With the host `auth_token` (a wrong one closes the socket): answered by `hosts{hosts:[{device_id, alias, app_version}]}` — the listed Hosts online, minus the caller's own `device_id`. |
 | `keepalive`      | either → Relay   | Echoed back; keeps idle proxies from reaping the socket. |
-| `error`          | Relay → sender   | `{ code, message }` — auth/routing error. |
+| `error`          | Relay → sender   | `{ code, message }` — auth/routing error. `listen_superseded` (with `slot`) tells a Host another connection took over a code it listened on. |
 
 Model (deliberately minimal — reconnect = re-join):
 

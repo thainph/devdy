@@ -164,6 +164,10 @@ pub struct Notice {
     /// `peer_left`, so it stops instead of re-joining and kicking the newcomer
     /// back (two tabs ping-ponging forever).
     pub superseded: bool,
+    /// `Some(slot)` when the recipient is a Host whose listen on that slot was
+    /// taken over by another connection: it gets `error{listen_superseded}`
+    /// so it knows joins no longer reach it (`room_id` is empty).
+    pub lost_slot: Option<String>,
 }
 
 /// One live room: exactly one Host and one Controller.
@@ -244,7 +248,8 @@ impl RoomRegistry {
     ///   code is dropped and its room closed.
     /// - Another connection held this code (a stale socket of the same Host that
     ///   has not timed out yet): the newer Host takes it over and the old room
-    ///   is closed so its Controller re-joins the live Host.
+    ///   is closed so its Controller re-joins the live Host. The old connection
+    ///   is told (`lost_slot`): if it is in fact alive, it can listen again.
     ///
     /// Returns the peers to notify.
     pub fn listen(&mut self, code: u64, host: ConnId, host_out: Outbound, next_room_id: String, slot: &str) -> Vec<Notice> {
@@ -255,8 +260,17 @@ impl RoomRegistry {
                 notices.extend(self.unlisten(prev, Some(host)));
             }
         }
-        if self.listeners.get(&code).is_some_and(|l| l.host != host || l.slot != slot) {
+        if let Some(l) = self.listeners.get(&code).filter(|l| l.host != host || l.slot != slot) {
+            let displaced = (l.host != host).then(|| (l.host_out.clone(), l.slot.clone()));
             notices.extend(self.unlisten(code, Some(host)));
+            if let Some((out, lost)) = displaced {
+                notices.push(Notice {
+                    room_id: String::new(),
+                    out,
+                    superseded: false,
+                    lost_slot: Some(lost),
+                });
+            }
         }
         self.listeners.insert(
             code,
@@ -384,6 +398,7 @@ impl RoomRegistry {
                 room_id: room_id.to_string(),
                 out: room.host_out,
                 superseded: false,
+                lost_slot: None,
             });
         }
         if Some(room.controller) != originator {
@@ -391,6 +406,7 @@ impl RoomRegistry {
                 room_id: room_id.to_string(),
                 out: room.controller_out,
                 superseded: false,
+                lost_slot: None,
             });
         }
         out
@@ -544,12 +560,40 @@ mod tests {
         let (new_host, _rx) = sink();
         let notices = reg.listen(1, 11, new_host.clone(), "rm_c".into(), "");
         assert!(notices.iter().any(|n| n.room_id == room), "controller told to re-join");
+        // The old connection learns it lost the listen (it may be alive after all).
+        let lost: Vec<_> = notices.iter().filter(|n| n.lost_slot.is_some()).collect();
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].lost_slot.as_deref(), Some(""));
+        assert!(lost[0].room_id.is_empty() && !lost[0].superseded);
         let (room2, _) = joined(reg.join(1, 20, sink().0, "rm_d".into()));
         assert!(same_sink(&reg.route(&room2, 20).unwrap(), &new_host));
         // The stale socket finally dies: it must not tear down the new listen.
         assert!(reg.on_disconnect(10).is_empty());
         assert!(reg.is_listening(1));
         assert!(reg.in_room(&room2, 11));
+    }
+
+    #[test]
+    fn a_sync_listen_taken_over_and_dropped_is_reported_to_its_owner() {
+        // Host 10 listens on its sync code; another connection (11, same device
+        // id) arms the same code, then goes away: nobody listens any more, and
+        // 10 must have been told so it can arm again.
+        let mut reg = RoomRegistry::default();
+        let (host, _rx) = sink();
+        assert!(reg.listen(5, 10, host.clone(), "rm_a".into(), "sync").is_empty());
+        let notices = reg.listen(5, 11, sink().0, "rm_b".into(), "sync");
+        assert_eq!(notices.len(), 1);
+        assert!(same_sink(&notices[0].out, &host));
+        assert_eq!(notices[0].lost_slot.as_deref(), Some("sync"));
+        assert!(reg.on_disconnect(11).is_empty());
+        assert!(!reg.is_listening(5));
+        // Re-arming restores it.
+        assert!(reg.listen(5, 10, host, "rm_c".into(), "sync").is_empty());
+        assert!(matches!(reg.join(5, 20, sink().0, "rm_d".into()), JoinOutcome::Joined { .. }));
+        // A re-announce by the owner itself is not a takeover.
+        let (h, _r) = sink();
+        assert!(reg.listen(6, 12, h.clone(), "x".into(), "sync").is_empty());
+        assert!(reg.listen(6, 12, h, "y".into(), "sync").is_empty());
     }
 
     #[test]
