@@ -366,6 +366,7 @@ async fn serve(
     let failure = match &built {
         Ok(b) if b.len() as u64 > MAX_BUNDLE_BYTES => Some(ERR_TOO_LARGE),
         Ok(_) => None,
+        Err(e) if e == ERR_TOO_LARGE => Some(ERR_TOO_LARGE),
         Err(_) => Some(ERR_SOURCE_FAILED),
     };
     if let Some(reason) = failure {

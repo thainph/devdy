@@ -50,7 +50,7 @@ pub const SYNC_SLOT: &str = "sync";
 /// frame near 7.2 MiB, well inside the relay's 32 MiB message cap.
 pub const CHUNK_BYTES: usize = 4 * 1024 * 1024;
 /// Largest bundle either side accepts.
-pub const MAX_BUNDLE_BYTES: u64 = 512 * 1024 * 1024;
+pub const MAX_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
 /// Sync wire version, carried in `request` and `start`.
 pub const PROTOCOL_VERSION: u32 = 1;
 /// Random bytes in the host salt and the puller nonce.

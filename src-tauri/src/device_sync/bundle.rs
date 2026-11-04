@@ -46,8 +46,9 @@ const AAD: &[u8] = b"devdy-device-sync:v1";
 const MAGIC: &[u8; 4] = b"DDS1";
 const NONCE_LEN: usize = 24;
 const TAG_LEN: usize = 16;
-/// Cap on the decompressed payload, so a corrupted (or hostile) stream can't exhaust memory.
-const MAX_PLAIN_LEN: u64 = 1024 * 1024 * 1024;
+/// Cap on the payload JSON, enforced by both sides: twice the largest bundle the transport
+/// carries, so a corrupted (or hostile) stream can't exhaust memory on the puller.
+const MAX_PLAIN_LEN: u64 = 2 * crate::device_sync::transport::MAX_BUNDLE_BYTES;
 
 /// What to pull. `mirror` also deletes local items the source doesn't have (see module docs).
 #[derive(Debug, Clone, Default, Serialize, Deserialize)]
@@ -175,25 +176,30 @@ async fn collect_builtin_disabled(db: &Db) -> Result<BTreeMap<String, Vec<String
 
 fn seal_payload(payload: &SyncPayload, key: &[u8; 32]) -> Result<Vec<u8>, String> {
     let json = serde_json::to_vec(payload).map_err(|e| e.to_string())?;
+    // The puller would refuse it; say so instead of shipping it.
+    if json.len() as u64 > MAX_PLAIN_LEN {
+        return Err(ERR_TOO_LARGE.to_string());
+    }
     let mut z = flate2::write::ZlibEncoder::new(Vec::new(), flate2::Compression::default());
     z.write_all(&json).map_err(|e| e.to_string())?;
+    drop(json);
     let plain = z.finish().map_err(|e| e.to_string())?;
 
     let mut nonce: Nonce = [0u8; NONCE_LEN];
     copy_randombytes(&mut nonce);
-    let mut out = Vec::with_capacity(MAGIC.len() + NONCE_LEN + plain.len() + TAG_LEN);
-    out.extend_from_slice(MAGIC);
-    out.extend_from_slice(&nonce);
-    let mut cipher = vec![0u8; plain.len() + TAG_LEN];
-    crypto_aead_xchacha20poly1305_ietf_encrypt(&mut cipher, &plain, Some(AAD), &nonce, key)
+    let header = MAGIC.len() + NONCE_LEN;
+    let mut out = vec![0u8; header + plain.len() + TAG_LEN];
+    out[..MAGIC.len()].copy_from_slice(MAGIC);
+    out[MAGIC.len()..header].copy_from_slice(&nonce);
+    crypto_aead_xchacha20poly1305_ietf_encrypt(&mut out[header..], &plain, Some(AAD), &nonce, key)
         .map_err(|_| "Could not encrypt the sync data".to_string())?;
-    out.extend_from_slice(&cipher);
     Ok(out)
 }
 
 /// Open a sealed bundle. Errors are stable codes the UI translates; a wrong key reads as
-/// corrupted data, since the transport already proved the password.
-fn open_payload(bytes: &[u8], key: &[u8; 32]) -> Result<SyncPayload, String> {
+/// corrupted data, since the transport already proved the password. Each stage's input is freed
+/// as soon as the next one is decoded, so at most two copies of the data are alive at once.
+fn open_payload(bytes: Vec<u8>, key: &[u8; 32]) -> Result<SyncPayload, String> {
     let corrupt = || ERR_BUNDLE_CORRUPT.to_string();
     let header = MAGIC.len() + NONCE_LEN;
     if bytes.len() < header + TAG_LEN {
@@ -214,11 +220,13 @@ fn open_payload(bytes: &[u8], key: &[u8; 32]) -> Result<SyncPayload, String> {
     let mut plain = vec![0u8; cipher.len() - TAG_LEN];
     crypto_aead_xchacha20poly1305_ietf_decrypt(&mut plain, cipher, Some(AAD), &nonce, key)
         .map_err(|_| corrupt())?;
+    drop(bytes);
     let mut json = Vec::new();
     flate2::read::ZlibDecoder::new(plain.as_slice())
         .take(MAX_PLAIN_LEN + 1)
         .read_to_end(&mut json)
         .map_err(|_| corrupt())?;
+    drop(plain);
     if json.len() as u64 > MAX_PLAIN_LEN {
         return Err(ERR_TOO_LARGE.to_string());
     }
@@ -239,13 +247,12 @@ fn open_payload(bytes: &[u8], key: &[u8; 32]) -> Result<SyncPayload, String> {
 pub async fn apply_sync_bundle(
     app: &AppHandle,
     db: &Db,
-    bytes: &[u8],
+    bytes: Vec<u8>,
     key: &[u8; 32],
     cats: &SyncCategories,
 ) -> Result<SyncReport, String> {
-    let bytes = bytes.to_vec();
     let key = *key;
-    let payload = tokio::task::spawn_blocking(move || open_payload(&bytes, &key))
+    let payload = tokio::task::spawn_blocking(move || open_payload(bytes, &key))
         .await
         .map_err(|_| ERR_BUNDLE_CORRUPT.to_string())??;
     let env = ApplyEnv {
@@ -889,7 +896,7 @@ mod tests {
         let raw = String::from_utf8_lossy(&sealed);
         assert!(!raw.contains("buy milk") && !raw.contains("ghp_secret_token"));
 
-        let opened = open_payload(&sealed, &key).unwrap();
+        let opened = open_payload(sealed.clone(), &key).unwrap();
         assert_eq!(opened.bundle.todos[0].text, "buy milk");
         assert_eq!(
             opened.secrets.github.get("gh").map(String::as_str),
@@ -897,7 +904,7 @@ mod tests {
         );
         assert!(opened.categories.todos && !opened.categories.notes);
 
-        let err = |b: &[u8], k: &[u8; 32]| open_payload(b, k).err().unwrap();
+        let err = |b: &[u8], k: &[u8; 32]| open_payload(b.to_vec(), k).err().unwrap();
         assert_eq!(err(&sealed, &[8u8; 32]), ERR_BUNDLE_CORRUPT);
         let mut tampered = sealed.clone();
         *tampered.last_mut().unwrap() ^= 1;

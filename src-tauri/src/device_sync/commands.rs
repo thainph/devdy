@@ -78,7 +78,7 @@ pub async fn device_sync_pull(
         total,
     });
     let report =
-        apply_sync_bundle(&app, db.inner(), &pulled.bytes, &pulled.key, &categories).await?;
+        apply_sync_bundle(&app, db.inner(), pulled.bytes, &pulled.key, &categories).await?;
     emit(Progress {
         phase: Phase::Done,
         received: total,
