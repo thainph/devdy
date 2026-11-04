@@ -85,5 +85,9 @@
     "disconnectHint": "A phone / web controller is driving this app through Remote Control. Disconnecting cuts it off at once and signs it out: it must sign in again with the master password. To keep it out for good, change the master password.",
     "disconnectFailed": "Couldn't disconnect: {error}",
     "enableFailed": "Couldn't turn on Remote Control: {error}"
+  },
+  "savedWithoutFolder": {
+    "one": "Saved for {project} — its folder isn't on this machine yet; it will be installed when the folder appears.",
+    "many": "Saved for {projects} — no folder on this machine yet; installed when the folder appears."
   }
 }

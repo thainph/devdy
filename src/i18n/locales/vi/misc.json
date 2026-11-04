@@ -85,5 +85,9 @@
     "disconnectHint": "Một điện thoại / web controller đang điều khiển app này qua điều khiển từ xa. Ngắt kết nối sẽ cắt ngay và đăng xuất thiết bị đó: nó phải đăng nhập lại bằng mật khẩu chính. Để chặn hẳn, hãy đổi mật khẩu chính.",
     "disconnectFailed": "Không ngắt kết nối được: {error}",
     "enableFailed": "Không bật được điều khiển từ xa: {error}"
+  },
+  "savedWithoutFolder": {
+    "one": "Đã lưu cho {project} — chưa có thư mục trên máy này, sẽ cài khi thư mục xuất hiện.",
+    "many": "Đã lưu cho {projects} — chưa có thư mục trên máy này, sẽ cài khi thư mục xuất hiện."
   }
 }
