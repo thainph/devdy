@@ -35,8 +35,9 @@ const PH_OPEN = ''
 const PH_CLOSE = ''
 const PH_RE = /(\d+)/g
 
-const MENTION_CLASS = 'slack-mention rounded px-0.5 bg-primary/10 text-primary font-medium'
-const LINK_CLASS = 'slack-link text-primary underline-offset-2 hover:underline cursor-pointer'
+// Styled by `.slack-body` in assets/base.css (theme tokens, like .markdown-output).
+const MENTION_CLASS = 'slack-mention'
+const LINK_CLASS = 'slack-link'
 
 export function escapeHtml(s: string): string {
   return s
@@ -212,9 +213,9 @@ export function mrkdwnToHtml(text: string, ctx: MrkdwnContext): string {
   if (!text) return ''
   const cut = cutOut(text, (inner) => tokenHtml(resolveToken(inner, ctx)), {
     block: (body) =>
-      `<pre class="slack-code-block my-1 rounded-md border border-border/60 bg-muted/50 px-2.5 py-2 font-mono text-[12px] whitespace-pre-wrap break-words"><code>${escapeHtml(decodeEntities(body.replace(/^\n/, '').replace(/\n$/, '')))}</code></pre>`,
+      `<pre class="slack-code-block"><code>${escapeHtml(decodeEntities(body.replace(/^\n/, '').replace(/\n$/, '')))}</code></pre>`,
     inline: (body) =>
-      `<code class="slack-code rounded border border-border/60 bg-muted/60 px-1 py-px font-mono text-[12px] text-destructive">${escapeHtml(decodeEntities(body))}</code>`,
+      `<code class="slack-code">${escapeHtml(decodeEntities(body))}</code>`,
   })
 
   // Steps 2–3, line by line, so quotes can be grouped afterwards.
@@ -238,7 +239,7 @@ export function mrkdwnToHtml(text: string, ctx: MrkdwnContext): string {
       const quoted: string[] = []
       while (i < lines.length && lines[i].quote) quoted.push(lines[i++].html)
       parts.push(
-        `<blockquote class="slack-quote my-0.5 border-l-4 border-border pl-2.5 text-muted-foreground">${quoted.join('\n')}</blockquote>`,
+        `<blockquote class="slack-quote">${quoted.join('\n')}</blockquote>`,
       )
     } else {
       buffer.push(lines[i++].html)

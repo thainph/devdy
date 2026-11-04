@@ -249,7 +249,7 @@ watch(
 
     <div
       ref="scroller"
-      class="min-h-0 flex-1 overflow-y-auto py-3"
+      class="min-h-0 flex-1 overflow-y-auto pt-2 pb-4"
       @scroll.passive="onScroll"
       @load.capture="onMediaLoad"
     >
@@ -266,7 +266,7 @@ watch(
       <template v-for="(row, i) in rows" v-else :key="row.message.ts">
         <div
           v-if="i === firstNewIndex"
-          class="my-2 flex items-center gap-2 px-5 text-[11px] font-semibold text-destructive"
+          class="my-3 flex items-center gap-2 px-5 text-[11px] font-semibold text-destructive"
         >
           <span class="h-px flex-1 bg-destructive/50" />
           {{ t('slackThread.message.newDivider') }}
@@ -284,7 +284,7 @@ watch(
         />
         <div
           v-if="row.isParent && replyCount > 0"
-          class="my-2 flex items-center gap-3 px-5 text-xs text-muted-foreground"
+          class="my-3 flex items-center gap-3 px-5 text-xs text-muted-foreground"
         >
           <span class="shrink-0 font-medium">{{ t('slackThread.replies', { n: replyCount }, replyCount) }}</span>
           <span class="h-px flex-1 bg-border" />

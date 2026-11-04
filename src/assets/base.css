@@ -505,6 +505,69 @@
 
 .markdown-output img { max-width: 100%; border-radius: 0.375rem; }
 
+/* ---------------------------------------------------------------------------
+ * Slack message body (SlackMessage.vue, v-html from lib/slackMrkdwnCore.ts).
+ * Same type scale and tokens as .markdown-output so the Slack window reads like
+ * the rest of the app. The container is `white-space: pre-wrap` (mrkdwn keeps
+ * its line breaks), so blocks carry no extra vertical margin of their own.
+ * ------------------------------------------------------------------------- */
+.slack-body {
+  font-size: 0.875rem;
+  line-height: 1.6;
+  color: hsl(var(--foreground) / 0.92);
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.slack-body strong { font-weight: 600; color: hsl(var(--foreground)); }
+.slack-body em { font-style: italic; }
+.slack-body del { color: hsl(var(--muted-foreground)); }
+
+.slack-body .slack-mention {
+  padding: 0 0.2rem;
+  border-radius: 0.25rem;
+  background: hsl(var(--primary) / 0.12);
+  color: hsl(var(--primary));
+  font-weight: 500;
+}
+.slack-body .slack-link {
+  color: hsl(var(--primary));
+  text-decoration: underline;
+  text-decoration-color: hsl(var(--primary) / 0.35);
+  text-decoration-thickness: 1px;
+  text-underline-offset: 2px;
+  cursor: pointer;
+}
+.slack-body .slack-link:hover { text-decoration-color: currentColor; }
+
+.slack-body .slack-code {
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8em;
+  padding: 0.08rem 0.35rem;
+  border-radius: 0.3rem;
+  background: hsl(var(--muted));
+  border: 1px solid hsl(var(--border) / 0.7);
+  color: hsl(var(--primary));
+}
+.slack-body .slack-code-block {
+  margin: 0.35rem 0;
+  padding: 0.65rem 0.8rem;
+  border-radius: 0.5rem;
+  background: hsl(var(--muted) / 0.6);
+  border: 1px solid hsl(var(--border));
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.8rem;
+  line-height: 1.55;
+  color: hsl(var(--foreground));
+  white-space: pre-wrap;
+  overflow-wrap: anywhere;
+}
+.slack-body .slack-quote {
+  margin: 0.2rem 0;
+  padding: 0.1rem 0 0.1rem 0.75rem;
+  border-left: 3px solid hsl(var(--primary) / 0.45);
+  color: hsl(var(--muted-foreground));
+}
+
 /* Mermaid diagrams. Before the SVG renders (or if a ```mermaid block fails to
    parse — common while streaming) we show the raw source via `.mermaid-src`.
    Once rendered, the directive swaps in an <svg>. */
