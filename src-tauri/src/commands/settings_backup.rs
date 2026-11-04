@@ -780,11 +780,26 @@ pub(crate) async fn id_by(
     .map_err(|e| e.to_string())
 }
 
-/// Find the local project an exported note/todo belonged to: same path first, then same name.
-async fn resolve_project(db: &Db, project: &Option<ProjectRef>) -> Option<String> {
+/// How an imported item finds its local project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectMatch {
+    /// A backup file: same path first, then same name.
+    PathThenName,
+    /// A device sync: paths differ between machines, so by name only.
+    NameOnly,
+}
+
+/// Find the local project an exported note/todo/thread belonged to.
+async fn resolve_project(
+    db: &Db,
+    project: &Option<ProjectRef>,
+    how: ProjectMatch,
+) -> Option<String> {
     let project = project.as_ref()?;
-    if let Ok(Some(id)) = id_by(db, "projects", "path", &project.path).await {
-        return Some(id);
+    if how == ProjectMatch::PathThenName {
+        if let Ok(Some(id)) = id_by(db, "projects", "path", &project.path).await {
+            return Some(id);
+        }
     }
     id_by(db, "projects", "name", &project.name)
         .await
@@ -2539,7 +2554,16 @@ pub(crate) async fn import_claude(
 }
 
 pub(crate) async fn import_note(db: &Db, entry: &NoteEntry) -> Result<Upsert, String> {
-    let project_id = resolve_project(db, &entry.project).await;
+    import_note_matching(db, entry, ProjectMatch::PathThenName).await
+}
+
+/// [`import_note`] with the project found by `how`.
+pub(crate) async fn import_note_matching(
+    db: &Db,
+    entry: &NoteEntry,
+    how: ProjectMatch,
+) -> Result<Upsert, String> {
+    let project_id = resolve_project(db, &entry.project, how).await;
     let exists = id_by(db, "notes", "id", &entry.id).await?.is_some();
     if exists {
         // An unresolvable project keeps the note's current local project.
@@ -2623,7 +2647,7 @@ async fn import_todo_focus(db: &Db, id: &str, focus: &serde_json::Map<String, se
 }
 
 async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
-    let project_id = resolve_project(db, &entry.project).await;
+    let project_id = resolve_project(db, &entry.project, ProjectMatch::PathThenName).await;
     write_todo(db, entry, project_id, false).await
 }
 
@@ -2750,6 +2774,15 @@ pub(crate) async fn import_slack_thread(
     db: &Db,
     entry: &SlackThreadEntry,
 ) -> Result<(Upsert, String), String> {
+    import_slack_thread_matching(db, entry, ProjectMatch::PathThenName).await
+}
+
+/// [`import_slack_thread`] with the project found by `how`.
+pub(crate) async fn import_slack_thread_matching(
+    db: &Db,
+    entry: &SlackThreadEntry,
+    how: ProjectMatch,
+) -> Result<(Upsert, String), String> {
     let err = |e: sqlx::Error| e.to_string();
     let local: Option<String> = match (&entry.channel_id, &entry.thread_ts) {
         (Some(channel), Some(ts)) => sqlx::query_scalar(
@@ -2762,7 +2795,7 @@ pub(crate) async fn import_slack_thread(
         .map_err(err)?,
         _ => id_by(db, "slack_threads", "id", &entry.id).await?,
     };
-    let project_id = resolve_project(db, &entry.project).await;
+    let project_id = resolve_project(db, &entry.project, how).await;
 
     if let Some(id) = local {
         let mut changed = sqlx::query(

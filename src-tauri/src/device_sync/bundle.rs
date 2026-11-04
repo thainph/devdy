@@ -16,7 +16,8 @@
 
 use crate::commands::groups::GroupKind;
 use crate::commands::settings_backup::{
-    self as backup, Bundle, ImportReport, ProjectEntry, SecretPayload, Sections, Upsert,
+    self as backup, Bundle, ImportReport, ProjectEntry, ProjectMatch, SecretPayload, Sections,
+    Upsert,
 };
 use crate::commands::{
     aws_accounts, azure_accounts, claude_accounts, github_accounts, gitlab_accounts, google, mcp,
@@ -419,7 +420,7 @@ async fn apply_payload(
 
     if cats.notes && src.notes {
         for entry in &bundle.notes {
-            let result = backup::import_note(db, entry).await;
+            let result = backup::import_note_matching(db, entry, ProjectMatch::NameOnly).await;
             report.record("notes", &entry.title, result);
         }
     }
@@ -443,7 +444,7 @@ async fn apply_payload(
         backup::import_slack_caches(db, bundle, &mut report).await;
         let mut created = Vec::new();
         for entry in &bundle.slack_threads {
-            let result = backup::import_slack_thread(db, entry)
+            let result = backup::import_slack_thread_matching(db, entry, ProjectMatch::NameOnly)
                 .await
                 .map(|(outcome, id)| {
                     if outcome == Upsert::Created {
@@ -959,6 +960,59 @@ mod tests {
             count(&db, "SELECT COUNT(*) FROM todos WHERE id = 't-local'").await,
             0
         );
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn notes_and_slack_threads_resolve_projects_by_name_only() {
+        let db = test_db().await;
+        let dir = temp_dir();
+        // 'beta' here sits at the path 'alpha' has on the source.
+        exec(&db, &[
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('p-alpha', 'alpha', '/elsewhere', 'c')",
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('p-beta', 'beta', '/source/alpha', 'c')",
+        ]).await;
+        let cats = SyncCategories {
+            notes: true,
+            slack_threads: true,
+            ..Default::default()
+        };
+        let project = json!({ "name": "alpha", "path": "/source/alpha" });
+        let mut n = note("n1");
+        n["project"] = project.clone();
+        let thread = json!({
+            "id": "st1", "title": "thread", "position": 0, "created_at": "c", "updated_at": "u",
+            "channel_id": "C1", "thread_ts": "1.0", "project": project,
+        });
+        let sections = json!({ "notes": [n], "slack_threads": [thread] });
+        apply_payload(&env(&dir), &db, payload(cats.clone(), sections), &cats).await;
+        let note_project: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM notes WHERE id = 'n1'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(note_project.as_deref(), Some("p-alpha"));
+        let thread_project: Option<String> = sqlx::query_scalar(
+            "SELECT project_id FROM slack_threads WHERE channel_id = 'C1' AND thread_ts = '1.0'",
+        )
+        .fetch_one(&db)
+        .await
+        .unwrap();
+        assert_eq!(thread_project.as_deref(), Some("p-alpha"));
+
+        // A backup restore still prefers the path.
+        let entry: backup::NoteEntry = serde_json::from_value(json!({
+            "id": "n2", "title": "n2", "content": "c", "position": 0, "created_at": "c",
+            "updated_at": "u", "project": { "name": "alpha", "path": "/source/alpha" },
+        }))
+        .unwrap();
+        backup::import_note(&db, &entry).await.unwrap();
+        let backup_project: Option<String> =
+            sqlx::query_scalar("SELECT project_id FROM notes WHERE id = 'n2'")
+                .fetch_one(&db)
+                .await
+                .unwrap();
+        assert_eq!(backup_project.as_deref(), Some("p-beta"));
         let _ = std::fs::remove_dir_all(&dir);
     }
 
