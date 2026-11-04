@@ -192,7 +192,10 @@ pub struct RemoteState {
     /// The single bound remote session (one run/room at a time). `None` when no
     /// remote control is active.
     pub bound: Arc<TokioMutex<Option<BoundSession>>>,
+    /// True while a phone / web controller is attached and authenticated.
     pub connected: Arc<AtomicBool>,
+    /// True while the host socket is up and the relay has acked `register_host`.
+    pub relay_online: Arc<AtomicBool>,
     /// True while the agent's host↔relay socket is down and it is retrying with
     /// backoff (as opposed to a clean idle wait, where the socket is up). Lets the
     /// desktop badge show a truthful "reconnecting…" instead of a bare
@@ -230,6 +233,7 @@ impl RemoteState {
             bus: RemoteBus::new(),
             bound: Arc::new(TokioMutex::new(None)),
             connected: Arc::new(AtomicBool::new(false)),
+            relay_online: Arc::new(AtomicBool::new(false)),
             reconnecting: Arc::new(AtomicBool::new(false)),
             announce_signal: Arc::new(tokio::sync::Notify::new()),
             kick_signal: Arc::new(tokio::sync::Notify::new()),
@@ -280,6 +284,7 @@ impl RemoteState {
             bus: self.bus.clone(),
             bound: self.bound.clone(),
             connected: self.connected.clone(),
+            relay_online: self.relay_online.clone(),
             reconnecting: self.reconnecting.clone(),
             announce_signal: self.announce_signal.clone(),
             kick_signal: self.kick_signal.clone(),
@@ -325,6 +330,8 @@ impl RemoteState {
         }
         set_last_error(&self.last_error, None);
         self.connected
+            .store(false, std::sync::atomic::Ordering::SeqCst);
+        self.relay_online
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.reconnecting
             .store(false, std::sync::atomic::Ordering::SeqCst);

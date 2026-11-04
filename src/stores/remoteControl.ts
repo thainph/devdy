@@ -21,7 +21,10 @@ import type { LastSync } from '@/lib/deviceSync'
 export interface RemoteStatus {
   enabled: boolean
   running: boolean
+  /** A phone / web controller is attached and authenticated. */
   connected: boolean
+  /** The host socket is up and the relay acked its registration. */
+  relay_online: boolean
   /** Host↔relay socket is down and the agent is retrying (backoff). Distinct from
    * `connected`: drives a "reconnecting…" badge during a transient blip. */
   reconnecting: boolean
