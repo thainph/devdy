@@ -125,7 +125,6 @@ fn sections_of(cats: &SyncCategories) -> Sections {
 
 /// Gather the ticked categories, compress and seal them with `key` (XChaCha20-Poly1305, random
 /// nonce, AAD `devdy-device-sync:v1`).
-#[allow(dead_code)] // Called by the device sync transport.
 pub async fn build_sync_bundle(
     app: &AppHandle,
     db: &Db,
@@ -228,7 +227,6 @@ fn open_payload(bytes: &[u8], key: &[u8; 32]) -> Result<SyncPayload, String> {
 
 /// Decrypt `bytes` with `key` and apply the categories ticked in `cats` that the bundle carries.
 /// A wrong key fails before anything is written.
-#[allow(dead_code)] // Called by the device sync transport.
 pub async fn apply_sync_bundle(
     app: &AppHandle,
     db: &Db,

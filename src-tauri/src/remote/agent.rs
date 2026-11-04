@@ -232,11 +232,14 @@ async fn connect_once(
         let _ = sink.close().await;
     });
 
-    // Register the Host (FR-001, SEC-001 token from keyring).
+    // Register the Host (FR-001, SEC-001 token from keyring), listed for
+    // device sync while it can serve one.
+    let mut listed = sync_listing(deps).await;
     if out_tx
-        .send(Envelope::register_host(
+        .send(Envelope::register_host_listed(
             config.device_id.clone(),
             auth_token.to_string(),
+            listed.clone(),
         ))
         .is_err()
     {
@@ -259,6 +262,9 @@ async fn connect_once(
     // listening), and the login room currently mid-handshake (if any).
     let mut login_listening: Option<String> = None;
     let mut login: Option<LoginPending> = None;
+    // Device sync: the code the sync slot is armed with, and the pull in flight.
+    let mut sync_listening: Option<String> = None;
+    let mut sync: Option<crate::device_sync::host::SyncPending> = None;
 
     let seq = Arc::new(SeqCounter::default());
     let rate = Arc::new(TokioMutex::new(CommandRateLimiter::new(Instant::now())));
@@ -273,6 +279,7 @@ async fn connect_once(
 
     sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
     sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+    sync_device_sync_listen(&config.device_id, &out_tx, &mut sync_listening, &mut sync);
 
     // Heartbeat: keep the host↔relay socket warm through idle-killing proxies
     // once a run stops streaming. Carries the ACTIVE room id (if any) so the relay
@@ -324,6 +331,18 @@ async fn connect_once(
             _ = deps.announce_signal.notified() => {
                 sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
                 sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+                // Alias or master password changed: re-register to update the
+                // listing (same socket; the relay just replaces it).
+                let want = sync_listing(deps).await;
+                if want != listed {
+                    let _ = out_tx.send(Envelope::register_host_listed(
+                        config.device_id.clone(),
+                        auth_token.to_string(),
+                        want.clone(),
+                    ));
+                    listed = want;
+                }
+                sync_device_sync_listen(&config.device_id, &out_tx, &mut sync_listening, &mut sync);
             }
             _ = deps.kick_signal.notified() => {
                 kick_room(deps, &out_tx, &mut room_ctx, &mut pending_room, &mut forward_task).await;
@@ -361,8 +380,12 @@ async fn connect_once(
                     );
                     break ConnectOutcome::Disconnected;
                 }
-                // Password-login frames are self-contained; everything else is
-                // the session path.
+                // Device-sync and password-login frames are self-contained;
+                // everything else is the session path.
+                if crate::device_sync::host::is_sync_frame(&env, sync.as_ref()) {
+                    crate::device_sync::host::handle_frame(env, &deps.app, &deps.db, &out_tx, &seq, &mut sync).await;
+                    continue;
+                }
                 if login_frame(&env, login.as_ref()) {
                     handle_login_frame(
                         env, deps, &out_tx, &seq, &mut login,
@@ -421,6 +444,32 @@ async fn sync_listen(
         }
     }
     *listening = want;
+}
+
+/// What this Host is listed as for device sync: `(alias, app version)` while
+/// a master password is set (pulls need it), otherwise not listed.
+async fn sync_listing(deps: &AgentDeps) -> Option<(String, String)> {
+    if !crate::secrets::has_remote_master_password() {
+        return None;
+    }
+    let alias = crate::remote::device_alias(&deps.db).await.unwrap_or_default();
+    Some((alias, deps.app.package_info().version.to_string()))
+}
+
+/// Listen on this device's sync code exactly while a master password is set.
+fn sync_device_sync_listen(
+    device_id: &str,
+    out_tx: &OutboundTx,
+    sync_listening: &mut Option<String>,
+    sync: &mut Option<crate::device_sync::host::SyncPending>,
+) {
+    use crate::device_sync::host::{listen_code, listen_frame};
+    let want = listen_code(device_id, crate::secrets::has_remote_master_password());
+    if let Some(frame) = listen_frame(sync_listening.as_deref(), want.as_deref()) {
+        *sync = None;
+        let _ = out_tx.send(frame);
+    }
+    *sync_listening = want;
 }
 
 /// A password-login handshake in progress on the login slot.

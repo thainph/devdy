@@ -9,6 +9,7 @@
 //! [`server::serve`] are enough to embed the relay (used by integration tests).
 
 pub mod config;
+pub mod presence;
 pub mod protocol;
 pub mod ratelimit;
 pub mod room;

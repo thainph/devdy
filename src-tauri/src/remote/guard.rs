@@ -55,6 +55,10 @@ const LOCAL_ONLY_COMMANDS: &[&str] = &[
     "remote_create_session_link",
     "remote_kick_controller",
     "remote_clear_audit",
+    // Device sync: pulling here overwrites this machine's data with another
+    // device's (and needs that device's master password).
+    "device_sync_list_devices",
+    "device_sync_pull",
     // Web Push: who gets notified, about what (and a send from this Host).
     "remote_push_remove",
     "remote_push_set_events",
@@ -531,6 +535,8 @@ mod tests {
             "remote_enable",
             "remote_disable",
             "remote_clear_audit",
+            "device_sync_list_devices",
+            "device_sync_pull",
             "remote_push_remove",
             "remote_push_set_events",
             "remote_push_test",
