@@ -1,27 +1,30 @@
 {
   "open": "Sync from another device",
-  "button": "Sync",
   "title": "Sync from another device",
   "device": {
-    "help": "Devdy devices online on your relay. Pick the one to pull data from.",
+    "help": "Devdy machines online on {host}",
     "refresh": "Refresh device list",
-    "loading": "Looking for devices…",
-    "empty": "No device is online",
-    "emptyHint": "Only devices on the same relay that have Remote Control turned on and a master password set (Settings → Devices) show up here. Set them up on the other machine, then refresh.",
+    "loading": "Looking for machines…",
+    "empty": "No machine is online",
     "version": "Devdy {version}",
-    "versionUnknown": "Unknown version"
+    "versionUnknown": "Unknown version",
+    "helpNoHost": "Devdy machines online on your relay",
+    "emptyCheck": "On the machine to pull from, check that it:",
+    "needs": {
+      "relay": "Uses the same relay ({host})",
+      "remote": "Has Remote Control turned on",
+      "password": "Has a master password set"
+    },
+    "polling": "Looking again every 5 seconds…"
   },
   "options": {
-    "from": "Pull from {name}. Each ticked item overwrites what is on this machine.",
-    "what": "What to sync",
+    "from": "From {name} · ticked items overwrite what is on this machine",
     "selectAll": "Select all",
     "selectNone": "Select none",
-    "password": "Master password",
-    "passwordPlaceholder": "Master password of {name}",
-    "passwordHint": "The master password set on the source device (Settings → Devices). Everything is encrypted end to end.",
-    "overwriteWarning": "Syncing overwrites local data right away and cannot be undone. Items only on this machine are kept.",
+    "password": "Master password of",
+    "passwordHint": "The master password set on {name} (Settings → Devices). Data is encrypted end to end.",
     "failed": "Sync from {name} failed — nothing was changed.",
-    "passwordWrong": "Check the master password above, then sync again."
+    "keepLocal": "Items only on this machine are kept."
   },
   "sections": {
     "todos": "Todos",
@@ -58,18 +61,20 @@
     "accounts": "GitHub, GitLab, Google with tokens. Claude/AWS/Azure names only — sign in again."
   },
   "phases": {
-    "connecting": "Connecting to the device",
+    "connecting": "Connecting to {name}",
     "auth": "Checking the master password",
     "downloading": "Downloading data",
     "applying": "Applying on this machine",
     "done": "Done"
   },
   "running": {
-    "title": "Syncing from {name}…",
-    "keepOpen": "Keep both devices awake until it finishes."
+    "title": "Syncing {n} items from {name}…",
+    "keepOpen": "Keep both devices awake until it finishes.",
+    "size": "{percent}% · {received} / {total} MB",
+    "slow": "Waiting for {name} to answer…"
   },
   "result": {
-    "done": "Synced from {name}.",
+    "done": "Synced from {name} at {time}.",
     "created": "New",
     "updated": "Updated",
     "unchanged": "Same",
@@ -79,7 +84,15 @@
     "reloginHint": "Claude, AWS and Azure accounts need to sign in again on this machine.",
     "reloadHint": "Reload Devdy to apply the synced theme and settings everywhere.",
     "showMore": "Show {n} more",
-    "showLess": "Show less"
+    "showLess": "Show less",
+    "hidden": "{n} items without changes are hidden.",
+    "attention": "Needs attention ({n})",
+    "total": {
+      "created": "{n} new",
+      "updated": "{n} updated",
+      "deleted": "{n} deleted",
+      "skipped": "{n} skipped"
+    }
   },
   "errors": {
     "wrong_password": "The master password of {name} is wrong. Enter the master password set in Settings → Devices on {name} — not the one of this machine. After 5 wrong tries within 5 minutes, {name} locks syncing for about 5 minutes.",
@@ -104,20 +117,20 @@
     "cancel": "Cancel",
     "back": "Back",
     "next": "Next",
-    "sync": "Sync",
     "syncing": "Syncing…",
     "reload": "Reload app",
     "close": "Close",
-    "mirrorSync": "Delete and sync"
+    "mirrorSync": "Delete and sync",
+    "syncN": "Sync {n} items from {name}",
+    "confirmDelete": "Next: confirm deletion"
   },
   "mirror": {
-    "label": "Mirror exactly (delete differences)",
-    "hint": "Items on this machine that the source doesn't have are DELETED in: Todos, Notes, Skills, Rules (with groups), MCP, VPS, Accounts. Secret notes, Slack threads, projects and general settings are never deleted.",
-    "warning": "Mirror is on: items missing on the source device will be deleted here in {parts}."
+    "label": "Mirror exactly (delete the rest)",
+    "hint": "Items only on this machine are DELETED in: Todos, Notes, Skills & Rules (with groups), MCP, VPS, Accounts. Secret notes, Slack threads, projects and general settings are never deleted."
   },
   "confirm": {
-    "title": "Delete items missing on the source?",
-    "message": "Everything on this machine that {name} doesn't have will be deleted in:",
+    "title": "Delete items {name} doesn't have?",
+    "message": "Items only on this machine will be deleted in:",
     "neverDeleted": "Secret notes, Slack threads, projects and general settings are never deleted. This cannot be undone."
   },
   "warningGroups": {
@@ -149,5 +162,41 @@
     "ruleGroup": "rule group",
     "skill": "skill",
     "rule": "rule"
+  },
+  "stepOf": "Step {n}/{total}",
+  "groups": {
+    "work": "Work",
+    "library": "Library & projects",
+    "config": "Settings & accounts"
+  },
+  "short": {
+    "todos": "Every field, Focus and due dates",
+    "notes": "Note by note",
+    "secretNotes": "Still locked by the vault password",
+    "slackThreads": "With translations; files reloaded",
+    "skillsRules": "By name, with groups and files",
+    "projects": "Same-name projects; no files",
+    "settings": "Theme, language, models, prompts…",
+    "mcpServers": "Secret env and headers included",
+    "vpsServers": "Passphrases and keys included",
+    "accounts": "GitHub/GitLab/Google with tokens"
+  },
+  "advanced": {
+    "title": "Advanced",
+    "mirrorOn": "Mirror exactly: on",
+    "mirrorOff": "Mirror exactly: off"
+  },
+  "card": {
+    "title": "Sync between machines",
+    "help": "Other machines can pull from this one with its master password while Remote Control is on.",
+    "needsRelay": "Set up the relay first (Connection) to sync with other machines."
+  },
+  "last": {
+    "line": "Last synced: {when} from {name}",
+    "today": "today {time}",
+    "yesterday": "yesterday {time}",
+    "earlier": "{date} {time}",
+    "counts": "{n} items · {created} new, {updated} updated",
+    "never": "Never synced from another machine."
   }
 }
