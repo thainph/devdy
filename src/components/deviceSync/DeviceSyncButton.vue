@@ -1,23 +1,20 @@
 <script setup lang="ts">
 // Entry point of the device pull sync dialog. `compact`: the bare icon (sidebar footer);
 // otherwise an `xs` outline button with a label (Settings card headers).
-// Hidden in remote-desktop windows: every call there goes to the controlled machine.
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { RefreshCw } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
-import { isRemoteMode } from '@/lib/ipc/remote'
 import DeviceSyncDialog from './DeviceSyncDialog.vue'
 
 defineProps<{ compact?: boolean }>()
 
 const { t } = useI18n()
-const enabled = !isRemoteMode()
 const open = ref(false)
 </script>
 
 <template>
-  <span v-if="enabled" class="inline-flex">
+  <span class="inline-flex">
     <Button
       v-if="compact"
       variant="ghost"

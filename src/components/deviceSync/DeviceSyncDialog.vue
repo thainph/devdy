@@ -10,7 +10,7 @@ import { Banner, Button, Input, Modal } from '@/components/ui'
 import { invoke } from '@/lib/tauri'
 import {
   DEVICE_SYNC_PROGRESS, SYNC_CATEGORY_KEYS, SYNC_PHASES, defaultCategories, mirrorDeletions,
-  progressPercent, reportRows, selectedCategories, syncErrorKind,
+  deviceLabel, isDeviceGone, progressPercent, reportRows, selectedCategories, syncErrorCode,
   type SyncCategories, type SyncDevice, type SyncProgress, type SyncReport,
 } from '@/lib/deviceSync'
 import { useDeviceSyncRefresh } from '@/composables/useDeviceSyncRefresh'
@@ -30,6 +30,7 @@ const loadingDevices = ref(false)
 const devicesError = ref('')
 const selectedId = ref<string | null>(null)
 const selectedDevice = computed(() => devices.value.find(d => d.deviceId === selectedId.value) ?? null)
+const selectedName = computed(() => (selectedDevice.value ? deviceLabel(selectedDevice.value) : ''))
 
 async function loadDevices() {
   if (loadingDevices.value) return
@@ -40,7 +41,7 @@ async function loadDevices() {
     if (selectedId.value && !devices.value.some(d => d.deviceId === selectedId.value)) selectedId.value = null
   } catch (e) {
     devices.value = []
-    devicesError.value = String(e)
+    devicesError.value = errorMessage(e)
   } finally {
     loadingDevices.value = false
   }
@@ -78,6 +79,12 @@ const percent = computed(() => progressPercent(progress.value))
 const phaseIndex = computed(() => (progress.value ? SYNC_PHASES.indexOf(progress.value.phase) : 0))
 const rows = computed(() => (report.value ? reportRows(report.value) : []))
 
+/** Localised message for a known error code, else the backend text verbatim. */
+function errorMessage(err: unknown, name = '') {
+  const code = syncErrorCode(err)
+  return code ? t(`deviceSync.errors.${code}`, { name }) : String(err)
+}
+
 function sectionLabel(key: string) {
   const path = `deviceSync.sections.${key}`
   return te(path) ? t(path) : key
@@ -109,17 +116,18 @@ async function runSync() {
     step.value = 'result'
     await refreshAfterSync(picked)
   } catch (e) {
-    const kind = syncErrorKind(e)
-    if (kind === 'wrongPassword') {
-      passwordError.value = t('deviceSync.errors.wrongPassword')
+    const code = syncErrorCode(e)
+    const message = errorMessage(e, deviceLabel(device))
+    if (code === 'wrong_password') {
+      passwordError.value = message
       step.value = 'options'
-    } else if (kind === 'deviceOffline') {
-      devicesError.value = t('deviceSync.errors.deviceOffline', { name: device.alias })
+    } else if (isDeviceGone(code)) {
       selectedId.value = null
       step.value = 'device'
-      void loadDevices()
+      await loadDevices()
+      devicesError.value = message
     } else {
-      syncError.value = String(e)
+      syncError.value = message
       step.value = 'options'
     }
   } finally {
@@ -217,7 +225,7 @@ onBeforeUnmount(() => unlistenProgress?.())
           >
             <Monitor class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
             <span class="min-w-0 flex-1">
-              <span class="block truncate text-[13px] font-medium">{{ d.alias }}</span>
+              <span class="block truncate text-[13px] font-medium">{{ deviceLabel(d) }}</span>
               <span class="block text-[11px] text-muted-foreground">
                 {{ d.appVersion ? t('deviceSync.device.version', { version: d.appVersion }) : t('deviceSync.device.versionUnknown') }}
               </span>
@@ -231,7 +239,7 @@ onBeforeUnmount(() => unlistenProgress?.())
     <!-- Step 2: categories + master password -->
     <div v-else-if="step === 'options'" class="space-y-4 p-4">
       <p class="text-[11px] text-muted-foreground">
-        {{ t('deviceSync.options.from', { name: selectedDevice?.alias ?? '' }) }}
+        {{ t('deviceSync.options.from', { name: selectedName }) }}
       </p>
 
       <section class="space-y-2">
@@ -266,7 +274,7 @@ onBeforeUnmount(() => unlistenProgress?.())
           v-model="password"
           type="password"
           autocomplete="off"
-          :placeholder="t('deviceSync.options.passwordPlaceholder', { name: selectedDevice?.alias ?? '' })"
+          :placeholder="t('deviceSync.options.passwordPlaceholder', { name: selectedName })"
           @keydown.enter="requestSync"
         />
         <p v-if="passwordError" class="text-[11px] text-destructive">{{ passwordError }}</p>
@@ -301,7 +309,7 @@ onBeforeUnmount(() => unlistenProgress?.())
         <div class="min-w-0 space-y-2">
           <p class="text-sm font-medium">{{ t('deviceSync.confirm.title') }}</p>
           <p class="text-xs text-muted-foreground">
-            {{ t('deviceSync.confirm.message', { name: selectedDevice?.alias ?? '' }) }}
+            {{ t('deviceSync.confirm.message', { name: selectedName }) }}
           </p>
           <ul class="space-y-1 text-xs">
             <li v-for="k in mirrorParts" :key="k" class="flex items-center gap-1.5 text-destructive">
@@ -316,7 +324,7 @@ onBeforeUnmount(() => unlistenProgress?.())
 
     <!-- Step 3: running -->
     <div v-else-if="step === 'running'" class="space-y-4 p-4">
-      <p class="text-xs">{{ t('deviceSync.running.title', { name: selectedDevice?.alias ?? '' }) }}</p>
+      <p class="text-xs">{{ t('deviceSync.running.title', { name: selectedName }) }}</p>
       <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
         <div class="h-full bg-primary transition-all" :style="{ width: `${percent}%` }" />
       </div>
@@ -342,7 +350,7 @@ onBeforeUnmount(() => unlistenProgress?.())
 
     <!-- Step 4: report -->
     <div v-else-if="report" class="space-y-3 p-4">
-      <Banner tone="success">{{ t('deviceSync.result.done', { name: selectedDevice?.alias ?? '' }) }}</Banner>
+      <Banner tone="success">{{ t('deviceSync.result.done', { name: selectedName }) }}</Banner>
       <table v-if="rows.length" class="w-full text-xs">
         <thead class="text-[10px] uppercase tracking-wider text-muted-foreground">
           <tr>

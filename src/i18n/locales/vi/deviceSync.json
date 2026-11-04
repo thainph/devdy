@@ -7,7 +7,7 @@
     "refresh": "Làm mới danh sách máy",
     "loading": "Đang tìm máy…",
     "empty": "Không có máy nào online",
-    "emptyHint": "Ở máy kia, mở Devdy và bật Remote Control (Cài đặt → Thiết bị) với cùng relay, rồi làm mới.",
+    "emptyHint": "Chỉ máy dùng cùng relay, đã bật Remote Control và đặt master password (Cài đặt → Thiết bị) mới hiện ở đây. Thiết lập ở máy kia rồi làm mới.",
     "version": "Devdy {version}",
     "versionUnknown": "Không rõ phiên bản"
   },
@@ -78,8 +78,20 @@
     "reloadHint": "Tải lại Devdy để áp dụng theme và cài đặt vừa đồng bộ ở mọi nơi."
   },
   "errors": {
-    "wrongPassword": "Sai master password.",
-    "deviceOffline": "{name} đã offline. Hãy chọn lại máy."
+    "wrong_password": "Sai master password.",
+    "device_offline": "{name} đã offline. Hãy chọn lại máy.",
+    "device_disconnected": "{name} bị ngắt kết nối giữa chừng. Hãy chọn lại máy.",
+    "rate_limited": "Nhập sai password quá nhiều lần. Thử lại sau khoảng 5 phút.",
+    "checksum_mismatch": "Dữ liệu tải về bị hỏng. Chưa có gì bị thay đổi — hãy thử lại.",
+    "timeout": "Máy kia phản hồi quá lâu. Hãy thử lại.",
+    "source_failed": "{name} không chuẩn bị được dữ liệu. Kiểm tra Devdy ở máy đó rồi thử lại.",
+    "bundle_too_large": "Dữ liệu trên {name} quá lớn để đồng bộ. Bỏ tick bớt mục rồi thử lại.",
+    "protocol_error": "Hai máy không hiểu nhau. Hãy cập nhật Devdy ở cả hai máy.",
+    "relay_not_configured": "Máy này chưa cấu hình relay. Cài đặt ở Cài đặt → Thiết bị.",
+    "relay_unreachable": "Không kết nối được relay. Kiểm tra mạng và URL relay.",
+    "relay_auth_failed": "Relay từ chối máy này. Kiểm tra auth token relay ở Cài đặt → Thiết bị.",
+    "relay_unsupported": "Relay đã cũ, chưa hỗ trợ đồng bộ thiết bị. Hãy cập nhật relay server.",
+    "busy": "Đang có một lần đồng bộ khác. Đợi nó xong rồi thử lại."
   },
   "actions": {
     "cancel": "Huỷ",

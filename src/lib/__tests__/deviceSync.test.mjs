@@ -5,13 +5,16 @@ import assert from 'node:assert/strict'
 import {
   MIRROR_DELETE_KEYS,
   SYNC_CATEGORY_KEYS,
+  SYNC_ERROR_CODES,
   defaultCategories,
+  deviceLabel,
+  isDeviceGone,
   mirrorDeletions,
   progressPercent,
   reportRows,
   reportTotals,
   selectedCategories,
-  syncErrorKind,
+  syncErrorCode,
 } from '../deviceSync.ts'
 
 test('defaultCategories ticks every category with mirror off', () => {
@@ -45,12 +48,25 @@ test('selectedCategories keeps category order', () => {
   assert.deepEqual(selectedCategories(c), ['todos', 'accounts'])
 })
 
-test('syncErrorKind maps the known codes, anything else is other', () => {
-  assert.equal(syncErrorKind('wrong_password'), 'wrongPassword')
-  assert.equal(syncErrorKind(' device_offline '), 'deviceOffline')
-  assert.equal(syncErrorKind('relay closed'), 'other')
-  assert.equal(syncErrorKind(new Error('wrong_password')), 'other')
-  assert.equal(syncErrorKind(undefined), 'other')
+test('syncErrorCode recognises every backend code, anything else is null', () => {
+  for (const code of SYNC_ERROR_CODES) assert.equal(syncErrorCode(code), code)
+  assert.equal(syncErrorCode(' device_offline '), 'device_offline')
+  assert.equal(syncErrorCode('relay closed'), null)
+  assert.equal(syncErrorCode(new Error('wrong_password')), null)
+  assert.equal(syncErrorCode(undefined), null)
+})
+
+test('isDeviceGone only for offline / disconnected', () => {
+  assert.ok(isDeviceGone('device_offline'))
+  assert.ok(isDeviceGone('device_disconnected'))
+  assert.ok(!isDeviceGone('timeout'))
+  assert.ok(!isDeviceGone(null))
+})
+
+test('deviceLabel falls back to the device id when the alias is empty', () => {
+  assert.equal(deviceLabel({ alias: 'mac-mini', deviceId: 'abcdef0123456789' }), 'mac-mini')
+  assert.equal(deviceLabel({ alias: '  ', deviceId: 'abcdef0123456789' }), 'Devdy · abcdef01')
+  assert.equal(deviceLabel({ alias: '', deviceId: 'abc' }), 'Devdy · abc')
 })
 
 test('progressPercent follows the phase', () => {

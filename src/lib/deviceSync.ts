@@ -66,14 +66,29 @@ export function mirrorDeletions(c: SyncCategories): SyncCategory[] {
   return MIRROR_DELETE_KEYS.filter(k => c[k])
 }
 
-export type SyncErrorKind = 'wrongPassword' | 'deviceOffline' | 'other'
+/** Error codes the `device_sync_*` commands return as plain strings (i18n `deviceSync.errors.<code>`). */
+export const SYNC_ERROR_CODES = [
+  'wrong_password', 'device_offline', 'rate_limited', 'checksum_mismatch', 'timeout',
+  'device_disconnected', 'source_failed', 'bundle_too_large', 'protocol_error',
+  'relay_not_configured', 'relay_unreachable', 'relay_auth_failed', 'relay_unsupported', 'busy',
+] as const
 
-/** Map a command error (plain string) to a known kind; `other` is shown verbatim. */
-export function syncErrorKind(err: unknown): SyncErrorKind {
+export type SyncErrorCode = (typeof SYNC_ERROR_CODES)[number]
+
+/** The known code of a command error, or `null` (then the error is shown verbatim). */
+export function syncErrorCode(err: unknown): SyncErrorCode | null {
   const s = String(err ?? '').trim()
-  if (s === 'wrong_password') return 'wrongPassword'
-  if (s === 'device_offline') return 'deviceOffline'
-  return 'other'
+  return (SYNC_ERROR_CODES as readonly string[]).includes(s) ? (s as SyncErrorCode) : null
+}
+
+/** Codes after which the picked device is gone: back to the device list. */
+export function isDeviceGone(code: SyncErrorCode | null): boolean {
+  return code === 'device_offline' || code === 'device_disconnected'
+}
+
+/** Display name of a device; the alias may be empty. */
+export function deviceLabel(d: Pick<SyncDevice, 'alias' | 'deviceId'>): string {
+  return d.alias.trim() || `Devdy · ${d.deviceId.slice(0, 8)}`
 }
 
 /** 0–100 for the progress bar; download progress only counts once the size is known. */

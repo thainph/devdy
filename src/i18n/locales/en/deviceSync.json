@@ -7,7 +7,7 @@
     "refresh": "Refresh device list",
     "loading": "Looking for devices…",
     "empty": "No device is online",
-    "emptyHint": "On the other machine, open Devdy and turn on Remote Control (Settings → Devices) with the same relay, then refresh.",
+    "emptyHint": "Only devices on the same relay that have Remote Control turned on and a master password set (Settings → Devices) show up here. Set them up on the other machine, then refresh.",
     "version": "Devdy {version}",
     "versionUnknown": "Unknown version"
   },
@@ -78,8 +78,20 @@
     "reloadHint": "Reload Devdy to apply the synced theme and settings everywhere."
   },
   "errors": {
-    "wrongPassword": "Wrong master password.",
-    "deviceOffline": "{name} went offline. Pick a device again."
+    "wrong_password": "Wrong master password.",
+    "device_offline": "{name} went offline. Pick a device again.",
+    "device_disconnected": "{name} disconnected during the sync. Pick a device again.",
+    "rate_limited": "Too many wrong passwords. Try again in about 5 minutes.",
+    "checksum_mismatch": "The downloaded data was corrupted. Nothing was changed — try again.",
+    "timeout": "The device took too long to answer. Try again.",
+    "source_failed": "{name} could not prepare its data. Check Devdy on that machine and try again.",
+    "bundle_too_large": "The data on {name} is too large to sync. Untick some items and try again.",
+    "protocol_error": "The two devices could not understand each other. Update Devdy on both machines.",
+    "relay_not_configured": "No relay is set up on this machine. Configure it in Settings → Devices.",
+    "relay_unreachable": "Cannot reach the relay. Check the network and the relay URL.",
+    "relay_auth_failed": "The relay rejected this machine. Check the relay auth token in Settings → Devices.",
+    "relay_unsupported": "The relay is too old for device sync. Update the relay server.",
+    "busy": "Another sync is already running. Wait for it to finish."
   },
   "actions": {
     "cancel": "Cancel",
