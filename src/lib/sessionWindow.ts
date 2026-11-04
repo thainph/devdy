@@ -19,13 +19,12 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
-import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 // Small deterministic string hash (djb2) → a stable, label-safe window id per run.
 function hashLabel(s: string): string {
   let h = 5381
   for (let i = 0; i < s.length; i++) h = ((h << 5) + h + s.charCodeAt(i)) >>> 0
-  return popoutLabel(`session-${h.toString(36)}`)
+  return `session-${h.toString(36)}`
 }
 
 /** The window label of a run's pop-out (whether or not it is currently open). */
@@ -74,7 +73,7 @@ export async function openSessionWindow(
 
   const params = new URLSearchParams({ sessionWindow: '1', projectId, runId })
   const win = new WebviewWindow(label, {
-    url: popoutUrl(`index.html?${params.toString()}`),
+    url: `index.html?${params.toString()}`,
     title: 'Session — Devdy',
     width: 1000,
     height: 720,

@@ -28,7 +28,6 @@ import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebview } from '@tauri-apps/api/webview'
-import { remotePathsForDrop } from '@/lib/remoteUpload'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Play, Square, GitPullRequest, Bug,
@@ -1802,12 +1801,7 @@ onMounted(async () => {
       isDraggingFile.value = false
     } else if (p.type === 'drop') {
       isDraggingFile.value = false
-      // In a remote-desktop window the dropped files are copied over first.
-      if (!overTree) {
-        void remotePathsForDrop(p.paths)
-          .then(addDroppedPaths)
-          .catch((e) => toast.error(String(e)))
-      }
+      if (!overTree) void addDroppedPaths(p.paths)
     }
   })
 

@@ -135,7 +135,7 @@ use commands::notes::{
     add_note, delete_note, delete_notes, list_notes, reorder_notes, set_note_project, update_note,
 };
 use commands::secret_vault::{
-    rd_copy_secret, secret_note_copy, secret_note_create, secret_note_delete, secret_note_from_note, secret_note_reveal, secret_note_set_project,
+    secret_note_copy, secret_note_create, secret_note_delete, secret_note_from_note, secret_note_reveal, secret_note_set_project,
     secret_note_update, secret_notes_list, secret_notes_reorder, secret_vault_change_password, secret_vault_lock,
     secret_vault_merge_old, secret_vault_setup, secret_vault_status, secret_vault_touch, secret_vault_unlock, secret_vault_unlock_recovery,
 };
@@ -154,11 +154,6 @@ use remote::commands::{
     remote_end_session, remote_get_audit, remote_kick_controller, remote_reveal_otp,
     remote_set_config, remote_set_device_alias, remote_set_master_password, remote_status,
 };
-use remote::file_proxy::{rd_download_append, rd_download_create, rdfile_register, rdfile_respond};
-use remote::fs_bridge::{
-    remote_client_log, remote_fs_home, remote_fs_list, remote_fs_log_dir, remote_fs_read, remote_fs_stat,
-};
-use remote::ipc::{remote_bridge_batch, remote_bridge_ready};
 use remote::RemoteState;
 use runs::broker::approver::ModalApproverResolver;
 use runs::broker::{start_broker, ApproverResolver, BrokerConfig};
@@ -185,10 +180,6 @@ pub fn run() {
         .plugin(tauri_plugin_fs::init())
         .plugin(tauri_plugin_shell::init())
         .plugin(tauri_plugin_notification::init())
-        // Remote desktop: files of the controlled Devdy as URLs in a
-        // remote-desktop window (see remote::file_proxy).
-        .register_asynchronous_uri_scheme_protocol(remote::file_proxy::SCHEME, remote::file_proxy::handle)
-        .manage(remote::file_proxy::FileProxy::default())
         // The menu itself is installed by the frontend (see `set_app_menu`), so
         // its labels follow the app language; this only routes clicks back.
         .on_menu_event(commands::app_menu::on_menu_event)
@@ -206,8 +197,6 @@ pub fn run() {
                 .expect("Failed to create rules dir");
             commands::project_links::set_backup_root(app_data_dir.join("legacy-backups"));
             commands::mcp_packages::set_root(app_data_dir.join("mcp-packages"));
-            // Unfinished file-transfer writes and their temp files (both sides).
-            remote::upload::spawn_sweeper(app.handle().clone());
 
             // Persist logs so the credential broker's audit trail and its
             // "broker unreachable / accept error" warnings are actually recorded.
@@ -448,8 +437,7 @@ pub fn run() {
             }
             Ok(())
         })
-        // Refuse credential / security commands to the remote-desktop bridge.
-        .invoke_handler(remote::guard::gated(tauri::generate_handler![
+        .invoke_handler(tauri::generate_handler![
             health_check,
             set_app_menu,
             set_tray_menu,
@@ -717,7 +705,6 @@ pub fn run() {
             secret_note_delete,
             secret_notes_reorder,
             secret_note_from_note,
-            rd_copy_secret,
             get_inbox_api_info,
             regenerate_inbox_api_token,
             set_inbox_api_enabled,
@@ -764,46 +751,12 @@ pub fn run() {
             remote::push::commands::remote_push_remove,
             remote::push::commands::remote_push_set_events,
             remote::push::commands::remote_push_test,
-            remote_bridge_ready,
-            remote_bridge_batch,
-            remote_fs_list,
-            remote_fs_stat,
-            remote_fs_read,
-            remote_fs_home,
-            remote_fs_log_dir,
-            remote_client_log,
-            rdfile_register,
-            rdfile_respond,
-            rd_download_create,
-            rd_download_append,
             remote::meta::set_run_meta,
-            remote::upload::remote_upload_begin,
-            remote::upload::remote_upload_chunk,
-            remote::upload::remote_upload_finish,
-            remote::upload::remote_upload_abort,
-            remote::upload::stat_local_files,
-            remote::upload::read_local_file_chunk,
-            remote::fs_bridge::remote_fs_mkdir,
-            remote::fs_bridge::remote_fs_rename,
-            remote::fs_bridge::remote_fs_delete,
-            remote::fs_bridge::remote_fs_walk,
-            remote::fs_bridge::remote_fs_hash,
-            remote::transfer::local_fs_home,
-            remote::transfer::local_fs_list,
-            remote::transfer::local_fs_mkdir,
-            remote::transfer::local_fs_rename,
-            remote::transfer::local_fs_delete,
-            remote::transfer::local_fs_walk,
-            remote::transfer::local_fs_hash,
-            remote::transfer::local_fs_write_begin,
-            remote::transfer::local_fs_write_chunk,
-            remote::transfer::local_fs_write_finish,
-            remote::transfer::local_fs_write_abort,
             procs::commands::list_background_processes,
             procs::commands::stop_background_processes,
             procs::commands::kill_background_process,
             procs::quit::resolve_quit,
-        ]))
+        ])
         .build(tauri::generate_context!())
         .expect("error while building tauri application")
         .run(|app_handle, event| {
@@ -841,13 +794,8 @@ pub fn run() {
                 }
                 // Exits that bypass the question (macOS Dock Quit, logout) still
                 // get the cleanup; a second run after a confirmed quit is cheap.
-                // A File Transfer window closed mid-copy: drop its partial files.
-                tauri::RunEvent::WindowEvent { label, event: tauri::WindowEvent::Destroyed, .. } => {
-                    remote::transfer::on_webview_destroyed(&label);
-                }
                 tauri::RunEvent::Exit => {
                     procs::quit::on_exit(app_handle);
-                    remote::upload::abort_all_writes();
                 }
                 _ => {}
             }

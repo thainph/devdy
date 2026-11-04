@@ -49,10 +49,6 @@ pub struct RemoteStatus {
     pub session_authenticated: bool,
     /// Sliding idle expiry (Unix secs) of the bound session, when known.
     pub session_idle_expires_at: Option<u64>,
-    /// Whether another Devdy is driving this one over remote-desktop IPC.
-    pub desktop_controlled: bool,
-    /// When that remote-desktop Controller attached (Unix secs).
-    pub desktop_controlled_since: Option<u64>,
 }
 
 /// Persist relay config (DATA-001). `auth_token`, when provided (non-empty), is
@@ -303,11 +299,11 @@ pub async fn remote_set_device_alias(
     Ok(())
 }
 
-/// Kill switch: disconnect AND sign out the Controller currently attached
-/// (remote desktop or phone). The session token it holds is rotated away first,
-/// so it cannot re-join on its own; it has to sign in again with the OTP or the
-/// master password. To keep it out for good the owner changes the master
-/// password (or ends the session).
+/// Kill switch: disconnect AND sign out the Controller currently attached.
+/// The session token it holds is rotated away first, so it cannot re-join on
+/// its own; it has to sign in again with the OTP or the master password. To
+/// keep it out for good the owner changes the master password (or ends the
+/// session).
 #[tauri::command]
 pub async fn remote_kick_controller(
     db: State<'_, Db>,
@@ -323,8 +319,7 @@ pub async fn remote_kick_controller(
     // secret. Done even when nobody is attached right now (e.g. a controller
     // mid-reconnect): the owner asked for it to be signed out.
     sign_out_controllers(state.inner()).await;
-    let attached = state.connected.load(std::sync::atomic::Ordering::SeqCst)
-        || state.ipc.controlled_since().await.is_some();
+    let attached = state.connected.load(std::sync::atomic::Ordering::SeqCst);
     // Nothing to cut: don't leave a stored permit that would kick the next
     // Controller to join.
     if attached && state.is_running().await {
@@ -385,7 +380,6 @@ pub async fn remote_status(
     } else {
         (None, Vec::new())
     };
-    let desktop_controlled_since = state.ipc.controlled_since().await;
     Ok(RemoteStatus {
         enabled,
         running: state.is_running().await,
@@ -401,7 +395,5 @@ pub async fn remote_status(
         subscribed_run_ids,
         session_authenticated,
         session_idle_expires_at,
-        desktop_controlled: desktop_controlled_since.is_some(),
-        desktop_controlled_since,
     })
 }

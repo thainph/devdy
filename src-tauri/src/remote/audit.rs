@@ -6,7 +6,8 @@
 //! (surfaced as the "Clear" action in Settings), and [`delete_for_run`] when the
 //! owner deletes a session — its audit entries go with it. These are deliberate
 //! manual actions, not part of automated flow. The device registry was removed in the single-session
-//! redesign; the `device_id` column remains in the schema but is unused (NULL).
+//! redesign; the `device_id` column is NULL except on `device_sync_pull`, where it holds
+//! the pulling device's id.
 
 use crate::db::Db;
 use serde::Serialize;
@@ -37,8 +38,7 @@ fn now_rfc3339() -> String {
 /// Append one audit entry (BR-013). NEVER fails the caller's flow — an audit
 /// write error is logged best-effort but must not block command handling.
 ///
-/// `device_id` is retained in the signature for schema compatibility but is
-/// unused in the single-session redesign (callers pass `None`).
+/// `device_id` is `None` except for a device sync pull (the pulling device).
 pub async fn audit(
     db: &Db,
     device_id: Option<&str>,

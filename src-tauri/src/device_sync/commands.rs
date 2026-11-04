@@ -1,5 +1,5 @@
-//! Tauri commands of the pulling side. Local-only: a remote controller may not
-//! call them (`remote::guard::LOCAL_ONLY_COMMANDS`).
+//! Tauri commands of the pulling side. Only the local UI can call them: the web
+//! controller has no channel to invoke Tauri commands on the host.
 
 use std::sync::atomic::{AtomicBool, Ordering};
 

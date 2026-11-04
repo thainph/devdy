@@ -5,7 +5,6 @@
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { trackWindowForTray } from '@/lib/tray'
 import { centerOnCurrentMonitor } from '@/lib/windowCascade'
-import { popoutLabel, popoutUrl } from '@/lib/popout'
 
 /** Window label; src-tauri/capabilities/default.json grants it the app permissions. */
 export const FOCUS_WINDOW_LABEL = 'focus'
@@ -31,7 +30,7 @@ export async function openFocusWindow(): Promise<WebviewWindow | null> {
     await focusWindow(win)
     return win
   }
-  const existing = await WebviewWindow.getByLabel(popoutLabel(FOCUS_WINDOW_LABEL))
+  const existing = await WebviewWindow.getByLabel(FOCUS_WINDOW_LABEL)
   if (existing) {
     await focusWindow(existing)
     return existing
@@ -54,8 +53,8 @@ export async function openFocusWindow(): Promise<WebviewWindow | null> {
 async function createFocusWindow(): Promise<WebviewWindow> {
   const width = 1100
   const height = 780
-  const win = new WebviewWindow(popoutLabel(FOCUS_WINDOW_LABEL), {
-    url: popoutUrl('index.html?focusWindow=1'),
+  const win = new WebviewWindow(FOCUS_WINDOW_LABEL, {
+    url: 'index.html?focusWindow=1',
     title: 'Focus — Devdy',
     width,
     height,

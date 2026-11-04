@@ -9,10 +9,8 @@ import { Button, Card, Badge, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
 import { useRemoteControlStore } from '@/stores/remoteControl'
-import { isRemoteMode } from '@/lib/ipc/remote'
-import { openRemoteDesktopWindow } from '@/lib/remoteDesktopWindow'
 import RemotePushSettings from './RemotePushSettings.vue'
-import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw, Loader2, Trash2, MonitorSmartphone } from 'lucide-vue-next'
+import { Radio, Wifi, WifiOff, ShieldCheck, RefreshCw, Loader2, Trash2 } from 'lucide-vue-next'
 
 const store = useRemoteControlStore()
 const { t } = useI18n()
@@ -21,8 +19,6 @@ const { confirm } = useConfirm()
 const clearingAudit = ref(false)
 
 const togglingEnabled = ref(false)
-// A remote-desktop window already drives another Devdy; no nesting.
-const remoteMode = isRemoteMode()
 
 let pollTimer: ReturnType<typeof setInterval> | null = null
 
@@ -56,14 +52,6 @@ onMounted(() => {
 onUnmounted(() => {
   if (pollTimer) clearInterval(pollTimer)
 })
-
-async function openRemoteDesktop() {
-  try {
-    await openRemoteDesktopWindow()
-  } catch (e) {
-    toast.error(String(e))
-  }
-}
 
 async function toggleEnabled() {
   togglingEnabled.value = true
@@ -176,26 +164,11 @@ function resultTone(r: string): 'success' | 'error' | 'neutral' {
             </template>
           </i18n-t>
         </p>
-
-        <!-- Remote desktop: drive another Devdy from this one. -->
-        <div
-          v-if="!remoteMode"
-          class="flex items-center justify-between gap-4 border-t border-border/50 pt-3"
-        >
-          <div class="min-w-0">
-            <p class="text-sm font-medium text-foreground">{{ t('remote.settings.controlOther') }}</p>
-            <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('remote.settings.controlOtherHint') }}</p>
-          </div>
-          <Button variant="outline" class="shrink-0" @click="openRemoteDesktop">
-            <MonitorSmartphone class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('remote.settings.controlOtherOpen') }}
-          </Button>
-        </div>
       </div>
     </Card>
 
     <!-- Web Push to paired phones -->
-    <RemotePushSettings v-if="!remoteMode" />
+    <RemotePushSettings />
 
     <!-- Audit log -->
     <Card>

@@ -1637,7 +1637,6 @@ async fn collect_groups(
 #[tauri::command]
 pub async fn export_settings_backup(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     path: String,
     password: Option<String>,
@@ -1651,57 +1650,35 @@ pub async fn export_settings_backup(
             "The password must be at least {MIN_PASSWORD_LEN} characters"
         ));
     }
-    let (mut bundle, mut payload) =
+    let (mut bundle, payload) =
         collect_sections(&app, db.inner(), password.is_some(), Sections::ALL).await?;
-    if from_remote(&webview) {
-        payload.secret_vault = None;
-    }
     if let Some(password) = password {
         let sealed = tokio::task::spawn_blocking(move || seal(&payload, &password))
             .await
             .map_err(|e| e.to_string())??;
         bundle.secrets = Some(sealed);
     }
-    // A remote desktop writes only where it may (never `~/.devdy`, app data…).
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::write(policy.as_ref(), std::path::Path::new(&path))?;
     let json = serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string())?;
-    write_private_file(&path.to_string_lossy(), &json)?;
+    write_private_file(&path, &json)?;
     Ok(bundle.info())
-}
-
-/// Called by a Remote Control controller: the secret notes vault stays out of
-/// it (its sealed data would allow offline guessing of the vault password, and
-/// an import could overwrite notes).
-fn from_remote(webview: &tauri::Webview) -> bool {
-    webview.label() == crate::remote::ipc::BRIDGE_LABEL
 }
 
 // ---- Import ------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn inspect_settings_backup(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-) -> Result<BackupInfo, String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
-    Ok(read_bundle(&path.to_string_lossy())?.info())
+pub async fn inspect_settings_backup(path: String) -> Result<BackupInfo, String> {
+    Ok(read_bundle(&path)?.info())
 }
 
 #[tauri::command]
 pub async fn import_settings_backup(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     path: String,
     password: Option<String>,
     create_missing_dirs: Option<bool>,
 ) -> Result<ImportReport, String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
-    let bundle = read_bundle(&path.to_string_lossy())?;
+    let bundle = read_bundle(&path)?;
     let password = password.filter(|p| !p.is_empty());
     let mut report = ImportReport::default();
 
@@ -1713,10 +1690,6 @@ pub async fn import_settings_backup(
                 .await
                 .map_err(|e| e.to_string())??;
             report.secrets_imported = true;
-            let mut payload = payload;
-            if from_remote(&webview) {
-                payload.secret_vault = None;
-            }
             Some(payload)
         }
         (Some(_), None) => {
