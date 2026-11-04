@@ -48,6 +48,22 @@ use tokio_tungstenite::tungstenite::Message;
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(15);
 
+/// Wait before dialing again after the relay refused this Host because another
+/// running Devdy uses the same device id. Retrying fast cannot help (the other
+/// one stays connected); a new device id (`remote_regenerate_device_id`)
+/// restarts the agent straight away.
+const DEVICE_CONFLICT_RETRY: Duration = Duration::from_secs(300);
+
+/// How often the device-sync listen is re-armed while serving. Re-arming the
+/// same code is a no-op for the relay, and it restores a listen the relay
+/// dropped without telling us (older relays, when another connection took the
+/// code over and then went away).
+const SYNC_REARM_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Minimum gap between two re-arms triggered by `listen_superseded`, so two
+/// live apps fighting over the same code can't ping-pong faster than this.
+const SYNC_REARM_MIN_GAP: Duration = Duration::from_secs(10);
+
 /// Upper bound on dialing the relay (DNS + TCP + TLS + WS upgrade). Without it a
 /// dial started during a network change or right after wake can hang forever,
 /// and the agent never gets back to its reconnect loop.
@@ -137,6 +153,8 @@ pub struct AgentDeps {
     pub subscriptions: crate::remote::RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: crate::remote::FocusRun,
+    /// Device id / alias clash reported by the relay (see `remote_status`).
+    pub device_conflict: crate::remote::ConflictSlot,
 }
 
 /// Run the agent until `stop` fires. Reconnect loop with capped backoff.
@@ -155,6 +173,16 @@ pub async fn run_agent(
         let outcome = connect_once(&config, &deps, &auth_token, &mut stop).await;
         match outcome {
             ConnectOutcome::Stopped => break,
+            ConnectOutcome::DeviceConflict => {
+                deps.connected.store(false, Ordering::SeqCst);
+                deps.reconnecting.store(false, Ordering::SeqCst);
+                tracing::warn!(event = "remote_device_id_conflict_wait", secs = DEVICE_CONFLICT_RETRY.as_secs());
+                tokio::select! {
+                    _ = tokio::time::sleep(DEVICE_CONFLICT_RETRY) => {}
+                    _ = stop.changed() => { if *stop.borrow() { break; } }
+                }
+                backoff = BACKOFF_MIN;
+            }
             ConnectOutcome::Disconnected => {
                 deps.connected.store(false, Ordering::SeqCst);
                 // The socket is down and we're about to wait+retry — surface this
@@ -180,6 +208,8 @@ pub async fn run_agent(
 enum ConnectOutcome {
     Stopped,
     Disconnected,
+    /// The relay refused this Host: another running Devdy has its device id.
+    DeviceConflict,
 }
 
 /// One connection lifecycle: dial → register → serve until the socket drops.
@@ -289,6 +319,14 @@ async fn connect_once(
     // delivers an inbound frame within KEEPALIVE_INTERVAL. `last_inbound` is primed
     // to now (the socket just connected) so the check measures silence from here.
     let mut last_inbound = Instant::now();
+    // Device sync: re-arm its listen now and then (see SYNC_REARM_INTERVAL).
+    let mut sync_rearm = tokio::time::interval_at(
+        tokio::time::Instant::now() + SYNC_REARM_INTERVAL,
+        SYNC_REARM_INTERVAL,
+    );
+    sync_rearm.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_sync_arm = Instant::now();
+
     let mut liveness = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_check = (Instant::now(), SystemTime::now());
@@ -302,6 +340,12 @@ async fn connect_once(
                 let room_id = room_ctx.as_ref().map(|c| c.room_id.clone()).unwrap_or_default();
                 if out_tx.send(Envelope::keepalive(room_id)).is_err() {
                     break ConnectOutcome::Disconnected;
+                }
+            }
+            _ = sync_rearm.tick() => {
+                if let Some(frame) = crate::device_sync::host::rearm_frame(sync_listening.as_deref()) {
+                    let _ = out_tx.send(frame);
+                    last_sync_arm = Instant::now();
                 }
             }
             _ = liveness.tick() => {
@@ -366,6 +410,44 @@ async fn connect_once(
                     Ok(e) => e,
                     Err(_) => { tracing::debug!(event = "remote_bad_frame"); continue; }
                 };
+                // Another running Devdy holds this device id: stop dialing fast.
+                if env.t == FrameType::Error && env.code.as_deref() == Some("device_id_conflict") {
+                    tracing::warn!(event = "remote_device_id_conflict");
+                    crate::remote::set_device_conflict(
+                        &deps.app,
+                        &deps.device_conflict,
+                        Some(crate::remote::DeviceConflict::device_id()),
+                    );
+                    break ConnectOutcome::DeviceConflict;
+                }
+                // The relay acked `register_host`: whatever clash it reported
+                // before is over (an alias clash, if still there, follows).
+                if env.t == FrameType::Control && env.room_id.is_empty() && env.code.as_deref() == Some("ok") {
+                    crate::remote::set_device_conflict(&deps.app, &deps.device_conflict, None);
+                }
+                if env.t == FrameType::Error && env.code.as_deref() == Some("alias_conflict") {
+                    let alias = env.alias.as_deref().unwrap_or_default();
+                    tracing::warn!(event = "remote_alias_conflict");
+                    crate::remote::set_device_conflict(
+                        &deps.app,
+                        &deps.device_conflict,
+                        Some(crate::remote::DeviceConflict::alias(alias)),
+                    );
+                    continue;
+                }
+                // Another connection took over our device-sync code: arm it
+                // again (at most every SYNC_REARM_MIN_GAP; the periodic re-arm
+                // covers the rest).
+                if crate::device_sync::host::lost_sync_listen(&env) {
+                    tracing::warn!(event = "device_sync_listen_superseded");
+                    if last_sync_arm.elapsed() >= SYNC_REARM_MIN_GAP {
+                        if let Some(frame) = crate::device_sync::host::rearm_frame(sync_listening.as_deref()) {
+                            let _ = out_tx.send(frame);
+                            last_sync_arm = Instant::now();
+                        }
+                    }
+                    continue;
+                }
                 // The relay refused something this connection depends on (our
                 // listen hit the cap / rate limit, or we are not registered).
                 // Re-dial so the listen is re-established instead of sitting on

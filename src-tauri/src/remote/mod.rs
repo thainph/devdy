@@ -65,6 +65,65 @@ pub const KEY_DEVICE_ID: &str = "remote_device_id";
 /// several Devdy hosts can share one relay (see `login::login_code`).
 pub const KEY_DEVICE_ALIAS: &str = "remote_device_alias";
 
+/// Tauri event carrying the current [`DeviceConflict`] (`null` once cleared).
+pub const DEVICE_CONFLICT_EVENT: &str = "remote://device-conflict";
+
+/// A clash the relay reported for this Host. Serialized camelCase:
+/// `{ "kind": "device_id" }` or `{ "kind": "alias", "alias": "Mac mini" }`.
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct DeviceConflict {
+    /// `device_id`: another running Devdy is connected with this device id, so
+    /// the relay refused this one (Remote Control and device sync are off
+    /// here until it is resolved). `alias`: another online device is listed
+    /// under the same name (a warning only).
+    pub kind: String,
+    /// The clashing name, for `alias`.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+}
+
+impl DeviceConflict {
+    pub fn device_id() -> Self {
+        Self {
+            kind: "device_id".to_string(),
+            alias: None,
+        }
+    }
+
+    pub fn alias(alias: &str) -> Self {
+        Self {
+            kind: "alias".to_string(),
+            alias: Some(alias.to_string()),
+        }
+    }
+}
+
+/// Shared slot for the current conflict.
+pub type ConflictSlot = Arc<std::sync::Mutex<Option<DeviceConflict>>>;
+
+/// Store `conflict` and tell the UI when it changed.
+pub fn set_device_conflict(app: &AppHandle, slot: &ConflictSlot, conflict: Option<DeviceConflict>) {
+    use tauri::Emitter;
+    let changed = match slot.lock() {
+        Ok(mut current) if *current != conflict => {
+            *current = conflict.clone();
+            true
+        }
+        _ => false,
+    };
+    if changed {
+        let _ = app.emit(DEVICE_CONFLICT_EVENT, conflict);
+    }
+}
+
+/// Random id of this app launch, sent on `register_host` (see
+/// `protocol::Envelope::instance_id`). Never persisted.
+pub fn instance_id() -> &'static str {
+    static ID: std::sync::OnceLock<String> = std::sync::OnceLock::new();
+    ID.get_or_init(|| uuid::Uuid::new_v4().to_string())
+}
+
 /// Live control handle for the running agent task.
 struct AgentControl {
     stop: tokio::sync::watch::Sender<bool>,
@@ -97,6 +156,8 @@ pub struct RemoteState {
     pub focus_run_id: FocusRun,
     /// Web Push to subscribed phones; its dispatcher runs with the agent.
     pub push: push::PushHub,
+    /// The device id / alias clash the relay last reported, if any.
+    pub device_conflict: ConflictSlot,
     agent: Arc<TokioMutex<Option<AgentControl>>>,
 }
 
@@ -118,6 +179,7 @@ impl RemoteState {
             subscriptions: Arc::new(TokioMutex::new(HashSet::new())),
             focus_run_id: Arc::new(TokioMutex::new(None)),
             push: push::PushHub::default(),
+            device_conflict: Arc::new(std::sync::Mutex::new(None)),
             agent: Arc::new(TokioMutex::new(None)),
         }
     }
@@ -161,6 +223,7 @@ impl RemoteState {
             kick_signal: self.kick_signal.clone(),
             subscriptions: self.subscriptions.clone(),
             focus_run_id: self.focus_run_id.clone(),
+            device_conflict: self.device_conflict.clone(),
         };
         let config = agent::AgentConfig {
             relay_url,
@@ -182,6 +245,10 @@ impl RemoteState {
             ctrl.handle.abort();
         }
         self.push.stop();
+        // Only meaningful while connected to the relay.
+        if let Ok(mut c) = self.device_conflict.lock() {
+            *c = None;
+        }
         self.connected
             .store(false, std::sync::atomic::Ordering::SeqCst);
         self.reconnecting
@@ -250,6 +317,14 @@ pub(crate) async fn device_alias(db: &Db) -> Option<String> {
         .filter(|a| login::valid_alias(a))
 }
 
+/// Replace the Host's `device_id` with a fresh one (after a `device_id`
+/// conflict: a copied database on another machine). Returns the new id.
+pub(crate) async fn regenerate_device_id(db: &Db) -> Result<String, String> {
+    let id = uuid::Uuid::new_v4().to_string();
+    set_setting(db, KEY_DEVICE_ID, &id).await?;
+    Ok(id)
+}
+
 /// Return the Host's stable `device_id`, generating + persisting one on first
 /// use (DATA-001).
 pub(crate) async fn ensure_device_id(db: &Db) -> Result<String, String> {
@@ -264,6 +339,28 @@ pub(crate) async fn ensure_device_id(db: &Db) -> Result<String, String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn device_conflict_is_camel_case_json() {
+        assert_eq!(
+            serde_json::to_value(DeviceConflict::device_id()).unwrap(),
+            serde_json::json!({ "kind": "device_id" })
+        );
+        assert_eq!(
+            serde_json::to_value(DeviceConflict::alias("Mac mini")).unwrap(),
+            serde_json::json!({ "kind": "alias", "alias": "Mac mini" })
+        );
+    }
+
+    #[test]
+    fn register_host_carries_this_launch_instance_id() {
+        let a = protocol::Envelope::register_host_listed("dev", "tok", None);
+        let b = protocol::Envelope::register_host_listed("dev", "tok", Some(("air".into(), "1".into())));
+        let id = a.instance_id.clone().expect("instance id sent");
+        assert_eq!(uuid::Uuid::parse_str(&id).map(|_| ()), Ok(()));
+        assert_eq!(b.instance_id.as_deref(), Some(id.as_str()), "stable for the launch");
+        assert_eq!(id, instance_id());
+    }
 
     #[test]
     fn hex_roundtrips() {

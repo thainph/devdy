@@ -77,6 +77,21 @@ pub fn listen_frame(current: Option<&str>, want: Option<&str>) -> Option<Envelop
     })
 }
 
+/// The frame that arms the sync slot again on `current` (the code it should
+/// listen on), without touching a pull in progress: for the same code, the
+/// relay only refreshes the listen. `None` while not serving.
+pub fn rearm_frame(current: Option<&str>) -> Option<Envelope> {
+    current.map(|code| Envelope::create_pair_slot(code, SYNC_SLOT))
+}
+
+/// Whether the relay says another connection took over this Host's sync
+/// listen (`error{listen_superseded, slot: "sync"}`).
+pub fn lost_sync_listen(env: &Envelope) -> bool {
+    env.t == FrameType::Error
+        && env.code.as_deref() == Some("listen_superseded")
+        && env.slot.as_deref() == Some(SYNC_SLOT)
+}
+
 /// Whether `env` belongs to the sync flow (and must stay away from the
 /// session and login paths).
 pub fn is_sync_frame(env: &Envelope, pending: Option<&SyncPending>) -> bool {
@@ -747,6 +762,32 @@ mod tests {
             !is_sync_frame(&left, Some(&p)),
             "the phone leaving is not the pull ending"
         );
+    }
+
+    #[test]
+    fn a_lost_sync_listen_is_armed_again() {
+        // Periodic re-arm: same code, same slot, while serving only.
+        assert!(rearm_frame(None).is_none());
+        let arm = rearm_frame(Some("devdy-sync-v1/dev-a")).unwrap();
+        assert_eq!(arm.t, FrameType::CreatePair);
+        assert_eq!(arm.pair_code.as_deref(), Some("devdy-sync-v1/dev-a"));
+        assert_eq!(arm.slot.as_deref(), Some(SYNC_SLOT));
+
+        // The relay's notice that another connection took the sync code over.
+        let lost: Envelope = serde_json::from_value(serde_json::json!({
+            "t": "error", "code": "listen_superseded", "slot": "sync",
+        }))
+        .unwrap();
+        assert!(lost_sync_listen(&lost));
+        assert!(!is_sync_frame(&lost, None), "not part of a pull");
+        for other in [
+            serde_json::json!({ "t": "error", "code": "listen_superseded" }),
+            serde_json::json!({ "t": "error", "code": "listen_superseded", "slot": "login" }),
+            serde_json::json!({ "t": "error", "code": "pair_invalid", "slot": "sync" }),
+        ] {
+            let env: Envelope = serde_json::from_value(other).unwrap();
+            assert!(!lost_sync_listen(&env));
+        }
     }
 
     #[test]
