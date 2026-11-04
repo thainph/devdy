@@ -19,7 +19,7 @@
     "password": "Master password",
     "passwordPlaceholder": "Master password của {name}",
     "passwordHint": "Master password đặt ở máy nguồn (Cài đặt → Thiết bị). Toàn bộ dữ liệu được mã hoá đầu cuối.",
-    "overwriteWarning": "Đồng bộ sẽ ghi đè dữ liệu trên máy này ngay và không hoàn tác được. Todo sẽ giống y hệt máy nguồn."
+    "overwriteWarning": "Đồng bộ sẽ ghi đè dữ liệu trên máy này ngay và không hoàn tác được. Mục chỉ có ở máy này được giữ nguyên."
   },
   "sections": {
     "todos": "Todo",
@@ -44,11 +44,11 @@
     "azureAccounts": "Tài khoản Azure"
   },
   "rules": {
-    "todos": "Giống y hệt máy nguồn: xoá todo không có ở đó.",
-    "notes": "Cập nhật theo từng note; note chỉ có ở máy này được giữ.",
+    "todos": "Ghi đè theo từng todo, đủ mọi thuộc tính (Focus, hạn, project).",
+    "notes": "Ghi đè theo từng note.",
     "secretNotes": "Vẫn khoá bằng vault password; gộp như khi import vault.",
     "slackThreads": "Thread, tin nhắn và bản dịch; file đính kèm sẽ tự tải lại.",
-    "skillsRules": "Khớp theo tên, kèm nhóm và file; mục chỉ có ở máy này được giữ.",
+    "skillsRules": "Khớp theo tên, kèm nhóm và file.",
     "projects": "Chỉ project trùng tên với project ở máy này; đồng bộ cài đặt, không chép file.",
     "settings": "Theme, ngôn ngữ, model, prompt đã lưu, dịch…",
     "mcpServers": "Đầy đủ cài đặt, gồm env và header bí mật.",
@@ -88,6 +88,17 @@
     "sync": "Đồng bộ",
     "syncing": "Đang đồng bộ…",
     "reload": "Tải lại app",
-    "close": "Đóng"
+    "close": "Đóng",
+    "mirrorSync": "Xoá và đồng bộ"
+  },
+  "mirror": {
+    "label": "Đồng bộ y hệt (xoá phần khác biệt)",
+    "hint": "Mục ở máy này không có trên máy nguồn sẽ bị XOÁ trong: Todo, Note, Skill, Rule (kèm nhóm), MCP, VPS, Tài khoản. Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá.",
+    "warning": "Đang bật đồng bộ y hệt: mục không có trên máy nguồn sẽ bị xoá ở máy này trong {parts}."
+  },
+  "confirm": {
+    "title": "Xoá các mục không có trên máy nguồn?",
+    "message": "Mọi mục ở máy này mà {name} không có sẽ bị xoá trong:",
+    "neverDeleted": "Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá. Không hoàn tác được."
   }
 }

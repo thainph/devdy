@@ -14,7 +14,16 @@ export const SYNC_CATEGORY_KEYS = [
 ] as const
 
 export type SyncCategory = (typeof SYNC_CATEGORY_KEYS)[number]
-export type SyncCategories = Record<SyncCategory, boolean>
+/** Ticked categories + `mirror`: also delete local items the source doesn't have. */
+export type SyncCategories = Record<SyncCategory, boolean> & { mirror: boolean }
+
+/**
+ * Categories whose local-only items `mirror` deletes. Secret notes, Slack threads, projects
+ * and general settings are never deleted.
+ */
+export const MIRROR_DELETE_KEYS = [
+  'todos', 'notes', 'skillsRules', 'mcpServers', 'vpsServers', 'accounts',
+] as const satisfies readonly SyncCategory[]
 
 export interface SyncCounts {
   created: number
@@ -42,13 +51,19 @@ export const DEVICE_SYNC_PROGRESS = 'device-sync-progress'
 
 export const SYNC_PHASES: SyncPhase[] = ['connecting', 'auth', 'downloading', 'applying', 'done']
 
-/** Every category ticked: the dialog's starting state. */
+/** Every category ticked, mirror off: the dialog's starting state. */
 export function defaultCategories(): SyncCategories {
-  return Object.fromEntries(SYNC_CATEGORY_KEYS.map(k => [k, true])) as SyncCategories
+  return { ...Object.fromEntries(SYNC_CATEGORY_KEYS.map(k => [k, true])), mirror: false } as SyncCategories
 }
 
 export function selectedCategories(c: SyncCategories): SyncCategory[] {
   return SYNC_CATEGORY_KEYS.filter(k => c[k])
+}
+
+/** Ticked categories where local-only items get deleted (empty unless `mirror` is on). */
+export function mirrorDeletions(c: SyncCategories): SyncCategory[] {
+  if (!c.mirror) return []
+  return MIRROR_DELETE_KEYS.filter(k => c[k])
 }
 
 export type SyncErrorKind = 'wrongPassword' | 'deviceOffline' | 'other'

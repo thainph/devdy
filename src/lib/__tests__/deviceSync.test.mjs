@@ -3,8 +3,10 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  MIRROR_DELETE_KEYS,
   SYNC_CATEGORY_KEYS,
   defaultCategories,
+  mirrorDeletions,
   progressPercent,
   reportRows,
   reportTotals,
@@ -12,11 +14,27 @@ import {
   syncErrorKind,
 } from '../deviceSync.ts'
 
-test('defaultCategories ticks every category', () => {
+test('defaultCategories ticks every category with mirror off', () => {
   const c = defaultCategories()
-  assert.deepEqual(Object.keys(c), [...SYNC_CATEGORY_KEYS])
-  assert.ok(Object.values(c).every(v => v === true))
+  assert.deepEqual(Object.keys(c), [...SYNC_CATEGORY_KEYS, 'mirror'])
+  assert.equal(c.mirror, false)
+  assert.ok(SYNC_CATEGORY_KEYS.every(k => c[k] === true))
   assert.deepEqual(selectedCategories(c), [...SYNC_CATEGORY_KEYS])
+  assert.deepEqual(mirrorDeletions(c), [])
+})
+
+test('mirrorDeletions lists only ticked deletable categories', () => {
+  const c = defaultCategories()
+  c.mirror = true
+  assert.deepEqual(mirrorDeletions(c), [...MIRROR_DELETE_KEYS])
+  for (const k of ['secretNotes', 'slackThreads', 'projects', 'settings']) {
+    assert.ok(!MIRROR_DELETE_KEYS.includes(k), k)
+  }
+  c.notes = false
+  c.accounts = false
+  assert.deepEqual(mirrorDeletions(c), ['todos', 'skillsRules', 'mcpServers', 'vpsServers'])
+  c.mirror = false
+  assert.deepEqual(mirrorDeletions(c), [])
 })
 
 test('selectedCategories keeps category order', () => {

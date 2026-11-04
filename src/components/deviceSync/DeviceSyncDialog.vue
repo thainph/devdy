@@ -1,16 +1,16 @@
 <script setup lang="ts">
 // Device pull sync: pick another online Devdy, tick what to take, enter its master
 // password, then pull once and overwrite local data (see docs/device-pull-sync-plan.md).
-// Steps: device → options → running → result.
+// Steps: device → options → (confirm, when mirror deletes) → running → result.
 import { computed, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { AlertTriangle, Check, Loader2, Monitor, RefreshCw, RotateCcw, WifiOff } from 'lucide-vue-next'
+import { AlertTriangle, Check, Loader2, Monitor, RefreshCw, RotateCcw, Trash2, WifiOff } from 'lucide-vue-next'
 import { Banner, Button, Input, Modal } from '@/components/ui'
 import { invoke } from '@/lib/tauri'
 import {
-  DEVICE_SYNC_PROGRESS, SYNC_CATEGORY_KEYS, SYNC_PHASES, defaultCategories, progressPercent,
-  reportRows, selectedCategories, syncErrorKind,
+  DEVICE_SYNC_PROGRESS, SYNC_CATEGORY_KEYS, SYNC_PHASES, defaultCategories, mirrorDeletions,
+  progressPercent, reportRows, selectedCategories, syncErrorKind,
   type SyncCategories, type SyncDevice, type SyncProgress, type SyncReport,
 } from '@/lib/deviceSync'
 import { useDeviceSyncRefresh } from '@/composables/useDeviceSyncRefresh'
@@ -21,7 +21,7 @@ const emit = defineEmits<{ close: [] }>()
 const { t, te } = useI18n()
 const { refreshAfterSync } = useDeviceSyncRefresh()
 
-type Step = 'device' | 'options' | 'running' | 'result'
+type Step = 'device' | 'options' | 'confirm' | 'running' | 'result'
 const step = ref<Step>('device')
 
 // ---- Step 1: online devices ----
@@ -53,10 +53,19 @@ const passwordError = ref('')
 const syncError = ref('')
 const allSelected = computed(() => SYNC_CATEGORY_KEYS.every(k => categories.value[k]))
 const canSync = computed(() => !!selectedDevice.value && selectedCategories(categories.value).length > 0 && !!password.value)
+/** Ticked parts whose local-only items mirror deletes: non-empty means a confirm step first. */
+const mirrorParts = computed(() => mirrorDeletions(categories.value))
+const mirrorPartsLabel = computed(() => mirrorParts.value.map(k => t(`deviceSync.sections.${k}`)).join(', '))
 
 function toggleAll() {
   const next = !allSelected.value
   for (const k of SYNC_CATEGORY_KEYS) categories.value[k] = next
+}
+
+function requestSync() {
+  if (!canSync.value) return
+  if (mirrorParts.value.length) step.value = 'confirm'
+  else void runSync()
 }
 
 // ---- Step 3/4: progress + report ----
@@ -258,14 +267,51 @@ onBeforeUnmount(() => unlistenProgress?.())
           type="password"
           autocomplete="off"
           :placeholder="t('deviceSync.options.passwordPlaceholder', { name: selectedDevice?.alias ?? '' })"
-          @keydown.enter="runSync"
+          @keydown.enter="requestSync"
         />
         <p v-if="passwordError" class="text-[11px] text-destructive">{{ passwordError }}</p>
         <p v-else class="text-[11px] text-muted-foreground">{{ t('deviceSync.options.passwordHint') }}</p>
       </section>
 
+      <!-- Mirror: separate from the list, off by default -->
+      <label
+        class="flex items-start gap-2.5 rounded-lg border px-3 py-2 text-xs cursor-pointer"
+        :class="categories.mirror ? 'border-destructive/40 bg-destructive/10' : 'border-border/60 hover:bg-accent/50'"
+      >
+        <input v-model="categories.mirror" type="checkbox" class="mt-0.5 accent-destructive">
+        <span class="min-w-0">
+          <span class="block font-medium">{{ t('deviceSync.mirror.label') }}</span>
+          <span class="block text-[11px] text-muted-foreground">{{ t('deviceSync.mirror.hint') }}</span>
+        </span>
+      </label>
+
       <Banner v-if="syncError" tone="destructive" live>{{ syncError }}</Banner>
-      <Banner tone="warning">{{ t('deviceSync.options.overwriteWarning') }}</Banner>
+      <Banner v-if="mirrorParts.length" tone="destructive" :icon="Trash2">
+        {{ t('deviceSync.mirror.warning', { parts: mirrorPartsLabel }) }}
+      </Banner>
+      <Banner v-else tone="warning">{{ t('deviceSync.options.overwriteWarning') }}</Banner>
+    </div>
+
+    <!-- Step 2b: confirm mirror deletions -->
+    <div v-else-if="step === 'confirm'" class="space-y-3 p-4">
+      <div class="flex gap-3">
+        <div class="flex h-8 w-8 shrink-0 items-center justify-center rounded-full bg-destructive/10 text-destructive">
+          <AlertTriangle class="h-4 w-4" :stroke-width="1.75" />
+        </div>
+        <div class="min-w-0 space-y-2">
+          <p class="text-sm font-medium">{{ t('deviceSync.confirm.title') }}</p>
+          <p class="text-xs text-muted-foreground">
+            {{ t('deviceSync.confirm.message', { name: selectedDevice?.alias ?? '' }) }}
+          </p>
+          <ul class="space-y-1 text-xs">
+            <li v-for="k in mirrorParts" :key="k" class="flex items-center gap-1.5 text-destructive">
+              <Trash2 class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+              {{ t(`deviceSync.sections.${k}`) }}
+            </li>
+          </ul>
+          <p class="text-[11px] text-muted-foreground">{{ t('deviceSync.confirm.neverDeleted') }}</p>
+        </div>
+      </div>
     </div>
 
     <!-- Step 3: running -->
@@ -339,9 +385,16 @@ onBeforeUnmount(() => unlistenProgress?.())
       <template v-else-if="step === 'options'">
         <Button variant="ghost" size="sm" class="mr-auto" @click="step = 'device'">{{ t('deviceSync.actions.back') }}</Button>
         <Button variant="ghost" size="sm" @click="close">{{ t('deviceSync.actions.cancel') }}</Button>
-        <Button size="sm" :disabled="!canSync" @click="runSync">
+        <Button :variant="mirrorParts.length ? 'destructive' : 'primary'" size="sm" :disabled="!canSync" @click="requestSync">
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('deviceSync.actions.sync') }}
+        </Button>
+      </template>
+      <template v-else-if="step === 'confirm'">
+        <Button variant="ghost" size="sm" class="mr-auto" @click="step = 'options'">{{ t('deviceSync.actions.back') }}</Button>
+        <Button variant="destructive" size="sm" @click="runSync">
+          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('deviceSync.actions.mirrorSync') }}
         </Button>
       </template>
       <template v-else-if="step === 'running'">

@@ -19,7 +19,7 @@
     "password": "Master password",
     "passwordPlaceholder": "Master password of {name}",
     "passwordHint": "The master password set on the source device (Settings → Devices). Everything is encrypted end to end.",
-    "overwriteWarning": "Syncing overwrites local data right away and cannot be undone. Todos become an exact copy of the source device."
+    "overwriteWarning": "Syncing overwrites local data right away and cannot be undone. Items only on this machine are kept."
   },
   "sections": {
     "todos": "Todos",
@@ -44,11 +44,11 @@
     "azureAccounts": "Azure accounts"
   },
   "rules": {
-    "todos": "Exact copy of the source device: todos missing there are deleted here.",
-    "notes": "Updated by note; notes only on this machine are kept.",
+    "todos": "Overwritten by todo, every field included (Focus, due date, project).",
+    "notes": "Overwritten by note.",
     "secretNotes": "Stay sealed with their vault password; merged like a vault import.",
     "slackThreads": "Threads, messages and translations; attachments are downloaded again.",
-    "skillsRules": "Matched by name, with their groups and files; local-only ones are kept.",
+    "skillsRules": "Matched by name, with their groups and files.",
     "projects": "Only projects with the same name as one here; their settings, not their files.",
     "settings": "Theme, language, models, saved prompts, translation…",
     "mcpServers": "Full settings, secret env and headers included.",
@@ -88,6 +88,17 @@
     "sync": "Sync",
     "syncing": "Syncing…",
     "reload": "Reload app",
-    "close": "Close"
+    "close": "Close",
+    "mirrorSync": "Delete and sync"
+  },
+  "mirror": {
+    "label": "Mirror exactly (delete differences)",
+    "hint": "Items on this machine that the source doesn't have are DELETED in: Todos, Notes, Skills, Rules (with groups), MCP, VPS, Accounts. Secret notes, Slack threads, projects and general settings are never deleted.",
+    "warning": "Mirror is on: items missing on the source device will be deleted here in {parts}."
+  },
+  "confirm": {
+    "title": "Delete items missing on the source?",
+    "message": "Everything on this machine that {name} doesn't have will be deleted in:",
+    "neverDeleted": "Secret notes, Slack threads, projects and general settings are never deleted. This cannot be undone."
   }
 }
