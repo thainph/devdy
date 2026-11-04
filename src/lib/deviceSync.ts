@@ -35,7 +35,59 @@ export interface SyncCounts {
 
 export interface SyncReport {
   counts: Record<string, SyncCounts>
-  warnings: string[]
+  warnings: SyncWarning[]
+}
+
+/**
+ * One report line as `code` + `params` (i18n `deviceSync.warnings.<code>`). Codes:
+ * `project_folder_missing` {project, path}, `link_target_missing` {project, kind, name},
+ * `link_failed` {project, name, error}, `project_failed` {project, error},
+ * `item_failed` {section, name, error}, `project_sync_failed` {section, name, detail},
+ * `category_not_sent` / `category_empty_no_mirror` {section},
+ * `delete_failed` {section, name, error}, `other` {message}.
+ */
+export interface SyncWarning {
+  code: string
+  params: Record<string, string>
+}
+
+export type SyncWarningGroup = 'folders' | 'links' | 'mirror' | 'problems'
+
+const WARNING_GROUP: Record<string, SyncWarningGroup> = {
+  project_folder_missing: 'folders',
+  link_target_missing: 'links',
+  link_failed: 'links',
+  category_not_sent: 'mirror',
+  category_empty_no_mirror: 'mirror',
+}
+
+const WARNING_GROUP_ORDER: SyncWarningGroup[] = ['problems', 'folders', 'links', 'mirror']
+
+/** Warnings shown per group before "show N more". */
+export const WARNING_PREVIEW = 3
+
+/** A plain string (older report shape) reads as an `other` warning. */
+export function normalizeWarning(w: SyncWarning | string): SyncWarning {
+  if (typeof w === 'string') return { code: 'other', params: { message: w } }
+  return { code: w.code || 'other', params: w.params ?? {} }
+}
+
+/**
+ * Warnings by group, real problems first, then folder notes, missing link targets and
+ * mirror notes; empty groups dropped, order inside a group kept. Exact repeats are dropped.
+ */
+export function groupWarnings(warnings: (SyncWarning | string)[]): { group: SyncWarningGroup, items: SyncWarning[] }[] {
+  const seen = new Set<string>()
+  const byGroup = new Map<SyncWarningGroup, SyncWarning[]>()
+  for (const raw of warnings ?? []) {
+    const w = normalizeWarning(raw)
+    const key = JSON.stringify([w.code, Object.entries(w.params).sort()])
+    if (seen.has(key)) continue
+    seen.add(key)
+    const group = WARNING_GROUP[w.code] ?? 'problems'
+    byGroup.set(group, [...(byGroup.get(group) ?? []), w])
+  }
+  return WARNING_GROUP_ORDER.filter(g => byGroup.has(g)).map(group => ({ group, items: byGroup.get(group)! }))
 }
 
 export type SyncPhase = 'connecting' | 'auth' | 'downloading' | 'applying' | 'done'
@@ -82,7 +134,7 @@ export function syncErrorCode(err: unknown): SyncErrorCode | null {
   return (SYNC_ERROR_CODES as readonly string[]).includes(s) ? (s as SyncErrorCode) : null
 }
 
-/** Codes after which the picked device is gone: back to the device list. */
+/** Codes after which the picked device may be gone: the device list is refreshed. */
 export function isDeviceGone(code: SyncErrorCode | null): boolean {
   return code === 'device_offline' || code === 'device_disconnected'
 }

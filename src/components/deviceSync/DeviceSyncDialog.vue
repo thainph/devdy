@@ -2,16 +2,18 @@
 // Device pull sync: pick another online Devdy, tick what to take, enter its master
 // password, then pull once and overwrite local data (see docs/device-pull-sync-plan.md).
 // Steps: device → options → (confirm, when mirror deletes) → running → result.
-import { computed, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { AlertTriangle, Check, Loader2, Monitor, RefreshCw, RotateCcw, Trash2, WifiOff } from 'lucide-vue-next'
+import { AlertTriangle, Check, FolderX, Info, Link2Off, Loader2, Monitor, RefreshCw, RotateCcw, Trash2, WifiOff } from 'lucide-vue-next'
 import { Banner, Button, Input, Modal } from '@/components/ui'
 import { invoke } from '@/lib/tauri'
 import {
-  DEVICE_SYNC_PROGRESS, SYNC_CATEGORY_KEYS, SYNC_PHASES, defaultCategories, mirrorDeletions,
-  deviceLabel, isDeviceGone, progressPercent, reportRows, selectedCategories, syncErrorCode,
-  type SyncCategories, type SyncDevice, type SyncProgress, type SyncReport,
+  DEVICE_SYNC_PROGRESS, SYNC_CATEGORY_KEYS, SYNC_PHASES, WARNING_PREVIEW, defaultCategories,
+  deviceLabel, groupWarnings, isDeviceGone, mirrorDeletions, progressPercent, reportRows,
+  selectedCategories, syncErrorCode,
+  type SyncCategories, type SyncDevice, type SyncProgress, type SyncReport, type SyncWarning,
+  type SyncWarningGroup,
 } from '@/lib/deviceSync'
 import { useDeviceSyncRefresh } from '@/composables/useDeviceSyncRefresh'
 
@@ -50,8 +52,12 @@ async function loadDevices() {
 // ---- Step 2: categories + password ----
 const categories = ref<SyncCategories>(defaultCategories())
 const password = ref('')
-const passwordError = ref('')
+/** The last sync failed on the master password: the field is kept and highlighted. */
+const passwordError = ref(false)
+/** Why the last sync failed, shown at the top of step 2. */
 const syncError = ref('')
+const optionsEl = ref<HTMLElement | null>(null)
+const passwordEl = ref<HTMLElement | null>(null)
 const allSelected = computed(() => SYNC_CATEGORY_KEYS.every(k => categories.value[k]))
 const canSync = computed(() => !!selectedDevice.value && selectedCategories(categories.value).length > 0 && !!password.value)
 /** Ticked parts whose local-only items mirror deletes: non-empty means a confirm step first. */
@@ -78,6 +84,33 @@ let unlistenProgress: UnlistenFn | null = null
 const percent = computed(() => progressPercent(progress.value))
 const phaseIndex = computed(() => (progress.value ? SYNC_PHASES.indexOf(progress.value.phase) : 0))
 const rows = computed(() => (report.value ? reportRows(report.value) : []))
+const warningGroups = computed(() => (report.value ? groupWarnings(report.value.warnings) : []))
+const expanded = ref(new Set<SyncWarningGroup>())
+
+function toggleGroup(group: SyncWarningGroup) {
+  const next = new Set(expanded.value)
+  if (next.has(group)) next.delete(group)
+  else next.add(group)
+  expanded.value = next
+}
+
+function visibleWarnings(group: SyncWarningGroup, items: SyncWarning[]) {
+  return expanded.value.has(group) ? items : items.slice(0, WARNING_PREVIEW)
+}
+
+const GROUP_ICON = { problems: AlertTriangle, folders: FolderX, links: Link2Off, mirror: Info } as const
+
+/** Localised text of a report line; section / link kind params are translated too. */
+function warningText(w: SyncWarning) {
+  const params: Record<string, string> = { ...w.params }
+  if (params.section) params.section = sectionLabel(params.section)
+  if (params.kind) {
+    const path = `deviceSync.linkKinds.${params.kind}`
+    params.kind = te(path) ? t(path) : params.kind
+  }
+  const path = `deviceSync.warnings.${w.code}`
+  return te(path) ? t(path, params) : (params.message ?? w.code)
+}
 
 /** Localised message for a known error code, else the backend text verbatim. */
 function errorMessage(err: unknown, name = '') {
@@ -90,11 +123,26 @@ function sectionLabel(key: string) {
   return te(path) ? t(path) : key
 }
 
+/** Back to step 2 with the error on top; a wrong password keeps the field and focuses it. */
+async function showSyncError(message: string, wrongPassword: boolean) {
+  syncError.value = message
+  passwordError.value = wrongPassword
+  step.value = 'options'
+  await nextTick()
+  if (wrongPassword) {
+    const input = passwordEl.value?.querySelector('input')
+    input?.focus({ preventScroll: true })
+    input?.select()
+  }
+  optionsEl.value?.scrollIntoView({ block: 'start' })
+}
+
 async function runSync() {
   const device = selectedDevice.value
   if (!device || !canSync.value) return
-  passwordError.value = ''
+  passwordError.value = false
   syncError.value = ''
+  expanded.value = new Set()
   progress.value = { phase: 'connecting', received: 0, total: 0 }
   step.value = 'running'
   const picked = { ...categories.value }
@@ -117,19 +165,9 @@ async function runSync() {
     await refreshAfterSync(picked)
   } catch (e) {
     const code = syncErrorCode(e)
-    const message = errorMessage(e, deviceLabel(device))
-    if (code === 'wrong_password') {
-      passwordError.value = message
-      step.value = 'options'
-    } else if (isDeviceGone(code)) {
-      selectedId.value = null
-      step.value = 'device'
-      await loadDevices()
-      devicesError.value = message
-    } else {
-      syncError.value = message
-      step.value = 'options'
-    }
+    await showSyncError(errorMessage(e, deviceLabel(device)), code === 'wrong_password')
+    // The device may be gone: refresh the list for when the user goes back to it.
+    if (isDeviceGone(code)) void loadDevices()
   } finally {
     unlistenProgress?.()
     unlistenProgress = null
@@ -142,8 +180,9 @@ function reset() {
   devicesError.value = ''
   categories.value = defaultCategories()
   password.value = ''
-  passwordError.value = ''
+  passwordError.value = false
   syncError.value = ''
+  expanded.value = new Set()
   progress.value = null
   report.value = null
   syncedSettings.value = false
@@ -237,7 +276,11 @@ onBeforeUnmount(() => unlistenProgress?.())
     </div>
 
     <!-- Step 2: categories + master password -->
-    <div v-else-if="step === 'options'" class="space-y-4 p-4">
+    <div v-else-if="step === 'options'" ref="optionsEl" class="space-y-4 p-4">
+      <Banner v-if="syncError" tone="destructive" live>
+        <span class="block font-medium">{{ t('deviceSync.options.failed', { name: selectedName }) }}</span>
+        <span class="block">{{ syncError }}</span>
+      </Banner>
       <p class="text-[11px] text-muted-foreground">
         {{ t('deviceSync.options.from', { name: selectedName }) }}
       </p>
@@ -266,7 +309,7 @@ onBeforeUnmount(() => unlistenProgress?.())
         </div>
       </section>
 
-      <section class="space-y-1.5">
+      <section ref="passwordEl" class="space-y-1.5">
         <label class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">
           {{ t('deviceSync.options.password') }}
         </label>
@@ -274,10 +317,13 @@ onBeforeUnmount(() => unlistenProgress?.())
           v-model="password"
           type="password"
           autocomplete="off"
+          :class="passwordError ? 'border-destructive focus-visible:ring-destructive/40' : ''"
+          :aria-invalid="passwordError || undefined"
           :placeholder="t('deviceSync.options.passwordPlaceholder', { name: selectedName })"
+          @update:model-value="passwordError = false"
           @keydown.enter="requestSync"
         />
-        <p v-if="passwordError" class="text-[11px] text-destructive">{{ passwordError }}</p>
+        <p v-if="passwordError" class="text-[11px] text-destructive">{{ t('deviceSync.options.passwordWrong') }}</p>
         <p v-else class="text-[11px] text-muted-foreground">{{ t('deviceSync.options.passwordHint') }}</p>
       </section>
 
@@ -293,7 +339,6 @@ onBeforeUnmount(() => unlistenProgress?.())
         </span>
       </label>
 
-      <Banner v-if="syncError" tone="destructive" live>{{ syncError }}</Banner>
       <Banner v-if="mirrorParts.length" tone="destructive" :icon="Trash2">
         {{ t('deviceSync.mirror.warning', { parts: mirrorPartsLabel }) }}
       </Banner>
@@ -375,12 +420,26 @@ onBeforeUnmount(() => unlistenProgress?.())
       </table>
       <p v-else class="text-[11px] text-muted-foreground">{{ t('deviceSync.result.nothing') }}</p>
 
-      <ul v-if="report.warnings.length" class="space-y-1 text-[11px] text-warning">
-        <li v-for="(w, i) in report.warnings" :key="i" class="flex items-start gap-1.5">
-          <AlertTriangle class="mt-px h-3 w-3 shrink-0" :stroke-width="1.75" />
-          <span class="break-all">{{ w }}</span>
-        </li>
-      </ul>
+      <section v-for="g in warningGroups" :key="g.group" class="space-y-1">
+        <p
+          class="flex items-center gap-1.5 text-[11px] font-medium"
+          :class="g.group === 'problems' ? 'text-warning' : 'text-muted-foreground'"
+        >
+          <component :is="GROUP_ICON[g.group]" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+          {{ t(`deviceSync.warningGroups.${g.group}`, { n: g.items.length }) }}
+        </p>
+        <ul class="space-y-0.5 pl-[18px] text-[11px]" :class="g.group === 'problems' ? 'text-warning' : 'text-muted-foreground'">
+          <li v-for="(w, i) in visibleWarnings(g.group, g.items)" :key="i" class="break-words">{{ warningText(w) }}</li>
+        </ul>
+        <button
+          v-if="g.items.length > WARNING_PREVIEW"
+          type="button"
+          class="pl-[18px] text-[11px] text-primary hover:underline cursor-pointer"
+          @click="toggleGroup(g.group)"
+        >
+          {{ expanded.has(g.group) ? t('deviceSync.result.showLess') : t('deviceSync.result.showMore', { n: g.items.length - WARNING_PREVIEW }) }}
+        </button>
+      </section>
       <p v-if="categories.accounts" class="text-[11px] text-muted-foreground">{{ t('deviceSync.result.reloginHint') }}</p>
       <p v-if="syncedSettings" class="text-[11px] text-muted-foreground">{{ t('deviceSync.result.reloadHint') }}</p>
     </div>

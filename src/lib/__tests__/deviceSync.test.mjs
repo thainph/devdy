@@ -9,8 +9,10 @@ import {
   SYNC_ERROR_CODES,
   defaultCategories,
   deviceLabel,
+  groupWarnings,
   isDeviceGone,
   mirrorDeletions,
+  normalizeWarning,
   progressPercent,
   reportRows,
   reportTotals,
@@ -115,4 +117,35 @@ test('reportTotals sums every row', () => {
   })
   assert.deepEqual(total, { created: 3, updated: 2, unchanged: 1, deleted: 4, skipped: 1 })
   assert.deepEqual(reportTotals({ counts: {}, warnings: [] }), { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 })
+})
+
+test('groupWarnings: problems first, then folders / links / mirror, repeats dropped', () => {
+  const folder = (project) => ({ code: 'project_folder_missing', params: { project, path: `/x/${project}` } })
+  const groups = groupWarnings([
+    { code: 'category_empty_no_mirror', params: { section: 'skills' } },
+    folder('pms'),
+    { code: 'link_target_missing', params: { project: 'pms', kind: 'vpsServer', name: 'prod' } },
+    folder('sora'),
+    folder('pms'),
+    { code: 'item_failed', params: { section: 'notes', name: 'n', error: 'e' } },
+    'legacy text',
+    'legacy text',
+  ])
+  assert.deepEqual(groups.map(g => [g.group, g.items.length]), [
+    ['problems', 2], ['folders', 2], ['links', 1], ['mirror', 1],
+  ])
+  assert.deepEqual(groups[0].items[1], { code: 'other', params: { message: 'legacy text' } })
+  assert.deepEqual(groups[1].items.map(w => w.params.project), ['pms', 'sora'])
+  // Param order doesn't make a repeat look new.
+  const same = groupWarnings([
+    { code: 'other', params: { a: '1', b: '2' } },
+    { code: 'other', params: { b: '2', a: '1' } },
+  ])
+  assert.equal(same[0].items.length, 1)
+  assert.deepEqual(groupWarnings([]), [])
+})
+
+test('normalizeWarning fills missing params', () => {
+  assert.deepEqual(normalizeWarning({ code: 'x' }), { code: 'x', params: {} })
+  assert.deepEqual(normalizeWarning('m'), { code: 'other', params: { message: 'm' } })
 })

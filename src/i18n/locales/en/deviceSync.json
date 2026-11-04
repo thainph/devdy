@@ -19,7 +19,9 @@
     "password": "Master password",
     "passwordPlaceholder": "Master password of {name}",
     "passwordHint": "The master password set on the source device (Settings → Devices). Everything is encrypted end to end.",
-    "overwriteWarning": "Syncing overwrites local data right away and cannot be undone. Items only on this machine are kept."
+    "overwriteWarning": "Syncing overwrites local data right away and cannot be undone. Items only on this machine are kept.",
+    "failed": "Sync from {name} failed — nothing was changed.",
+    "passwordWrong": "Check the master password above, then sync again."
   },
   "sections": {
     "todos": "Todos",
@@ -75,13 +77,15 @@
     "skipped": "Skipped",
     "nothing": "Nothing was changed.",
     "reloginHint": "Claude, AWS and Azure accounts need to sign in again on this machine.",
-    "reloadHint": "Reload Devdy to apply the synced theme and settings everywhere."
+    "reloadHint": "Reload Devdy to apply the synced theme and settings everywhere.",
+    "showMore": "Show {n} more",
+    "showLess": "Show less"
   },
   "errors": {
-    "wrong_password": "Wrong master password.",
-    "device_offline": "{name} went offline. Pick a device again.",
+    "wrong_password": "The master password of {name} is wrong. Enter the master password set in Settings → Devices on {name} — not the one of this machine. After 5 wrong tries within 5 minutes, {name} locks syncing for about 5 minutes.",
+    "device_offline": "Cannot connect to {name}. Open Devdy on that machine and check that Remote Control is on; if it still fails, turn Remote Control off and on again on {name}.",
     "device_disconnected": "{name} disconnected during the sync. Pick a device again.",
-    "rate_limited": "Too many wrong passwords. Try again in about 5 minutes.",
+    "rate_limited": "Too many wrong master passwords: {name} is locked for about 5 minutes. Wait about 5 minutes, then try again. Logging in to the web controller of {name} is locked during that time too.",
     "checksum_mismatch": "The downloaded data was corrupted. Nothing was changed — try again.",
     "timeout": "The device took too long to answer. Try again.",
     "source_failed": "{name} could not prepare its data. Check Devdy on that machine and try again.",
@@ -115,5 +119,35 @@
     "title": "Delete items missing on the source?",
     "message": "Everything on this machine that {name} doesn't have will be deleted in:",
     "neverDeleted": "Secret notes, Slack threads, projects and general settings are never deleted. This cannot be undone."
+  },
+  "warningGroups": {
+    "problems": "Problems ({n})",
+    "folders": "Project folders not on this machine ({n})",
+    "links": "Links to items not on this machine ({n})",
+    "mirror": "Mirror skipped ({n})"
+  },
+  "warnings": {
+    "project_folder_missing": "Project '{project}': folder {path} is not on this machine — settings saved, skills and rules not copied into the folder yet.",
+    "link_target_missing": "Project '{project}': {kind} '{name}' is not on this machine, so it was not linked.",
+    "link_failed": "Project '{project}': could not switch on '{name}': {error}",
+    "project_failed": "Project '{project}': {error}",
+    "item_failed": "{section} '{name}': {error}",
+    "project_sync_failed": "{section} '{name}': not updated in project {detail}",
+    "category_not_sent": "{section}: the other device did not send this, nothing deleted.",
+    "category_empty_no_mirror": "{section}: the other device has none, nothing deleted to be safe.",
+    "delete_failed": "{section} '{name}': could not delete: {error}",
+    "other": "{message}"
+  },
+  "linkKinds": {
+    "mcpServer": "MCP server",
+    "vpsServer": "VPS server",
+    "githubAccount": "GitHub account",
+    "gitlabAccount": "GitLab account",
+    "awsAccount": "AWS account",
+    "azureAccount": "Azure account",
+    "skillGroup": "skill group",
+    "ruleGroup": "rule group",
+    "skill": "skill",
+    "rule": "rule"
   }
 }

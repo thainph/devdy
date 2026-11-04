@@ -19,7 +19,9 @@
     "password": "Master password",
     "passwordPlaceholder": "Master password của {name}",
     "passwordHint": "Master password đặt ở máy nguồn (Cài đặt → Thiết bị). Toàn bộ dữ liệu được mã hoá đầu cuối.",
-    "overwriteWarning": "Đồng bộ sẽ ghi đè dữ liệu trên máy này ngay và không hoàn tác được. Mục chỉ có ở máy này được giữ nguyên."
+    "overwriteWarning": "Đồng bộ sẽ ghi đè dữ liệu trên máy này ngay và không hoàn tác được. Mục chỉ có ở máy này được giữ nguyên.",
+    "failed": "Đồng bộ từ {name} thất bại — chưa có gì bị thay đổi.",
+    "passwordWrong": "Kiểm tra lại master password ở trên rồi đồng bộ lại."
   },
   "sections": {
     "todos": "Todo",
@@ -75,13 +77,15 @@
     "skipped": "Bỏ qua",
     "nothing": "Không có gì thay đổi.",
     "reloginHint": "Tài khoản Claude, AWS và Azure cần đăng nhập lại trên máy này.",
-    "reloadHint": "Tải lại Devdy để áp dụng theme và cài đặt vừa đồng bộ ở mọi nơi."
+    "reloadHint": "Tải lại Devdy để áp dụng theme và cài đặt vừa đồng bộ ở mọi nơi.",
+    "showMore": "Xem thêm {n}",
+    "showLess": "Thu gọn"
   },
   "errors": {
-    "wrong_password": "Sai master password.",
-    "device_offline": "{name} đã offline. Hãy chọn lại máy.",
+    "wrong_password": "Master password của {name} không đúng. Nhập master password đặt ở Cài đặt → Thiết bị của máy {name} (không phải của máy này). Sai 5 lần trong 5 phút thì {name} sẽ khoá đồng bộ khoảng 5 phút.",
+    "device_offline": "Không kết nối được tới {name}. Mở app trên máy đó, kiểm tra Remote Control đang bật; nếu vẫn lỗi hãy tắt/bật lại Remote Control trên {name}.",
     "device_disconnected": "{name} bị ngắt kết nối giữa chừng. Hãy chọn lại máy.",
-    "rate_limited": "Nhập sai password quá nhiều lần. Thử lại sau khoảng 5 phút.",
+    "rate_limited": "Nhập sai master password quá nhiều lần: {name} đang khoá khoảng 5 phút. Hãy đợi khoảng 5 phút rồi thử lại. Trong thời gian đó đăng nhập web controller của {name} cũng bị khoá.",
     "checksum_mismatch": "Dữ liệu tải về bị hỏng. Chưa có gì bị thay đổi — hãy thử lại.",
     "timeout": "Máy kia phản hồi quá lâu. Hãy thử lại.",
     "source_failed": "{name} không chuẩn bị được dữ liệu. Kiểm tra Devdy ở máy đó rồi thử lại.",
@@ -115,5 +119,35 @@
     "title": "Xoá các mục không có trên máy nguồn?",
     "message": "Mọi mục ở máy này mà {name} không có sẽ bị xoá trong:",
     "neverDeleted": "Secret note, Slack thread, Project và Cài đặt chung không bao giờ bị xoá. Không hoàn tác được."
+  },
+  "warningGroups": {
+    "problems": "Lỗi ({n})",
+    "folders": "Thư mục project không có trên máy này ({n})",
+    "links": "Liên kết tới mục không có trên máy này ({n})",
+    "mirror": "Không xoá khi đồng bộ y hệt ({n})"
+  },
+  "warnings": {
+    "project_folder_missing": "Project '{project}': thư mục {path} không có trên máy này — đã lưu cài đặt, chưa chép skill/rule vào thư mục.",
+    "link_target_missing": "Project '{project}': {kind} '{name}' không có trên máy này nên chưa được liên kết.",
+    "link_failed": "Project '{project}': không bật được '{name}': {error}",
+    "project_failed": "Project '{project}': {error}",
+    "item_failed": "{section} '{name}': {error}",
+    "project_sync_failed": "{section} '{name}': chưa cập nhật được vào project {detail}",
+    "category_not_sent": "{section}: máy kia không gửi mục này, không xoá gì.",
+    "category_empty_no_mirror": "{section}: máy kia không có mục nào, để an toàn không xoá gì.",
+    "delete_failed": "{section} '{name}': không xoá được: {error}",
+    "other": "{message}"
+  },
+  "linkKinds": {
+    "mcpServer": "MCP server",
+    "vpsServer": "VPS server",
+    "githubAccount": "tài khoản GitHub",
+    "gitlabAccount": "tài khoản GitLab",
+    "awsAccount": "tài khoản AWS",
+    "azureAccount": "tài khoản Azure",
+    "skillGroup": "nhóm skill",
+    "ruleGroup": "nhóm rule",
+    "skill": "skill",
+    "rule": "rule"
   }
 }
