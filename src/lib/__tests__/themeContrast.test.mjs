@@ -1,5 +1,5 @@
 // Unit tests for lib/themeContrast.ts + a WCAG contrast sweep over every color
-// theme in src/assets/main.css and src/assets/themes/*.css.
+// theme in src/assets/base.css and src/assets/themes/*.css.
 // Run: node --test src/lib/__tests__/themeContrast.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -78,7 +78,7 @@ test('checkTheme reports failing and missing pairs', () => {
 // --- Sweep over the real theme files -------------------------------------------
 
 const assets = join(dirname(fileURLToPath(import.meta.url)), '../../assets')
-const mainBlocks = parseThemeBlocks(readFileSync(join(assets, 'main.css'), 'utf8'))
+const mainBlocks = parseThemeBlocks(readFileSync(join(assets, 'base.css'), 'utf8'))
 const themesDir = join(assets, 'themes')
 const themeFiles = existsSync(themesDir)
   ? readdirSync(themesDir)
@@ -107,7 +107,7 @@ test('base :root / .dark define every token the pairs need', () => {
 })
 
 for (const [id, t] of Object.entries(mainBlocks.themes)) {
-  test(`main.css theme ${id} defines the required tokens`, () => {
+  test(`base.css theme ${id} defines the required tokens`, () => {
     for (const mode of ['light', 'dark']) {
       assert.deepEqual(missingTokens(t[mode], REQUIRED_TOKENS), [], `${id} ${mode}`)
     }

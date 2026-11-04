@@ -85,7 +85,9 @@ pub fn login_psk(password: &str) -> [u8; 32] {
 }
 
 /// The login PSK for `password`, uncached. Slow: run it off the async runtime.
-fn derive_login_psk(password: &str) -> [u8; 32] {
+/// Device sync uses it for a password typed on the pulling side, which must
+/// not land in (or evict the host's entry from) the cache above.
+pub(crate) fn derive_login_psk(password: &str) -> [u8; 32] {
     derive_effective_psk(LOGIN_LINK_SECRET, &stretch(password))
 }
 

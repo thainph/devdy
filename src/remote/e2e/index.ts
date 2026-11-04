@@ -2,17 +2,24 @@
  * Devdy Remote Control — E2E crypto contract (TS reference impl).
  *
  * Cross-compatible with the Rust reference impl in `remote-e2e/` (crate
- * `dryoc`). Both sides use the same libsodium-compatible primitives, so the
- * same test vector yields the same `cipher` bytes.
+ * `dryoc`). Both sides use the same libsodium-compatible primitives (X25519,
+ * BLAKE2b, XChaCha20-Poly1305 IETF), so the same test vector yields the same
+ * `cipher` bytes.
  *
  * Spec: `docs/remote-e2e-spec.md` (SEC-006 / CON-04 / AC-19). We NEVER
- * implement crypto primitives by hand — everything routes through
- * `libsodium-wrappers`.
+ * implement crypto primitives by hand — everything routes through the audited,
+ * tree-shakeable `@noble/*` libraries (pure JS, no WASM init). Only the
+ * base64/hex codecs are local, and they reproduce libsodium's strict
+ * `base64_variants.ORIGINAL` decoder (padding required, canonical trailing bits)
+ * so wire behaviour is byte-identical to the previous libsodium-wrappers impl.
  *
  * Frame layout of the decoded `cipher` (spec §4):
  *   version(1B) | nonce(24B) | aead_ct    (version byte bound as AEAD AD)
  */
-import sodium from 'libsodium-wrappers'
+import { xchacha20poly1305 } from '@noble/ciphers/chacha.js'
+import { randomBytes } from '@noble/ciphers/utils.js'
+import { x25519 } from '@noble/curves/ed25519.js'
+import { blake2b } from '@noble/hashes/blake2.js'
 
 /** Wire format version — first byte of every frame (spec §2). */
 export const E2E_VERSION = 0x01
@@ -32,10 +39,12 @@ export const TAG_LEN = 16
 /** X25519 public/secret key length. */
 export const PUB_LEN = 32
 
-/** Ensures libsodium's WASM/asm runtime is initialized before any call. */
-export async function ready(): Promise<void> {
-  await sodium.ready
-}
+/**
+ * Kept for API compatibility: the previous libsodium impl needed its WASM
+ * runtime initialized before any call. The `@noble/*` primitives are pure JS
+ * and need no init, so this resolves immediately.
+ */
+export async function ready(): Promise<void> {}
 
 /** An ephemeral X25519 keypair for one remote session. */
 export interface Keypair {
@@ -57,8 +66,10 @@ export class E2eError extends Error {
  * Generates a fresh ephemeral keypair. Call {@link ready} first.
  */
 export function generateKeypair(): Keypair {
-  const kp = sodium.crypto_box_keypair()
-  return { publicKey: kp.publicKey, secretKey: kp.privateKey }
+  // Same as libsodium `crypto_box_keypair`: 32 random bytes as the secret,
+  // public = X25519(secret, basepoint) (clamping happens inside the ladder).
+  const secretKey = randomBytes(PUB_LEN)
+  return { publicKey: x25519.getPublicKey(secretKey), secretKey }
 }
 
 /**
@@ -105,10 +116,16 @@ export class Session {
     assertLen(theirPublic, PUB_LEN, 'peer public key')
 
     // dh = X25519(my_secret, their_public)
+    // Like libsodium `crypto_scalarmult` (and dryoc → Rust `WeakKex`), reject
+    // low-order peer keys / an all-zero shared secret. noble throws on the
+    // low-order blocklist; the explicit zero check is belt-and-braces.
     let dh: Uint8Array
     try {
-      dh = sodium.crypto_scalarmult(myKeypair.secretKey, theirPublic)
+      dh = x25519.getSharedSecret(myKeypair.secretKey, theirPublic)
     } catch {
+      throw new E2eError('x25519 shared secret is degenerate')
+    }
+    if (isAllZero(dh)) {
       throw new E2eError('x25519 shared secret is degenerate')
     }
 
@@ -119,7 +136,7 @@ export class Session {
     const material = concat([textBytes(CONTEXT), lo, hi, dh])
 
     // K = BLAKE2b(key = psk, input = material)
-    const key = sodium.crypto_generichash(KEY_LEN, material, psk)
+    const key = generichash(KEY_LEN, material, psk)
     return new Session(key)
   }
 
@@ -130,7 +147,7 @@ export class Session {
 
   /** Seals `plaintext` into a base64 `cipher` with a fresh random nonce. */
   seal(plaintext: Uint8Array): string {
-    const nonce = sodium.randombytes_buf(NONCE_LEN)
+    const nonce = randomBytes(NONCE_LEN)
     return this.sealWithNonce(plaintext, nonce)
   }
 
@@ -141,15 +158,11 @@ export class Session {
   sealWithNonce(plaintext: Uint8Array, nonce: Uint8Array): string {
     assertLen(nonce, NONCE_LEN, 'nonce')
     const ad = new Uint8Array([E2E_VERSION])
-    const aeadCt = sodium.crypto_aead_xchacha20poly1305_ietf_encrypt(
-      plaintext,
-      ad,
-      null,
-      nonce,
-      this.key,
-    )
+    // Combined mode: ciphertext || 16-byte tag, same as libsodium's
+    // `crypto_aead_xchacha20poly1305_ietf_encrypt`.
+    const aeadCt = xchacha20poly1305(this.key, nonce, ad).encrypt(plaintext)
     const frame = concat([new Uint8Array([E2E_VERSION]), nonce, aeadCt])
-    return sodium.to_base64(frame, sodium.base64_variants.ORIGINAL)
+    return toBase64(frame)
   }
 
   /**
@@ -160,7 +173,7 @@ export class Session {
   open(cipherB64: string): Uint8Array {
     let frame: Uint8Array
     try {
-      frame = sodium.from_base64(cipherB64, sodium.base64_variants.ORIGINAL)
+      frame = fromBase64(cipherB64)
     } catch {
       throw new E2eError('cipher is not valid base64')
     }
@@ -175,13 +188,7 @@ export class Session {
     const aeadCt = frame.subarray(1 + NONCE_LEN)
     const ad = new Uint8Array([E2E_VERSION])
     try {
-      return sodium.crypto_aead_xchacha20poly1305_ietf_decrypt(
-        null,
-        aeadCt,
-        ad,
-        nonce,
-        this.key,
-      )
+      return xchacha20poly1305(this.key, nonce, ad).decrypt(aeadCt)
     } catch {
       throw new E2eError('aead authentication failed')
     }
@@ -208,8 +215,8 @@ export function deriveSession(
 export function hostFingerprint(hostPublic: Uint8Array): string {
   assertLen(hostPublic, PUB_LEN, 'host public key')
   const input = concat([textBytes(FP_CONTEXT), hostPublic])
-  const out = sodium.crypto_generichash(32, input, null)
-  return sodium.to_hex(out)
+  const out = generichash(32, input, null)
+  return toHex(out)
 }
 
 /**
@@ -231,10 +238,120 @@ export function deriveEffectivePsk(
   secret2: string,
 ): Uint8Array {
   const input = concat([textBytes(OTP_KDF_CONTEXT), textBytes(secret2)])
-  return sodium.crypto_generichash(KEY_LEN, input, textBytes(linkSecretHex))
+  return generichash(KEY_LEN, input, textBytes(linkSecretHex))
 }
 
 // ---- helpers ----
+
+/**
+ * libsodium `crypto_generichash` semantics: BLAKE2b with `outLen` output and
+ * an optional key, where a null/empty key means unkeyed. Keys longer than 64
+ * bytes throw (as libsodium does).
+ */
+function generichash(
+  outLen: number,
+  input: Uint8Array,
+  key: Uint8Array | null,
+): Uint8Array {
+  return blake2b(input, {
+    dkLen: outLen,
+    key: key && key.length > 0 ? key : undefined,
+  })
+}
+
+function isAllZero(bytes: Uint8Array): boolean {
+  let acc = 0
+  for (const b of bytes) {
+    acc |= b
+  }
+  return acc === 0
+}
+
+function toHex(bytes: Uint8Array): string {
+  let out = ''
+  for (const b of bytes) {
+    out += b.toString(16).padStart(2, '0')
+  }
+  return out
+}
+
+const B64_ALPHABET =
+  'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/'
+const B64_LOOKUP: Int16Array = (() => {
+  const t = new Int16Array(128).fill(-1)
+  for (let i = 0; i < B64_ALPHABET.length; i += 1) {
+    t[B64_ALPHABET.charCodeAt(i)] = i
+  }
+  return t
+})()
+
+/** Standard (RFC 4648 §4) base64 with `=` padding — libsodium `ORIGINAL`. */
+function toBase64(bytes: Uint8Array): string {
+  let out = ''
+  let i = 0
+  for (; i + 2 < bytes.length; i += 3) {
+    const n = (bytes[i] << 16) | (bytes[i + 1] << 8) | bytes[i + 2]
+    out +=
+      B64_ALPHABET[(n >> 18) & 63] +
+      B64_ALPHABET[(n >> 12) & 63] +
+      B64_ALPHABET[(n >> 6) & 63] +
+      B64_ALPHABET[n & 63]
+  }
+  const rest = bytes.length - i
+  if (rest === 1) {
+    const n = bytes[i] << 16
+    out += B64_ALPHABET[(n >> 18) & 63] + B64_ALPHABET[(n >> 12) & 63] + '=='
+  } else if (rest === 2) {
+    const n = (bytes[i] << 16) | (bytes[i + 1] << 8)
+    out +=
+      B64_ALPHABET[(n >> 18) & 63] +
+      B64_ALPHABET[(n >> 12) & 63] +
+      B64_ALPHABET[(n >> 6) & 63] +
+      '='
+  }
+  return out
+}
+
+/**
+ * Strict standard-base64 decode matching libsodium `sodium_base642bin` with
+ * `ORIGINAL` and no ignore set (and the Rust `base64` STANDARD engine):
+ * padding required, no whitespace / URL-safe chars, and the unused trailing
+ * bits of the last symbol must be zero. Throws on any violation.
+ */
+function fromBase64(s: string): Uint8Array {
+  if (s.length % 4 !== 0) {
+    throw new Error('bad base64 length')
+  }
+  let pad = 0
+  if (s.endsWith('==')) {
+    pad = 2
+  } else if (s.endsWith('=')) {
+    pad = 1
+  }
+  const dataLen = s.length - pad
+  const out = new Uint8Array((dataLen * 3) >> 2)
+  let acc = 0
+  let accBits = 0
+  let o = 0
+  for (let i = 0; i < dataLen; i += 1) {
+    const c = s.charCodeAt(i)
+    const v = c < 128 ? B64_LOOKUP[c] : -1
+    if (v < 0) {
+      throw new Error('bad base64 character')
+    }
+    acc = ((acc << 6) | v) & 0xfff
+    accBits += 6
+    if (accBits >= 8) {
+      accBits -= 8
+      out[o] = (acc >> accBits) & 0xff
+      o += 1
+    }
+  }
+  if ((acc & ((1 << accBits) - 1)) !== 0) {
+    throw new Error('non-canonical base64')
+  }
+  return out
+}
 
 function assertLen(bytes: Uint8Array, expected: number, what: string): void {
   if (bytes.length !== expected) {

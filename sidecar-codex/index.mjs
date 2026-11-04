@@ -408,7 +408,14 @@ function ensureKeychainRules(env) {
 }
 ensureKeychainRules(mcpConfig.env || process.env)
 
-const codex = spawn(CODEX_BIN, [...mcpConfig.args, 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'], env: mcpConfig.env })
+// Codex runs commands as `zsh -lc` by default. A login shell re-runs
+// /etc/zprofile (path_helper) and ~/.zprofile (`brew shellenv`…), which pushes
+// the sidecar-proxy shim dir behind /opt/homebrew/bin — so `aws`/`gh`/… hit the
+// real binaries against the empty sandbox config instead of the broker
+// (`aws: NoCredentials`). A non-login shell keeps the PATH Rust handed us.
+const SHELL_ARGS = ['-c', 'allow_login_shell=false']
+
+const codex = spawn(CODEX_BIN, [...mcpConfig.args, ...SHELL_ARGS, 'app-server'], { cwd: CWD, stdio: ['pipe', 'pipe', 'pipe'], env: mcpConfig.env })
 let rpcId = 1
 const pending = new Map() // request id → resolve
 function request(method, params) {

@@ -13,6 +13,17 @@
  */
 
 import type { FetchedModel } from '@/lib/engineOptions'
+import type {
+  AiAnalyzeResult,
+  AiSuggestion,
+  DayPlan,
+  EstimateSource,
+  FocusBoard,
+  FocusSettings,
+  TodoPriority,
+  TodoStatus,
+} from '@/lib/focus'
+import { parseAiAnalyzeResult, parseAiSuggestion, parseDayPlan, parseFocusSettings } from '../lib/remoteFocus.ts'
 
 /** Re-exported so controller modules import wire types from one place. */
 export type { FetchedModel }
@@ -385,32 +396,10 @@ export interface ProjectListKind {
   projects: ProjectInfo[]
 }
 
-/** Remote desktop: the outcome of one `ipc_invoke` (correlated by `id`).
- * `value` / `error` are exactly what the command resolved / rejected with. */
-export interface IpcResultKind {
-  kind: 'ipc_result'
-  id: string
-  ok: boolean
-  value?: unknown
-  error?: unknown
-}
-
-/** Remote desktop: one app event the Controller subscribed to. */
-export interface IpcEventKind {
-  kind: 'ipc_event'
-  event: string
-  payload: unknown
-}
-
-/** Remote desktop: the Host shed events on a congested link; refetch state. */
-export interface IpcResyncKind {
-  kind: 'ipc_resync'
-}
-
 // ---- Data features ({@link FEATURE_DATA}) ----
 
-/** One todo (mirror of Host `TodoInfo`). No Focus fields — the phone does not
- * edit priority / estimate / AI plan. */
+/** One todo (mirror of Host `TodoInfo`). No Focus fields — a {@link FEATURE_FOCUS}
+ * Controller reads them from the {@link FocusBoardKind}. */
 export interface TodoInfo {
   id: string
   /** The full text: the first line is the title, the rest a note. */
@@ -428,6 +417,50 @@ export interface TodoInfo {
 export interface TodoListKind {
   kind: 'todo_list'
   todos: TodoInfo[]
+}
+
+/** The ranked Focus board ({@link FEATURE_FOCUS}) — the desktop's `focus_board`
+ * payload as-is: buckets, scores, reasons, the "do now" ids and today's load. */
+export interface FocusBoardKind {
+  kind: 'focus_board'
+  board: FocusBoard
+}
+
+/** What a Focus AI request was ({@link FocusAiResultKind.ai_kind}). */
+export type FocusAiKind = 'suggest' | 'analyze' | 'plan_today'
+
+/**
+ * The late answer to `focus_ai_suggest` / `focus_ai_analyze` /
+ * `focus_ai_plan_today` (acked at once, answered up to ~3 min later), keyed by
+ * the client's `request_id`. A failure carries only a short code
+ * (`project_required`, `busy`, `no_plan`, `cancelled`, `timeout`, `failed`…).
+ * A success whose `result` does not narrow is turned into `failed`.
+ */
+export type FocusAiResultKind = { kind: 'focus_ai_result'; request_id: string } & (
+  | { ok: true; ai_kind: 'suggest'; result: AiSuggestion }
+  | { ok: true; ai_kind: 'analyze'; result: AiAnalyzeResult }
+  | { ok: true; ai_kind: 'plan_today'; result: DayPlan }
+  | { ok: false; ai_kind: FocusAiKind; error: string }
+)
+
+/** A day's saved plan (`focus_day_plan_get`, after planning / pushing to Calendar). */
+export interface FocusDayPlanKind {
+  kind: 'focus_day_plan'
+  date: string
+  plan: DayPlan | null
+}
+
+/** BR-11 suggestion for "how long did it take?" (`focus_suggest_actual`). */
+export interface FocusActualKind {
+  kind: 'focus_actual'
+  todo_id: string
+  minutes: number | null
+}
+
+/** The Focus settings, as stored (normalised) by the Host. */
+export interface FocusSettingsKind {
+  kind: 'focus_settings'
+  settings: FocusSettings
 }
 
 /** One note (Markdown) — mirror of Host `NoteInfo`. */
@@ -513,6 +546,8 @@ export interface PushEventsWire {
   pending: boolean
   done: boolean
   failed: boolean
+  /** Focus reminders; absent from a Host without them. */
+  focus?: boolean
 }
 
 /** Web Push setup (`push_config`): the VAPID key to subscribe with, whether
@@ -544,10 +579,12 @@ export type StreamPayload =
   | PlanUsageKind
   | RunListKind
   | ProjectListKind
-  | IpcResultKind
-  | IpcEventKind
-  | IpcResyncKind
   | TodoListKind
+  | FocusBoardKind
+  | FocusAiResultKind
+  | FocusDayPlanKind
+  | FocusActualKind
+  | FocusSettingsKind
   | NoteListKind
   | ProjectTogglesKind
   | NoteKind
@@ -753,21 +790,32 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         claude_accounts: accounts,
       }
     }
-    case 'ipc_result':
-      return typeof o.id === 'string' && typeof o.ok === 'boolean'
-        ? // A command that resolved to null must not surface as undefined.
-          { kind: 'ipc_result', id: o.id, ok: o.ok, value: o.value === undefined ? null : o.value, error: o.error }
-        : null
-    case 'ipc_event':
-      return typeof o.event === 'string'
-        ? { kind: 'ipc_event', event: o.event, payload: o.payload ?? null }
-        : null
-    case 'ipc_resync':
-      return { kind: 'ipc_resync' }
     case 'todo_list':
       return Array.isArray(o.todos)
         ? { kind: 'todo_list', todos: (o.todos as unknown[]).filter(isTodoInfo) }
         : null
+    case 'focus_board':
+      return isFocusBoard(o.board) ? { kind: 'focus_board', board: o.board } : null
+    case 'focus_ai_result':
+      return parseFocusAiResult(o)
+    case 'focus_day_plan': {
+      if (typeof o.date !== 'string') return null
+      const plan = o.plan == null ? null : parseDayPlan(o.plan)
+      if (o.plan != null && !plan) return null
+      return { kind: 'focus_day_plan', date: o.date, plan }
+    }
+    case 'focus_actual':
+      return typeof o.todo_id === 'string'
+        ? {
+            kind: 'focus_actual',
+            todo_id: o.todo_id,
+            minutes: typeof o.minutes === 'number' && Number.isFinite(o.minutes) ? o.minutes : null,
+          }
+        : null
+    case 'focus_settings': {
+      const settings = parseFocusSettings(o.settings)
+      return settings ? { kind: 'focus_settings', settings } : null
+    }
     case 'note_list':
       return Array.isArray(o.notes)
         ? {
@@ -839,6 +887,46 @@ function isTodoInfo(v: unknown): v is TodoInfo {
     typeof o.done === 'boolean' &&
     typeof o.created_at === 'string'
   )
+}
+
+/** Narrow a Focus board; rows without a usable todo are dropped in place. */
+function isFocusBoard(v: unknown): v is FocusBoard {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  if (typeof o.now !== 'string' || !Array.isArray(o.items) || !Array.isArray(o.top)) return false
+  o.items = (o.items as unknown[]).filter((it) => {
+    if (!it || typeof it !== 'object') return false
+    const r = it as Record<string, unknown>
+    return isTodoInfo(r.todo) && typeof r.bucket === 'string' && typeof r.score === 'number' && Array.isArray(r.reasons)
+  })
+  o.top = (o.top as unknown[]).filter((id) => typeof id === 'string')
+  return true
+}
+
+const FOCUS_AI_KINDS: readonly FocusAiKind[] = ['suggest', 'analyze', 'plan_today']
+
+/** Narrow a `focus_ai_result`; a success with an unusable result becomes `failed`. */
+function parseFocusAiResult(o: Record<string, unknown>): FocusAiResultKind | null {
+  if (typeof o.request_id !== 'string' || typeof o.ok !== 'boolean') return null
+  const aiKind = FOCUS_AI_KINDS.find((k) => k === o.ai_kind)
+  if (!aiKind) return null
+  const base = { kind: 'focus_ai_result' as const, request_id: o.request_id }
+  const failed = (error: string): FocusAiResultKind => ({ ...base, ok: false, ai_kind: aiKind, error })
+  if (!o.ok) return failed(typeof o.error === 'string' && o.error ? o.error : 'failed')
+  switch (aiKind) {
+    case 'suggest': {
+      const result = parseAiSuggestion(o.result)
+      return result ? { ...base, ok: true, ai_kind: aiKind, result } : failed('failed')
+    }
+    case 'analyze': {
+      const result = parseAiAnalyzeResult(o.result)
+      return result ? { ...base, ok: true, ai_kind: aiKind, result } : failed('failed')
+    }
+    case 'plan_today': {
+      const result = parseDayPlan(o.result)
+      return result ? { ...base, ok: true, ai_kind: aiKind, result } : failed('failed')
+    }
+  }
 }
 
 /** Narrow one note row. */
@@ -955,11 +1043,6 @@ export interface CmdPayload {
     | 'list_plan_usage'
     | 'open_run'
     | 'close_run'
-    // Remote desktop (a Controller that advertised FEATURE_IPC).
-    | 'ipc_hello'
-    | 'ipc_invoke'
-    | 'ipc_listen'
-    | 'ipc_unlisten'
     // Inbox: re-send every open permission prompt.
     | 'list_pending'
     // Data features (a Controller that advertised FEATURE_DATA).
@@ -976,6 +1059,19 @@ export interface CmdPayload {
     | 'project_toggles_get'
     | 'project_toggle_set'
     | 'note_get'
+    | 'focus_board'
+    // Full Focus (a Controller that advertised FEATURE_FOCUS; needs FEATURE_DATA too).
+    | 'focus_ai_suggest'
+    | 'focus_ai_analyze'
+    | 'focus_ai_plan_today'
+    | 'focus_ai_cancel'
+    | 'focus_day_plan_get'
+    | 'focus_plan_to_calendar'
+    | 'todo_start_ai'
+    | 'focus_suggest_actual'
+    | 'focus_settings_get'
+    | 'focus_settings_set'
+    | 'focus_calendar_refresh'
     // Web Push (a Controller that advertised FEATURE_PUSH).
     | 'push_config'
     | 'push_visibility'
@@ -1011,14 +1107,6 @@ export interface CmdPayload {
    * pure opt-in — see {@link CLIENT_FEATURES}.
    */
   client_features?: string[]
-  /** `ipc_invoke`: correlation id echoed in the `ipc_result`. */
-  id?: string
-  /** `ipc_invoke`: the Tauri command, exactly as the UI named it. */
-  cmd?: string
-  /** `ipc_invoke`: the command's arguments, verbatim. */
-  args?: unknown
-  /** `ipc_listen` / `ipc_unlisten`: the app event name. */
-  event?: string
   // ---- Data features ({@link FEATURE_DATA}) ----
   /** The todo / note / skill / rule / MCP server a data action targets. */
   item_id?: string
@@ -1033,6 +1121,21 @@ export interface CmdPayload {
   content?: string
   /** `todo_add`: local `YYYY-MM-DD` deadline. */
   due_date?: string
+  /** `todo_add`: local `HH:MM` on `due_date`. */
+  due_time?: string
+  /** `todo_add`: Focus priority. */
+  priority?: TodoPriority
+  /** `todo_add`: estimate in minutes. */
+  estimate_min?: number
+  /** `todo_add` / `focus_ai_suggest`: the todo's source link (http(s) or a
+   * shorthand like `owner/repo#12`; the Host normalises it). */
+  source_url?: string
+  /** `focus_day_plan_get` / `focus_plan_to_calendar`: local `YYYY-MM-DD`. */
+  date?: string
+  /** `focus_plan_to_calendar`: the blocks to push (absent = every block). */
+  block_ids?: string[]
+  /** `focus_settings_set`: the settings the phone edits (desktop-only keys are left out). */
+  settings?: Partial<FocusSettings>
   /** `project_toggle_set`: which kind of switch. */
   toggle_kind?: ToggleKind
   /** `project_toggle_set`: the new state. */
@@ -1058,6 +1161,18 @@ export interface TodoPatchWire {
   text?: string
   due_date?: string | null
   project_id?: string | null
+  // Focus fields ({@link FEATURE_FOCUS}).
+  due_time?: string | null
+  priority?: TodoPriority
+  estimate_min?: number | null
+  status?: TodoStatus
+  /** RFC3339; null wakes a snoozed todo. */
+  snoozed_until?: string | null
+  remind_at?: string | null
+  /** Minutes the todo really took (BR-11); null clears. */
+  actual_min?: number | null
+  /** `'ai'` when the estimate came from an AI analysis. */
+  estimate_source?: EstimateSource | null
 }
 
 /** The fields a `note_update` may change. */
@@ -1090,11 +1205,6 @@ export const FEATURE_OUTPUT_BATCH = 'output_batch'
  */
 export const FEATURE_MULTI_RUN = 'multi_run'
 
-/** Advertise a remote-desktop Controller: the normal Devdy UI whose
- * `invoke` / `listen` run on the Host (`ipc_*` commands). Sent alone — such a
- * Controller understands none of the run-streaming payloads. */
-export const FEATURE_IPC = 'ipc'
-
 /** Advertise the Todo / Note / project-switch screens (`todo_*`, `note_*`,
  * `project_toggle*`). Without it the Host refuses those actions. */
 export const FEATURE_DATA = 'data'
@@ -1102,9 +1212,13 @@ export const FEATURE_DATA = 'data'
 /** Advertise Web Push management (`push_*`). Without it the Host refuses them. */
 export const FEATURE_PUSH = 'push'
 
+/** Advertise the Focus board: the Host follows every todo write with a fresh
+ * {@link FocusBoardKind}. `focus_board` itself rides {@link FEATURE_DATA}. */
+export const FEATURE_FOCUS = 'focus'
+
 /** What a Host can advertise in `session_token.host_features`. An older Host
  * sends none: the Controller then hides what it would only be refused. */
-export type HostFeature = 'data' | 'inbox' | 'remember' | 'push'
+export type HostFeature = 'data' | 'inbox' | 'remember' | 'push' | 'focus'
 
 /** Whether the Host advertised `feature`. */
 export function hostHas(features: readonly string[] | null | undefined, feature: HostFeature): boolean {
@@ -1112,7 +1226,13 @@ export function hostHas(features: readonly string[] | null | undefined, feature:
 }
 
 /** Everything this controller bundle understands, sent on the gate frame. */
-export const CLIENT_FEATURES: string[] = [FEATURE_OUTPUT_BATCH, FEATURE_MULTI_RUN, FEATURE_DATA, FEATURE_PUSH]
+export const CLIENT_FEATURES: string[] = [
+  FEATURE_OUTPUT_BATCH,
+  FEATURE_MULTI_RUN,
+  FEATURE_DATA,
+  FEATURE_PUSH,
+  FEATURE_FOCUS,
+]
 
 /**
  * `respond_permission` — only `allow_once`/`deny_once` (BR-016). For
@@ -1147,11 +1267,6 @@ export function requestHistoryCmd(runId: string): CmdPayload {
 }
 
 /** `list_runs` — refresh the run browser. */
-/** `ipc_hello` — the remote-desktop gate frame (carries no request). */
-export function ipcHelloCmd(authMode: AuthMode): CmdPayload {
-  return { kind: 'cmd', action: 'ipc_hello', auth_mode: authMode, client_features: [FEATURE_IPC] }
-}
-
 export function listRunsCmd(): CmdPayload {
   return { kind: 'cmd', action: 'list_runs' }
 }
@@ -1280,12 +1395,97 @@ export function todoListCmd(): CmdPayload {
   return { kind: 'cmd', action: 'todo_list' }
 }
 
-/** `todo_add` — a new todo; the Host pushes the fresh list. */
-export function todoAddCmd(input: { text: string; projectId?: string | null; dueDate?: string | null }): CmdPayload {
+/** `todo_add` — a new todo; the Host pushes the fresh list. The Focus fields
+ * are only sent when set (an older Host ignores them). */
+export function todoAddCmd(input: {
+  text: string
+  projectId?: string | null
+  dueDate?: string | null
+  dueTime?: string | null
+  priority?: TodoPriority | null
+  estimateMin?: number | null
+  sourceUrl?: string | null
+}): CmdPayload {
   const cmd: CmdPayload = { kind: 'cmd', action: 'todo_add', text: input.text }
   if (input.projectId) cmd.project_id = input.projectId
   if (input.dueDate) cmd.due_date = input.dueDate
+  if (input.dueDate && input.dueTime) cmd.due_time = input.dueTime
+  if (input.priority && input.priority !== 2) cmd.priority = input.priority
+  if (input.estimateMin) cmd.estimate_min = input.estimateMin
+  if (input.sourceUrl?.trim()) cmd.source_url = input.sourceUrl.trim()
   return cmd
+}
+
+/** `focus_board` — the ranked board, answered with a {@link FocusBoardKind}. */
+export function focusBoardCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'focus_board' }
+}
+
+// ---- Full Focus commands ({@link FEATURE_FOCUS}) ----
+
+/** `focus_ai_suggest` — read the source, answered later by a `suggest` {@link FocusAiResultKind}. */
+export function focusAiSuggestCmd(
+  requestId: string,
+  input: { sourceUrl: string; projectId?: string | null; title?: string | null },
+): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'focus_ai_suggest', request_id: requestId, source_url: input.sourceUrl }
+  if (input.projectId) cmd.project_id = input.projectId
+  if (input.title?.trim()) cmd.title = input.title.trim()
+  return cmd
+}
+
+/** `focus_ai_analyze` — analyze one todo; answered later by an `analyze` result. */
+export function focusAiAnalyzeCmd(requestId: string, todoId: string): CmdPayload {
+  return { kind: 'cmd', action: 'focus_ai_analyze', request_id: requestId, item_id: todoId }
+}
+
+/** `focus_ai_plan_today` — plan today; answered later by a `plan_today` result + `focus_day_plan`. */
+export function focusAiPlanTodayCmd(requestId: string): CmdPayload {
+  return { kind: 'cmd', action: 'focus_ai_plan_today', request_id: requestId }
+}
+
+/** `focus_ai_cancel` — stop a running AI request (acked even when nothing ran). */
+export function focusAiCancelCmd(requestId: string): CmdPayload {
+  return { kind: 'cmd', action: 'focus_ai_cancel', request_id: requestId }
+}
+
+/** `focus_day_plan_get` — a day's saved plan (default: the Host's today). */
+export function focusDayPlanGetCmd(date?: string | null): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'focus_day_plan_get' }
+  if (date) cmd.date = date
+  return cmd
+}
+
+/** `focus_plan_to_calendar` — push blocks (all when `blockIds` is absent) to Google Calendar. */
+export function focusPlanToCalendarCmd(date: string, blockIds?: string[] | null): CmdPayload {
+  const cmd: CmdPayload = { kind: 'cmd', action: 'focus_plan_to_calendar', date }
+  if (blockIds) cmd.block_ids = blockIds
+  return cmd
+}
+
+/** `todo_start_ai` — a new session on the todo; the ack carries its `run_id`. */
+export function todoStartAiCmd(todoId: string): CmdPayload {
+  return { kind: 'cmd', action: 'todo_start_ai', item_id: todoId }
+}
+
+/** `focus_suggest_actual` — answered with a {@link FocusActualKind}. */
+export function focusSuggestActualCmd(todoId: string): CmdPayload {
+  return { kind: 'cmd', action: 'focus_suggest_actual', item_id: todoId }
+}
+
+/** `focus_settings_get` — answered with a {@link FocusSettingsKind}. */
+export function focusSettingsGetCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'focus_settings_get' }
+}
+
+/** `focus_settings_set` — save (Host validates); answered with the normalised settings. */
+export function focusSettingsSetCmd(settings: Partial<FocusSettings>): CmdPayload {
+  return { kind: 'cmd', action: 'focus_settings_set', settings }
+}
+
+/** `focus_calendar_refresh` — drop the Calendar cache; answered with a fresh `focus_board`. */
+export function focusCalendarRefreshCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'focus_calendar_refresh' }
 }
 
 /** `todo_update` — change title / note (`text`), deadline or project. */

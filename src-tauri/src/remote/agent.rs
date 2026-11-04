@@ -137,8 +137,6 @@ pub struct AgentDeps {
     pub subscriptions: crate::remote::RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: crate::remote::FocusRun,
-    /// Remote-desktop IPC routing.
-    pub ipc: crate::remote::ipc::IpcHub,
 }
 
 /// Run the agent until `stop` fires. Reconnect loop with capped backoff.
@@ -232,11 +230,14 @@ async fn connect_once(
         let _ = sink.close().await;
     });
 
-    // Register the Host (FR-001, SEC-001 token from keyring).
+    // Register the Host (FR-001, SEC-001 token from keyring), listed for
+    // device sync while it can serve one.
+    let mut listed = sync_listing(deps).await;
     if out_tx
-        .send(Envelope::register_host(
+        .send(Envelope::register_host_listed(
             config.device_id.clone(),
             auth_token.to_string(),
+            listed.clone(),
         ))
         .is_err()
     {
@@ -259,6 +260,9 @@ async fn connect_once(
     // listening), and the login room currently mid-handshake (if any).
     let mut login_listening: Option<String> = None;
     let mut login: Option<LoginPending> = None;
+    // Device sync: the code the sync slot is armed with, and the pull in flight.
+    let mut sync_listening: Option<String> = None;
+    let mut sync: Option<crate::device_sync::host::SyncPending> = None;
 
     let seq = Arc::new(SeqCounter::default());
     let rate = Arc::new(TokioMutex::new(CommandRateLimiter::new(Instant::now())));
@@ -273,6 +277,7 @@ async fn connect_once(
 
     sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
     sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+    sync_device_sync_listen(&config.device_id, &out_tx, &mut sync_listening, &mut sync);
 
     // Heartbeat: keep the host↔relay socket warm through idle-killing proxies
     // once a run stops streaming. Carries the ACTIVE room id (if any) so the relay
@@ -324,6 +329,18 @@ async fn connect_once(
             _ = deps.announce_signal.notified() => {
                 sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
                 sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+                // Alias or master password changed: re-register to update the
+                // listing (same socket; the relay just replaces it).
+                let want = sync_listing(deps).await;
+                if want != listed {
+                    let _ = out_tx.send(Envelope::register_host_listed(
+                        config.device_id.clone(),
+                        auth_token.to_string(),
+                        want.clone(),
+                    ));
+                    listed = want;
+                }
+                sync_device_sync_listen(&config.device_id, &out_tx, &mut sync_listening, &mut sync);
             }
             _ = deps.kick_signal.notified() => {
                 kick_room(deps, &out_tx, &mut room_ctx, &mut pending_room, &mut forward_task).await;
@@ -361,8 +378,12 @@ async fn connect_once(
                     );
                     break ConnectOutcome::Disconnected;
                 }
-                // Password-login frames are self-contained; everything else is
-                // the session path.
+                // Device-sync and password-login frames are self-contained;
+                // everything else is the session path.
+                if crate::device_sync::host::is_sync_frame(&env, sync.as_ref()) {
+                    crate::device_sync::host::handle_frame(env, &deps.app, &deps.db, &out_tx, &seq, &mut sync).await;
+                    continue;
+                }
                 if login_frame(&env, login.as_ref()) {
                     handle_login_frame(
                         env, deps, &out_tx, &seq, &mut login,
@@ -421,6 +442,32 @@ async fn sync_listen(
         }
     }
     *listening = want;
+}
+
+/// What this Host is listed as for device sync: `(alias, app version)` while
+/// a master password is set (pulls need it), otherwise not listed.
+async fn sync_listing(deps: &AgentDeps) -> Option<(String, String)> {
+    if !crate::secrets::has_remote_master_password() {
+        return None;
+    }
+    let alias = crate::remote::device_alias(&deps.db).await.unwrap_or_default();
+    Some((alias, deps.app.package_info().version.to_string()))
+}
+
+/// Listen on this device's sync code exactly while a master password is set.
+fn sync_device_sync_listen(
+    device_id: &str,
+    out_tx: &OutboundTx,
+    sync_listening: &mut Option<String>,
+    sync: &mut Option<crate::device_sync::host::SyncPending>,
+) {
+    use crate::device_sync::host::{listen_code, listen_frame};
+    let want = listen_code(device_id, crate::secrets::has_remote_master_password());
+    if let Some(frame) = listen_frame(sync_listening.as_deref(), want.as_deref()) {
+        *sync = None;
+        let _ = out_tx.send(frame);
+    }
+    *sync_listening = want;
 }
 
 /// A password-login handshake in progress on the login slot.
@@ -659,7 +706,6 @@ async fn drop_room(
         }
     };
     deps.connected.store(false, Ordering::SeqCst);
-    deps.ipc.detach(&deps.app).await;
     {
         use tauri::Manager;
         if let Some(state) = deps.app.try_state::<crate::remote::RemoteState>() {
@@ -1121,9 +1167,9 @@ async fn try_authenticate_first_frame(
     };
     let batch_output = has_feature(FEATURE_OUTPUT_BATCH);
     let multi_run = has_feature(FEATURE_MULTI_RUN);
-    let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
     let data = has_feature(crate::remote::protocol::FEATURE_DATA);
     let push = has_feature(crate::remote::protocol::FEATURE_PUSH);
+    let focus = has_feature(crate::remote::protocol::FEATURE_FOCUS);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
@@ -1131,84 +1177,77 @@ async fn try_authenticate_first_frame(
         multi_run = multi_run,
         data = data,
         push = push,
+        focus = focus,
     );
     // A phone that just authenticated is on screen (it reports otherwise with
-    // `push_visibility`); a remote desktop never holds pushes back.
+    // `push_visibility`).
     {
         use tauri::Manager;
         if let Some(state) = deps.app.try_state::<crate::remote::RemoteState>() {
-            state.push.controller_attached(!ipc);
+            state.push.controller_attached();
         }
     }
 
-    // A remote-desktop Controller drives the full UI through IPC: it needs
-    // none of the phone-controller streams, only its replies routed back.
-    if ipc {
-        deps.ipc
-            .attach(&deps.app, session.clone(), room_id.clone(), out_tx.clone(), seq.clone())
+    // Start this connection from a clean slate: the linked run is open, nothing
+    // else. A Controller that was browsing before a reconnect re-opens whatever
+    // it wants, so carrying stale subscriptions over would only stream runs
+    // nobody is looking at.
+    {
+        let mut subs = deps.subscriptions.lock().await;
+        subs.clear();
+        subs.insert(run_id.clone());
+    }
+    *deps.focus_run_id.lock().await = Some(run_id.clone());
+
+    let ft = tokio::spawn(forward_loop(
+        deps.bus.clone(),
+        session.clone(),
+        room_id.clone(),
+        out_tx.clone(),
+        seq.clone(),
+        deps.db.clone(),
+        crate::remote::forwarder::ForwardScope {
+            subscriptions: deps.subscriptions.clone(),
+            initial_run_id: run_id.clone(),
+            multi_run,
+            batch_output,
+        },
+    ));
+    if let Some(old) = forward_task.replace(ft) {
+        old.abort();
+    }
+
+    // Push the initial run list: every run for a run browser, just the linked
+    // one for a legacy Controller.
+    let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
+    crate::remote::forwarder::send_run_list(
+        &deps.db,
+        &session,
+        &room_id,
+        out_tx,
+        &**seq,
+        list_filter,
+    )
+    .await;
+
+    // Push the initial engine/model/permission-mode snapshot so the controller's
+    // composer mirrors the desktop from the first frame (no blank/default drift).
+    {
+        use tauri::Manager;
+        if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
+            crate::remote::forwarder::send_run_meta(
+                &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
+            )
             .await;
-    } else {
-        // Start this connection from a clean slate: the linked run is open, nothing
-        // else. A Controller that was browsing before a reconnect re-opens whatever
-        // it wants, so carrying stale subscriptions over would only stream runs
-        // nobody is looking at.
-        {
-            let mut subs = deps.subscriptions.lock().await;
-            subs.clear();
-            subs.insert(run_id.clone());
         }
-        *deps.focus_run_id.lock().await = Some(run_id.clone());
-
-        let ft = tokio::spawn(forward_loop(
-            deps.bus.clone(),
-            session.clone(),
-            room_id.clone(),
-            out_tx.clone(),
-            seq.clone(),
-            deps.db.clone(),
-            crate::remote::forwarder::ForwardScope {
-                subscriptions: deps.subscriptions.clone(),
-                initial_run_id: run_id.clone(),
-                multi_run,
-                batch_output,
-            },
-        ));
-        if let Some(old) = forward_task.replace(ft) {
-            old.abort();
-        }
-
-        // Push the initial run list: every run for a run browser, just the linked
-        // one for a legacy Controller.
-        let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
-        crate::remote::forwarder::send_run_list(
-            &deps.db,
-            &session,
-            &room_id,
-            out_tx,
-            &**seq,
-            list_filter,
-        )
-        .await;
-
-        // Push the initial engine/model/permission-mode snapshot so the controller's
-        // composer mirrors the desktop from the first frame (no blank/default drift).
-        {
-            use tauri::Manager;
-            if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
-                crate::remote::forwarder::send_run_meta(
-                    &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
-                )
-                .await;
-            }
-        }
-
-        // Push the initial subscription usage badges (Claude + Codex) so the
-        // controller shows plan utilization from the first frame.
-        crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
-
-        // The desktop's theme, so the controller matches its colors.
-        crate::remote::forwarder::send_appearance(&deps.db, &session, &room_id, out_tx, &**seq).await;
     }
+
+    // Push the initial subscription usage badges (Claude + Codex) so the
+    // controller shows plan utilization from the first frame.
+    crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
+
+    // The desktop's theme, so the controller matches its colors.
+    crate::remote::forwarder::send_appearance(&deps.db, &session, &room_id, out_tx, &**seq).await;
 
     let ctx = Arc::new(HandlerCtx {
         app: deps.app.clone(),
@@ -1226,11 +1265,13 @@ async fn try_authenticate_first_frame(
         rate: rate.clone(),
         idem: idem.clone(),
         idle: idle.clone(),
-        ipc,
         data,
+        focus,
         push,
         push_session_tag: crate::remote::push::session_tag(&session_secret),
+        live_board: Default::default(),
     });
+    crate::remote::focus::start_live_board(&ctx);
     *room_ctx = Some(ctx.clone());
 
     // Dispatch the first (already-decrypted) frame as a normal command.

@@ -2,7 +2,8 @@
 //! decides which notifications are due (`decide`, pure) and shows them as ONE
 //! clickable macOS notification (`compose`, pure). The I/O wrapper (`start`)
 //! reads the board, records what fired in `todo_notifications` and routes a
-//! click to the Focus window.
+//! click to the Focus window. The same notification also goes to subscribed
+//! phones as a Web Push (`crate::remote::push::focus_reminder`).
 //!
 //! Rules:
 //! - `remind` (user-set `remind_at`) fires any time; every other kind only
@@ -507,6 +508,8 @@ pub async fn tick(app: &tauri::AppHandle, db: &crate::db::Db) -> Result<usize, S
     };
     // Recorded first: a crash mid-notify must not repeat it every minute.
     record(db, &notices).await?;
+    // The same notification to subscribed phones (Remote Control Web Push).
+    crate::remote::push::focus_reminder(app, db, &title, &body, open.as_deref());
     crate::commands::notifications::show_clickable_opts(
         app.clone(),
         title,

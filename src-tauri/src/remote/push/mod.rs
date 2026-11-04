@@ -9,6 +9,15 @@
 //! while a phone Controller is connected and on screen: what happens then is
 //! held, dropped if the phone reports leaving (it saw it live), and sent only
 //! if it is unclear the phone ever saw it (disconnected, gone quiet).
+//!
+//! Focus reminders ([`focus_reminder`]) take a separate path: the scheduler
+//! hands over the notification it just showed on the desktop (already one per
+//! tick, already worded in the app language) and it goes to every device with
+//! the `focus` switch on, at once, while Remote Control is on. It is NOT held
+//! back while the phone is on screen: the controller has no live view of
+//! reminders, so the "it saw it live" reasoning does not hold and a held
+//! reminder would be dropped unseen. Nor does it carry a `Topic`, so a queued
+//! reminder is never replaced by a later push.
 
 pub mod actions;
 pub mod coalesce;
@@ -20,7 +29,8 @@ pub mod store;
 use crate::db::Db;
 use crate::remote::{RemoteBus, RemoteRunEvent};
 use coalesce::{
-    compose, kind_of_done, suppressed, BurstCounts, Coalescer, Holder, PushKind, PushMessage, COALESCE_WINDOW,
+    compose, compose_focus, kind_of_done, suppressed, BurstCounts, Coalescer, Holder, PushEvents, PushKind,
+    PushMessage, COALESCE_WINDOW,
 };
 use p256::SecretKey;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -35,8 +45,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Push runtime state, held in [`crate::remote::RemoteState`].
 #[derive(Clone)]
 pub struct PushHub {
-    /// A phone Controller is connected. A remote desktop (`ipc`) does not
-    /// count: it is another computer, not the phone being notified.
+    /// A phone Controller is connected.
     phone_connected: Arc<AtomicBool>,
     /// Whether the connected phone is on screen (`push_visibility`).
     /// Reset to true on every authentication: a freshly opened app is visible.
@@ -95,9 +104,9 @@ impl PushHub {
         }
     }
 
-    /// A Controller authenticated: `phone` is false for a remote desktop.
-    pub fn controller_attached(&self, phone: bool) {
-        self.phone_connected.store(phone, Ordering::SeqCst);
+    /// A Controller authenticated.
+    pub fn controller_attached(&self) {
+        self.phone_connected.store(true, Ordering::SeqCst);
         self.visible.store(true, Ordering::SeqCst);
         self.touch();
     }
@@ -279,6 +288,13 @@ async fn flush_worker(hub: PushHub, db: Db, mut work: mpsc::UnboundedReceiver<Bu
 
 /// Send one burst to every device that opted into what happened, all at once.
 async fn flush(hub: &PushHub, db: &Db, counts: BurstCounts) {
+    let open_pending = crate::runs::permission::all_pending().len() as u32;
+    send_all(hub, db, |events| compose(counts, open_pending, events)).await;
+}
+
+/// Send to every device what `pick` gives for its switches (combined with the
+/// desktop's), all at once.
+async fn send_all(hub: &PushHub, db: &Db, pick: impl Fn(PushEvents) -> Option<PushMessage>) {
     let Some(vapid) = existing_vapid_key() else { return };
     // A row subscribed with another key can never verify: drop, not retry.
     store::remove_other_keys(db, &vapid_public_key(&vapid)).await;
@@ -287,14 +303,30 @@ async fn flush(hub: &PushHub, db: &Db, counts: BurstCounts) {
         _ => return,
     };
     let global = store::events(db).await;
-    let open_pending = crate::runs::permission::all_pending().len() as u32;
     let subject = subject(db).await;
     let sends = subs.iter().filter_map(|sub| {
-        let msg = compose(counts, open_pending, sub.events.and(global))?;
+        let msg = pick(sub.events.and(global))?;
         let (vapid, subject) = (&vapid, &subject);
         Some(async move { send::deliver(db, hub.client(), vapid, subject, sub, &msg).await })
     });
     futures_util::future::join_all(sends).await;
+}
+
+/// Deliver a Focus reminder the scheduler just showed on the desktop (see the
+/// module doc). Returns at once; the sends run on their own task so a slow
+/// push service never delays the scheduler.
+pub fn focus_reminder(app: &tauri::AppHandle, db: &Db, title: &str, body: &str, todo_id: Option<&str>) {
+    use tauri::Manager;
+    let msg = PushMessage::focus(title, body, todo_id);
+    let (app, db) = (app.clone(), db.clone());
+    tauri::async_runtime::spawn(async move {
+        let Some(state) = app.try_state::<crate::remote::RemoteState>() else { return };
+        // Like run notifications: only while Remote Control is on.
+        if !state.is_running().await {
+            return;
+        }
+        send_all(&state.push, &db, |events| compose_focus(&msg, events)).await;
+    });
 }
 
 /// Send the test notification to one device.
@@ -315,9 +347,7 @@ mod tests {
     async fn only_a_phone_on_screen_holds_pushes_back() {
         let hub = PushHub::default();
         assert!(!hub.is_suppressed(), "nobody connected");
-        hub.controller_attached(false);
-        assert!(!hub.is_suppressed(), "a remote desktop does not count");
-        hub.controller_attached(true);
+        hub.controller_attached();
         assert!(hub.is_suppressed(), "a phone just opened the app");
         hub.set_visible(false);
         assert!(!hub.is_suppressed(), "the phone went to the background");
@@ -329,7 +359,7 @@ mod tests {
     #[tokio::test]
     async fn leaving_the_screen_wakes_the_dispatcher() {
         let hub = PushHub::default();
-        hub.controller_attached(true);
+        hub.controller_attached();
         hub.set_visible(false);
         // A stored permit: the dispatcher sees it even if it was busy.
         tokio::time::timeout(Duration::from_millis(100), hub.release.notified()).await.unwrap();

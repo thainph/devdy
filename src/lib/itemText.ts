@@ -1,4 +1,4 @@
-import { i18n } from '@/i18n'
+import { i18n } from '@/i18n/core'
 
 /** A todo / note's one-line label: the first non-empty line, stripped of markdown noise. */
 export function firstLine(text: string): string {

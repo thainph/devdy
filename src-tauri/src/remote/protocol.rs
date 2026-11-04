@@ -29,6 +29,10 @@ pub enum FrameType {
     /// Application-level heartbeat that keeps the host↔relay socket warm through
     /// idle-killing proxies once a run stops streaming (see the relay for details).
     Keepalive,
+    /// Device sync: ask the relay which other Hosts are online (host token).
+    ListHosts,
+    /// Device sync: the relay's answer to `list_hosts`.
+    Hosts,
 
     // Data frames (opaque cipher, forwarded by room_id).
     Stream,
@@ -71,11 +75,33 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<String>,
 
+    /// `register_host`: the alias + app version this Host is listed under in
+    /// `list_hosts` (both absent = not listed). Older relays ignore them.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+
+    /// `hosts`: the online Hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts: Option<Vec<HostPresence>>,
+
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
 
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub message: Option<String>,
+}
+
+/// One online Host in a relay `hosts` answer (wire names match the relay).
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+pub struct HostPresence {
+    pub device_id: String,
+    #[serde(default)]
+    pub alias: String,
+    #[serde(default)]
+    pub app_version: String,
 }
 
 impl Envelope {
@@ -90,6 +116,9 @@ impl Envelope {
             pair_code: None,
             persistent: None,
             slot: None,
+            alias: None,
+            app_version: None,
+            hosts: None,
             code: None,
             message: None,
         }
@@ -101,6 +130,36 @@ impl Envelope {
         let mut e = Self::bare(FrameType::RegisterHost);
         e.device_id = Some(device_id.into());
         e.auth_token = Some(auth_token.into());
+        e
+    }
+
+    /// `register_host` that also lists this Host for device sync under
+    /// `alias` (`None` = not listed).
+    pub fn register_host_listed(
+        device_id: impl Into<String>,
+        auth_token: impl Into<String>,
+        listing: Option<(String, String)>,
+    ) -> Self {
+        let mut e = Self::register_host(device_id, auth_token);
+        if let Some((alias, app_version)) = listing {
+            e.alias = Some(alias);
+            e.app_version = Some(app_version);
+        }
+        e
+    }
+
+    /// `list_hosts { auth_token, device_id }` — the other online Hosts.
+    pub fn list_hosts(auth_token: impl Into<String>, device_id: impl Into<String>) -> Self {
+        let mut e = Self::bare(FrameType::ListHosts);
+        e.auth_token = Some(auth_token.into());
+        e.device_id = Some(device_id.into());
+        e
+    }
+
+    /// `join { pair_code }` — this Devdy acting as a Controller.
+    pub fn join(pair_code: impl Into<String>) -> Self {
+        let mut e = Self::bare(FrameType::Join);
+        e.pair_code = Some(pair_code.into());
         e
     }
 
@@ -265,26 +324,6 @@ pub enum StreamPayload {
         #[serde(default, skip_serializing_if = "Vec::is_empty")]
         host_features: Vec<String>,
     },
-    /// Remote desktop: the outcome of one `ipc_invoke`. `value` is the command's
-    /// return value, `error` its rejection, both exactly as the local UI sees.
-    /// `value` is always present: a command that resolved to `null` must not
-    /// arrive as a missing field (`undefined`) on the Controller.
-    IpcResult {
-        id: String,
-        ok: bool,
-        #[serde(default)]
-        value: serde_json::Value,
-        #[serde(default, skip_serializing_if = "Option::is_none")]
-        error: Option<serde_json::Value>,
-    },
-    /// Remote desktop: one app event the Controller subscribed to.
-    IpcEvent {
-        event: String,
-        payload: serde_json::Value,
-    },
-    /// Remote desktop: events were shed on a congested link, so the
-    /// Controller's view may be stale — it should refetch its state.
-    IpcResync,
     /// Password login succeeded (Host → Controller, on the login room): a full
     /// session link + token so the Controller continues on the session path.
     LoginGranted {
@@ -374,6 +413,32 @@ pub enum StreamPayload {
     // ---- Data features ([`FEATURE_DATA`]) ----
     /// Every todo (the Controller filters by project / done locally).
     TodoList { todos: Vec<TodoInfo> },
+    /// The ranked Focus board ([`FEATURE_FOCUS`]), exactly as the desktop's
+    /// `focus_board` command returns it: buckets, scores, reasons, "do now" ids
+    /// and today's Calendar load. Ranking stays on the Host (BR-05).
+    FocusBoard { board: serde_json::Value },
+    /// The outcome of a `focus_ai_*` request, echoing the Controller's
+    /// `request_id`. `ai_kind` is `suggest` | `analyze` | `plan_today`; `result`
+    /// is exactly what the desktop command returns. A failure carries only a
+    /// short `error` code (`busy`, `cancelled`, `timeout`, `failed`, …).
+    FocusAiResult {
+        request_id: String,
+        ai_kind: String,
+        ok: bool,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        result: Option<serde_json::Value>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+    /// The stored day plan of `date` (`null` when there is none).
+    FocusDayPlan {
+        date: String,
+        plan: Option<serde_json::Value>,
+    },
+    /// BR-11: the suggested actual time of a todo (`null` = no suggestion).
+    FocusActual { todo_id: String, minutes: Option<i64> },
+    /// The Focus settings, as stored (normalised).
+    FocusSettings { settings: serde_json::Value },
     /// Notes matching a `note_list` / `note_search`, echoing the filter so the
     /// Controller can drop a stale reply. Title + a short preview only; the
     /// editor fetches the full note with `note_get`.
@@ -431,7 +496,8 @@ pub enum StreamPayload {
 }
 
 /// One todo as the Controller sees it — no Focus fields (priority, estimate,
-/// AI plan…), which the phone does not edit.
+/// AI plan…): a [`FEATURE_FOCUS`] Controller reads those from the
+/// [`StreamPayload::FocusBoard`].
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 pub struct TodoInfo {
     pub id: String,
@@ -564,14 +630,19 @@ pub const FEATURE_MULTI_RUN: &str = "multi_run";
 /// are refused, so an older bundle sees exactly the pre-data Host.
 pub const FEATURE_DATA: &str = "data";
 
+/// Feature flag a Controller advertises to render the Focus board: after every
+/// todo write it is sent a fresh [`StreamPayload::FocusBoard`] next to the
+/// `todo_list`. The `focus_board` action itself is a data action.
+pub const FEATURE_FOCUS: &str = "focus";
+
 /// Feature flag a Controller advertises to manage Web Push (`push_*`). Without
 /// it those actions are refused.
 pub const FEATURE_PUSH: &str = "push";
 
 /// What this Host advertises in `session_token.host_features`: the data
 /// screens, the Inbox's `list_pending`, Always (`allow_always` /
-/// `deny_always`) from a Controller, and Web Push.
-pub const HOST_FEATURES: [&str; 4] = ["data", "inbox", "remember", "push"];
+/// `deny_always`) from a Controller, Web Push and the Focus board.
+pub const HOST_FEATURES: [&str; 5] = ["data", "inbox", "remember", "push", "focus"];
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -722,18 +793,6 @@ pub struct CmdPayload {
     /// why every negotiated feature must default to the old behaviour.
     #[serde(default)]
     pub client_features: Option<Vec<String>>,
-    /// `ipc_invoke`: correlation id echoed in the `ipc_result`.
-    #[serde(default)]
-    pub id: Option<String>,
-    /// `ipc_invoke`: the Tauri command to run, exactly as the UI named it.
-    #[serde(default)]
-    pub cmd: Option<String>,
-    /// `ipc_invoke`: the command's arguments, verbatim.
-    #[serde(default)]
-    pub args: Option<serde_json::Value>,
-    /// `ipc_listen` / `ipc_unlisten`: the app event name.
-    #[serde(default)]
-    pub event: Option<String>,
     // ---- Data features ([`FEATURE_DATA`]) ----
     /// The todo / note / skill / rule / MCP server a data action targets.
     #[serde(default)]
@@ -754,6 +813,29 @@ pub struct CmdPayload {
     /// `todo_add`: local `YYYY-MM-DD` deadline.
     #[serde(default)]
     pub due_date: Option<String>,
+    /// `todo_add`: local `HH:MM` on `due_date`.
+    #[serde(default)]
+    pub due_time: Option<String>,
+    /// `todo_add`: 1 | 2 | 3 (Focus priority).
+    #[serde(default)]
+    pub priority: Option<i64>,
+    /// `todo_add`: estimate in minutes.
+    #[serde(default)]
+    pub estimate_min: Option<i64>,
+    /// `todo_add` / `focus_ai_suggest`: the todo's source link (http(s) or a
+    /// shorthand; normalised by the Host).
+    #[serde(default)]
+    pub source_url: Option<String>,
+    /// `focus_day_plan_get` / `focus_plan_to_calendar`: local `YYYY-MM-DD`.
+    #[serde(default)]
+    pub date: Option<String>,
+    /// `focus_plan_to_calendar`: the blocks to add (absent = every block).
+    #[serde(default)]
+    pub block_ids: Option<Vec<String>>,
+    /// `focus_settings_set`: the Focus settings to store (a missing key keeps
+    /// its current value).
+    #[serde(default)]
+    pub settings: Option<serde_json::Value>,
     /// `project_toggle_set`: `skill` | `rule` | `mcp` | `builtin_mcp`.
     #[serde(default)]
     pub toggle_kind: Option<String>,
@@ -803,6 +885,10 @@ pub enum HandshakePayload {
     /// the kill switch / a password change). Unsealed by necessity — the Host
     /// has no key the Controller shares — and carries nothing.
     HsReject,
+    /// Host → device-sync puller: the pull was refused before any key was
+    /// shared (`wrong_password`, `rate_limited`, `bad_request`). Unsealed for
+    /// the same reason as [`HandshakePayload::HsReject`]; carries only the code.
+    SyncReject { reason: String },
 }
 
 #[cfg(test)]
@@ -819,7 +905,7 @@ mod tests {
             host_features: HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
         })
         .unwrap();
-        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push"]));
+        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push", "focus"]));
     }
 
     #[test]
@@ -834,7 +920,7 @@ mod tests {
             v,
             serde_json::json!({
                 "kind": "push_config", "vapid_public_key": "BPk", "subscribed": true,
-                "events": { "pending": true, "done": true, "failed": true }
+                "events": { "pending": true, "done": true, "failed": true, "focus": true }
             })
         );
     }

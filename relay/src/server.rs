@@ -27,6 +27,7 @@ use tokio_tungstenite::tungstenite::protocol::WebSocketConfig;
 use tokio_tungstenite::tungstenite::Message;
 
 use crate::config::Config;
+use crate::presence::{clean_field, HostPresence, PresenceRegistry};
 use crate::protocol::{Envelope, ErrorCode, FrameType};
 use crate::ratelimit::RateLimiter;
 use crate::room::{ConnId, JoinOutcome, Notice, Outbound, RoomRegistry};
@@ -35,6 +36,8 @@ use crate::room::{ConnId, JoinOutcome, Notice, Outbound, RoomRegistry};
 pub struct Shared {
     pub config: Config,
     pub rooms: Mutex<RoomRegistry>,
+    /// Online Hosts that opted into `list_hosts`.
+    pub presence: Mutex<PresenceRegistry>,
     next_conn: AtomicU64,
 }
 
@@ -43,6 +46,7 @@ impl Shared {
         Shared {
             config,
             rooms: Mutex::new(RoomRegistry::default()),
+            presence: Mutex::new(PresenceRegistry::default()),
             next_conn: AtomicU64::new(1),
         }
     }
@@ -295,6 +299,7 @@ async fn handle_connection(
     // Cleanup: drop the Host's listen / close the room, notify the survivor.
     let notices = shared.rooms.lock().await.on_disconnect(conn_id);
     deliver(notices);
+    shared.presence.lock().await.remove(conn_id);
 
     // Let the writer flush what is queued (e.g. an auth error) and close, but
     // never wait on a socket that stopped draining.
@@ -327,23 +332,36 @@ async fn dispatch(
     match env.t {
         FrameType::RegisterHost => {
             // AC-01 / AC-02: authenticate the Host.
-            let token_ok = env
-                .auth_token
-                .as_deref()
-                .map(|t| constant_time_eq(t, &shared.config.host_token))
-                .unwrap_or(false);
-            if !token_ok {
+            if !token_matches(env.auth_token.as_deref(), &shared.config.host_token) {
                 tracing::warn!(event = "register_denied", conn = conn_id);
                 let _ = out_tx.send(Envelope::error(ErrorCode::AuthFailed, "invalid auth token"));
                 return true;
             }
             *role = Role::Host;
+            let presence = presence_of(&env);
             tracing::info!(
                 event = "host_registered",
                 conn = conn_id,
-                device_id = env.device_id.as_deref().unwrap_or("")
+                device_id = env.device_id.as_deref().unwrap_or(""),
+                listed = presence.is_some()
             );
+            shared.presence.lock().await.set(conn_id, presence);
             let _ = out_tx.send(Envelope::control_ack(String::new()));
+            false
+        }
+
+        // Owner's Devdy desktops (they all hold the host token) ask who else is
+        // online. Same token check as `register_host`; a wrong token closes.
+        FrameType::ListHosts => {
+            if !token_matches(env.auth_token.as_deref(), &shared.config.host_token) {
+                tracing::warn!(event = "list_hosts_denied", conn = conn_id);
+                let _ = out_tx.send(Envelope::error(ErrorCode::AuthFailed, "invalid auth token"));
+                return true;
+            }
+            let exclude = env.device_id.as_deref().map(clean_field).filter(|d| !d.is_empty());
+            let hosts = shared.presence.lock().await.list(exclude.as_deref());
+            tracing::info!(event = "list_hosts", conn = conn_id, count = hosts.len());
+            let _ = out_tx.send(Envelope::hosts(hosts));
             false
         }
 
@@ -473,7 +491,7 @@ async fn dispatch(
         }
 
         // Frames the relay only ever emits; a client sending them is a no-op.
-        FrameType::RoomReady | FrameType::PeerLeft | FrameType::Error => {
+        FrameType::RoomReady | FrameType::PeerLeft | FrameType::Error | FrameType::Hosts => {
             tracing::debug!(event = "ignored_inbound_control", conn = conn_id);
             false
         }
@@ -507,6 +525,21 @@ fn hash_code(code: &str) -> u64 {
     let mut h = std::collections::hash_map::DefaultHasher::new();
     code.hash(&mut h);
     h.finish()
+}
+
+/// What a `register_host` announces for `list_hosts`: only a Host that sends
+/// `app_version` (newer Hosts that serve device sync) is listed.
+fn presence_of(env: &Envelope) -> Option<HostPresence> {
+    let app_version = clean_field(env.app_version.as_deref()?);
+    Some(HostPresence {
+        device_id: clean_field(env.device_id.as_deref().unwrap_or("")),
+        alias: clean_field(env.alias.as_deref().unwrap_or("")),
+        app_version,
+    })
+}
+
+fn token_matches(given: Option<&str>, expected: &str) -> bool {
+    given.is_some_and(|t| constant_time_eq(t, expected))
 }
 
 /// Length-then-content comparison that avoids early-exit on the first differing

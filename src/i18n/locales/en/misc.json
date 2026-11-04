@@ -81,24 +81,20 @@
     "run": "Run",
     "project": "Project"
   },
-  "remoteDesktopHost": {
-    "hint": "Another Devdy is driving this app through Remote Control. Disconnecting cuts it off now and signs it out: it has to sign in again with the master password or a pairing code. To keep it out, change the master password.",
-    "disconnect": "Disconnect and sign out",
-    "disconnectFailed": "Could not disconnect: {error}"
-  },
   "remoteIndicator": {
     "title": "Remote Control",
     "short": "Remote",
-    "controlled": "Controlled",
     "relayOnline": "Relay online",
     "relayOffline": "Relay offline",
     "relayReconnecting": "Reconnecting to the relay…",
     "agentStopped": "Not running — check the relay settings",
-    "desktopSince": "Another Devdy since {time}",
     "controller": "A phone / web controller is signed in",
     "nobody": "No controller connected",
     "pair": "Pair a device…",
-    "settings": "Remote Control settings"
+    "settings": "Remote Control settings",
+    "disconnect": "Disconnect and sign out",
+    "disconnectHint": "A phone / web controller is driving this app through Remote Control. Disconnecting cuts it off now and signs it out: it has to sign in again with the master password or a pairing code. To keep it out, change the master password.",
+    "disconnectFailed": "Could not disconnect: {error}"
   },
   "ide": {
     "openFile": "Open {path}",

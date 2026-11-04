@@ -1,7 +1,0 @@
-{
-  "$schema": "../gen/schemas/desktop-schema.json",
-  "identifier": "remote-bridge",
-  "description": "The hidden remote-desktop bridge (src/bridge/main.ts). It replays a remote window's APP commands here (those are not ACL-gated) and forwards the events that window listens to; requests arrive on a Channel. A remote window runs plugin commands on its own machine, so the bridge needs no plugin beyond listening to events: no emit, fs, opener, dialog, shell, window or webview access.",
-  "windows": ["remote-bridge"],
-  "permissions": ["core:event:allow-listen", "core:event:allow-unlisten"]
-}

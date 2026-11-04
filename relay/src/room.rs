@@ -36,16 +36,23 @@ pub type ConnId = u64;
 /// silently dropping frames and leaving the session desynced.
 pub const OUTBOUND_MAX_QUEUE: usize = 4096;
 
+/// Payload bytes that may sit queued for one connection, for the same reason:
+/// the frame count alone lets a few large frames (a device-sync chunk is a few
+/// MiB) pile up to gigabytes. Twice the default 32 MiB message cap, so one
+/// maximal frame always fits behind a normal backlog.
+pub const OUTBOUND_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Sender half used to push envelopes to a connection's write task.
 ///
 /// The channel itself is unbounded — the relay routes from inside a lock and
 /// must never await on a send — so the depth is tracked explicitly. Exceeding
-/// [`OUTBOUND_MAX_QUEUE`] fires `kill`, which the connection task turns into a
-/// disconnect.
+/// [`OUTBOUND_MAX_QUEUE`] frames or [`OUTBOUND_MAX_BYTES`] fires `kill`, which
+/// the connection task turns into a disconnect.
 #[derive(Debug, Clone)]
 pub struct Outbound {
     tx: mpsc::UnboundedSender<Envelope>,
     depth: Arc<AtomicUsize>,
+    bytes: Arc<AtomicUsize>,
     kill: Arc<Notify>,
 }
 
@@ -53,19 +60,27 @@ pub struct Outbound {
 pub struct OutboundRx {
     rx: mpsc::UnboundedReceiver<Envelope>,
     depth: Arc<AtomicUsize>,
+    bytes: Arc<AtomicUsize>,
+}
+
+/// Queued size of a frame: its payload, the only part that can be large.
+fn weight(env: &Envelope) -> usize {
+    env.cipher.as_ref().map_or(0, String::len)
 }
 
 /// Create a connected pair for one connection.
 pub fn outbound_channel() -> (Outbound, OutboundRx) {
     let (tx, rx) = mpsc::unbounded_channel();
     let depth = Arc::new(AtomicUsize::new(0));
+    let bytes = Arc::new(AtomicUsize::new(0));
     (
         Outbound {
             tx,
             depth: depth.clone(),
+            bytes: bytes.clone(),
             kill: Arc::new(Notify::new()),
         },
-        OutboundRx { rx, depth },
+        OutboundRx { rx, depth, bytes },
     )
 }
 
@@ -74,16 +89,22 @@ impl Outbound {
     /// far behind; in the latter case the connection is also signalled to close.
     #[allow(clippy::result_unit_err)]
     pub fn send(&self, env: Envelope) -> Result<(), ()> {
-        if self.depth.load(Ordering::Relaxed) >= OUTBOUND_MAX_QUEUE {
+        let w = weight(&env);
+        let queued = self.bytes.load(Ordering::Relaxed);
+        if self.depth.load(Ordering::Relaxed) >= OUTBOUND_MAX_QUEUE
+            || (queued > 0 && queued + w > OUTBOUND_MAX_BYTES)
+        {
             self.kill.notify_one();
             return Err(());
         }
         // Count before sending so the receiver's decrement never underflows.
         self.depth.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(w, Ordering::Relaxed);
         match self.tx.send(env) {
             Ok(()) => Ok(()),
             Err(_) => {
                 self.depth.fetch_sub(1, Ordering::Relaxed);
+                self.bytes.fetch_sub(w, Ordering::Relaxed);
                 Err(())
             }
         }
@@ -111,8 +132,13 @@ impl OutboundRx {
     /// Await the next frame, keeping the depth gauge in step.
     pub async fn recv(&mut self) -> Option<Envelope> {
         let env = self.rx.recv().await?;
-        self.depth.fetch_sub(1, Ordering::Relaxed);
+        self.dequeued(&env);
         Some(env)
+    }
+
+    fn dequeued(&self, env: &Envelope) {
+        self.depth.fetch_sub(1, Ordering::Relaxed);
+        self.bytes.fetch_sub(weight(env), Ordering::Relaxed);
     }
 
     /// Take an already-queued frame without awaiting. Exercised by the tests.
@@ -120,7 +146,7 @@ impl OutboundRx {
     pub fn try_recv(&mut self) -> Result<Envelope, ()> {
         match self.rx.try_recv() {
             Ok(env) => {
-                self.depth.fetch_sub(1, Ordering::Relaxed);
+                self.dequeued(&env);
                 Ok(env)
             }
             Err(_) => Err(()),
@@ -615,5 +641,30 @@ mod tests {
         futures_util::FutureExt::now_or_never(tx.killed()).expect("kill signalled");
         assert!(rx.try_recv().is_ok());
         assert!(tx.send(Envelope::peer_left("rm_ok")).is_ok());
+    }
+
+    #[test]
+    fn outbound_kills_a_peer_that_queues_too_many_bytes() {
+        let big = |room: &str| {
+            let mut e = Envelope::peer_left(room);
+            e.cipher = Some("x".repeat(8 * 1024 * 1024));
+            e
+        };
+        let (tx, mut rx) = outbound_channel();
+        for i in 0..OUTBOUND_MAX_BYTES / (8 * 1024 * 1024) {
+            assert!(tx.send(big(&format!("rm_{i}"))).is_ok());
+        }
+        assert!(tx.depth() < 16, "far below the frame cap");
+        assert!(tx.send(big("rm_over")).is_err());
+        futures_util::FutureExt::now_or_never(tx.killed()).expect("kill signalled");
+        // Draining frees the bytes again.
+        assert!(rx.try_recv().is_ok());
+        assert!(tx.send(big("rm_ok")).is_ok());
+
+        // A single frame larger than the cap still goes to an idle peer.
+        let (tx, _rx) = outbound_channel();
+        let mut huge = Envelope::peer_left("rm_huge");
+        huge.cipher = Some("x".repeat(OUTBOUND_MAX_BYTES + 1));
+        assert!(tx.send(huge).is_ok());
     }
 }

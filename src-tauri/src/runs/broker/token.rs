@@ -1381,10 +1381,12 @@ pub async fn build_account_context(
          {}\n\n\
          Use gh / glab / git / aws / az / terraform as normal — the correct project account is already wired, \
          you do NOT need to login or provide a token/credential. Some credential-touching \
-         commands are blocked by policy (e.g. `gh auth token`, `gh auth login`, `aws configure`, \
-         `az login`, `az account get-access-token`). \
+         commands are blocked because Devdy manages the login (e.g. `gh auth login`, `aws configure set`, \
+         `az login`, `az account set`); others that print or mint credentials (e.g. `gh auth token`, \
+         `aws sts assume-role`, `az account get-access-token`) ask the user first. \
          This machine should not rely on global credentials for these tools; outside this wiring \
-         calls may fail (fail-closed).",
+         calls may fail (fail-closed). Run these tools directly, never through a login shell \
+         (`zsh -l`, `bash -l`, `zsh -lc …`): it reorders PATH and skips the wiring.",
         lines.join("\n")
     );
 

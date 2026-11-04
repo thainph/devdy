@@ -97,29 +97,34 @@ fn evaluate_gh_like(argv: &[String], is_glab: bool) -> PolicyDecision {
     let action = pos.get(1).map(|s| s.as_str());
     let has_show_token = flags.iter().any(|f| *f == "--show-token");
 
-    // ---- 1. DENYLIST (highest priority) ----
-    // Credential-printing / auth-mutating / secret / key management.
+    // ---- 1. DENYLIST / SENSITIVE (highest priority) ----
+    // The run's login is Devdy-managed: mutating it can't work (the config dir
+    // is a sandbox) → Deny. Credential-printing and secret / key management are
+    // legitimate but sensitive → Ask, checked before the read allowlist so no
+    // shape can slip through as a read.
     if group == "auth" {
         match action {
-            Some("token") => return deny("`auth token` prints the credential"),
             Some("setup-git") => return deny("`auth setup-git` writes a global credential helper"),
-            Some("login") => return deny("`auth login` mutates auth state"),
-            Some("logout") => return deny("`auth logout` mutates auth state"),
+            Some("login") => return deny("`auth login` — the account login is managed by Devdy"),
+            Some("logout") => return deny("`auth logout` — the account login is managed by Devdy"),
+            Some("token") => {
+                return ask("`auth token` prints the account token into the session — needs confirmation")
+            }
             Some("status") if has_show_token => {
-                return deny("`auth status --show-token` prints the credential")
+                return ask("`auth status --show-token` prints the account token into the session — needs confirmation")
             }
             // Bare `auth status` (and any other auth action) is sensitive: fall
             // through to default Ask (NOT allowed as a read).
             _ => return ask("auth subcommand is sensitive — needs confirmation"),
         }
     }
-    // `secret` and `ssh-key` groups: fully denied (gh). For glab, `variable`
-    // and `ssh-key` are the credential-adjacent equivalents (plan §4.3).
+    // `secret` and `ssh-key` groups (gh). For glab, `variable` and `ssh-key`
+    // are the credential-adjacent equivalents (plan §4.3).
     if group == "secret" || group == "ssh-key" {
-        return deny("secret/ssh-key management is blocked");
+        return ask("secret/ssh-key management — needs confirmation");
     }
     if is_glab && group == "variable" {
-        return deny("variable management is blocked");
+        return ask("CI/CD variable management — needs confirmation");
     }
 
     // ---- 2. READ ALLOWLIST ----
@@ -211,7 +216,16 @@ fn evaluate_aws(argv: &[String]) -> PolicyDecision {
     let op = pos.get(1).map(|s| s.as_str()).unwrap_or("");
 
     if service == "configure" {
-        return deny("`aws configure` mutates local credential/config state");
+        return match op {
+            // Reads of the (sandboxed) config / the injected credentials.
+            "list" | "get" | "list-profiles" => {
+                ask("`aws configure` read may show credential details — needs confirmation")
+            }
+            "export-credentials" => {
+                ask("`aws configure export-credentials` prints the account credentials into the session — needs confirmation")
+            }
+            _ => deny("`aws configure` — the AWS config is managed by Devdy for this run"),
+        };
     }
     if service == "iam"
         && matches!(
@@ -226,10 +240,10 @@ fn evaluate_aws(argv: &[String]) -> PolicyDecision {
                 | "delete-user"
         )
     {
-        return deny("AWS IAM credential/user management is blocked");
+        return ask("AWS IAM credential/user management — needs confirmation");
     }
     if service == "sts" && matches!(op, "get-session-token" | "assume-role") {
-        return deny("AWS STS credential minting is blocked");
+        return ask("AWS STS mints credentials into the session — needs confirmation");
     }
 
     if service == "sts" && op == "get-caller-identity" {
@@ -455,28 +469,27 @@ fn evaluate_az(argv: &[String]) -> PolicyDecision {
     let (path, interleaved) = az_command_path(argv);
     let p: Vec<&str> = path.iter().map(String::as_str).collect();
 
-    // ---- 1. DENYLIST: session/credential mutation or credential printing ----
+    // ---- 1. DENYLIST (Devdy-managed session) + sensitive Asks ----
     // Checked first so no flag placement can soften a Deny into an Ask/Allow.
     match p.as_slice() {
         ["login", ..] | ["logout", ..] => {
             return deny("`az login`/`az logout` — the Azure session is managed by Devdy")
         }
-        ["account", "get-access-token", ..] => {
-            return deny("`az account get-access-token` prints a credential")
-        }
         ["account", "set", ..] | ["account", "clear", ..] => {
             return deny("the Azure default subscription is managed by Devdy for this project")
         }
+        // Sensitive but legitimate: Ask, still ahead of every Allow path.
+        ["account", "get-access-token", ..] => {
+            return ask("`az account get-access-token` prints an access token into the session — needs confirmation")
+        }
         ["ad", "sp", "credential", "reset", ..] | ["ad", "app", "credential", "reset", ..] => {
-            return deny("Azure AD credential reset mints a secret and is blocked")
+            return ask("Azure AD credential reset mints a secret — needs confirmation")
         }
         ["ad", "sp", "create-for-rbac", ..] => {
-            return deny(
-                "`az ad sp create-for-rbac` mints a service principal secret and is blocked",
-            )
+            return ask("`az ad sp create-for-rbac` mints a service principal secret — needs confirmation")
         }
         ["keyvault", "secret", "show", ..] | ["keyvault", "secret", "download", ..] => {
-            return deny("reading Key Vault secret values is blocked")
+            return ask("reading a Key Vault secret value — needs confirmation")
         }
         _ => {}
     }
@@ -556,18 +569,18 @@ mod tests {
 
     // ---- AC5: deny ----
     #[test]
-    fn deny_gh_auth_token() {
+    fn ask_gh_auth_token() {
         assert!(matches!(
             evaluate_policy("gh", &argv(&["auth", "token"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
     }
 
     #[test]
-    fn deny_gh_auth_status_show_token() {
+    fn ask_gh_auth_status_show_token() {
         assert!(matches!(
             evaluate_policy("gh", &argv(&["auth", "status", "--show-token"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
     }
 
@@ -592,22 +605,22 @@ mod tests {
     }
 
     #[test]
-    fn deny_gh_secret_and_sshkey() {
+    fn ask_gh_secret_and_sshkey() {
         assert!(matches!(
             evaluate_policy("gh", &argv(&["secret", "set", "FOO"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
         assert!(matches!(
             evaluate_policy("gh", &argv(&["ssh-key", "add"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
     }
 
     #[test]
-    fn deny_glab_auth_token() {
+    fn ask_glab_auth_token() {
         assert!(matches!(
             evaluate_policy("glab", &argv(&["auth", "token"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
     }
 
@@ -736,19 +749,21 @@ mod tests {
     }
 
     #[test]
-    fn deny_aws_credential_commands() {
-        assert!(matches!(
-            evaluate_policy("aws", &argv(&["configure"])),
-            PolicyDecision::Deny { .. }
-        ));
-        assert!(matches!(
-            evaluate_policy("aws", &argv(&["iam", "create-access-key"])),
-            PolicyDecision::Deny { .. }
-        ));
-        assert!(matches!(
-            evaluate_policy("aws", &argv(&["sts", "get-session-token"])),
-            PolicyDecision::Deny { .. }
-        ));
+    fn aws_credential_commands() {
+        for a in [&["configure"][..], &["configure", "set", "region", "x"][..], &["configure", "sso"][..]] {
+            assert!(matches!(evaluate_policy("aws", &argv(a)), PolicyDecision::Deny { .. }), "argv={a:?} must Deny");
+        }
+        for a in [
+            &["configure", "list"][..],
+            &["configure", "get", "region"][..],
+            &["configure", "export-credentials"][..],
+            &["iam", "create-access-key"][..],
+            &["iam", "create-user", "--user-name", "x"][..],
+            &["sts", "get-session-token"][..],
+            &["sts", "assume-role", "--role-arn", "x"][..],
+        ] {
+            assert!(matches!(evaluate_policy("aws", &argv(a)), PolicyDecision::Ask { .. }), "argv={a:?} must Ask");
+        }
     }
 
     #[test]
@@ -856,6 +871,17 @@ mod tests {
             &["login"][..],
             &["login", "--tenant", "contoso.onmicrosoft.com"][..],
             &["logout"][..],
+            &["--subscription", "x", "login"][..],
+            &["account", "set", "--subscription", "other"][..],
+            &["account", "clear"][..],
+        ] {
+            assert!(
+                matches!(evaluate_policy("az", &argv(a)), PolicyDecision::Deny { .. }),
+                "argv={a:?} must Deny"
+            );
+        }
+        // Sensitive but legitimate → Ask; no flag placement may soften it to Allow.
+        for a in [
             &["account", "get-access-token"][..],
             &["account", "get-access-token", "--resource", "https://management.azure.com"][..],
             &["Account", "Get-Access-Token"][..],
@@ -864,10 +890,7 @@ mod tests {
             &["--output=json", "account", "get-access-token"][..],
             &["--query", "accessToken", "account", "get-access-token"][..],
             &["account", "--debug", "get-access-token"][..],
-            &["--subscription", "x", "login"][..],
             &["account", "get-access-token", "--help"][..],
-            &["account", "set", "--subscription", "other"][..],
-            &["account", "clear"][..],
             &["ad", "sp", "credential", "reset", "--id", "x"][..],
             &["ad", "app", "credential", "reset", "--id", "x"][..],
             &["ad", "sp", "create-for-rbac", "-n", "x"][..],
@@ -875,8 +898,8 @@ mod tests {
             &["keyvault", "secret", "download", "--vault-name", "kv", "-n", "s", "-f", "o"][..],
         ] {
             assert!(
-                matches!(evaluate_policy("az", &argv(a)), PolicyDecision::Deny { .. }),
-                "argv={a:?} must Deny"
+                matches!(evaluate_policy("az", &argv(a)), PolicyDecision::Ask { .. }),
+                "argv={a:?} must Ask"
             );
         }
     }
@@ -1048,8 +1071,8 @@ mod tests {
 
     // ---- SEC-2 (loop-back 1): case-insensitive subcommand/action matching ----
     #[test]
-    fn deny_gh_auth_token_case_insensitive() {
-        // Upper-case must resolve to the same Deny as lower-case.
+    fn ask_gh_auth_token_case_insensitive() {
+        // Upper-case must resolve to the same Ask as lower-case (never Allow).
         for a in [
             &["AUTH", "TOKEN"][..],
             &["Auth", "Token"][..],
@@ -1057,34 +1080,34 @@ mod tests {
             &["AUTH", "token"][..],
         ] {
             assert!(
-                matches!(evaluate_policy("gh", &argv(a)), PolicyDecision::Deny { .. }),
-                "argv={a:?} must Deny (was reaching Ask before SEC-2 fix)"
+                matches!(evaluate_policy("gh", &argv(a)), PolicyDecision::Ask { .. }),
+                "argv={a:?} must Ask"
             );
         }
     }
 
     #[test]
-    fn deny_auth_status_show_token_case_insensitive() {
-        // Positionals uppercased, flag kept verbatim → still Deny.
+    fn ask_auth_status_show_token_case_insensitive() {
+        // Positionals uppercased, flag kept verbatim → still Ask.
         assert!(matches!(
             evaluate_policy("gh", &argv(&["AUTH", "STATUS", "--show-token"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
     }
 
     #[test]
-    fn deny_glab_and_secret_groups_case_insensitive() {
+    fn ask_glab_and_secret_groups_case_insensitive() {
         assert!(matches!(
             evaluate_policy("glab", &argv(&["AUTH", "Token"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
         assert!(matches!(
             evaluate_policy("gh", &argv(&["Secret", "set", "FOO"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
         assert!(matches!(
             evaluate_policy("gh", &argv(&["SSH-KEY", "add"])),
-            PolicyDecision::Deny { .. }
+            PolicyDecision::Ask { .. }
         ));
     }
 

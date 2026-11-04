@@ -6,6 +6,8 @@
 
 use serde::{Deserialize, Serialize};
 
+use crate::presence::HostPresence;
+
 /// Frame type discriminator carried in the envelope's `t` field (SRS §5.1/§5.3).
 ///
 /// Control frames drive the room lifecycle; the `Stream`, `PermissionRequest`
@@ -36,6 +38,12 @@ pub enum FrameType {
     /// because a browser cannot originate WS ping frames and a finished run stops
     /// all other traffic, so the socket would otherwise be reaped when idle.
     Keepalive,
+    /// Client → relay: list the online Hosts. Carries the host `auth_token`
+    /// (only the owner's own Devdy desktops hold it) and optionally the
+    /// caller's `device_id`, which is left out of the answer.
+    ListHosts,
+    /// Relay → client: the answer to `list_hosts`, in `hosts`.
+    Hosts,
 
     // Data frames (opaque cipher, forwarded by room_id).
     Stream,
@@ -93,6 +101,20 @@ pub struct Envelope {
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slot: Option<String>,
 
+    /// `register_host` (optional, newer Hosts): the device alias to list this
+    /// Host under. Its presence (with `app_version`) opts the Host into
+    /// `list_hosts`; a re-register without it withdraws the Host from the list.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub alias: Option<String>,
+
+    /// `register_host` (optional, newer Hosts): the Devdy app version.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub app_version: Option<String>,
+
+    /// `hosts` (relay → client): the online Hosts.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hosts: Option<Vec<HostPresence>>,
+
     /// `error`: machine-readable error code.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub code: Option<String>,
@@ -103,10 +125,10 @@ pub struct Envelope {
 }
 
 impl Envelope {
-    /// Build an `error` control frame (relay → sender).
-    pub fn error(code: ErrorCode, message: impl Into<String>) -> Self {
+    /// A frame of type `t` with every optional field empty.
+    pub fn bare(t: FrameType) -> Self {
         Envelope {
-            t: FrameType::Error,
+            t,
             room_id: String::new(),
             seq: None,
             cipher: None,
@@ -116,27 +138,27 @@ impl Envelope {
             persistent: None,
             resume_token: None,
             slot: None,
-            code: Some(code.as_str().to_string()),
-            message: Some(message.into()),
+            alias: None,
+            app_version: None,
+            hosts: None,
+            code: None,
+            message: None,
         }
+    }
+
+    /// Build an `error` control frame (relay → sender).
+    pub fn error(code: ErrorCode, message: impl Into<String>) -> Self {
+        let mut e = Self::bare(FrameType::Error);
+        e.code = Some(code.as_str().to_string());
+        e.message = Some(message.into());
+        e
     }
 
     /// Build a `room_ready` control frame carrying the assigned `room_id`.
     pub fn room_ready(room_id: impl Into<String>) -> Self {
-        Envelope {
-            t: FrameType::RoomReady,
-            room_id: room_id.into(),
-            seq: None,
-            cipher: None,
-            device_id: None,
-            auth_token: None,
-            pair_code: None,
-            persistent: None,
-            resume_token: None,
-            slot: None,
-            code: None,
-            message: None,
-        }
+        let mut e = Self::bare(FrameType::RoomReady);
+        e.room_id = room_id.into();
+        e
     }
 
     /// Ack for `create_pair` (relay → Host): the Host now listens on its code.
@@ -150,57 +172,32 @@ impl Envelope {
 
     /// Build a `peer_left` control frame for the surviving peer.
     pub fn peer_left(room_id: impl Into<String>) -> Self {
-        Envelope {
-            t: FrameType::PeerLeft,
-            room_id: room_id.into(),
-            seq: None,
-            cipher: None,
-            device_id: None,
-            auth_token: None,
-            pair_code: None,
-            persistent: None,
-            resume_token: None,
-            slot: None,
-            code: None,
-            message: None,
-        }
+        let mut e = Self::bare(FrameType::PeerLeft);
+        e.room_id = room_id.into();
+        e
     }
 
     /// Build a `keepalive` heartbeat frame for `room_id` (empty for a pre-room
     /// socket-warming beat). The relay echoes this back to the sender.
     pub fn keepalive(room_id: impl Into<String>) -> Self {
-        Envelope {
-            t: FrameType::Keepalive,
-            room_id: room_id.into(),
-            seq: None,
-            cipher: None,
-            device_id: None,
-            auth_token: None,
-            pair_code: None,
-            persistent: None,
-            resume_token: None,
-            slot: None,
-            code: None,
-            message: None,
-        }
+        let mut e = Self::bare(FrameType::Keepalive);
+        e.room_id = room_id.into();
+        e
     }
 
     /// Ack for a control frame that has no dedicated response type.
     pub fn control_ack(room_id: impl Into<String>) -> Self {
-        Envelope {
-            t: FrameType::Control,
-            room_id: room_id.into(),
-            seq: None,
-            cipher: None,
-            device_id: None,
-            auth_token: None,
-            pair_code: None,
-            persistent: None,
-            resume_token: None,
-            slot: None,
-            code: Some("ok".to_string()),
-            message: None,
-        }
+        let mut e = Self::bare(FrameType::Control);
+        e.room_id = room_id.into();
+        e.code = Some("ok".to_string());
+        e
+    }
+
+    /// Answer to `list_hosts`.
+    pub fn hosts(hosts: Vec<HostPresence>) -> Self {
+        let mut e = Self::bare(FrameType::Hosts);
+        e.hosts = Some(hosts);
+        e
     }
 }
 
