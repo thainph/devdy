@@ -19,6 +19,7 @@ import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
 import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import RemoteIndicator from '@/components/RemoteIndicator.vue'
+import DeviceSyncButton from '@/components/deviceSync/DeviceSyncButton.vue'
 import RemoteDesktopIndicator from '@/components/remote/RemoteDesktopIndicator.vue'
 import RemoteDesktopAlert from '@/components/remote/RemoteDesktopAlert.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
@@ -1004,6 +1005,7 @@ onMounted(async () => {
           <!-- Version footer -->
           <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
             <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
+            <DeviceSyncButton compact class="ml-auto" />
             <!-- This machine's Remote Control dot, or (remote-desktop window) the
                  link to the controlled Devdy; each hides itself elsewhere. -->
             <RemoteIndicator />

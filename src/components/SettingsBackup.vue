@@ -10,6 +10,7 @@ import { ArchiveRestore, Download, FileUp, KeyRound, Loader2, Upload } from 'luc
 import { Button, Card, Input, ToggleSwitch } from '@/components/ui'
 import BackupContents from '@/components/BackupContents.vue'
 import BackupImportReport from '@/components/BackupImportReport.vue'
+import DeviceSyncButton from '@/components/deviceSync/DeviceSyncButton.vue'
 import { useToast } from '@/composables/useToast'
 import { invoke } from '@/lib/tauri'
 import { formatExportedAt, type BackupInfo, type ImportReport } from '@/lib/settingsBackup'
@@ -114,7 +115,8 @@ function cancelImport() {
   <Card body-class="p-4 space-y-5">
     <template #header>
       <ArchiveRestore class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
-      <span class="text-xs font-semibold">{{ t('settings.backup.title') }}</span>
+      <span class="text-xs font-semibold flex-1">{{ t('settings.backup.title') }}</span>
+      <DeviceSyncButton />
     </template>
 
     <p class="text-[11px] text-muted-foreground">{{ t('settings.backup.help') }}</p>
