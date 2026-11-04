@@ -344,3 +344,114 @@ async fn login_slot_is_tagged_and_survives_ending_the_session() {
     send(&mut c2, json!({ "t": "join", "pair_code": "devdy-login" })).await;
     assert_eq!(recv_json(&mut c2).await.unwrap()["t"], "room_ready");
 }
+
+/// Register a Host that announces presence (newer Hosts serving device sync).
+async fn register_listed_host(url: &str, device_id: &str, alias: &str) -> Ws {
+    let mut ws = connect(url).await;
+    send(
+        &mut ws,
+        json!({
+            "t": "register_host", "device_id": device_id, "auth_token": TEST_TOKEN,
+            "alias": alias, "app_version": "0.14.0"
+        }),
+    )
+    .await;
+    assert_eq!(recv_json(&mut ws).await.expect("register ack")["t"], "control");
+    ws
+}
+
+async fn list_hosts(url: &str, token: &str, me: Option<&str>) -> Value {
+    let mut ws = connect(url).await;
+    let mut frame = json!({ "t": "list_hosts", "auth_token": token });
+    if let Some(me) = me {
+        frame["device_id"] = json!(me);
+    }
+    send(&mut ws, frame).await;
+    recv_json(&mut ws).await.expect("list_hosts answer")
+}
+
+#[tokio::test]
+async fn list_hosts_needs_the_host_token() {
+    let url = start_relay().await;
+    let _a = register_listed_host(&url, "dev-a", "air").await;
+
+    let err = list_hosts(&url, "wrong", None).await;
+    assert_eq!(err["t"], "error");
+    assert_eq!(err["code"], "auth_failed");
+    assert!(err.get("hosts").is_none(), "nothing leaks with the refusal");
+
+    let mut anon = connect(&url).await;
+    send(&mut anon, json!({ "t": "list_hosts" })).await;
+    assert_eq!(recv_json(&mut anon).await.unwrap()["code"], "auth_failed");
+    assert!(recv_json(&mut anon).await.is_none(), "connection closed");
+}
+
+#[tokio::test]
+async fn list_hosts_returns_only_other_listed_hosts() {
+    let url = start_relay().await;
+    let _a = register_listed_host(&url, "dev-a", "air").await;
+    let b = register_listed_host(&url, "dev-b", "mini").await;
+    // An older Host announces no presence and is never listed.
+    let _legacy = register_host(&url).await;
+
+    let got = list_hosts(&url, TEST_TOKEN, Some("dev-a")).await;
+    assert_eq!(got["t"], "hosts");
+    assert_eq!(
+        got["hosts"],
+        json!([{ "device_id": "dev-b", "alias": "mini", "app_version": "0.14.0" }]),
+        "the caller itself and legacy hosts are left out"
+    );
+
+    // A host that goes away disappears from the list.
+    drop(b);
+    tokio::time::sleep(Duration::from_millis(200)).await;
+    let got = list_hosts(&url, TEST_TOKEN, Some("dev-a")).await;
+    assert_eq!(got["hosts"], json!([]));
+}
+
+#[tokio::test]
+async fn re_register_without_presence_unlists() {
+    let url = start_relay().await;
+    let mut a = register_listed_host(&url, "dev-a", "air").await;
+    assert_eq!(list_hosts(&url, TEST_TOKEN, None).await["hosts"].as_array().unwrap().len(), 1);
+    send(&mut a, json!({ "t": "register_host", "device_id": "dev-a", "auth_token": TEST_TOKEN })).await;
+    assert_eq!(recv_json(&mut a).await.unwrap()["t"], "control");
+    assert_eq!(list_hosts(&url, TEST_TOKEN, None).await["hosts"], json!([]));
+}
+
+#[tokio::test]
+async fn sync_slot_join_never_supersedes_the_remote_session() {
+    let url = start_relay().await;
+    let mut host = register_listed_host(&url, "dev-a", "air").await;
+    listen(&mut host, "session-code").await;
+    send(&mut host, json!({ "t": "create_pair", "pair_code": "devdy-sync-v1/dev-a", "slot": "sync" })).await;
+    assert_eq!(recv_json(&mut host).await.unwrap()["slot"], "sync");
+
+    let (mut phone, session_room) = join(&url, &mut host, "session-code").await;
+
+    // Another desktop pulls over the sync slot.
+    let mut puller = connect(&url).await;
+    send(&mut puller, json!({ "t": "join", "pair_code": "devdy-sync-v1/dev-a" })).await;
+    let pr = recv_json(&mut puller).await.unwrap();
+    assert_eq!(pr["t"], "room_ready");
+    let sync_room = pr["room_id"].as_str().unwrap().to_string();
+    let h = recv_json(&mut host).await.unwrap();
+    assert_eq!(h["slot"], "sync");
+    assert_eq!(h["room_id"], sync_room.as_str());
+    assert_ne!(sync_room, session_room);
+
+    // The phone was not told anything and still routes both ways.
+    assert!(recv_within(&mut phone, Duration::from_millis(300)).await.is_none(), "phone not superseded");
+    send(&mut phone, json!({ "t": "cmd", "room_id": session_room, "cipher": "P" })).await;
+    assert_eq!(recv_json(&mut host).await.unwrap()["cipher"], "P");
+    send(&mut host, json!({ "t": "stream", "room_id": sync_room, "cipher": "S" })).await;
+    assert_eq!(recv_json(&mut puller).await.unwrap()["cipher"], "S");
+
+    // The pull ending leaves the session alone.
+    drop(puller);
+    let pl = recv_json(&mut host).await.unwrap();
+    assert_eq!(pl["t"], "peer_left");
+    assert_eq!(pl["room_id"], sync_room.as_str());
+    send(&mut host, json!({ "t": "stream", "room_id": session_room, "cipher": "Q" })).await;
+    assert_eq!(recv_json(&mut phone).await.unwrap()["cipher"], "Q");
+}
