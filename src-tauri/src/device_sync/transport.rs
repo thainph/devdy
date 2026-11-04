@@ -51,8 +51,9 @@ pub const SYNC_CODE: &str = "devdy-sync-v1";
 /// Relay listen slot for device sync.
 pub const SYNC_SLOT: &str = "sync";
 /// Largest raw bundle bytes per `chunk` frame. Base64 + seal + base64 puts a
-/// frame near 7.2 MiB, well inside the relay's 32 MiB message cap.
-pub const CHUNK_BYTES: usize = 4 * 1024 * 1024;
+/// frame near 3.6 MiB; with [`ACK_WINDOW`] that bounds what a pull ever queues
+/// ahead of the phone's frames on the shared socket to about 7 MiB.
+pub const CHUNK_BYTES: usize = 2 * 1024 * 1024;
 /// Largest bundle either side accepts.
 pub const MAX_BUNDLE_BYTES: u64 = 256 * 1024 * 1024;
 /// Sync wire version, carried in `request` and `start`. v2 added [`SyncMsg::Ack`]
