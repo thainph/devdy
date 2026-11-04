@@ -97,16 +97,18 @@
   },
   "push": {
     "title": "Phone notifications",
-    "intro": "Paired phones that turned on notifications (bell in the phone's Inbox) are notified while Remote Control is on and the phone is not open. Notifications carry counts only.",
+    "intro": "Paired phones that turned on notifications (bell in the phone's Inbox) are notified while Remote Control is on and the phone is not open. Run notifications carry counts only; Focus reminders carry the todo's text, end-to-end encrypted to the phone.",
     "kinds": {
       "pending": "Waiting for approval",
       "done": "Run finished",
-      "failed": "Run failed"
+      "failed": "Run failed",
+      "focus": "Focus reminders"
     },
     "kindHints": {
       "pending": "A permission prompt, question or credential approval is waiting.",
       "done": "A run finished, or a session finished its turn and waits for you.",
-      "failed": "A run ended with an error."
+      "failed": "A run ended with an error.",
+      "focus": "The desktop's Focus reminders (start by, due soon, overdue, remind me, morning summary), with the todo's text. Sent even while the phone is open."
     },
     "devices": "Devices",
     "noDevices": "No device yet. On the phone, open the Inbox and tap the bell.",

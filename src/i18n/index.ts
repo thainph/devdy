@@ -1,4 +1,4 @@
-import { createI18n } from 'vue-i18n'
+import { registerMessages } from './core'
 
 /**
  * App-wide i18n. Messages are split one JSON file per namespace (usually one
@@ -8,50 +8,15 @@ import { createI18n } from 'vue-i18n'
  *
  * Namespace = the file's base name. So `locales/en/settings.json` becomes the
  * `settings.*` message tree, referenced as `t('settings.title')`.
+ *
+ * Importing this module registers EVERY namespace; the phone Controller uses
+ * `./controller` instead (see `./core`).
  */
-export type Locale = 'en' | 'vi'
+export { i18n, setLocale, SUPPORTED_LOCALES, type Locale } from './core'
 
-export const SUPPORTED_LOCALES: { value: Locale; label: string }[] = [
-  { value: 'en', label: 'English' },
-  { value: 'vi', label: 'Tiếng Việt' },
-]
+type LocaleModule = { default: Record<string, unknown> }
 
-function buildMessages(
-  files: Record<string, { default: Record<string, unknown> }>,
-): Record<string, unknown> {
-  const messages: Record<string, unknown> = {}
-  for (const path in files) {
-    // path looks like './locales/en/settings.json' → namespace 'settings'
-    const namespace = path.split('/').pop()!.replace('.json', '')
-    messages[namespace] = files[path].default
-  }
-  return messages
-}
-
-const en = buildMessages(
-  import.meta.glob('./locales/en/*.json', { eager: true }) as Record<
-    string,
-    { default: Record<string, unknown> }
-  >,
-)
-const vi = buildMessages(
-  import.meta.glob('./locales/vi/*.json', { eager: true }) as Record<
-    string,
-    { default: Record<string, unknown> }
-  >,
-)
-
-export const i18n = createI18n({
-  legacy: false,
-  locale: 'en',
-  fallbackLocale: 'en',
-  // eslint-disable-next-line @typescript-eslint/no-explicit-any
-  messages: { en, vi } as any,
+registerMessages({
+  en: import.meta.glob<LocaleModule>('./locales/en/*.json', { eager: true }),
+  vi: import.meta.glob<LocaleModule>('./locales/vi/*.json', { eager: true }),
 })
-
-/** Switch the active language app-wide. Safe to call with any string. */
-export function setLocale(locale: string) {
-  const next: Locale = locale === 'vi' ? 'vi' : 'en'
-  ;(i18n.global.locale as unknown as { value: Locale }).value = next
-  document.documentElement.setAttribute('lang', next)
-}

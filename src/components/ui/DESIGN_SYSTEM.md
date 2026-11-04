@@ -8,7 +8,7 @@ Primitives live in `src/components/ui/` and are imported from `@/components/ui`.
 
 ## 1. Tokens
 
-### Colors (`src/assets/main.css`)
+### Colors (`src/assets/base.css`)
 
 Use the semantic utilities — they follow light/dark mode and the color themes.
 
@@ -133,7 +133,7 @@ buttons, ≥ 44px for a standalone primary action.
 
 ## 6. Themes and skins
 
-Palettes live one per file in `src/assets/themes/<id>.css` (imported at the top of `main.css`) and are registered in `src/lib/colorThemes.ts`. Every file defines a `[data-theme='<id>']:not(.dark)` and a `[data-theme='<id>'].dark` block with the full token set plus `--aurora-1/2`; `src/lib/__tests__/themeContrast.test.mjs` enforces WCAG AA on every pair.
+Palettes live one per file in `src/assets/themes/<id>.css` (imported at the top of `base.css`) and are registered in `src/lib/colorThemes.ts`. Every file defines a `[data-theme='<id>']:not(.dark)` and a `[data-theme='<id>'].dark` block with the full token set plus `--aurora-1/2`; `src/lib/__tests__/themeContrast.test.mjs` enforces WCAG AA on every pair.
 
 A **skin** (group `skin`) also changes shape, material and motion, not just color. Skin rules go in the same file, **outside `@layer`** (unlayered rules beat Tailwind utilities), always scoped under `[data-theme='<id>']`. Hooks a skin may restyle:
 

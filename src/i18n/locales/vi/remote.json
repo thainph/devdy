@@ -97,16 +97,18 @@
   },
   "push": {
     "title": "Thông báo điện thoại",
-    "intro": "Điện thoại đã ghép cặp và bật thông báo (nút chuông ở tab Cần xử lý) sẽ được báo khi Remote Control đang bật và điện thoại không mở app. Thông báo chỉ chứa số lượng.",
+    "intro": "Điện thoại đã ghép cặp và bật thông báo (nút chuông ở tab Cần xử lý) sẽ được báo khi Remote Control đang bật và điện thoại không mở app. Thông báo về phiên chạy chỉ chứa số lượng; nhắc việc Focus có nội dung việc, được mã hoá đầu-cuối tới điện thoại.",
     "kinds": {
       "pending": "Cần duyệt",
       "done": "Phiên chạy xong",
-      "failed": "Phiên bị lỗi"
+      "failed": "Phiên bị lỗi",
+      "focus": "Nhắc việc Focus"
     },
     "kindHints": {
       "pending": "Có permission, câu hỏi hoặc yêu cầu dùng credential đang chờ.",
       "done": "Một run đã xong, hoặc session đã xong lượt và đang chờ bạn.",
-      "failed": "Một run kết thúc với lỗi."
+      "failed": "Một run kết thúc với lỗi.",
+      "focus": "Nhắc việc Focus của máy tính (nên bắt đầu, sắp đến hạn, quá hạn, nhắc tôi, tóm tắt buổi sáng), kèm nội dung việc. Gửi cả khi điện thoại đang mở app."
     },
     "devices": "Thiết bị",
     "noDevices": "Chưa có thiết bị. Trên điện thoại, mở tab Cần xử lý và bấm nút chuông.",

@@ -4898,6 +4898,6 @@ function handleRefInput(val: string) {
   </div>
 </template>
 
-<!-- Markdown output styling is global (src/assets/main.css): the streaming AI
+<!-- Markdown output styling is global (src/assets/base.css): the streaming AI
      result is rendered via v-html inside <StreamLog>, which scoped :deep() rules
      here cannot reach. -->

@@ -16,7 +16,7 @@ export function parseRgb(css: string): [number, number, number] | null {
   return m ? [Number(m[1]), Number(m[2]), Number(m[3])] : null
 }
 
-/** RGB → bare HSL channels `H S% L%` (the token format in main.css). */
+/** RGB → bare HSL channels `H S% L%` (the token format in base.css). */
 export function rgbToHslChannels([r, g, b]: [number, number, number]): string {
   const rn = r / 255
   const gn = g / 255

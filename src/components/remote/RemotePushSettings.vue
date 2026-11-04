@@ -14,6 +14,7 @@ interface PushEvents {
   pending: boolean
   done: boolean
   failed: boolean
+  focus: boolean
 }
 interface PushDevice {
   id: string
@@ -26,13 +27,13 @@ interface PushOverview {
   events: PushEvents
 }
 
-const KINDS = ['pending', 'done', 'failed'] as const
+const KINDS = ['pending', 'done', 'failed', 'focus'] as const
 
 const { t } = useI18n()
 const { toast } = useToast()
 
 const devices = ref<PushDevice[]>([])
-const events = ref<PushEvents>({ pending: true, done: true, failed: true })
+const events = ref<PushEvents>({ pending: true, done: true, failed: true, focus: true })
 const loaded = ref(false)
 const busyId = ref<string | null>(null)
 let pollTimer: ReturnType<typeof setInterval> | null = null

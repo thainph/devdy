@@ -91,8 +91,8 @@ function onBodyClick(e: MouseEvent) {
 
 <template>
   <div
-    class="group relative flex gap-2 px-5 transition-colors hover:bg-accent/30"
-    :class="continued ? 'py-0.5' : 'pt-2 pb-1'"
+    class="group relative flex gap-3 px-5 transition-colors hover:bg-muted/40"
+    :class="continued ? 'py-0.5' : 'pt-3 pb-1'"
   >
     <!-- Gutter: avatar, or the time on hover for a grouped message. -->
     <div class="w-9 shrink-0">
@@ -101,10 +101,11 @@ function onBodyClick(e: MouseEvent) {
         :path="message.avatarPath"
         :name="name"
         :tone-key="message.userId ?? message.botId ?? name"
+        class="mt-0.5"
       />
       <span
         v-else
-        class="block pt-0.5 text-right text-[10px] tabular-nums leading-5 text-muted-foreground opacity-0 group-hover:opacity-100"
+        class="block text-right text-[10px] tabular-nums leading-[1.4rem] text-muted-foreground opacity-0 group-hover:opacity-100"
         :title="formatFullDate(message.postedAt)"
       >
         {{ formatClock(message.postedAt) }}
@@ -112,13 +113,13 @@ function onBodyClick(e: MouseEvent) {
     </div>
 
     <div class="min-w-0 flex-1">
-      <div v-if="!continued" class="flex items-baseline gap-1.5">
-        <span class="truncate text-sm font-bold text-foreground" :title="user?.realName ?? undefined">
+      <div v-if="!continued" class="flex items-baseline gap-2 leading-5">
+        <span class="truncate text-[13px] font-semibold text-foreground" :title="user?.realName ?? undefined">
           {{ name }}
         </span>
         <span
           v-if="isBot"
-          class="shrink-0 self-center rounded bg-muted px-1 py-px text-[9px] font-semibold text-muted-foreground"
+          class="shrink-0 self-center rounded bg-muted px-1 text-[9px] font-semibold uppercase leading-4 tracking-wide text-muted-foreground"
         >
           {{ t('slackThread.message.app') }}
         </span>
@@ -134,16 +135,17 @@ function onBodyClick(e: MouseEvent) {
         {{ t('slackThread.message.deleted') }}
       </p>
       <template v-else>
-        <!-- Sanitized by renderSlackMrkdwn (DOMPurify). -->
+        <!-- Sanitized by renderSlackMrkdwn (DOMPurify); styled by .slack-body (base.css). -->
         <div
           v-if="shownText"
-          class="slack-body whitespace-pre-wrap break-words text-sm leading-[1.46] text-foreground"
+          class="slack-body"
+          :class="{ 'mt-0.5': !continued }"
           @click="onBodyClick"
           v-html="bodyHtml"
         />
         <div
           v-if="message.editedTs || untranslatedTag"
-          class="mt-0.5 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"
+          class="mt-1 flex flex-wrap items-center gap-1.5 text-[11px] text-muted-foreground"
         >
           <span v-if="message.editedTs">{{ t('slackThread.message.edited') }}</span>
           <span
@@ -159,11 +161,11 @@ function onBodyClick(e: MouseEvent) {
 
       <SlackMessageFiles :files="files" @open-image="emit('openImage', $event)" />
 
-      <div v-if="message.reactions.length" class="mt-1 flex flex-wrap gap-1">
+      <div v-if="message.reactions.length" class="mt-1.5 flex flex-wrap gap-1.5">
         <span
           v-for="r in message.reactions"
           :key="r.name"
-          class="inline-flex items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-1.5 py-px text-xs"
+          class="inline-flex h-6 items-center gap-1 rounded-full border border-border/70 bg-muted/40 px-2 text-xs"
           :title="`:${r.name}:`"
         >
           <span>{{ emojiFor(r.name) ?? `:${r.name}:` }}</span>

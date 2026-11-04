@@ -21,6 +21,8 @@
   "groupAssignee": "Assignee",
   "sortBy": "Sort by:",
   "sortStart": "Start date",
+  "sortDeadline": "Deadline",
+  "sortStatus": "Status",
   "assigneesLabel": "Assignees:",
   "unassigned": "Unassigned",
   "noOpenIssues": "No open issues",

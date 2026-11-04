@@ -23,6 +23,7 @@ pub mod bus;
 pub mod command;
 pub mod commands;
 pub mod data;
+pub mod focus;
 pub mod forwarder;
 pub mod handler;
 pub mod login;

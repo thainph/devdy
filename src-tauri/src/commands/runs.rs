@@ -932,6 +932,10 @@ async fn wire_broker(
     // config dir to their child per call.
     wire_azure_config(app, cmd);
 
+    // gh / glab: a real binary reached around the shim (e.g. a login shell that
+    // reorders PATH) must not find the user's own login.
+    wire_git_cli_config(app, cmd);
+
     // ssh-transparent-connect: wire per-run transparent SSH for this project's
     // mapped VPS servers. No mapping → Ok(None) (no env set, no agent — AC-305).
     // The shim dir is already on PATH (prepend_shim_path above), so the ssh/scp
@@ -1059,6 +1063,45 @@ fn wire_azure_config(app: &AppHandle, cmd: &mut Command) {
     // Normally created at startup; recreate if something removed it.
     let _ = std::fs::create_dir_all(&empty_dir);
     cmd.env("AZURE_CONFIG_DIR", empty_dir);
+}
+
+/// Token env vars gh / glab read on their own. The shims inject the
+/// broker's token per call; an inherited one would bypass the broker.
+const GIT_CLI_TOKEN_ENV: &[&str] = &[
+    "GH_TOKEN",
+    "GITHUB_TOKEN",
+    "GH_ENTERPRISE_TOKEN",
+    "GITHUB_ENTERPRISE_TOKEN",
+    "GITLAB_TOKEN",
+    "GITLAB_ACCESS_TOKEN",
+    "GITLAB_PRIVATE_TOKEN",
+    "OAUTH_TOKEN",
+    "CI_JOB_TOKEN",
+];
+
+/// Strip inherited gh / glab tokens and point `GH_CONFIG_DIR`
+/// / `GLAB_CONFIG_DIR` at empty sandboxes, so a real `gh` / `glab` that runs
+/// without the shim (login shell, absolute path) is signed out instead of
+/// using `~/.config/gh` / `~/.config/glab-cli`. Through the shim the child gets
+/// `GH_TOKEN` / `GITLAB_TOKEN`, which needs no config.
+fn wire_git_cli_config(app: &AppHandle, cmd: &mut Command) {
+    for key in GIT_CLI_TOKEN_ENV {
+        cmd.env_remove(key);
+    }
+    let root = match app.path().app_data_dir() {
+        Ok(app_data_dir) => app_data_dir.join("cli-sandbox"),
+        Err(_) => std::env::temp_dir().join("devdy-cli-sandbox"),
+    };
+    for (var, name) in [("GH_CONFIG_DIR", "gh"), ("GLAB_CONFIG_DIR", "glab")] {
+        let dir = root.join(name);
+        let _ = std::fs::create_dir_all(&dir);
+        #[cfg(unix)]
+        {
+            use std::os::unix::fs::PermissionsExt;
+            let _ = std::fs::set_permissions(&dir, std::fs::Permissions::from_mode(0o700));
+        }
+        cmd.env(var, dir);
+    }
 }
 
 /// Set `GIT_AUTHOR_*`/`GIT_COMMITTER_*` from the project's linked account so
@@ -2620,7 +2663,16 @@ pub async fn create_session_run(
     project_id: String,
     engine_override: Option<String>,
 ) -> Result<RunRecord, String> {
-    let default_engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
+    create_session_run_inner(db.inner(), project_id, engine_override).await
+}
+
+/// `create_session_run` for callers holding a plain pool (Focus "Start with AI").
+pub async fn create_session_run_inner(
+    db: &Db,
+    project_id: String,
+    engine_override: Option<String>,
+) -> Result<RunRecord, String> {
+    let default_engine = crate::commands::settings::resolve_default_engine(db).await;
     let engine = engine_override
         .filter(|e| !e.trim().is_empty())
         .unwrap_or(default_engine);
@@ -2636,7 +2688,7 @@ pub async fn create_session_run(
     .bind(&project_id)
     .bind(&engine)
     .bind(&now)
-    .execute(db.inner())
+    .execute(db)
     .await
     .map_err(|e| e.to_string())?;
 

@@ -96,8 +96,9 @@ pub async fn send(client: &reqwest::Client, vapid: &SecretKey, subject: &str, su
     };
     let audience = url.origin().ascii_serialization();
     let authorization = crypto::vapid_authorization(vapid, &audience, subject, crate::remote::agent::now_unix());
-    let urgency = if msg.pending.unwrap_or(0) > 0 || msg.t == "test" { "high" } else { "normal" };
-    let send_topic = sends_topic(&url);
+    let urgency = urgency(msg);
+    // A queued reminder must not be replaced by the next push.
+    let send_topic = sends_topic(&url) && !msg.is_focus();
     let mut req = client
         .post(url)
         .header("TTL", TTL_SECS.to_string())
@@ -130,6 +131,15 @@ pub async fn send(client: &reqwest::Client, vapid: &SecretKey, subject: &str, su
             }
         }
         Err(e) => Outcome::Failed(if e.is_timeout() { "timeout".into() } else { "network".into() }),
+    }
+}
+
+/// Prompts, reminders and the test are time-sensitive; finished runs are not.
+fn urgency(msg: &PushMessage) -> &'static str {
+    if msg.pending.unwrap_or(0) > 0 || msg.t == "test" || msg.is_focus() {
+        "high"
+    } else {
+        "normal"
     }
 }
 
@@ -254,6 +264,19 @@ mod tests {
         assert!(!topic("https://web.push.apple.com/QGx"));
         assert!(topic("https://fcm.googleapis.com/fcm/send/abc"));
         assert!(topic("https://updates.push.services.mozilla.com/wpush/v2/x"));
+    }
+
+    #[test]
+    fn reminders_go_out_urgent() {
+        assert_eq!(urgency(&PushMessage::focus("Focus", "Reminder: A", None)), "high");
+        assert_eq!(urgency(&PushMessage::test()), "high");
+        let done = super::super::coalesce::compose(
+            super::super::coalesce::BurstCounts { new_pending: 0, done: 1, failed: 0 },
+            0,
+            Default::default(),
+        )
+        .unwrap();
+        assert_eq!(urgency(&done), "normal");
     }
 
     #[test]

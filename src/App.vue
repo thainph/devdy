@@ -555,7 +555,7 @@ function applyTheme(theme: string) {
   }
 }
 
-// Named color palette. Sets the `data-theme` attribute on <html> (see main.css);
+// Named color palette. Sets the `data-theme` attribute on <html> (see base.css);
 // the default (indigo) theme uses no attribute so it falls back to :root/.dark.
 function applyColorTheme(theme: string) {
   const t = theme && theme !== 'default' ? theme : ''
