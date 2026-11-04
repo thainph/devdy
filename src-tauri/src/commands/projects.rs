@@ -231,24 +231,8 @@ pub struct DetectedProjectInfo {
     pub repos: Vec<DetectedRepo>,
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_vscode(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-    file: Option<String>,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    let file = match file {
-        Some(f) => Some(crate::remote::fs_policy::read(policy.as_ref(), Path::new(&f))?.to_string_lossy().into_owned()),
-        None => None,
-    };
-    open_in_vscode_inner(path, file)
-}
-
-fn open_in_vscode_inner(path: String, file: Option<String>) -> Result<(), String> {
+pub async fn open_in_vscode(path: String, file: Option<String>) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -293,19 +277,8 @@ fn open_in_vscode_inner(path: String, file: Option<String>) -> Result<(), String
     Ok(())
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_chrome(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    open_in_chrome_inner(path)
-}
-
-fn open_in_chrome_inner(path: String) -> Result<(), String> {
+pub async fn open_in_chrome(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -337,19 +310,8 @@ fn open_in_chrome_inner(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_folder(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    open_in_folder_inner(path)
-}
-
-fn open_in_folder_inner(path: String) -> Result<(), String> {
+pub async fn open_in_folder(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -381,20 +343,8 @@ fn open_in_folder_inner(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_terminal(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-    terminal_app: String,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    open_in_terminal_inner(path, terminal_app)
-}
-
-fn open_in_terminal_inner(path: String, terminal_app: String) -> Result<(), String> {
+pub async fn open_in_terminal(path: String, terminal_app: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -606,13 +556,7 @@ end tell
 }
 
 #[tauri::command]
-pub async fn detect_project_info(webview: tauri::Webview, path: String) -> Result<DetectedProjectInfo, String> {
-    // Picking a NEW folder to add: outside every project by definition, so a
-    // remote desktop is only kept out of the credential stores here.
-    if crate::remote::guard::from_remote_bridge(&webview) {
-        use tauri::Manager;
-        crate::remote::guard::SecretPaths::for_app(webview.app_handle()).check(&path)?;
-    }
+pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, String> {
     if !Path::new(&path).exists() {
         return Err("Path does not exist".to_string());
     }
@@ -718,15 +662,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
 }
 
 #[tauri::command]
-pub async fn add_project(webview: tauri::Webview, db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
-    // A registered project becomes a writable root of the remote desktop: it
-    // may only register folders it already reaches (HOME, volumes, projects).
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    if let Some(policy) = &policy {
-        for path in std::iter::once(&payload.path).chain(payload.repos.iter().flatten().map(|r| &r.path)) {
-            policy.read(Path::new(path))?;
-        }
-    }
+pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
     if !Path::new(&payload.path).exists() {
         return Err("Project path does not exist".to_string());
     }
@@ -956,7 +892,6 @@ pub async fn list_repos(db: State<'_, Db>, project_id: String) -> Result<Vec<Rep
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_repo(
-    webview: tauri::Webview,
     db: State<'_, Db>,
     project_id: String,
     name: String,
@@ -967,9 +902,6 @@ pub async fn add_repo(
     gitlab_project_path: Option<String>,
     gitlab_project_id: Option<i64>,
 ) -> Result<Repo, String> {
-    // As in `add_project`: a remote desktop registers only what it reaches.
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?;
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let provider = provider

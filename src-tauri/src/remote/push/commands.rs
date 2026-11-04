@@ -1,6 +1,5 @@
 //! Desktop (Settings → Remote Control) commands for Web Push: the subscribed
-//! devices, the per-kind switches, and a test send. The writes are refused to a
-//! remote desktop (`guard::LOCAL_ONLY_COMMANDS`).
+//! devices, the per-kind switches, and a test send.
 
 use super::coalesce::PushEvents;
 use super::send::Outcome;

@@ -35,8 +35,7 @@ const SEND_TIMEOUT: Duration = Duration::from_secs(10);
 /// Push runtime state, held in [`crate::remote::RemoteState`].
 #[derive(Clone)]
 pub struct PushHub {
-    /// A phone Controller is connected. A remote desktop (`ipc`) does not
-    /// count: it is another computer, not the phone being notified.
+    /// A phone Controller is connected.
     phone_connected: Arc<AtomicBool>,
     /// Whether the connected phone is on screen (`push_visibility`).
     /// Reset to true on every authentication: a freshly opened app is visible.
@@ -95,9 +94,9 @@ impl PushHub {
         }
     }
 
-    /// A Controller authenticated: `phone` is false for a remote desktop.
-    pub fn controller_attached(&self, phone: bool) {
-        self.phone_connected.store(phone, Ordering::SeqCst);
+    /// A Controller authenticated.
+    pub fn controller_attached(&self) {
+        self.phone_connected.store(true, Ordering::SeqCst);
         self.visible.store(true, Ordering::SeqCst);
         self.touch();
     }
@@ -315,9 +314,7 @@ mod tests {
     async fn only_a_phone_on_screen_holds_pushes_back() {
         let hub = PushHub::default();
         assert!(!hub.is_suppressed(), "nobody connected");
-        hub.controller_attached(false);
-        assert!(!hub.is_suppressed(), "a remote desktop does not count");
-        hub.controller_attached(true);
+        hub.controller_attached();
         assert!(hub.is_suppressed(), "a phone just opened the app");
         hub.set_visible(false);
         assert!(!hub.is_suppressed(), "the phone went to the background");
@@ -329,7 +326,7 @@ mod tests {
     #[tokio::test]
     async fn leaving_the_screen_wakes_the_dispatcher() {
         let hub = PushHub::default();
-        hub.controller_attached(true);
+        hub.controller_attached();
         hub.set_visible(false);
         // A stored permit: the dispatcher sees it even if it was busy.
         tokio::time::timeout(Duration::from_millis(100), hub.release.notified()).await.unwrap();

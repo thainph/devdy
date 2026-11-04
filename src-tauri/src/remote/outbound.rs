@@ -88,8 +88,7 @@ impl OutboundTx {
     }
 
     /// [`Self::send_lossy`] that tells the caller what happened: `Ok(true)`
-    /// queued, `Ok(false)` shed — for a caller that must make up for a dropped
-    /// frame (the remote-desktop IPC asks the Controller to resync).
+    /// queued, `Ok(false)` shed.
     pub fn offer(&self, env: Envelope) -> Result<bool, ()> {
         if self.tx.is_closed() {
             return Err(());
@@ -111,6 +110,7 @@ impl OutboundTx {
     }
 
     /// Current queue depth (frames enqueued but not yet written to the socket).
+    #[cfg(test)]
     pub fn depth(&self) -> usize {
         self.depth.load(Ordering::Relaxed)
     }

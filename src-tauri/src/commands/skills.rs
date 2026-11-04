@@ -489,16 +489,10 @@ pub async fn delete_skill(
 
 #[tauri::command]
 pub async fn export_skill_zip(
-    webview: tauri::Webview,
     db: State<'_, Db>,
     id: String,
     dest_path: String,
 ) -> Result<(), String> {
-    // A remote desktop exports anywhere it may write.
-    let dest_path = match crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await? {
-        Some(p) => p.write(Path::new(&dest_path))?.to_string_lossy().into_owned(),
-        None => dest_path,
-    };
     use sqlx::Row;
     use std::io::Write;
     use zip::ZipWriter;
@@ -536,14 +530,9 @@ pub async fn export_skill_zip(
 #[tauri::command]
 pub async fn import_skill_zip(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     zip_path: String,
 ) -> Result<Skill, String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let zip_path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&zip_path))?
-        .to_string_lossy()
-        .into_owned();
     use std::io::Read;
     use zip::ZipArchive;
 

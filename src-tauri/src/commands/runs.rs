@@ -2738,13 +2738,8 @@ pub(crate) async fn delete_run_tree(
     Ok(outcome)
 }
 
-/// Drop the Remote Control audit entries of deleted runs — only when the
-/// person at this machine deleted them: from a remote desktop (the bridge) the
-/// trace of what it did stays.
-pub(crate) async fn prune_run_audit(webview: &tauri::Webview, db: &sqlx::SqlitePool, run_ids: &[String]) {
-    if crate::remote::guard::from_remote_bridge(webview) {
-        return;
-    }
+/// Drop the Remote Control audit entries of deleted runs.
+pub(crate) async fn prune_run_audit(db: &sqlx::SqlitePool, run_ids: &[String]) {
     for id in run_ids {
         let _ = crate::remote::audit::delete_for_run(db, id).await;
     }
@@ -2971,7 +2966,6 @@ fn remove_paths(paths: &[PathBuf]) -> Vec<String> {
 #[tauri::command]
 pub async fn delete_run(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     run_id: String,
@@ -2984,7 +2978,7 @@ pub async fn delete_run(
         &run_id,
     )
     .await?;
-    prune_run_audit(&webview, db.inner(), &outcome.deleted_ids).await;
+    prune_run_audit(db.inner(), &outcome.deleted_ids).await;
     crate::slack_threads::emit_all_changed(&app);
     crate::item_links::emit_changed(&app, None);
     Ok(outcome.leftover_files)
@@ -3262,7 +3256,6 @@ pub async fn set_run_protected(
 #[tauri::command]
 pub async fn delete_all_runs(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     project_id: String,
@@ -3295,7 +3288,7 @@ pub async fn delete_all_runs(
         .await
         {
             deleted += outcome.deleted;
-            prune_run_audit(&webview, db.inner(), &outcome.deleted_ids).await;
+            prune_run_audit(db.inner(), &outcome.deleted_ids).await;
             for path in outcome.leftover_files {
                 eprintln!("[delete_all_runs] could not remove transcript {path}");
             }
