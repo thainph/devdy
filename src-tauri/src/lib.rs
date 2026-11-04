@@ -55,7 +55,6 @@ use commands::gitlab_accounts::{
     create_gitlab_account, delete_gitlab_account, list_gitlab_accounts, set_project_gitlab_account,
     update_gitlab_account, validate_gitlab_account,
 };
-use commands::health::health_check;
 use commands::mascot_speak::{cancel_mascot_speak, mascot_speak, MascotSpeakState};
 use commands::mcp::{
     create_mcp_server, delete_mcp_server, export_mcp_server, get_mcp_server, import_mcp_server,
@@ -449,7 +448,6 @@ pub fn run() {
         })
         // Refuse credential / security commands to the remote-desktop bridge.
         .invoke_handler(remote::guard::gated(tauri::generate_handler![
-            health_check,
             set_app_menu,
             set_tray_menu,
             commands::autostart::autostart_get,
