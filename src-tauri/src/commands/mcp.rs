@@ -412,14 +412,18 @@ pub async fn update_mcp_server(
 
 #[tauri::command]
 pub async fn delete_mcp_server(db: State<'_, Db>, id: String) -> Result<(), String> {
+    delete_mcp_server_inner(db.inner(), &id).await
+}
+
+pub async fn delete_mcp_server_inner(db: &Db, id: &str) -> Result<(), String> {
     // Rows in project_mcp_servers are removed by the FK ON DELETE CASCADE.
     sqlx::query("DELETE FROM mcp_servers WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     // Remove the Keychain item too.
-    let _ = secrets::delete_mcp_secrets(&id);
+    let _ = secrets::delete_mcp_secrets(id);
     Ok(())
 }
 

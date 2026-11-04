@@ -541,12 +541,23 @@ pub async fn delete_vps_server(
     db: State<'_, Db>,
     id: String,
 ) -> Result<(), String> {
+    delete_vps_server_inner(Some(&app), db.inner(), &id).await
+}
+
+/// `app` locates the Devdy-managed key files to remove (`None` leaves them on disk).
+pub async fn delete_vps_server_inner(
+    app: Option<&AppHandle>,
+    db: &Db,
+    id: &str,
+) -> Result<(), String> {
     // BR-004: remove the Keychain secret alongside the row.
-    let _ = secrets::delete_server_secret(&id);
-    remove_imported_private_keys(&app, &id);
+    let _ = secrets::delete_server_secret(id);
+    if let Some(app) = app {
+        remove_imported_private_keys(app, id);
+    }
     sqlx::query("DELETE FROM servers WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

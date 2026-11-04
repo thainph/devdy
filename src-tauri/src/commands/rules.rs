@@ -388,10 +388,16 @@ pub async fn update_rule(
 
 #[tauri::command]
 pub async fn delete_rule(db: State<'_, Db>, id: String) -> Result<(), String> {
+    delete_rule_inner(db.inner(), &id, false).await
+}
+
+/// Delete a library rule: its project artifacts first, then the source file (moved to the legacy
+/// backups with `back_up`, removed otherwise) and the row.
+pub async fn delete_rule_inner(db: &Db, id: &str, back_up: bool) -> Result<(), String> {
     use sqlx::Row;
     let row = sqlx::query("SELECT name, source_path FROM rules WHERE id = ?")
-        .bind(&id)
-        .fetch_one(db.inner())
+        .bind(id)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Rule not found: {}", e))?;
     let name: String = row.get("name");
@@ -402,8 +408,8 @@ pub async fn delete_rule(db: State<'_, Db>, id: String) -> Result<(), String> {
         "SELECT p.path, pr.synced_hash_claude, pr.synced_hash_codex
          FROM project_rules pr JOIN projects p ON p.id = pr.project_id WHERE pr.rule_id = ?"
     )
-    .bind(&id)
-    .fetch_all(db.inner())
+    .bind(id)
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
@@ -420,11 +426,15 @@ pub async fn delete_rule(db: State<'_, Db>, id: String) -> Result<(), String> {
     }
 
     remove_codex_skill_source(&source_path, &name);
-    let _ = fs::remove_file(&source_path);
+    if back_up && Path::new(&source_path).exists() {
+        project_links::back_up_library_orphan(Path::new(&source_path), "rules")?;
+    } else {
+        let _ = fs::remove_file(&source_path);
+    }
 
     sqlx::query("DELETE FROM rules WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(())

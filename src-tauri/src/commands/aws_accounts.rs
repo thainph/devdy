@@ -305,36 +305,40 @@ pub async fn delete_aws_account(
     db: State<'_, Db>,
     id: String,
 ) -> Result<(), String> {
-    let _ = secrets::delete_aws_secret(&id);
+    delete_aws_account_inner(app.path().app_data_dir().ok().as_deref(), db.inner(), &id).await
+}
+
+/// `app_data_dir` holds the per-project AWS sandboxes to rewrite (`None` skips that).
+pub async fn delete_aws_account_inner(
+    app_data_dir: Option<&std::path::Path>,
+    db: &Db,
+    id: &str,
+) -> Result<(), String> {
+    let _ = secrets::delete_aws_secret(id);
     // Capture the projects using this account as their default before we NULL
     // the link: their sandboxes follow the new default (or are removed).
     let affected: Vec<String> =
         sqlx::query_scalar("SELECT id FROM projects WHERE aws_account_id = ?")
-            .bind(&id)
-            .fetch_all(db.inner())
+            .bind(id)
+            .fetch_all(db)
             .await
             .unwrap_or_default();
     let _ = sqlx::query("UPDATE projects SET aws_account_id = NULL WHERE aws_account_id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await;
     // project_aws_accounts cascades; a project that used it as the default falls
     // back to another enabled account.
     sqlx::query("DELETE FROM aws_accounts WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
-    super::project_git_accounts::repair_defaults(
-        db.inner(),
-        super::project_git_accounts::AWS,
-        None,
-    )
-    .await?;
-    if let Ok(app_data_dir) = app.path().app_data_dir() {
+    super::project_git_accounts::repair_defaults(db, super::project_git_accounts::AWS, None)
+        .await?;
+    if let Some(app_data_dir) = app_data_dir {
         for project_id in &affected {
-            crate::aws_sandbox::write_project_aws_config(db.inner(), &app_data_dir, project_id)
-                .await;
+            crate::aws_sandbox::write_project_aws_config(db, app_data_dir, project_id).await;
         }
     }
     Ok(())

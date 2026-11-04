@@ -442,10 +442,16 @@ pub async fn delete_skill(
     db: State<'_, Db>,
     id: String,
 ) -> Result<(), String> {
+    delete_skill_inner(db.inner(), &id, false).await
+}
+
+/// Delete a library skill: its project links first, then the source folder (moved to the legacy
+/// backups with `back_up`, removed otherwise) and the row.
+pub async fn delete_skill_inner(db: &Db, id: &str, back_up: bool) -> Result<(), String> {
     use sqlx::Row;
     let row = sqlx::query("SELECT source_path FROM skills WHERE id = ?")
-        .bind(&id)
-        .fetch_one(db.inner())
+        .bind(id)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Skill not found: {}", e))?;
 
@@ -458,8 +464,8 @@ pub async fn delete_skill(
          JOIN skills s ON s.id = ps.skill_id
          WHERE ps.skill_id = ?",
     )
-    .bind(&id)
-    .fetch_all(db.inner())
+    .bind(id)
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
@@ -476,11 +482,15 @@ pub async fn delete_skill(
         return Err(format!("Not deleted — clean these up first:\n{}", errors.join("\n")));
     }
 
-    let _ = fs::remove_dir_all(&source_path);
+    if back_up && Path::new(&source_path).exists() {
+        project_links::back_up_library_orphan(Path::new(&source_path), "skills")?;
+    } else {
+        let _ = fs::remove_dir_all(&source_path);
+    }
 
     sqlx::query("DELETE FROM skills WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 

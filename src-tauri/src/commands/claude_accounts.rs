@@ -202,40 +202,44 @@ pub async fn rename_claude_account(
 
 #[tauri::command]
 pub async fn delete_claude_account(db: State<'_, Db>, id: String) -> Result<(), String> {
+    delete_claude_account_inner(db.inner(), &id).await
+}
+
+pub async fn delete_claude_account_inner(db: &Db, id: &str) -> Result<(), String> {
     let was_default: i64 =
         sqlx::query_scalar("SELECT is_default FROM claude_accounts WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(db.inner())
+            .bind(id)
+            .fetch_optional(db)
             .await
             .map_err(|e| e.to_string())?
             .unwrap_or(0);
 
     sqlx::query("UPDATE projects SET claude_account_id = NULL WHERE claude_account_id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("UPDATE runs SET claude_account_id = NULL WHERE claude_account_id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
     sqlx::query("DELETE FROM claude_accounts WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 
     if was_default != 0 {
         if let Some(next_id) =
             sqlx::query_scalar::<_, String>("SELECT id FROM claude_accounts ORDER BY created_at LIMIT 1")
-                .fetch_optional(db.inner())
+                .fetch_optional(db)
                 .await
                 .map_err(|e| e.to_string())?
         {
             let _ = sqlx::query("UPDATE claude_accounts SET is_default = 1 WHERE id = ?")
                 .bind(next_id)
-                .execute(db.inner())
+                .execute(db)
                 .await;
         }
     }

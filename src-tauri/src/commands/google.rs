@@ -631,30 +631,34 @@ pub async fn reauth_google_account(
 /// oldest remaining account is promoted to default.
 #[tauri::command]
 pub async fn delete_google_account(db: State<'_, Db>, id: String) -> Result<(), String> {
+    delete_google_account_inner(db.inner(), &id).await
+}
+
+pub async fn delete_google_account_inner(db: &Db, id: &str) -> Result<(), String> {
     let was_default: Option<i64> =
         sqlx::query_scalar("SELECT is_default FROM google_accounts WHERE id = ?")
-            .bind(&id)
-            .fetch_optional(db.inner())
+            .bind(id)
+            .fetch_optional(db)
             .await
             .map_err(|e| e.to_string())?;
 
-    let _ = secrets::delete_google_account_token(&id);
+    let _ = secrets::delete_google_account_token(id);
     sqlx::query("DELETE FROM google_accounts WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 
     if was_default == Some(1) {
         if let Some(next_id) =
             sqlx::query_scalar::<_, String>("SELECT id FROM google_accounts ORDER BY created_at LIMIT 1")
-                .fetch_optional(db.inner())
+                .fetch_optional(db)
                 .await
                 .map_err(|e| e.to_string())?
         {
             sqlx::query("UPDATE google_accounts SET is_default = 1 WHERE id = ?")
                 .bind(&next_id)
-                .execute(db.inner())
+                .execute(db)
                 .await
                 .map_err(|e| e.to_string())?;
         }
