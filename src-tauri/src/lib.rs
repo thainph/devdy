@@ -3,6 +3,7 @@ mod azure_sandbox;
 mod commands;
 mod conductor;
 mod db;
+mod device_sync;
 mod focus;
 mod github;
 mod gitlab;
