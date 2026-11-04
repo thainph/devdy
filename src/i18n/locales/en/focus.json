@@ -149,8 +149,6 @@
   "drawer": {
     "text": "Title",
     "project": "Project",
-    "due": "Deadline",
-    "dueTime": "Time (optional)",
     "clearDue": "Clear deadline",
     "estimate": "Estimate",
     "estimatePlaceholder": "30m, 2h, 1h30",
@@ -159,7 +157,6 @@
     "snoozedUntil": "Snoozed until",
     "remindAt": "Remind me at",
     "clear": "Clear",
-    "source": "Source",
     "actual": "Actual time",
     "aiPlan": "AI plan",
     "aiAnalyzedAt": "Analyzed {time}",

@@ -1,5 +1,4 @@
 {
-  "panelTitle": "Việc & Ghi chú",
   "navTodos": "Việc cần làm",
   "navNotes": "Ghi chú",
   "tabTodo": "Việc",
@@ -20,8 +19,6 @@
   "emptyTodo": "Chưa có việc nào.",
   "emptyNote": "Chưa có ghi chú nào.",
   "noResults": "Không có mục nào khớp.",
-  "createWindowTitle": "Tạo mới — Devdy",
-  "editWindowTitle": "Chỉnh sửa — Devdy",
   "addTodo": "Thêm việc",
   "saveNote": "Lưu ghi chú",
   "reload": "Tải lại nội dung mới nhất",
@@ -85,7 +82,6 @@
   "deletedTodoDraftCopied": "Việc này đã bị xoá ở nơi khác — nội dung chưa lưu đã được chép vào clipboard.",
   "deletedNoteDraftLost": "Ghi chú này đã bị xoá ở nơi khác và không chép được nội dung chưa lưu.",
   "deletedTodoDraftLost": "Việc này đã bị xoá ở nơi khác và không chép được nội dung chưa lưu.",
-  "dueDate": "Hạn chót",
   "setDueDate": "Đặt hạn chót",
   "clearDueDate": "Bỏ hạn chót",
   "fieldProject": "Dự án",

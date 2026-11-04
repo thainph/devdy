@@ -45,15 +45,5 @@
   "plan": "plan",
   "proposedPlan": "Kế hoạch đề xuất",
   "mcp": "mcp",
-  "mcpRequest": "Yêu cầu MCP",
-  "server": "server",
-  "action": "action",
-  "message": "tin nhắn",
-  "denied": "bị từ chối",
-  "status": "trạng thái",
-  "input": "input",
-  "failed": "Thất bại",
-  "turns": "{count} lượt",
-  "tokensSuffix": "{tokens} tok",
-  "estimatedCost": "Ước tính (chạy bằng subscription)"
+  "mcpRequest": "Yêu cầu MCP"
 }

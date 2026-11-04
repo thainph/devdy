@@ -6,7 +6,6 @@
   "days": "ngày",
   "noBoardTitle": "Chưa dự án nào có bảng GitHub Project",
   "noBoardHint": "Liên kết một bảng trong Settings → GitHub Project của dự án để vẽ issue lên Gantt.",
-  "noBoardHintSettings": "Settings → GitHub Project",
   "bannerNoBoardPrefix": "Chưa liên kết bảng GitHub Project — Ngày bắt đầu / Hạn chót / Trạng thái sẽ trống. Cấu hình tại",
   "bannerNoBoardLink": "Settings → GitHub Project",
   "bannerSkippedNonGithub": "Đã bỏ qua repo không phải GitHub (chưa hỗ trợ GitLab).",

@@ -3,7 +3,6 @@
   "detecting": "Detecting…",
   "adding": "Adding…",
   "addProject": "Add Project",
-  "error": "Something went wrong",
   "emptyTitle": "No projects yet",
   "emptyHint": "Add a local folder to start managing AI skills and running analyses",
   "openInVscode": "Open project in VS Code",

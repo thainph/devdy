@@ -1,6 +1,4 @@
 {
-  "copyMarkdown": "Copy markdown",
-  "markdownCopied": "Markdown copied",
   "picker": {
     "title": "Insert a Slack thread, note or todo",
     "search": "Search…",

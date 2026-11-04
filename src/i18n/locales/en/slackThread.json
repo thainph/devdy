@@ -15,7 +15,6 @@
     "emptyHint": "Paste a Slack thread link with “Add thread”, or send one from the Chrome extension.",
     "noResults": "No matching threads.",
     "newCount": "{count} new",
-    "warning": "Has warnings — open the thread to see them",
     "collapse": "Collapse",
     "expand": "Expand",
     "linkFilter": "Filter by linked session",
