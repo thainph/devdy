@@ -16,7 +16,6 @@
 use crate::db::Db;
 use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
-use crate::remote::guard;
 use crate::remote::command::{
     data_action_permitted, focus_action_permitted, is_allowed_action, is_data_action, is_focus_action,
     is_push_action, map_remote_decision, push_action_permitted, CommandRateLimiter, IdempotencyGuard,
@@ -87,8 +86,6 @@ pub struct HandlerCtx {
     pub idem: Arc<TokioMutex<IdempotencyGuard>>,
     /// Sliding idle deadline (Unix secs). Bumped on each accepted command.
     pub idle: IdleClock,
-    /// A remote-desktop Controller (drives the UI over `ipc_*` commands).
-    pub ipc: bool,
     /// The Controller manages todos / notes / project switches ([`FEATURE_DATA`]).
     ///
     /// [`FEATURE_DATA`]: crate::remote::protocol::FEATURE_DATA
@@ -116,8 +113,8 @@ impl HandlerCtx {
     /// a reconnect within the idle window skips the OTP.
     fn slide_idle(&self) {
         let deadline = now_unix() + IDLE_TTL_SECS;
-        // Persisting hits the Keychain; a remote desktop issues many calls a
-        // second, so only write when the deadline moved meaningfully.
+        // Persisting hits the Keychain, so only write when the deadline moved
+        // meaningfully.
         let prev = self.idle.load(Ordering::SeqCst);
         self.idle.store(deadline, Ordering::SeqCst);
         if deadline.saturating_sub(prev) < 60 {
@@ -333,21 +330,6 @@ pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: CmdPayload) {
         }
     }
 
-    // Remote desktop: a full UI driving this app as the local user would. Its
-    // calls go to the bridge verbatim — no per-command allow-list or budget,
-    // by design (the paired device is trusted like the person at the keyboard)
-    // — except what `ipc_refuses` (Remote Control config, controlling-side
-    // plumbing, plugin commands). Sensitive calls are audited (`ipc_audit`).
-    if action.starts_with("ipc_") {
-        if !ctx.ipc {
-            reject(ctx, action, None, RejectReason::NotAllowed).await;
-            return;
-        }
-        ctx.slide_idle();
-        handle_ipc(ctx, &cmd).await;
-        return;
-    }
-
     // Gate 0: run scope. A multi-run Controller may act on any run this Host
     // actually has (device approval is the trust boundary, SRS BR-005 v1.1); a
     // legacy one is still pinned to the run its link was minted for. Either way
@@ -436,101 +418,6 @@ pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: CmdPayload) {
         "list_pending" => handle_list_pending(ctx, &cmd).await,
         // Unreachable: allow-list already gated. Defensive audit.
         _ => reject(ctx, action, run_id.as_deref(), RejectReason::NotAllowed).await,
-    }
-}
-
-/// Whether `ipc_invoke` refuses `name` before it reaches the bridge.
-///
-/// - [`guard::is_local_only_command`]: Remote Control config and the
-///   controlling side's plumbing (the bridge's `invoke_handler` refuses them
-///   too — this is the first wall).
-/// - `plugin:*`: a remote-desktop window runs plugin commands on its OWN
-///   machine (`src/lib/ipc/core.ts`), so none ever needs the bridge — and
-///   through it they would act here: `plugin:event|emit` can post to any
-///   listener of this app, `plugin:fs|*` reads its files.
-/// - `remote_bridge_*`: the bridge's own plumbing, called by the bridge page.
-fn ipc_refuses(name: &str) -> bool {
-    guard::is_local_only_command(name) || name.starts_with("plugin:") || name.starts_with("remote_bridge_")
-}
-
-/// Whether `args` hold a Tauri channel reference (`"__CHANNEL__:<id>"`) at any
-/// depth. A channel argument is resolved against the CALLING webview — the
-/// bridge — so a forged one could hand a command the bridge page's own
-/// callbacks (its request channel). No remote command takes a channel.
-fn has_channel_ref(args: &serde_json::Value) -> bool {
-    match args {
-        serde_json::Value::String(s) => s.starts_with("__CHANNEL__:"),
-        serde_json::Value::Array(a) => a.iter().any(has_channel_ref),
-        serde_json::Value::Object(o) => o.values().any(has_channel_ref),
-        _ => false,
-    }
-}
-
-/// The bridge request for one `ipc_*` command, `None` when there is nothing
-/// to forward. A refused invoke goes out as [`guard::DENIED`], a command that
-/// does not exist, so it fails on the Controller like an unknown one.
-fn ipc_request(cmd: &CmdPayload) -> Option<serde_json::Value> {
-    match cmd.action.as_str() {
-        "ipc_invoke" => {
-            let (Some(id), Some(name)) = (cmd.id.as_deref(), cmd.cmd.as_deref()) else { return None };
-            // Name only: args may carry anything (prompts, paths, secrets).
-            tracing::debug!(event = "remote_ipc_invoke", cmd = %name);
-            let args = cmd.args.clone().unwrap_or(serde_json::Value::Null);
-            let (name, args) = if ipc_refuses(name) || has_channel_ref(&args) {
-                (guard::DENIED, serde_json::Value::Null)
-            } else {
-                (name, args)
-            };
-            Some(serde_json::json!({ "type": "invoke", "id": id, "cmd": name, "args": args }))
-        }
-        "ipc_listen" | "ipc_unlisten" => {
-            let event = cmd.event.as_deref()?;
-            let kind = if cmd.action == "ipc_listen" { "listen" } else { "unlisten" };
-            Some(serde_json::json!({ "type": kind, "event": event }))
-        }
-        _ => None,
-    }
-}
-
-/// Longest setting key an audit entry quotes.
-const MAX_AUDIT_KEY: usize = 64;
-
-/// The audit entry `(action, result, reason)` of one `ipc_invoke`, if it gets
-/// one: a refused [`guard::is_local_only_command`], or a sensitive command let
-/// through ([`guard::audited_command`]; "accepted" = forwarded, it may still
-/// fail). Names only, never arguments — but for `update_setting` its key.
-fn ipc_audit(cmd: &CmdPayload) -> Option<(String, &'static str, Option<&'static str>)> {
-    if cmd.action != "ipc_invoke" {
-        return None;
-    }
-    let name = cmd.cmd.as_deref()?;
-    if guard::is_local_only_command(name) {
-        return Some((format!("ipc:{name}"), audit::RESULT_REJECTED, Some("local_only")));
-    }
-    if !guard::audited_command(name) {
-        return None;
-    }
-    if name == "update_setting" {
-        let key = cmd.args.as_ref().and_then(|a| a.get("key")).and_then(|k| k.as_str()).unwrap_or_default();
-        let shown: String = key.chars().take(MAX_AUDIT_KEY).collect();
-        let action = format!("ipc:update_setting:{shown}");
-        if !guard::remote_may_set_setting(key) {
-            return Some((action, audit::RESULT_REJECTED, Some("local_only")));
-        }
-        return Some((action, audit::RESULT_ACCEPTED, None));
-    }
-    Some((format!("ipc:{name}"), audit::RESULT_ACCEPTED, None))
-}
-
-/// Forward one `ipc_*` command to the bridge webview.
-async fn handle_ipc(ctx: &HandlerCtx, cmd: &CmdPayload) {
-    use tauri::Manager;
-    if let Some((action, result, reason)) = ipc_audit(cmd) {
-        audit::audit(&ctx.db, None, Some(&ctx.room_id), None, &action, result, reason).await;
-    }
-    let Some(request) = ipc_request(cmd) else { return };
-    if let Some(state) = ctx.app.try_state::<crate::remote::RemoteState>() {
-        state.ipc.forward(&ctx.app, request).await;
     }
 }
 
@@ -1262,111 +1149,6 @@ async fn create_session_run_for_remote(
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    fn payload(v: serde_json::Value) -> CmdPayload {
-        serde_json::from_value(v).unwrap()
-    }
-
-    fn invoke_of(name: &str, args: serde_json::Value) -> serde_json::Value {
-        ipc_request(&payload(serde_json::json!({ "action": "ipc_invoke", "id": "c1", "cmd": name, "args": args })))
-            .expect("an invoke request")
-    }
-
-    #[test]
-    fn everyday_invokes_reach_the_bridge_verbatim() {
-        let req = invoke_of("list_runs", serde_json::json!({ "projectId": "p" }));
-        assert_eq!(req, serde_json::json!({ "type": "invoke", "id": "c1", "cmd": "list_runs", "args": { "projectId": "p" } }));
-    }
-
-    #[test]
-    fn local_only_invokes_go_out_as_an_unknown_command_without_args() {
-        for name in ["remote_set_config", "remote_clear_audit", "remote_set_master_password", "read_local_file_chunk"] {
-            let req = invoke_of(name, serde_json::json!({ "path": "/tmp/x" }));
-            assert_eq!(req["cmd"], guard::DENIED, "{name}");
-            assert!(req["args"].is_null(), "{name}");
-        }
-    }
-
-    #[test]
-    fn credential_and_vault_invokes_now_reach_the_bridge() {
-        for name in ["export_settings_backup", "create_github_account", "update_mcp_server", "secret_note_reveal", "aws_sso_login"] {
-            let req = invoke_of(name, serde_json::json!({ "id": "x" }));
-            assert_eq!(req["cmd"], name, "{name}");
-            assert_eq!(req["args"], serde_json::json!({ "id": "x" }), "{name}");
-        }
-    }
-
-    fn audit_of(name: &str, args: serde_json::Value) -> Option<(String, &'static str, Option<&'static str>)> {
-        ipc_audit(&payload(serde_json::json!({ "action": "ipc_invoke", "id": "c1", "cmd": name, "args": args })))
-    }
-
-    #[test]
-    fn sensitive_invokes_are_audited_by_name_only() {
-        let (action, result, _) = audit_of("create_github_account", serde_json::json!({ "token": "ghp_secret" })).unwrap();
-        assert_eq!((action.as_str(), result), ("ipc:create_github_account", audit::RESULT_ACCEPTED));
-        assert_eq!(audit_of("secret_note_reveal", serde_json::json!({ "id": "n1" })).unwrap().0, "ipc:secret_note_reveal");
-        // Settings: the key, never the value; a refused key is a rejection.
-        let (action, result, _) = audit_of("update_setting", serde_json::json!({ "key": "extra_args", "value": "--x" })).unwrap();
-        assert_eq!((action.as_str(), result), ("ipc:update_setting:extra_args", audit::RESULT_ACCEPTED));
-        let (action, result, reason) = audit_of("update_setting", serde_json::json!({ "key": "remote_relay_url", "value": "wss://evil" })).unwrap();
-        assert_eq!((action.as_str(), result, reason), ("ipc:update_setting:remote_relay_url", audit::RESULT_REJECTED, Some("local_only")));
-        let long = "k".repeat(500);
-        assert_eq!(audit_of("update_setting", serde_json::json!({ "key": long })).unwrap().0.len(), "ipc:update_setting:".len() + MAX_AUDIT_KEY);
-        // Refused local-only commands leave a trace too.
-        let (action, result, _) = audit_of("remote_clear_audit", serde_json::json!({})).unwrap();
-        assert_eq!((action.as_str(), result), ("ipc:remote_clear_audit", audit::RESULT_REJECTED));
-        // Everyday work and chatty vault polls are not audited.
-        for name in ["list_runs", "start_run", "secret_vault_touch", "secret_vault_status", "secret_notes_list"] {
-            assert!(audit_of(name, serde_json::json!({})).is_none(), "{name}");
-        }
-        assert!(ipc_audit(&payload(serde_json::json!({ "action": "ipc_listen", "event": "x" }))).is_none());
-    }
-
-    #[test]
-    fn plugin_commands_never_reach_the_bridge() {
-        // The bridge listens for nothing a JS emit can reach any more, but an
-        // emit must not even get there: it could post to any listener here.
-        for (name, args) in [
-            (
-                "plugin:event|emit",
-                serde_json::json!({ "event": "remote-bridge://request", "payload": { "type": "invoke", "id": "x", "cmd": "export_settings_backup", "args": {} } }),
-            ),
-            ("plugin:event|emit_to", serde_json::json!({ "target": { "kind": "AnyLabel", "label": "remote-bridge" }, "event": "remote-bridge://request" })),
-            ("plugin:event|emit", serde_json::json!({ "event": "menu://action", "payload": "quit" })),
-            ("plugin:fs|read_file", serde_json::json!({ "path": "$APPDATA/server-keys/k" })),
-            ("plugin:opener|open_path", serde_json::json!({ "path": "/Applications/Calculator.app" })),
-            ("plugin:webview|create_webview_window", serde_json::json!({})),
-            ("remote_bridge_ready", serde_json::json!({})),
-            ("remote_bridge_batch", serde_json::json!({ "items": [] })),
-        ] {
-            let req = invoke_of(name, args);
-            assert_eq!(req["cmd"], guard::DENIED, "{name}");
-            assert!(req["args"].is_null(), "{name}");
-        }
-    }
-
-    #[test]
-    fn forged_channel_arguments_are_refused() {
-        for args in [
-            serde_json::json!({ "requests": "__CHANNEL__:1" }),
-            serde_json::json!({ "payload": { "on": ["x", "__CHANNEL__:7"] } }),
-        ] {
-            let req = invoke_of("list_runs", args);
-            assert_eq!(req["cmd"], guard::DENIED);
-            assert!(req["args"].is_null());
-        }
-        // A string merely mentioning it is fine.
-        let req = invoke_of("add_todo", serde_json::json!({ "title": "see __CHANNEL__:1" }));
-        assert_eq!(req["cmd"], "add_todo");
-    }
-
-    #[test]
-    fn listen_and_malformed_requests() {
-        let req = ipc_request(&payload(serde_json::json!({ "action": "ipc_listen", "event": "run://status" }))).unwrap();
-        assert_eq!(req, serde_json::json!({ "type": "listen", "event": "run://status" }));
-        assert!(ipc_request(&payload(serde_json::json!({ "action": "ipc_invoke", "id": "c1" }))).is_none());
-        assert!(ipc_request(&payload(serde_json::json!({ "action": "ipc_hello" }))).is_none());
-    }
 
     #[test]
     fn always_applies_only_to_per_tool_prompts() {

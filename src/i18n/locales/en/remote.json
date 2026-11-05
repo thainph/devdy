@@ -1,146 +1,206 @@
 {
-  "settings": {
-    "title": "Remote Control",
-    "connected": "Connected",
-    "reconnecting": "Reconnecting…",
-    "waiting": "Waiting",
-    "off": "Off",
-    "intro": "Control this host from a remote device through your self-hosted relay. The relay only ever sees end-to-end encrypted traffic.",
-    "enable": "Enable Remote Control",
+  "device": {
+    "title": "This machine",
+    "unnamed": "Unnamed",
+    "toggle": "Remote Control",
     "state": {
-      "connected": "Connected to a controller device.",
-      "running": "Running — waiting for a device to connect.",
-      "needsRelay": "Save a Relay URL in the card above first.",
-      "off": "Off. Turn on to allow remote control."
+      "setup": "Not set up",
+      "off": "Off",
+      "connecting": "Connecting…",
+      "error": "Connection error",
+      "ready": "Ready",
+      "phone": "Phone in control",
+      "aliasConflict": "Duplicate name",
+      "idConflict": "Duplicate device ID"
     },
-    "relayUrl": "Relay URL",
-    "relayUrlPlaceholder": "wss://relay.example.com/ws",
-    "authToken": "Auth token",
-    "saved": "(saved)",
-    "authTokenPlaceholder": "Leave blank to keep the current token",
-    "authTokenHint": "Stored in the OS keychain, never on disk in cleartext.",
-    "deviceName": "This device name",
-    "deviceNamePlaceholder": "e.g. mac-mini",
-    "deviceNameHint": "Lowercase letters, digits and '-' (up to 32). Entered with the master password to sign in to this machine (another Devdy or the web controller). Lets several hosts share one relay.",
-    "masterPassword": "Master password",
-    "set": "(set)",
-    "masterPasswordReplace": "Enter a new password to replace the current one",
-    "masterPasswordSet": "Set a password to skip the OTP each time",
-    "masterPasswordHint": "Enter it on your phone or another Devdy instead of the OTP code. Stored in the OS keychain. Fixed — only use it if you are the sole user. Changing or clearing it signs out every device signed in so far.",
-    "saveSettings": "Save settings",
-    "hostLabel": "host: {id}",
-    "perRunHint": "Remote sessions are now created per run: open a run and click the {remote} button in the toolbar to generate a link. Enter your {masterPassword} (if set) or the OTP code on your phone to connect.",
-    "remote": "Remote",
-    "masterPasswordInline": "master password",
-    "controlOther": "Control another Devdy",
-    "controlOtherHint": "Open a window that drives another Devdy over this relay, signed in with its device name and master password.",
-    "controlOtherOpen": "Open",
-    "auditLog": "Audit log",
-    "clearLog": "Clear log",
-    "table": {
-      "time": "Time",
-      "action": "Action",
-      "result": "Result",
-      "run": "Run"
+    "line": {
+      "setup": "{done}/{total} steps done · finish them to control this machine from your phone and sync with other machines",
+      "off": "Remote Control is off — phones and other machines can't see this one.",
+      "connecting": "Connecting to {host}…",
+      "error": "Not connected to {host}.",
+      "idConflict": "Refused by the relay — Devdy retries in a few minutes.",
+      "phone": "A phone is controlling this machine.",
+      "ready": "Connected to {host} · no phone in control"
     },
-    "noActivity": "No remote activity recorded yet.",
-    "confirmClearMaster": {
-      "title": "Clear master password",
-      "message": "Remove the saved master password?\nYou will use the per-join OTP code again.",
-      "confirmLabel": "Clear"
+    "actions": {
+      "continueSetup": "Continue setup",
+      "enable": "Turn on Remote Control",
+      "retry": "Retry connection",
+      "editRelay": "Edit relay",
+      "pair": "Pair a phone…",
+      "disconnectPhone": "Disconnect phone"
     },
-    "confirmClearAudit": {
-      "title": "Clear audit log",
-      "message": "Permanently delete all remote-control audit entries?\nThis cannot be undone.",
-      "confirmLabel": "Clear log"
+    "disconnectHint": "The phone has to sign in again with the master password.",
+    "errors": {
+      "relay_unreachable": "Can't reach the relay. Check the network and the relay URL — Devdy keeps retrying.",
+      "relay_bad_url": "The relay URL doesn't point to a Devdy relay (wrong address or path). Check the URL, e.g. wss://relay.example.com/ws.",
+      "relay_auth_failed": "The relay rejected this machine's auth token. Enter the relay's host token again.",
+      "relay_unsupported": "The relay is too old for this Devdy. Update the relay server.",
+      "relay_rate_limited": "The relay is throttling this machine. Devdy retries shortly.",
+      "device_id_conflict": "Another running Devdy uses this machine's device ID, so the relay refused this one.",
+      "relay_not_configured": "No relay URL is set. Enter it under Connection.",
+      "token_missing": "The relay auth token is missing from the Keychain. Enter it again.",
+      "agent_stopped": "Remote Control stopped. Retry, or check the relay settings.",
+      "unknown": "Not connected to the relay yet."
     },
     "toast": {
-      "relayRequired": "Relay URL is required",
-      "settingsSaved": "Relay settings saved",
-      "disabled": "Remote Control disabled",
-      "enabled": "Remote Control enabled",
-      "masterCleared": "Master password cleared",
-      "auditCleared": "Cleared {count} audit entries",
-      "auditAlreadyEmpty": "Audit log is already empty",
-      "deviceNameInvalid": "Device name: use only lowercase letters, digits and '-' (up to 32)"
+      "enabled": "Remote Control is on",
+      "disabled": "Remote Control is off",
+      "phoneDisconnected": "Phone disconnected and signed out"
+    }
+  },
+  "conflict": {
+    "alias": "The name \"{name}\" is used by another machine on this relay. Sync can't tell the two apart, and both compete for the web controller sign-in. Pick another name.",
+    "rename": "Rename",
+    "deviceId": "Another running Devdy has the same device ID as this machine — usually because the Devdy data (~/.devdy) was copied or the disk was cloned. The relay refuses this machine and Devdy retries in a few minutes. Use a new device ID to connect now.",
+    "newId": "Use a new device ID",
+    "newIdDone": "New device ID in use — reconnecting",
+    "confirmTitle": "Use a new device ID?",
+    "confirmMessage": "This machine gets a new device ID and reconnects to the relay (a few seconds).\nPaired phones and push notifications keep working.\nOther machines see this one as a new device in their sync list."
+  },
+  "setup": {
+    "title": "Set up Remote Control",
+    "steps": {
+      "relay": "Relay",
+      "name": "Device name",
+      "password": "Master password",
+      "enable": "Turn on Remote Control"
     },
-    "identity": {
-      "title": "This device & relay",
-      "intro": "Used by Remote Control. Another Devdy or the web controller enters this device name and master password to control this machine."
+    "hints": {
+      "relay": "Your self-hosted relay: its URL and host auth token.",
+      "name": "How phones and other machines find this one.",
+      "password": "Phones sign in to this machine with it; other machines use it to sync from this one.",
+      "enable": "This machine connects to the relay and shows up for phones and other machines."
+    },
+    "relaySummary": "{url} · token saved",
+    "passwordSummary": "Set",
+    "enable": "Turn on"
+  },
+  "connection": {
+    "title": "Connection",
+    "relay": "Relay",
+    "change": "Change",
+    "rename": "Rename",
+    "deviceId": "device ID {id}"
+  },
+  "relay": {
+    "url": "Relay URL",
+    "urlPlaceholder": "wss://relay.example.com/ws",
+    "urlRequired": "Enter the relay URL.",
+    "urlInvalid": "The URL must start with wss:// (or ws://).",
+    "token": "Auth token",
+    "tokenSaved": "saved",
+    "tokenKeep": "Leave blank to keep the current token",
+    "tokenRequired": "Enter the relay's host auth token.",
+    "tokenHint": "Kept in the OS Keychain, never written to disk in plain text.",
+    "tokenInKeychain": "Saved in the Keychain",
+    "tokenMissing": "Missing",
+    "saved": "Relay saved"
+  },
+  "name": {
+    "label": "Device name",
+    "placeholder": "e.g. macbook",
+    "hint": "Lowercase letters, digits and '-' (up to 32). Type it on the phone with the master password to sign in to this machine.",
+    "invalid": "Use only lowercase letters, digits and '-' (up to 32).",
+    "saved": "Device name saved"
+  },
+  "password": {
+    "label": "Master password",
+    "confirm": "Type it again",
+    "hint": "Kept in the Keychain. Changing or clearing it signs out every phone.",
+    "tooShort": "Use at least {n} characters.",
+    "mismatch": "The two passwords don't match.",
+    "save": "Save password",
+    "saved": "Master password saved",
+    "isSet": "Set",
+    "clear": "Clear master password",
+    "clearTitle": "Clear the master password?",
+    "clearMessage": "Phones can no longer sign in, and other machines can't sync from this one until you set a new one.",
+    "cleared": "Master password cleared"
+  },
+  "phone": {
+    "title": "Phone",
+    "controlling": "A phone is controlling this machine.",
+    "none": "No phone is controlling this machine. Pair one to scan a QR code.",
+    "off": "Remote Control is off: phones can't connect, and notifications are only sent while it is on."
+  },
+  "activity": {
+    "title": "Recent activity",
+    "summary": "{count} events · latest {at} — {action}",
+    "empty": "No remote activity yet.",
+    "time": "Time",
+    "action": "Action",
+    "result": "Result",
+    "accepted": "Allowed",
+    "rejected": "Refused",
+    "clear": "Clear activity",
+    "clearTitle": "Clear the activity log?",
+    "clearMessage": "Permanently delete every Remote Control activity entry?\nThis cannot be undone.",
+    "cleared": "Cleared {count} entries",
+    "alreadyEmpty": "The activity log is already empty",
+    "actions": {
+      "login": "Sign in with the master password",
+      "authenticate": "Sign in with a pairing link",
+      "kick_controller": "Disconnect phone",
+      "set_master_password": "Set the master password",
+      "clear_master_password": "Clear the master password",
+      "device_sync_pull": "Another machine synced from here",
+      "start_run": "Start a run",
+      "cancel_run": "Stop a run",
+      "send_chat_message": "Send a message",
+      "respond_permission": "Answer a permission",
+      "open_run": "Open a run",
+      "close_run": "Close a run",
+      "list_runs": "List runs",
+      "request_history": "Load run history"
+    },
+    "reasons": {
+      "bad_password": "wrong password",
+      "bad_otp": "wrong pairing code",
+      "throttled": "too many tries",
+      "rate_limited": "too many requests",
+      "malformed": "malformed request",
+      "unauthorized": "not signed in",
+      "action_not_allowed": "not allowed",
+      "wrong_run": "wrong run",
+      "not_found": "not found",
+      "bad_request": "bad request"
     }
   },
   "session": {
-    "title": "Control from phone",
-    "heading": "Control your runs from your phone",
+    "title": "Pair a phone",
+    "needsPasswordTitle": "Set a master password first",
+    "needsPasswordDesc": "Phones sign in to {name} with the master password. Set it once; it is used for every pairing and for sync.",
+    "saveAndPair": "Save and show QR code",
     "creating": "Creating link…",
-    "scanCaption": "Scan with your phone or copy the link to open the controller.",
+    "step1": "Scan the code with the phone camera, or copy the link and open it on the phone.",
+    "step2": "Enter the device name {name} and the master password.",
+    "expiresIn": "Code expires in {time} · a new one is made when it does",
+    "newCode": "New code",
     "copyLink": "Copy link",
-    "cannotDeriveController": "Could not determine the controller address from the relay URL. Copy the fields below and paste them into the controller manually.",
+    "cannotDeriveController": "Couldn't work out the controller address from the relay URL. Copy the fields below and paste them into the controller.",
     "copied": "Copied!",
     "copyFields": "Copy fields",
-    "enterMasterOnPhone": "Enter the {masterPassword} on your phone to connect. (Set a password in Settings → Remote Control.)",
-    "masterPassword": "master password",
-    "connecting": "Phone is connecting…",
-    "enterMasterToFinish": "Enter the master password on your phone to finish.",
+    "copyFailed": "Couldn't copy to the clipboard",
+    "qrFailed": "Couldn't draw the QR code",
+    "connecting": "The phone is connecting…",
+    "enterMasterToFinish": "Enter the master password on the phone to finish.",
     "connectedLive": "Connected — live control",
-    "phoneControlling": "Your phone is paired and can drive any run. Closing this modal will not disconnect.",
-    "idleExpiry": "Session expires if idle for ~{time}",
-    "stopControl": "Stop control",
-    "authFailed": "Authentication failed",
-    "attemptsLeft": "{count} attempts left",
-    "createNewLink": "Create new link",
-    "expired": "Session expired",
-    "errorOccurred": "An error occurred",
-    "copyFailed": "Could not copy to clipboard",
+    "phoneControlling": "The phone is paired and can drive every run. Closing this window does not disconnect it.",
+    "idleExpiry": "Signs out after ~{time} without activity",
+    "authFailed": "Sign-in failed",
+    "attemptsLeft": "{count} tries left",
+    "createNewLink": "Create a new link",
+    "expired": "The link expired",
+    "errorOccurred": "Something went wrong",
     "disabledTitle": "Remote Control is off",
-    "disabledDesc": "Remote Control isn't enabled yet. Turn it on to create a link for your phone.",
-    "disabledNoRelay": "Remote Control isn't enabled yet. Configure a relay URL in Settings first, then turn it on.",
-    "enableNow": "Enable Remote Control",
+    "disabledDesc": "Turn it on to create a link for the phone.",
+    "disabledNoRelay": "Set up the relay in Settings → Devices first, then turn Remote Control on.",
+    "enableNow": "Turn on Remote Control",
     "openSettings": "Open Settings"
   },
-  "desktop": {
-    "login": {
-      "title": "Control another Devdy",
-      "subtitle": "Sign in with the other device's name and its Remote Control master password.",
-      "device": "Device name",
-      "devicePlaceholder": "Leave blank if it has no name",
-      "password": "Master password",
-      "passwordPlaceholder": "Remote master password",
-      "submit": "Connect",
-      "working": "Connecting…",
-      "passwordFirst": "Enter the password first.",
-      "deviceInvalid": "Device names use only lowercase letters, digits and '-' (up to 32).",
-      "wrongPassword": "Wrong password (or too many tries — wait a few minutes).",
-      "hostOffline": "That Devdy is not reachable: check the device name, and that it is running with Remote Control on and a master password set.",
-      "network": "Could not reach the relay. Check your connection and try again.",
-      "noRelay": "Set a Relay URL in Settings → Remote Control on this machine first.",
-      "relayVia": "Via relay {url}"
-    },
-    "banner": {
-      "controlling": "Controlling {device}",
-      "unnamed": "remote Devdy",
-      "connected": "Connected",
-      "connecting": "Connecting…",
-      "reconnecting": "Reconnecting…",
-      "disconnected": "Disconnected",
-      "error": "Connection error",
-      "authFailed": "Signed out",
-      "superseded": "Taken over by another device",
-      "reconnect": "Reconnect",
-      "signInAgain": "Sign in again",
-      "signOut": "Sign out",
-      "files": "Files",
-      "filesHint": "Copy files between this computer and the controlled Devdy"
-    },
-    "upload": {
-      "progress": "Copying {name} to the controlled Devdy… {percent}%",
-      "progressMany": "Copying {count} files to the controlled Devdy… {percent}%",
-      "failed": "Couldn't copy {name} to the controlled Devdy: {error}",
-      "folderSkipped": "Folders can't be dropped into a controlled Devdy yet ({name})."
-    }
-  },
   "push": {
-    "title": "Phone notifications",
+    "title": "Push notifications",
     "intro": "Paired phones that turned on notifications (bell in the phone's Inbox) are notified while Remote Control is on and the phone is not open. Run notifications carry counts only; Focus reminders carry the todo's text, end-to-end encrypted to the phone.",
     "kinds": {
       "pending": "Waiting for approval",
@@ -154,7 +214,7 @@
       "failed": "A run ended with an error.",
       "focus": "The desktop's Focus reminders (start by, due soon, overdue, remind me, morning summary), with the todo's text. Sent even while the phone is open."
     },
-    "devices": "Devices",
+    "devices": "Phones receiving notifications",
     "noDevices": "No device yet. On the phone, open the Inbox and tap the bell.",
     "unnamed": "Unnamed device",
     "added": "Added {at}",
@@ -166,6 +226,8 @@
       "testSent": "Test notification sent to {label}.",
       "testFailed": "Test notification failed: {reason}",
       "gone": "The push service no longer knows this device — it was removed."
-    }
+    },
+    "removeTitle": "Remove this phone?",
+    "removeMessage": "{label} stops receiving notifications. It can subscribe again from the phone."
   }
 }

@@ -271,13 +271,15 @@ async function loadAppliedRules() {
 async function handleToggleRule(rule: { id: string; manual: boolean }) {
   togglingRuleId.value = rule.id
   try {
+    let folderMissing = false
     if (rule.manual) {
       await projectStore.removeRuleFromProject(projectId.value, rule.id)
     } else {
-      await projectStore.applyRule(projectId.value, rule.id)
+      folderMissing = (await projectStore.applyRule(projectId.value, rule.id))?.folder_missing ?? false
     }
     await Promise.all([loadAppliedRules(), loadGroupStates('rule')])
-    toast.success(t('projectDetail.toastSaved'))
+    if (folderMissing) toast.info(savedWithoutFolderMessage(), 5000)
+    else toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -322,6 +324,8 @@ async function handleToggleGroup(kind: GroupKind, group: ProjectGroupState) {
       if (outcome.failures.length > 0) {
         const details = outcome.failures.map(f => `• ${f.item_name}: ${f.error}`).join('\n')
         toast.error(t('groups.toastGroupEnabledPartial', { name: group.name, applied: outcome.applied, details }))
+      } else if (outcome.folder_missing) {
+        toast.info(savedWithoutFolderMessage(), 5000)
       } else {
         toast.success(t('groups.toastGroupEnabled', { name: group.name, count: outcome.applied }))
       }
@@ -342,6 +346,8 @@ async function handleReapplyGroup(kind: GroupKind, group: ProjectGroupState) {
     if (outcome.failures.length > 0) {
       const details = outcome.failures.map(f => `• ${f.item_name}: ${f.error}`).join('\n')
       toast.error(t('groups.toastGroupEnabledPartial', { name: group.name, applied: outcome.applied, details }))
+    } else if (outcome.folder_missing) {
+      toast.info(savedWithoutFolderMessage(), 5000)
     } else {
       toast.success(t('groups.toastGroupEnabled', { name: group.name, count: outcome.applied }))
     }
@@ -805,20 +811,27 @@ async function handleAddRepo() {
   }
 }
 
+/** Info toast: the link is saved, but this project's folder isn't on this machine yet. */
+function savedWithoutFolderMessage() {
+  return t('misc.savedWithoutFolder.one', { project: project.value?.name ?? '' })
+}
+
 // The switch owns the direct link only: turning it off on a skill a group also provides leaves the
 // skill in place (the group still wants it), it just stops being hand-picked.
 async function handleToggleSkill(skill: { id: string; manual: boolean }) {
   togglingSkillId.value = skill.id
   try {
+    let folderMissing = false
     if (skill.manual) {
       await projectStore.removeSkillFromProject(projectId.value, skill.id)
     } else {
-      await projectStore.applySkill(projectId.value, skill.id)
+      folderMissing = (await projectStore.applySkill(projectId.value, skill.id))?.folder_missing ?? false
     }
     // One skill can complete or break a group, so the group rows have to follow — in parallel, so
     // the row isn't frozen for two round trips.
     await Promise.all([loadAppliedSkills(), loadGroupStates('skill')])
-    toast.success(t('projectDetail.toastSaved'))
+    if (folderMissing) toast.info(savedWithoutFolderMessage(), 5000)
+    else toast.success(t('projectDetail.toastSaved'))
   } catch (e) {
     toast.error(String(e))
   } finally {

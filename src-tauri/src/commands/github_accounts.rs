@@ -174,21 +174,21 @@ pub async fn update_github_account(
 
 #[tauri::command]
 pub async fn delete_github_account(db: State<'_, Db>, id: String) -> Result<(), String> {
-    let _ = secrets::delete_account_pat(&id);
+    delete_github_account_inner(db.inner(), &id).await
+}
+
+pub async fn delete_github_account_inner(db: &Db, id: &str) -> Result<(), String> {
+    let _ = secrets::delete_account_pat(id);
     // projects.github_account_id is ON DELETE SET NULL and project_github_accounts
     // cascades, so linked projects simply unlink; a project that used it as the
     // default falls back to another enabled account.
     sqlx::query("DELETE FROM github_accounts WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
-    super::project_git_accounts::repair_defaults(
-        db.inner(),
-        super::project_git_accounts::GITHUB,
-        None,
-    )
-    .await
+    super::project_git_accounts::repair_defaults(db, super::project_git_accounts::GITHUB, None)
+        .await
 }
 
 #[tauri::command]

@@ -45,15 +45,5 @@
   "plan": "plan",
   "proposedPlan": "Proposed plan",
   "mcp": "mcp",
-  "mcpRequest": "MCP request",
-  "server": "server",
-  "action": "action",
-  "message": "message",
-  "denied": "denied",
-  "status": "status",
-  "input": "input",
-  "failed": "Failed",
-  "turns": "{count} turns",
-  "tokensSuffix": "{tokens} tok",
-  "estimatedCost": "Estimated (subscription run)"
+  "mcpRequest": "MCP request"
 }

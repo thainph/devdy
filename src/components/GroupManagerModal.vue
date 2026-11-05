@@ -3,6 +3,7 @@
 // to every project at once. One component serves both kinds — see `stores/groups.ts`.
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { Button, Badge, Input, Modal, Textarea } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -159,12 +160,14 @@ async function handleApplyToAll() {
   applyingAll.value = true
   try {
     const result = await store.applyGroupToAllProjects(group.id)
-    if (result.failures.length === 0) {
+    const pending = savedWithoutFolderNames(result.saved_without_folder)
+    if (result.failures.length === 0 && (result.applied > 0 || !pending.length)) {
       toast.success(t('groups.toastAppliedAll', { name: group.name, count: result.applied }))
-    } else {
+    } else if (result.failures.length > 0) {
       const details = result.failures.map(f => `• ${f.project_name}: ${f.error}`).join('\n')
       toast.error(t('groups.toastAppliedAllPartial', { applied: result.applied, failed: result.failures.length, details }))
     }
+    if (pending.length) toast.info(t('misc.savedWithoutFolder.many', { projects: pending.join(', ') }), 5000)
     emit('changed')
   } catch (e) {
     toast.error(String(e))

@@ -13,14 +13,11 @@
     "google": "Tài khoản Google",
     "usage": "Sử dụng & Ngân sách",
     "devices": "Thiết bị",
+    "backup": "Sao lưu",
     "prompts": "Mẫu Prompt",
     "inbox": "Inbox API",
     "azure": "Tài khoản Azure",
     "focus": "Focus"
-  },
-  "devicesTabs": {
-    "remote": "Điều khiển từ xa",
-    "backup": "Sao lưu"
   },
   "general": {
     "theme": "Giao diện",
@@ -91,7 +88,6 @@
     "resetPosition": "Đặt lại vị trí",
     "positionReset": "Đã đặt lại vị trí linh thú",
     "previewState": "Xem trước",
-    "previewHint": "Chọn một trạng thái để xem đồng thời hoạt ảnh, âm thanh và bong bóng thoại.",
     "previewLabel": "Preview linh thú DY",
     "previewBreakthrough": "Play breakthrough effect",
     "states": {
@@ -127,13 +123,6 @@
         "hoaThan": "Hóa Thần",
         "anhBien": "Anh Biến",
         "vanDinh": "Vấn Đỉnh"
-      },
-      "changes": {
-        "tier1": "Vừa bước vào cảnh giới mới: aura đổi màu nhẹ, nhịp thở và ánh mắt ổn định hơn.",
-        "tier2": "Năng lượng bắt đầu rõ hơn: mắt sáng hơn và vòng sáng dưới chân dày hơn.",
-        "tier3": "Linh khí tụ lại: thêm nhịp spark nhỏ khi AI đang suy nghĩ hoặc chạy tool.",
-        "tier4": "Sắp viên mãn: đuôi và dòng năng lượng quanh thân mạnh hơn trong trạng thái loading.",
-        "tier5": "Viên mãn cảnh giới: badge nổi bật hơn và sẵn sàng hiệu ứng đột phá sang cảnh giới kế tiếp."
       }
     }
   },
@@ -210,8 +199,6 @@
   },
   "aws": {
     "title": "Tài khoản AWS",
-    "authKeys": "Access key",
-    "authProfile": "Named profile / SSO",
     "intro": "Thêm tài khoản AWS một lần và liên kết một tài khoản cho mỗi dự án. Secret Access Key và Session Token được lưu an toàn trong OS Keychain. Devdy tự cấu hình tài khoản dự án đã chọn cho các lần chạy Claude và Codex qua broker.",
     "isolationWarning": "Tránh đặt credential AWS toàn cục cho công việc của agent. Devdy kiểm soát các lệnh gọi aws qua broker; việc thay đổi credential/config như aws configure bị chặn.",
     "validate": "Xác thực",
@@ -221,36 +208,15 @@
     "ssoLoggingIn": "Đang mở trình duyệt để đăng nhập SSO…",
     "labelPlaceholder": "Nhãn",
     "regionPlaceholder": "ap-northeast-1",
-    "accessKeyIdPlaceholder": "Access Key ID",
-    "newSecretPlaceholder": "Secret Access Key mới (để trống để giữ nguyên)",
-    "sessionTokenReplacePlaceholder": "Session Token (tùy chọn; đặt khi thay secret)",
-    "secretPlaceholder": "Secret Access Key",
-    "sessionTokenPlaceholder": "Session Token (tùy chọn)",
-    "profileNamePlaceholder": "Tên AWS profile",
-    "profileNameLabel": "Tên profile",
     "profileLabel": "AWS profile",
     "profileSelectPlaceholder": "Chọn một profile…",
     "profileNonSso": "profile",
     "profileNoneFound": "Không tìm thấy profile nào trong ~/.aws/config",
     "addFromProfile": "Thêm từ profile ~/.aws",
     "profileAllAdded": "Tất cả profile trong ~/.aws/config đã được thêm",
-    "ssoSessionLabel": "SSO session",
-    "ssoAccountLabel": "Account",
     "ssoRoleLabel": "Role",
-    "ssoSessionPlaceholder": "Chọn SSO session…",
-    "ssoAccountPlaceholder": "Chọn account…",
-    "ssoRolePlaceholder": "Chọn role…",
-    "ssoAddSession": "Thêm SSO session",
-    "ssoNewSessionNamePlaceholder": "Tên session (vd: my-company)",
-    "ssoStartUrlPlaceholder": "SSO start URL (https://…/start)",
-    "ssoLoginNeeded": "Token SSO chưa có hoặc đã hết hạn — đăng nhập để lấy danh sách account.",
-    "ssoResolvedProfile": "Profile",
-    "ssoUseManual": "Nhập tên profile thủ công",
-    "ssoUsePicker": "Chọn role qua SSO",
     "tagsPlaceholder": "Tag (tùy chọn)",
     "saving": "Đang lưu…",
-    "addAccount": "Thêm tài khoản",
-    "addLabelPlaceholder": "Nhãn (ví dụ: Work AWS, Production)",
     "adding": "Đang thêm…",
     "deleteTitle": "Xóa tài khoản AWS",
     "deleteMessage": "Xóa tài khoản AWS này? Các dự án liên kết với nó sẽ bị hủy liên kết."
@@ -325,7 +291,6 @@
     "modelsCached": "{count} model · cập nhật {when}",
     "codexRefreshHint": "Chưa làm mới — đang dùng danh sách mặc định. Bấm Làm mới để lấy model từ Codex CLI.",
     "defaultCodexModel": "Model Codex mặc định",
-    "codexStaticHint": "Codex không hỗ trợ liệt kê model động — danh sách này cố định.",
     "defaultPermissionMode": "Chế độ quyền mặc định",
     "permAskUi": "Hỏi qua UI (mặc định)",
     "permAcceptEdits": "Tự động chấp nhận chỉnh sửa",
@@ -488,6 +453,7 @@
       "todos": "Todo",
       "slackThreads": "Slack thread",
       "projects": "Project"
-    }
+    },
+    "syncInstead": "Hai máy đều đang online? Dùng {link} thay vì file."
   }
 }

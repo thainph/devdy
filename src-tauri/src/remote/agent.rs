@@ -48,6 +48,38 @@ use tokio_tungstenite::tungstenite::Message;
 const BACKOFF_MIN: Duration = Duration::from_secs(1);
 const BACKOFF_MAX: Duration = Duration::from_secs(15);
 
+/// Wait before dialing again after the relay refused this Host because another
+/// running Devdy uses the same device id. Retrying fast cannot help (the other
+/// one stays connected); a new device id (`remote_regenerate_device_id`)
+/// restarts the agent straight away.
+const DEVICE_CONFLICT_RETRY: Duration = Duration::from_secs(300);
+
+/// Wait after a FIRST `device_id_conflict` before checking again, unreported:
+/// longer than the relay's peer liveness timeout (45 s), so the half-open
+/// socket of this same machine's previous launch (killed app, lost network)
+/// is gone by then. Only a second refusal in a row is a real conflict.
+const DEVICE_CONFLICT_RECHECK: Duration = Duration::from_secs(60);
+
+/// After `refusals` `device_id_conflict`s in a row: how long to wait, and
+/// whether to report the conflict.
+fn device_conflict_wait(refusals: u32) -> (Duration, bool) {
+    if refusals <= 1 {
+        (DEVICE_CONFLICT_RECHECK, false)
+    } else {
+        (DEVICE_CONFLICT_RETRY, true)
+    }
+}
+
+/// How often the device-sync listen is re-armed while serving. Re-arming the
+/// same code is a no-op for the relay, and it restores a listen the relay
+/// dropped without telling us (older relays, when another connection took the
+/// code over and then went away).
+const SYNC_REARM_INTERVAL: Duration = Duration::from_secs(60);
+
+/// Minimum gap between two re-arms triggered by `listen_superseded`, so two
+/// live apps fighting over the same code can't ping-pong faster than this.
+const SYNC_REARM_MIN_GAP: Duration = Duration::from_secs(10);
+
 /// Upper bound on dialing the relay (DNS + TCP + TLS + WS upgrade). Without it a
 /// dial started during a network change or right after wake can hang forever,
 /// and the agent never gets back to its reconnect loop.
@@ -123,8 +155,10 @@ pub struct AgentDeps {
     pub bus: RemoteBus,
     /// The single bound remote session (set by `remote_create_session_link`).
     pub bound: Arc<TokioMutex<Option<BoundSession>>>,
-    /// Whether a relay connection is currently up + authenticated.
+    /// Whether a phone / web controller is attached and authenticated.
     pub connected: Arc<std::sync::atomic::AtomicBool>,
+    /// Whether the host socket is up and the relay acked `register_host`.
+    pub relay_online: Arc<std::sync::atomic::AtomicBool>,
     /// Whether the host↔relay socket is down and the agent is retrying (backoff),
     /// surfaced to the desktop badge as "reconnecting…".
     pub reconnecting: Arc<std::sync::atomic::AtomicBool>,
@@ -137,8 +171,10 @@ pub struct AgentDeps {
     pub subscriptions: crate::remote::RunSubscriptions,
     /// The run the Controller is currently viewing.
     pub focus_run_id: crate::remote::FocusRun,
-    /// Remote-desktop IPC routing.
-    pub ipc: crate::remote::ipc::IpcHub,
+    /// Device id / alias clash reported by the relay (see `remote_status`).
+    pub device_conflict: crate::remote::ConflictSlot,
+    /// Why this Host is not connected right now (see `remote::last_error`).
+    pub last_error: crate::remote::ErrorSlot,
 }
 
 /// Run the agent until `stop` fires. Reconnect loop with capped backoff.
@@ -149,6 +185,7 @@ pub async fn run_agent(
     mut stop: tokio::sync::watch::Receiver<bool>,
 ) {
     let mut backoff = BACKOFF_MIN;
+    let mut conflict_refusals = 0u32;
     loop {
         if *stop.borrow() {
             break;
@@ -157,8 +194,34 @@ pub async fn run_agent(
         let outcome = connect_once(&config, &deps, &auth_token, &mut stop).await;
         match outcome {
             ConnectOutcome::Stopped => break,
-            ConnectOutcome::Disconnected => {
+            ConnectOutcome::DeviceConflict => {
                 deps.connected.store(false, Ordering::SeqCst);
+                deps.relay_online.store(false, Ordering::SeqCst);
+                deps.reconnecting.store(false, Ordering::SeqCst);
+                conflict_refusals += 1;
+                let (wait, report) = device_conflict_wait(conflict_refusals);
+                if report {
+                    crate::remote::set_last_error(
+                        &deps.last_error,
+                        Some(crate::remote::last_error::DEVICE_ID_CONFLICT),
+                    );
+                    crate::remote::set_device_conflict(
+                        &deps.app,
+                        &deps.device_conflict,
+                        Some(crate::remote::DeviceConflict::device_id()),
+                    );
+                }
+                tracing::warn!(event = "remote_device_id_conflict_wait", secs = wait.as_secs(), report);
+                tokio::select! {
+                    _ = tokio::time::sleep(wait) => {}
+                    _ = stop.changed() => { if *stop.borrow() { break; } }
+                }
+                backoff = BACKOFF_MIN;
+            }
+            ConnectOutcome::Disconnected => {
+                conflict_refusals = 0;
+                deps.connected.store(false, Ordering::SeqCst);
+                deps.relay_online.store(false, Ordering::SeqCst);
                 // The socket is down and we're about to wait+retry — surface this
                 // as "reconnecting…" on the desktop (cleared once we reconnect).
                 deps.reconnecting.store(true, Ordering::SeqCst);
@@ -175,6 +238,7 @@ pub async fn run_agent(
         }
     }
     deps.connected.store(false, Ordering::SeqCst);
+    deps.relay_online.store(false, Ordering::SeqCst);
     deps.reconnecting.store(false, Ordering::SeqCst);
     tracing::info!(event = "remote_agent_stopped");
 }
@@ -182,6 +246,8 @@ pub async fn run_agent(
 enum ConnectOutcome {
     Stopped,
     Disconnected,
+    /// The relay refused this Host: another running Devdy has its device id.
+    DeviceConflict,
 }
 
 /// One connection lifecycle: dial → register → serve until the socket drops.
@@ -201,10 +267,18 @@ async fn connect_once(
             Ok(Ok((ws, _resp))) => ws,
             Ok(Err(e)) => {
                 tracing::warn!(event = "remote_connect_failed", error = %e);
+                crate::remote::set_last_error(
+                    &deps.last_error,
+                    Some(crate::remote::last_error::for_dial_error(&e)),
+                );
                 return ConnectOutcome::Disconnected;
             }
             Err(_) => {
                 tracing::warn!(event = "remote_connect_timeout");
+                crate::remote::set_last_error(
+                    &deps.last_error,
+                    Some(crate::remote::last_error::RELAY_UNREACHABLE),
+                );
                 return ConnectOutcome::Disconnected;
             }
         },
@@ -232,11 +306,14 @@ async fn connect_once(
         let _ = sink.close().await;
     });
 
-    // Register the Host (FR-001, SEC-001 token from keyring).
+    // Register the Host (FR-001, SEC-001 token from keyring), listed for
+    // device sync while it can serve one.
+    let mut listed = sync_listing(deps).await;
     if out_tx
-        .send(Envelope::register_host(
+        .send(Envelope::register_host_listed(
             config.device_id.clone(),
             auth_token.to_string(),
+            listed.clone(),
         ))
         .is_err()
     {
@@ -259,6 +336,9 @@ async fn connect_once(
     // listening), and the login room currently mid-handshake (if any).
     let mut login_listening: Option<String> = None;
     let mut login: Option<LoginPending> = None;
+    // Device sync: the code the sync slot is armed with, and the pull in flight.
+    let mut sync_listening: Option<String> = None;
+    let mut sync: Option<crate::device_sync::host::SyncPending> = None;
 
     let seq = Arc::new(SeqCounter::default());
     let rate = Arc::new(TokioMutex::new(CommandRateLimiter::new(Instant::now())));
@@ -273,6 +353,7 @@ async fn connect_once(
 
     sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
     sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+    sync_device_sync_listen(&config.device_id, &out_tx, &mut sync_listening, &mut sync);
 
     // Heartbeat: keep the host↔relay socket warm through idle-killing proxies
     // once a run stops streaming. Carries the ACTIVE room id (if any) so the relay
@@ -284,6 +365,14 @@ async fn connect_once(
     // delivers an inbound frame within KEEPALIVE_INTERVAL. `last_inbound` is primed
     // to now (the socket just connected) so the check measures silence from here.
     let mut last_inbound = Instant::now();
+    // Device sync: re-arm its listen now and then (see SYNC_REARM_INTERVAL).
+    let mut sync_rearm = tokio::time::interval_at(
+        tokio::time::Instant::now() + SYNC_REARM_INTERVAL,
+        SYNC_REARM_INTERVAL,
+    );
+    sync_rearm.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
+    let mut last_sync_arm = Instant::now();
+
     let mut liveness = tokio::time::interval(LIVENESS_CHECK_INTERVAL);
     liveness.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Delay);
     let mut last_check = (Instant::now(), SystemTime::now());
@@ -297,6 +386,12 @@ async fn connect_once(
                 let room_id = room_ctx.as_ref().map(|c| c.room_id.clone()).unwrap_or_default();
                 if out_tx.send(Envelope::keepalive(room_id)).is_err() {
                     break ConnectOutcome::Disconnected;
+                }
+            }
+            _ = sync_rearm.tick() => {
+                if let Some(frame) = crate::device_sync::host::rearm_frame(sync_listening.as_deref()) {
+                    let _ = out_tx.send(frame);
+                    last_sync_arm = Instant::now();
                 }
             }
             _ = liveness.tick() => {
@@ -324,6 +419,18 @@ async fn connect_once(
             _ = deps.announce_signal.notified() => {
                 sync_listen(deps, &out_tx, &mut listening, &mut room_ctx, &mut pending_room, &mut forward_task).await;
                 sync_login_listen(deps, &out_tx, &mut login_listening, &mut login).await;
+                // Alias or master password changed: re-register to update the
+                // listing (same socket; the relay just replaces it).
+                let want = sync_listing(deps).await;
+                if want != listed {
+                    let _ = out_tx.send(Envelope::register_host_listed(
+                        config.device_id.clone(),
+                        auth_token.to_string(),
+                        want.clone(),
+                    ));
+                    listed = want;
+                }
+                sync_device_sync_listen(&config.device_id, &out_tx, &mut sync_listening, &mut sync);
             }
             _ = deps.kick_signal.notified() => {
                 kick_room(deps, &out_tx, &mut room_ctx, &mut pending_room, &mut forward_task).await;
@@ -349,11 +456,52 @@ async fn connect_once(
                     Ok(e) => e,
                     Err(_) => { tracing::debug!(event = "remote_bad_frame"); continue; }
                 };
+                // Another running Devdy holds this device id: stop dialing fast.
+                if env.t == FrameType::Error && env.code.as_deref() == Some("device_id_conflict") {
+                    // Reported by `run_agent` only if it happens again.
+                    tracing::warn!(event = "remote_device_id_conflict");
+                    break ConnectOutcome::DeviceConflict;
+                }
+                // The relay acked `register_host`: whatever clash it reported
+                // before is over (an alias clash, if still there, follows).
+                if env.t == FrameType::Control && env.room_id.is_empty() && env.code.as_deref() == Some("ok") {
+                    deps.relay_online.store(true, Ordering::SeqCst);
+                    deps.reconnecting.store(false, Ordering::SeqCst);
+                    crate::remote::set_device_conflict(&deps.app, &deps.device_conflict, None);
+                    crate::remote::set_last_error(&deps.last_error, None);
+                }
+                if env.t == FrameType::Error && env.code.as_deref() == Some("alias_conflict") {
+                    let alias = env.alias.as_deref().unwrap_or_default();
+                    tracing::warn!(event = "remote_alias_conflict");
+                    crate::remote::set_device_conflict(
+                        &deps.app,
+                        &deps.device_conflict,
+                        Some(crate::remote::DeviceConflict::alias(alias)),
+                    );
+                    continue;
+                }
+                // Another connection took over our device-sync code: arm it
+                // again (at most every SYNC_REARM_MIN_GAP; the periodic re-arm
+                // covers the rest).
+                if crate::device_sync::host::lost_sync_listen(&env) {
+                    tracing::warn!(event = "device_sync_listen_superseded");
+                    if last_sync_arm.elapsed() >= SYNC_REARM_MIN_GAP {
+                        if let Some(frame) = crate::device_sync::host::rearm_frame(sync_listening.as_deref()) {
+                            let _ = out_tx.send(frame);
+                            last_sync_arm = Instant::now();
+                        }
+                    }
+                    continue;
+                }
                 // The relay refused something this connection depends on (our
                 // listen hit the cap / rate limit, or we are not registered).
                 // Re-dial so the listen is re-established instead of sitting on
                 // a socket no controller can reach.
                 if env.t == FrameType::Error && relay_error_needs_redial(env.code.as_deref()) {
+                    crate::remote::set_last_error(
+                        &deps.last_error,
+                        crate::remote::last_error::for_relay_error(env.code.as_deref()),
+                    );
                     tracing::warn!(
                         event = "remote_relay_error_redial",
                         code = env.code.as_deref().unwrap_or(""),
@@ -361,8 +509,12 @@ async fn connect_once(
                     );
                     break ConnectOutcome::Disconnected;
                 }
-                // Password-login frames are self-contained; everything else is
-                // the session path.
+                // Device-sync and password-login frames are self-contained;
+                // everything else is the session path.
+                if crate::device_sync::host::is_sync_frame(&env, sync.as_ref()) {
+                    crate::device_sync::host::handle_frame(env, &deps.app, &deps.db, &out_tx, &seq, &mut sync).await;
+                    continue;
+                }
                 if login_frame(&env, login.as_ref()) {
                     handle_login_frame(
                         env, deps, &out_tx, &seq, &mut login,
@@ -421,6 +573,32 @@ async fn sync_listen(
         }
     }
     *listening = want;
+}
+
+/// What this Host is listed as for device sync: `(alias, app version)` while
+/// a master password is set (pulls need it), otherwise not listed.
+async fn sync_listing(deps: &AgentDeps) -> Option<(String, String)> {
+    if !crate::secrets::has_remote_master_password() {
+        return None;
+    }
+    let alias = crate::remote::device_alias(&deps.db).await.unwrap_or_default();
+    Some((alias, deps.app.package_info().version.to_string()))
+}
+
+/// Listen on this device's sync code exactly while a master password is set.
+fn sync_device_sync_listen(
+    device_id: &str,
+    out_tx: &OutboundTx,
+    sync_listening: &mut Option<String>,
+    sync: &mut Option<crate::device_sync::host::SyncPending>,
+) {
+    use crate::device_sync::host::{listen_code, listen_frame};
+    let want = listen_code(device_id, crate::secrets::has_remote_master_password());
+    if let Some(frame) = listen_frame(sync_listening.as_deref(), want.as_deref()) {
+        *sync = None;
+        let _ = out_tx.send(frame);
+    }
+    *sync_listening = want;
 }
 
 /// A password-login handshake in progress on the login slot.
@@ -659,7 +837,6 @@ async fn drop_room(
         }
     };
     deps.connected.store(false, Ordering::SeqCst);
-    deps.ipc.detach(&deps.app).await;
     {
         use tauri::Manager;
         if let Some(state) = deps.app.try_state::<crate::remote::RemoteState>() {
@@ -1121,7 +1298,6 @@ async fn try_authenticate_first_frame(
     };
     let batch_output = has_feature(FEATURE_OUTPUT_BATCH);
     let multi_run = has_feature(FEATURE_MULTI_RUN);
-    let ipc = has_feature(crate::remote::ipc::FEATURE_IPC);
     let data = has_feature(crate::remote::protocol::FEATURE_DATA);
     let push = has_feature(crate::remote::protocol::FEATURE_PUSH);
     let focus = has_feature(crate::remote::protocol::FEATURE_FOCUS);
@@ -1135,82 +1311,74 @@ async fn try_authenticate_first_frame(
         focus = focus,
     );
     // A phone that just authenticated is on screen (it reports otherwise with
-    // `push_visibility`); a remote desktop never holds pushes back.
+    // `push_visibility`).
     {
         use tauri::Manager;
         if let Some(state) = deps.app.try_state::<crate::remote::RemoteState>() {
-            state.push.controller_attached(!ipc);
+            state.push.controller_attached();
         }
     }
 
-    // A remote-desktop Controller drives the full UI through IPC: it needs
-    // none of the phone-controller streams, only its replies routed back.
-    if ipc {
-        deps.ipc
-            .attach(&deps.app, session.clone(), room_id.clone(), out_tx.clone(), seq.clone())
+    // Start this connection from a clean slate: the linked run is open, nothing
+    // else. A Controller that was browsing before a reconnect re-opens whatever
+    // it wants, so carrying stale subscriptions over would only stream runs
+    // nobody is looking at.
+    {
+        let mut subs = deps.subscriptions.lock().await;
+        subs.clear();
+        subs.insert(run_id.clone());
+    }
+    *deps.focus_run_id.lock().await = Some(run_id.clone());
+
+    let ft = tokio::spawn(forward_loop(
+        deps.bus.clone(),
+        session.clone(),
+        room_id.clone(),
+        out_tx.clone(),
+        seq.clone(),
+        deps.db.clone(),
+        crate::remote::forwarder::ForwardScope {
+            subscriptions: deps.subscriptions.clone(),
+            initial_run_id: run_id.clone(),
+            multi_run,
+            batch_output,
+        },
+    ));
+    if let Some(old) = forward_task.replace(ft) {
+        old.abort();
+    }
+
+    // Push the initial run list: every run for a run browser, just the linked
+    // one for a legacy Controller.
+    let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
+    crate::remote::forwarder::send_run_list(
+        &deps.db,
+        &session,
+        &room_id,
+        out_tx,
+        &**seq,
+        list_filter,
+    )
+    .await;
+
+    // Push the initial engine/model/permission-mode snapshot so the controller's
+    // composer mirrors the desktop from the first frame (no blank/default drift).
+    {
+        use tauri::Manager;
+        if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
+            crate::remote::forwarder::send_run_meta(
+                &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
+            )
             .await;
-    } else {
-        // Start this connection from a clean slate: the linked run is open, nothing
-        // else. A Controller that was browsing before a reconnect re-opens whatever
-        // it wants, so carrying stale subscriptions over would only stream runs
-        // nobody is looking at.
-        {
-            let mut subs = deps.subscriptions.lock().await;
-            subs.clear();
-            subs.insert(run_id.clone());
         }
-        *deps.focus_run_id.lock().await = Some(run_id.clone());
-
-        let ft = tokio::spawn(forward_loop(
-            deps.bus.clone(),
-            session.clone(),
-            room_id.clone(),
-            out_tx.clone(),
-            seq.clone(),
-            deps.db.clone(),
-            crate::remote::forwarder::ForwardScope {
-                subscriptions: deps.subscriptions.clone(),
-                initial_run_id: run_id.clone(),
-                multi_run,
-                batch_output,
-            },
-        ));
-        if let Some(old) = forward_task.replace(ft) {
-            old.abort();
-        }
-
-        // Push the initial run list: every run for a run browser, just the linked
-        // one for a legacy Controller.
-        let list_filter = if multi_run { None } else { Some(run_id.as_str()) };
-        crate::remote::forwarder::send_run_list(
-            &deps.db,
-            &session,
-            &room_id,
-            out_tx,
-            &**seq,
-            list_filter,
-        )
-        .await;
-
-        // Push the initial engine/model/permission-mode snapshot so the controller's
-        // composer mirrors the desktop from the first frame (no blank/default drift).
-        {
-            use tauri::Manager;
-            if let Some(store) = deps.app.try_state::<crate::remote::RunMetaStore>() {
-                crate::remote::forwarder::send_run_meta(
-                    &deps.db, &store, &session, &room_id, out_tx, &**seq, &run_id,
-                )
-                .await;
-            }
-        }
-
-        // Push the initial subscription usage badges (Claude + Codex) so the
-        // controller shows plan utilization from the first frame.
-        crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
-
-        // The desktop's theme, so the controller matches its colors.
-        crate::remote::forwarder::send_appearance(&deps.db, &session, &room_id, out_tx, &**seq).await;
     }
+
+    // Push the initial subscription usage badges (Claude + Codex) so the
+    // controller shows plan utilization from the first frame.
+    crate::remote::forwarder::send_plan_usage(&deps.db, &session, &room_id, out_tx, &**seq, &run_id).await;
+
+    // The desktop's theme, so the controller matches its colors.
+    crate::remote::forwarder::send_appearance(&deps.db, &session, &room_id, out_tx, &**seq).await;
 
     let ctx = Arc::new(HandlerCtx {
         app: deps.app.clone(),
@@ -1228,7 +1396,6 @@ async fn try_authenticate_first_frame(
         rate: rate.clone(),
         idem: idem.clone(),
         idle: idle.clone(),
-        ipc,
         data,
         focus,
         push,
@@ -1277,8 +1444,20 @@ struct Disconnected {
 
 #[cfg(test)]
 mod tests {
-    use super::{login_listen_frame, should_ignore_handshake};
+    use super::{
+        device_conflict_wait, login_listen_frame, should_ignore_handshake, DEVICE_CONFLICT_RETRY,
+    };
+    use std::time::Duration;
     use crate::remote::protocol::FrameType;
+
+    #[test]
+    fn a_first_device_id_conflict_is_rechecked_before_it_is_reported() {
+        // The relay drops a dead socket after 45 s: the recheck waits longer.
+        let (wait, report) = device_conflict_wait(1);
+        assert!(wait > Duration::from_secs(45) && !report);
+        assert_eq!(device_conflict_wait(2), (DEVICE_CONFLICT_RETRY, true));
+        assert_eq!(device_conflict_wait(7), (DEVICE_CONFLICT_RETRY, true));
+    }
 
     #[test]
     fn login_listen_follows_the_login_code() {

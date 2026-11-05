@@ -148,7 +148,7 @@ impl Drop for LiveBoard {
 /// loads, coalescing bursts. The task only holds a weak reference: the
 /// listener goes away with the session.
 pub fn start_live_board(ctx: &Arc<HandlerCtx>) {
-    if !(ctx.data && ctx.focus) || ctx.ipc {
+    if !(ctx.data && ctx.focus) {
         return;
     }
     let (tx, mut rx) = tokio::sync::mpsc::channel::<()>(1);

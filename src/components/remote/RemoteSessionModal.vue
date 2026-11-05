@@ -3,6 +3,8 @@
 // Owner through: create link → controller scans → OTP shown → connected.
 //
 // Flow:
+//   needs-password    → no master password yet: the phone signs in with it, so it is
+//                       set right here first (then the flow continues)
 //   creating          → invoke createSessionLink(runId); spinner. Without a run
 //                       the backend lands the controller on the latest run.
 //   waiting-for-scan   → show QR + copy link; wait for controller to join
@@ -20,8 +22,9 @@ import { Modal, Button } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useRemoteControlStore, type SessionLink } from '@/stores/remoteControl'
 import PairingQr from './PairingQr.vue'
+import MasterPasswordForm from './MasterPasswordForm.vue'
 import {
-  Radio, Copy, Check, Loader2, ShieldCheck, ShieldAlert, RotateCcw,
+  Radio, Copy, Check, KeyRound, Loader2, ShieldCheck, ShieldAlert, RotateCcw, Smartphone, Unplug,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -36,6 +39,7 @@ const { t } = useI18n()
 const { toast } = useToast()
 
 type Phase =
+  | 'needs-password'
   | 'creating'
   | 'waiting-for-scan'
   | 'controller-joined'
@@ -164,6 +168,11 @@ async function openFlow() {
       phase.value = 'connected'
       return
     }
+    // The phone signs in with the master password: set one first.
+    if (!s.has_master_password) {
+      phase.value = 'needs-password'
+      return
+    }
     // Feature off? Offer to turn it on right here instead of forcing a trip to
     // Settings — the backend would otherwise reject createLink with an error.
     if (!s.enabled) {
@@ -197,11 +206,13 @@ function goToSettings() {
   emit('openSettings')
 }
 
-async function stopControl() {
+/** Cut the phone off and sign it out (same as the sidebar's kill switch). */
+async function disconnectPhone() {
   try {
-    await store.endSession()
-  } catch {
-    // best-effort
+    await store.kickController()
+  } catch (e) {
+    toast.error(String(e))
+    return
   }
   emit('close')
 }
@@ -307,13 +318,31 @@ watch(() => props.runId, () => {
 <template>
   <Modal :open="open" :title="t('remote.session.title')" size="sm" @close="onClose">
     <template #header>
-      <Radio class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
-      <h3 class="text-sm font-semibold flex-1">{{ t('remote.session.heading') }}</h3>
+      <Smartphone class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
+      <h3 class="text-sm font-semibold flex-1">{{ t('remote.session.title') }}</h3>
     </template>
 
     <div class="p-6">
+      <!-- needs-password: pairing signs in with the master password -->
+      <div v-if="phase === 'needs-password'" class="space-y-4">
+        <div class="flex gap-3">
+          <div class="flex h-9 w-9 shrink-0 items-center justify-center rounded-full bg-warning/10 text-warning">
+            <KeyRound class="h-4 w-4" :stroke-width="1.75" />
+          </div>
+          <div class="space-y-1">
+            <p class="text-sm font-medium">{{ t('remote.session.needsPasswordTitle') }}</p>
+            <p class="text-xs text-muted-foreground">
+              {{ t('remote.session.needsPasswordDesc', { name: store.status?.device_alias || t('remote.device.unnamed') }) }}
+            </p>
+          </div>
+        </div>
+        <div class="pl-12">
+          <MasterPasswordForm :submit-label="t('remote.session.saveAndPair')" @saved="openFlow" />
+        </div>
+      </div>
+
       <!-- creating -->
-      <div v-if="phase === 'creating'" class="flex flex-col items-center gap-3 py-8">
+      <div v-else-if="phase === 'creating'" class="flex flex-col items-center gap-3 py-8">
         <Loader2 class="h-6 w-6 animate-spin text-primary" :stroke-width="2" />
         <p class="text-sm text-muted-foreground">{{ t('remote.session.creating') }}</p>
       </div>
@@ -324,10 +353,24 @@ watch(() => props.runId, () => {
           v-if="linkUrl"
           :text="linkUrl"
           :ttl-seconds="120"
-          :copy-label="t('remote.session.copyLink')"
-          :caption="t('remote.session.scanCaption')"
           @expired="createLink"
-        />
+          @renew="createLink"
+        >
+          <ol class="w-full max-w-xs space-y-1.5 text-xs">
+            <li class="flex gap-2">
+              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">1</span>
+              {{ t('remote.session.step1') }}
+            </li>
+            <li class="flex gap-2">
+              <span class="flex h-5 w-5 shrink-0 items-center justify-center rounded-full bg-primary/15 text-[10px] font-semibold text-primary">2</span>
+              <i18n-t keypath="remote.session.step2" tag="span">
+                <template #name>
+                  <span class="font-mono font-medium">{{ store.status?.device_alias || '—' }}</span>
+                </template>
+              </i18n-t>
+            </li>
+          </ol>
+        </PairingQr>
         <div v-else class="space-y-2">
           <p class="text-xs text-warning">
             {{ t('remote.session.cannotDeriveController') }}
@@ -339,14 +382,6 @@ watch(() => props.runId, () => {
             {{ copied ? t('remote.session.copied') : t('remote.session.copyFields') }}
           </Button>
         </div>
-
-        <p class="text-center text-xs text-muted-foreground">
-          <i18n-t keypath="remote.session.enterMasterOnPhone" tag="span">
-            <template #masterPassword>
-              <span class="font-medium text-foreground/80">{{ t('remote.session.masterPassword') }}</span>
-            </template>
-          </i18n-t>
-        </p>
       </div>
 
       <!-- controller-joined: a controller is authenticating (no OTP shown) -->
@@ -372,7 +407,9 @@ watch(() => props.runId, () => {
         <p v-if="idleRemainingLabel" class="text-center text-[11px] text-muted-foreground">
           {{ t('remote.session.idleExpiry', { time: idleRemainingLabel }) }}
         </p>
-        <Button variant="destructive" @click="stopControl">{{ t('remote.session.stopControl') }}</Button>
+        <Button variant="destructive" @click="disconnectPhone">
+          <Unplug class="h-3.5 w-3.5" :stroke-width="1.75" />{{ t('remote.device.actions.disconnectPhone') }}
+        </Button>
       </div>
 
       <!-- auth-failed -->

@@ -1,4 +1,6 @@
-use crate::commands::rules::{ApplyAllOutcome, ApplyFailure};
+use crate::commands::rules::{
+    project_folder_missing, ApplyAllOutcome, ApplyFailure, ApplyOneOutcome, SavedWithoutFolder,
+};
 use crate::commands::skills::{
     claude_skill_dir, legacy_codex_skill_dir, remove_skill_artifacts, write_skill_artifacts,
 };
@@ -231,24 +233,8 @@ pub struct DetectedProjectInfo {
     pub repos: Vec<DetectedRepo>,
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_vscode(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-    file: Option<String>,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    let file = match file {
-        Some(f) => Some(crate::remote::fs_policy::read(policy.as_ref(), Path::new(&f))?.to_string_lossy().into_owned()),
-        None => None,
-    };
-    open_in_vscode_inner(path, file)
-}
-
-fn open_in_vscode_inner(path: String, file: Option<String>) -> Result<(), String> {
+pub async fn open_in_vscode(path: String, file: Option<String>) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -293,19 +279,8 @@ fn open_in_vscode_inner(path: String, file: Option<String>) -> Result<(), String
     Ok(())
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_chrome(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    open_in_chrome_inner(path)
-}
-
-fn open_in_chrome_inner(path: String) -> Result<(), String> {
+pub async fn open_in_chrome(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -337,19 +312,8 @@ fn open_in_chrome_inner(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_folder(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    open_in_folder_inner(path)
-}
-
-fn open_in_folder_inner(path: String) -> Result<(), String> {
+pub async fn open_in_folder(path: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -381,20 +345,8 @@ fn open_in_folder_inner(path: String) -> Result<(), String> {
     Ok(())
 }
 
-/// A remote desktop may only open what it may read ([`crate::remote::fs_policy`]).
 #[tauri::command]
-pub async fn open_in_terminal(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-    terminal_app: String,
-) -> Result<(), String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?.to_string_lossy().into_owned();
-    open_in_terminal_inner(path, terminal_app)
-}
-
-fn open_in_terminal_inner(path: String, terminal_app: String) -> Result<(), String> {
+pub async fn open_in_terminal(path: String, terminal_app: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -606,13 +558,7 @@ end tell
 }
 
 #[tauri::command]
-pub async fn detect_project_info(webview: tauri::Webview, path: String) -> Result<DetectedProjectInfo, String> {
-    // Picking a NEW folder to add: outside every project by definition, so a
-    // remote desktop is only kept out of the credential stores here.
-    if crate::remote::guard::from_remote_bridge(&webview) {
-        use tauri::Manager;
-        crate::remote::guard::SecretPaths::for_app(webview.app_handle()).check(&path)?;
-    }
+pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, String> {
     if !Path::new(&path).exists() {
         return Err("Path does not exist".to_string());
     }
@@ -718,15 +664,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
 }
 
 #[tauri::command]
-pub async fn add_project(webview: tauri::Webview, db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
-    // A registered project becomes a writable root of the remote desktop: it
-    // may only register folders it already reaches (HOME, volumes, projects).
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    if let Some(policy) = &policy {
-        for path in std::iter::once(&payload.path).chain(payload.repos.iter().flatten().map(|r| &r.path)) {
-            policy.read(Path::new(path))?;
-        }
-    }
+pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
     if !Path::new(&payload.path).exists() {
         return Err("Project path does not exist".to_string());
     }
@@ -956,7 +894,6 @@ pub async fn list_repos(db: State<'_, Db>, project_id: String) -> Result<Vec<Rep
 #[tauri::command]
 #[allow(clippy::too_many_arguments)]
 pub async fn add_repo(
-    webview: tauri::Webview,
     db: State<'_, Db>,
     project_id: String,
     name: String,
@@ -967,9 +904,6 @@ pub async fn add_repo(
     gitlab_project_path: Option<String>,
     gitlab_project_id: Option<i64>,
 ) -> Result<Repo, String> {
-    // As in `add_project`: a remote desktop registers only what it reaches.
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    crate::remote::fs_policy::read(policy.as_ref(), Path::new(&path))?;
     let id = Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let provider = provider
@@ -1116,8 +1050,10 @@ pub async fn apply_skill(
     db: State<'_, Db>,
     project_id: String,
     skill_id: String,
-) -> Result<(), String> {
-    apply_skill_to_project(db.inner(), &project_id, &skill_id, true).await
+) -> Result<ApplyOneOutcome, String> {
+    let folder_missing = project_folder_missing(db.inner(), &project_id).await;
+    apply_skill_to_project(db.inner(), &project_id, &skill_id, true).await?;
+    Ok(ApplyOneOutcome { folder_missing })
 }
 
 #[tauri::command]
@@ -1133,10 +1069,16 @@ pub async fn apply_skill_to_all_projects(
 
     let mut applied = 0;
     let mut failures = Vec::new();
+    let mut saved_without_folder = Vec::new();
     for row in &rows {
         let project_id: String = row.get("id");
         let project_name: String = row.get("name");
+        let missing = project_folder_missing(db.inner(), &project_id).await;
         match apply_skill_to_project(db.inner(), &project_id, &skill_id, true).await {
+            Ok(()) if missing => saved_without_folder.push(SavedWithoutFolder {
+                project_id,
+                project_name,
+            }),
             Ok(()) => applied += 1,
             Err(error) => failures.push(ApplyFailure {
                 project_id,
@@ -1145,7 +1087,11 @@ pub async fn apply_skill_to_all_projects(
             }),
         }
     }
-    Ok(ApplyAllOutcome { applied, failures })
+    Ok(ApplyAllOutcome {
+        applied,
+        failures,
+        saved_without_folder,
+    })
 }
 
 /// Re-write a skill (or every skill when `skill_id` is None) into each project that already has it
@@ -1172,18 +1118,23 @@ pub async fn reapply_skills(
 
     let mut applied = 0;
     let mut failures = Vec::new();
+    let mut saved_without_folder = Vec::new();
     for row in &rows {
         let project_id: String = row.get("project_id");
         let sid: String = row.get("skill_id");
         let project_name: String = row.get("project_name");
         let project_path: String = row.get("path");
         let skill_name: String = row.get("skill_name");
-        // Don't recreate a project folder that was moved or deleted on disk.
-        let result = if !std::path::Path::new(&project_path).is_dir() {
-            Err(format!("Project folder not found: {}", project_path))
-        } else {
-            apply_skill_to_project(db.inner(), &project_id, &sid, false).await
-        };
+        // No folder on this machine: the link stays saved, nothing to write (and
+        // the folder isn't recreated).
+        if !std::path::Path::new(&project_path).is_dir() {
+            saved_without_folder.push(SavedWithoutFolder {
+                project_id,
+                project_name,
+            });
+            continue;
+        }
+        let result = apply_skill_to_project(db.inner(), &project_id, &sid, false).await;
         match result {
             Ok(()) => {
                 applied += 1;
@@ -1202,7 +1153,55 @@ pub async fn reapply_skills(
             }),
         }
     }
-    Ok(ApplyAllOutcome { applied, failures })
+    saved_without_folder.dedup_by(|a, b| a.project_id == b.project_id);
+    Ok(ApplyAllOutcome {
+        applied,
+        failures,
+        saved_without_folder,
+    })
+}
+
+/// Install the skills / rules linked to a project while its folder was missing
+/// (nothing recorded as installed yet), now that the folder exists. Run at app
+/// start. Returns how many got installed. A link whose files git already
+/// tracks stays "not installed" and is simply checked again next time.
+pub async fn install_pending_links(db: &Db) -> usize {
+    let pending = |table: &str, item_col: &str| {
+        format!(
+            "SELECT l.project_id, l.{item_col}, p.path FROM {table} l \
+             JOIN projects p ON p.id = l.project_id \
+             WHERE l.synced_hash_claude IS NULL AND l.synced_hash_codex IS NULL"
+        )
+    };
+    let mut installed = 0;
+    for (is_skill, sql) in [
+        (true, pending("project_skills", "skill_id")),
+        (false, pending("project_rules", "rule_id")),
+    ] {
+        let rows: Vec<(String, String, String)> = match sqlx::query_as(&sql).fetch_all(db).await {
+            Ok(rows) => rows,
+            Err(e) => {
+                tracing::warn!(event = "install_pending_links_failed", error = %e);
+                continue;
+            }
+        };
+        for (project_id, item_id, path) in rows {
+            if !std::path::Path::new(&path).is_dir() {
+                continue;
+            }
+            // `manual = false` never downgrades a hand-picked link.
+            let result = if is_skill {
+                apply_skill_to_project(db, &project_id, &item_id, false).await
+            } else {
+                crate::commands::rules::apply_rule_to_project(db, &project_id, &item_id, false).await
+            };
+            match result {
+                Ok(()) => installed += 1,
+                Err(e) => tracing::warn!(event = "install_pending_link_failed", error = %e),
+            }
+        }
+    }
+    installed
 }
 
 /// Core apply logic shared by `apply_skill`, `apply_skill_to_all_projects` and group enablement.
@@ -1248,14 +1247,21 @@ pub async fn apply_skill_to_project(
     let prev_claude: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_claude"));
     let prev_codex: Option<String> = prev.as_ref().and_then(|r| r.get("synced_hash_codex"));
 
-    let (hash_claude, hash_codex) = write_skill_artifacts(
-        &project_path,
-        &skill_name,
-        &target,
-        &source_path,
-        prev_claude.as_deref(),
-        prev_codex.as_deref(),
-    )?;
+    // The link is a project setting: it is recorded even when the folder isn't on this machine
+    // (yet). Nothing is written there — and the folder isn't recreated; a later sync / re-apply
+    // installs the skill once it exists.
+    let (hash_claude, hash_codex) = if std::path::Path::new(&project_path).is_dir() {
+        write_skill_artifacts(
+            &project_path,
+            &skill_name,
+            &target,
+            &source_path,
+            prev_claude.as_deref(),
+            prev_codex.as_deref(),
+        )?
+    } else {
+        (prev_claude, prev_codex)
+    };
     let now = chrono::Utc::now().to_rfc3339();
 
     sqlx::query(

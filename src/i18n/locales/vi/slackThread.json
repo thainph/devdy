@@ -15,7 +15,6 @@
     "emptyHint": "Dán link thread Slack bằng nút “Thêm thread”, hoặc gửi từ Chrome extension.",
     "noResults": "Không có thread nào khớp.",
     "newCount": "{count} tin mới",
-    "warning": "Có cảnh báo — mở thread để xem",
     "collapse": "Thu gọn",
     "expand": "Mở rộng",
     "linkFilter": "Lọc theo phiên đã liên kết",

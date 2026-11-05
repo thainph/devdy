@@ -13,14 +13,11 @@
     "google": "Google Account",
     "usage": "Usage & Budget",
     "devices": "Devices",
+    "backup": "Backup",
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
     "azure": "Azure Accounts",
     "focus": "Focus"
-  },
-  "devicesTabs": {
-    "remote": "Remote Control",
-    "backup": "Backup"
   },
   "general": {
     "theme": "Theme",
@@ -91,7 +88,6 @@
     "resetPosition": "Reset position",
     "positionReset": "Mascot position reset",
     "previewState": "Preview",
-    "previewHint": "Pick a state to preview its animation, sound and speech bubble together.",
     "previewLabel": "DY mascot preview",
     "previewBreakthrough": "Play breakthrough effect",
     "states": {
@@ -127,13 +123,6 @@
         "hoaThan": "Deity Transformation",
         "anhBien": "Soul Metamorphosis",
         "vanDinh": "Peak Ascension"
-      },
-      "changes": {
-        "tier1": "Freshly entered realm: the aura shifts lightly while breathing and eyes feel steadier.",
-        "tier2": "Energy becomes clearer: brighter eyes and a stronger ground ring.",
-        "tier3": "Spiritual energy gathers: small spark beats appear while AI is thinking or running tools.",
-        "tier4": "Near completion: tails and energy streams become stronger during loading.",
-        "tier5": "Realm complete: the badge becomes more prominent and is ready for the next breakthrough effect."
       }
     }
   },
@@ -210,8 +199,6 @@
   },
   "aws": {
     "title": "AWS Accounts",
-    "authKeys": "Access keys",
-    "authProfile": "Named profile / SSO",
     "intro": "Add AWS accounts once and link one account to each project. Secret Access Keys and Session Tokens are stored securely in your OS Keychain. Devdy wires the selected project account to Claude and Codex runs through the broker.",
     "isolationWarning": "Avoid setting AWS credentials globally for agent work. Devdy gates aws calls through its broker; credential/config mutation such as aws configure is blocked.",
     "validate": "Validate",
@@ -221,36 +208,15 @@
     "ssoLoggingIn": "Opening browser for SSO login…",
     "labelPlaceholder": "Label",
     "regionPlaceholder": "ap-northeast-1",
-    "accessKeyIdPlaceholder": "Access Key ID",
-    "newSecretPlaceholder": "New Secret Access Key (leave blank to keep current)",
-    "sessionTokenReplacePlaceholder": "Session Token (optional; set when replacing secret)",
-    "secretPlaceholder": "Secret Access Key",
-    "sessionTokenPlaceholder": "Session Token (optional)",
-    "profileNamePlaceholder": "AWS profile name",
-    "profileNameLabel": "Profile name",
     "profileLabel": "AWS profile",
     "profileSelectPlaceholder": "Select a profile…",
     "profileNonSso": "profile",
     "profileNoneFound": "No profiles found in ~/.aws/config",
     "addFromProfile": "Add from ~/.aws profiles",
     "profileAllAdded": "All profiles from ~/.aws/config are already added",
-    "ssoSessionLabel": "SSO session",
-    "ssoAccountLabel": "Account",
     "ssoRoleLabel": "Role",
-    "ssoSessionPlaceholder": "Select SSO session…",
-    "ssoAccountPlaceholder": "Select account…",
-    "ssoRolePlaceholder": "Select role…",
-    "ssoAddSession": "Add SSO session",
-    "ssoNewSessionNamePlaceholder": "Session name (e.g. my-company)",
-    "ssoStartUrlPlaceholder": "SSO start URL (https://…/start)",
-    "ssoLoginNeeded": "SSO token missing or expired — sign in to list accounts.",
-    "ssoResolvedProfile": "Profile",
-    "ssoUseManual": "Enter a profile name manually instead",
-    "ssoUsePicker": "Pick a role via SSO instead",
     "tagsPlaceholder": "Tags (optional)",
     "saving": "Saving…",
-    "addAccount": "Add account",
-    "addLabelPlaceholder": "Label (e.g. Work AWS, Production)",
     "adding": "Adding…",
     "deleteTitle": "Delete AWS account",
     "deleteMessage": "Delete this AWS account? Projects linked to it will be unlinked."
@@ -325,7 +291,6 @@
     "modelsCached": "{count} models · updated {when}",
     "codexRefreshHint": "Not refreshed yet — using the built-in list. Click Refresh to load models from the Codex CLI.",
     "defaultCodexModel": "Default Codex model",
-    "codexStaticHint": "Codex does not support dynamic model listing — this list is fixed.",
     "defaultPermissionMode": "Default permission mode",
     "permAskUi": "Ask via UI (default)",
     "permAcceptEdits": "Auto-accept edits",
@@ -488,6 +453,7 @@
       "todos": "Todos",
       "slackThreads": "Slack threads",
       "projects": "Projects"
-    }
+    },
+    "syncInstead": "Both machines online? Use {link} instead of a file."
   }
 }

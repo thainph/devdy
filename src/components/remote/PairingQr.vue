@@ -8,7 +8,8 @@
 // NEVER written to the console/logs.
 import { onMounted, onBeforeUnmount, ref, watch, computed } from 'vue'
 import QRCode from 'qrcode'
-import { Copy, Check } from 'lucide-vue-next'
+import { useI18n } from 'vue-i18n'
+import { Copy, Check, RotateCcw } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 
 const props = withDefaults(defineProps<{
@@ -16,17 +17,14 @@ const props = withDefaults(defineProps<{
   text: string
   /** Seconds the offer stays valid. */
   ttlSeconds?: number
-  /** Copy-button label. */
-  copyLabel?: string
-  /** Caption shown above the countdown. */
-  caption?: string
 }>(), {
   ttlSeconds: 60,
-  copyLabel: 'Copy link',
-  caption: 'Scan from the Controller device.',
 })
 
-const emit = defineEmits<{ expired: [] }>()
+/** `expired`: the countdown ran out; `renew`: the user asked for a fresh code. */
+const emit = defineEmits<{ expired: []; renew: [] }>()
+
+const { t } = useI18n()
 
 const canvas = ref<HTMLCanvasElement | null>(null)
 const remaining = ref(props.ttlSeconds)
@@ -47,7 +45,7 @@ async function copyPayload() {
     if (copyTimer) clearTimeout(copyTimer)
     copyTimer = setTimeout(() => (copied.value = false), 2000)
   } catch {
-    renderError.value = 'Could not copy to clipboard'
+    renderError.value = t('remote.session.copyFailed')
   }
 }
 
@@ -62,7 +60,7 @@ async function draw() {
       color: { dark: '#0f172a', light: '#ffffff' },
     })
   } catch (e) {
-    renderError.value = 'Could not render QR code'
+    renderError.value = t('remote.session.qrFailed')
     // Intentionally do NOT log `e` — it may echo the secret payload.
     void e
   }
@@ -93,6 +91,12 @@ watch(() => encoded.value, () => {
   startCountdown()
 })
 
+const remainingLabel = computed(() => {
+  const m = Math.floor(remaining.value / 60)
+  const s = remaining.value % 60
+  return `${m}:${String(s).padStart(2, '0')}`
+})
+
 onBeforeUnmount(() => {
   if (timer) clearInterval(timer)
   if (copyTimer) clearTimeout(copyTimer)
@@ -105,19 +109,24 @@ onBeforeUnmount(() => {
       <canvas ref="canvas" class="block" />
     </div>
     <p v-if="renderError" class="text-xs text-destructive">{{ renderError }}</p>
-    <div class="text-center">
-      <p class="text-xs text-muted-foreground">{{ caption }}</p>
-      <p
-        class="mt-1 text-sm font-medium"
-        :class="remaining <= 10 ? 'text-destructive' : 'text-foreground'"
-      >
-        Expires in {{ remaining }}s
-      </p>
+    <slot />
+    <p class="text-[11px] text-muted-foreground">
+      <i18n-t keypath="remote.session.expiresIn" tag="span">
+        <template #time>
+          <span class="tabular-nums font-medium" :class="remaining <= 10 ? 'text-destructive' : 'text-foreground'">{{ remainingLabel }}</span>
+        </template>
+      </i18n-t>
+    </p>
+    <div class="flex items-center gap-2">
+      <Button variant="outline" size="sm" @click="copyPayload">
+        <Check v-if="copied" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
+        <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ copied ? t('remote.session.copied') : t('remote.session.copyLink') }}
+      </Button>
+      <Button variant="ghost" size="sm" @click="emit('renew')">
+        <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('remote.session.newCode') }}
+      </Button>
     </div>
-    <Button variant="outline" size="sm" @click="copyPayload">
-      <Check v-if="copied" class="h-3.5 w-3.5 text-success" :stroke-width="2" />
-      <Copy v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-      {{ copied ? 'Copied!' : copyLabel }}
-    </Button>
   </div>
 </template>

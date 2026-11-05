@@ -5,7 +5,7 @@ export interface VaultStatus {
   exists: boolean
   unlocked: boolean
   note_count: number
-  /** Notes of an older vault (sync / import), mergeable with that vault's password. */
+  /** Notes of an older vault (backup import), mergeable with that vault's password. */
   legacy_count: number
   /** Notes whose vault has not reached this device yet. */
   pending_count: number

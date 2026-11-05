@@ -21,8 +21,10 @@ pub struct RemoteStatus {
     pub enabled: bool,
     /// Whether the agent task is running.
     pub running: bool,
-    /// Whether a relay connection is currently up + authenticated.
+    /// Whether a phone / web controller is attached and authenticated.
     pub connected: bool,
+    /// Whether the host socket is up and the relay acked its registration.
+    pub relay_online: bool,
     /// Whether the host↔relay socket is down and the agent is retrying (backoff).
     /// Distinct from `connected`: lets the UI show "reconnecting…" during a blip.
     pub reconnecting: bool,
@@ -49,10 +51,17 @@ pub struct RemoteStatus {
     pub session_authenticated: bool,
     /// Sliding idle expiry (Unix secs) of the bound session, when known.
     pub session_idle_expires_at: Option<u64>,
-    /// Whether another Devdy is driving this one over remote-desktop IPC.
-    pub desktop_controlled: bool,
-    /// When that remote-desktop Controller attached (Unix secs).
-    pub desktop_controlled_since: Option<u64>,
+    /// A clash the relay reported: `{ kind: "device_id" }` (another running
+    /// Devdy uses this device id; this one is refused) or
+    /// `{ kind: "alias", alias }` (another online device has the same name).
+    /// Also pushed as the `remote://device-conflict` event.
+    #[serde(rename = "deviceConflict")]
+    pub device_conflict: Option<remote::DeviceConflict>,
+    /// Why the agent is not connected right now, as a stable code
+    /// (`remote::last_error`): `relay_unreachable`, `relay_bad_url`,
+    /// `relay_auth_failed`, `relay_unsupported`, `relay_rate_limited`,
+    /// `device_id_conflict`, `relay_not_configured`, `token_missing`.
+    pub last_error: Option<&'static str>,
 }
 
 /// Persist relay config (DATA-001). `auth_token`, when provided (non-empty), is
@@ -303,11 +312,11 @@ pub async fn remote_set_device_alias(
     Ok(())
 }
 
-/// Kill switch: disconnect AND sign out the Controller currently attached
-/// (remote desktop or phone). The session token it holds is rotated away first,
-/// so it cannot re-join on its own; it has to sign in again with the OTP or the
-/// master password. To keep it out for good the owner changes the master
-/// password (or ends the session).
+/// Kill switch: disconnect AND sign out the Controller currently attached.
+/// The session token it holds is rotated away first, so it cannot re-join on
+/// its own; it has to sign in again with the OTP or the master password. To
+/// keep it out for good the owner changes the master password (or ends the
+/// session).
 #[tauri::command]
 pub async fn remote_kick_controller(
     db: State<'_, Db>,
@@ -323,8 +332,7 @@ pub async fn remote_kick_controller(
     // secret. Done even when nobody is attached right now (e.g. a controller
     // mid-reconnect): the owner asked for it to be signed out.
     sign_out_controllers(state.inner()).await;
-    let attached = state.connected.load(std::sync::atomic::Ordering::SeqCst)
-        || state.ipc.controlled_since().await.is_some();
+    let attached = state.connected.load(std::sync::atomic::Ordering::SeqCst);
     // Nothing to cut: don't leave a stored permit that would kick the next
     // Controller to join.
     if attached && state.is_running().await {
@@ -385,11 +393,11 @@ pub async fn remote_status(
     } else {
         (None, Vec::new())
     };
-    let desktop_controlled_since = state.ipc.controlled_since().await;
     Ok(RemoteStatus {
         enabled,
         running: state.is_running().await,
         connected: state.connected.load(std::sync::atomic::Ordering::SeqCst),
+        relay_online: state.relay_online.load(std::sync::atomic::Ordering::SeqCst),
         reconnecting: state.reconnecting.load(std::sync::atomic::Ordering::SeqCst),
         relay_url,
         has_auth_token: crate::secrets::has_remote_auth_token(),
@@ -401,7 +409,35 @@ pub async fn remote_status(
         subscribed_run_ids,
         session_authenticated,
         session_idle_expires_at,
-        desktop_controlled: desktop_controlled_since.is_some(),
-        desktop_controlled_since,
+        device_conflict: state.device_conflict.lock().ok().and_then(|c| c.clone()),
+        last_error: state.last_error.lock().ok().and_then(|c| *c),
     })
+}
+
+/// Give this Host a new device id, for when the relay reports a `device_id`
+/// conflict (this machine's data was copied from another one). Clears the
+/// conflict and, when Remote Control runs, reconnects with the new id. Returns
+/// the new id.
+///
+/// The id only names this Host on the relay (its listing and its device-sync
+/// code): paired phones (session link, password login), Web Push subscriptions
+/// and the audit don't depend on it. Other devices see this one as a new entry
+/// in their sync device list.
+#[tauri::command]
+pub async fn remote_regenerate_device_id(
+    app: AppHandle,
+    db: State<'_, Db>,
+    registry: State<'_, RunRegistry>,
+    broker_approvals: State<'_, BrokerApprovals>,
+    state: State<'_, RemoteState>,
+) -> Result<String, String> {
+    let id = remote::regenerate_device_id(db.inner()).await?;
+    remote::set_device_conflict(&app, &state.device_conflict, None);
+    if state.is_running().await {
+        state.stop().await;
+        state
+            .start(&app, db.inner(), registry.inner(), broker_approvals.inner())
+            .await?;
+    }
+    Ok(id)
 }

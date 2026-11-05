@@ -64,310 +64,310 @@ pub enum Upsert {
 
 // ---- File format -------------------------------------------------------------
 
-#[derive(Serialize, Deserialize)]
-struct Bundle {
-    format: String,
-    version: u32,
-    exported_at: String,
+#[derive(Default, Serialize, Deserialize)]
+pub(crate) struct Bundle {
+    pub(crate) format: String,
+    pub(crate) version: u32,
+    pub(crate) exported_at: String,
     #[serde(default)]
-    app_version: String,
+    pub(crate) app_version: String,
     #[serde(default)]
-    settings: BTreeMap<String, String>,
+    pub(crate) settings: BTreeMap<String, String>,
     #[serde(default)]
-    skills: Vec<SkillEntry>,
+    pub(crate) skills: Vec<SkillEntry>,
     #[serde(default)]
-    rules: Vec<RuleEntry>,
+    pub(crate) rules: Vec<RuleEntry>,
     #[serde(default)]
-    skill_groups: Vec<GroupEntry>,
+    pub(crate) skill_groups: Vec<GroupEntry>,
     #[serde(default)]
-    rule_groups: Vec<GroupEntry>,
+    pub(crate) rule_groups: Vec<GroupEntry>,
     #[serde(default)]
-    mcp_servers: Vec<McpServer>,
+    pub(crate) mcp_servers: Vec<McpServer>,
     #[serde(default)]
-    vps_servers: Vec<VpsEntry>,
+    pub(crate) vps_servers: Vec<VpsEntry>,
     #[serde(default)]
-    github_accounts: Vec<GithubEntry>,
+    pub(crate) github_accounts: Vec<GithubEntry>,
     #[serde(default)]
-    gitlab_accounts: Vec<GitlabEntry>,
+    pub(crate) gitlab_accounts: Vec<GitlabEntry>,
     #[serde(default)]
-    aws_accounts: Vec<AwsEntry>,
+    pub(crate) aws_accounts: Vec<AwsEntry>,
     #[serde(default)]
-    azure_accounts: Vec<AzureEntry>,
+    pub(crate) azure_accounts: Vec<AzureEntry>,
     #[serde(default)]
-    google_accounts: Vec<GoogleEntry>,
+    pub(crate) google_accounts: Vec<GoogleEntry>,
     #[serde(default)]
-    claude_accounts: Vec<ClaudeEntry>,
+    pub(crate) claude_accounts: Vec<ClaudeEntry>,
     #[serde(default)]
-    notes: Vec<NoteEntry>,
+    pub(crate) notes: Vec<NoteEntry>,
     #[serde(default)]
-    todos: Vec<TodoEntry>,
+    pub(crate) todos: Vec<TodoEntry>,
     #[serde(default)]
-    slack_threads: Vec<SlackThreadEntry>,
+    pub(crate) slack_threads: Vec<SlackThreadEntry>,
     #[serde(default)]
-    slack_users: Vec<SlackUserEntry>,
+    pub(crate) slack_users: Vec<SlackUserEntry>,
     #[serde(default)]
-    slack_channels: Vec<SlackChannelEntry>,
+    pub(crate) slack_channels: Vec<SlackChannelEntry>,
     #[serde(default)]
-    projects: Vec<ProjectEntry>,
+    pub(crate) projects: Vec<ProjectEntry>,
     /// `$HOME` of the exporting machine: project paths under it are moved under this machine's.
     #[serde(default)]
-    home_dir: Option<String>,
+    pub(crate) home_dir: Option<String>,
     #[serde(default)]
-    secrets: Option<SealedSecrets>,
+    pub(crate) secrets: Option<SealedSecrets>,
 }
 
 /// A project with its repos and everything it is linked to. Links travel by NAME / LABEL (ids
 /// differ between machines); sessions and usage history stay on the machine.
 #[derive(Serialize, Deserialize)]
-struct ProjectEntry {
-    id: String,
-    name: String,
-    path: String,
+pub(crate) struct ProjectEntry {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) path: String,
     #[serde(default)]
-    github_owner: Option<String>,
+    pub(crate) github_owner: Option<String>,
     #[serde(default)]
-    github_repo: Option<String>,
-    default_engine: String,
-    created_at: String,
+    pub(crate) github_repo: Option<String>,
+    pub(crate) default_engine: String,
+    pub(crate) created_at: String,
     #[serde(default)]
-    position: i64,
+    pub(crate) position: i64,
     #[serde(default)]
-    github_project_board_url: Option<String>,
+    pub(crate) github_project_board_url: Option<String>,
     #[serde(default)]
-    github_project_field_mappings: Option<String>,
+    pub(crate) github_project_field_mappings: Option<String>,
     /// Default GitHub account (label).
     #[serde(default)]
-    github_account: Option<String>,
+    pub(crate) github_account: Option<String>,
     /// Retired reviewer account of older backups; imported as an enabled account.
     #[serde(default, skip_serializing)]
-    github_reviewer_account: Option<String>,
+    pub(crate) github_reviewer_account: Option<String>,
     /// Default GitLab account (label).
     #[serde(default)]
-    gitlab_account: Option<String>,
+    pub(crate) gitlab_account: Option<String>,
     /// Every GitHub / GitLab account enabled for the project (labels).
     #[serde(default)]
-    github_accounts: Vec<String>,
+    pub(crate) github_accounts: Vec<String>,
     #[serde(default)]
-    gitlab_accounts: Vec<String>,
+    pub(crate) gitlab_accounts: Vec<String>,
     /// Every AWS / Azure account enabled for the project (labels).
     #[serde(default)]
-    aws_accounts: Vec<String>,
+    pub(crate) aws_accounts: Vec<String>,
     #[serde(default)]
-    azure_accounts: Vec<String>,
+    pub(crate) azure_accounts: Vec<String>,
     #[serde(default)]
-    aws_account: Option<String>,
+    pub(crate) aws_account: Option<String>,
     #[serde(default)]
-    azure_account: Option<String>,
+    pub(crate) azure_account: Option<String>,
     #[serde(default)]
-    claude_account: Option<String>,
+    pub(crate) claude_account: Option<String>,
     #[serde(default)]
-    repos: Vec<RepoEntry>,
+    pub(crate) repos: Vec<RepoEntry>,
     #[serde(default)]
-    skills: Vec<LinkedItem>,
+    pub(crate) skills: Vec<LinkedItem>,
     #[serde(default)]
-    rules: Vec<LinkedItem>,
+    pub(crate) rules: Vec<LinkedItem>,
     #[serde(default)]
-    skill_groups: Vec<String>,
+    pub(crate) skill_groups: Vec<String>,
     #[serde(default)]
-    rule_groups: Vec<String>,
+    pub(crate) rule_groups: Vec<String>,
     #[serde(default)]
-    mcp_servers: Vec<String>,
+    pub(crate) mcp_servers: Vec<String>,
     #[serde(default)]
-    servers: Vec<ProjectServerEntry>,
+    pub(crate) servers: Vec<ProjectServerEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct RepoEntry {
-    name: String,
-    path: String,
+pub(crate) struct RepoEntry {
+    pub(crate) name: String,
+    pub(crate) path: String,
     #[serde(default)]
-    github_owner: Option<String>,
+    pub(crate) github_owner: Option<String>,
     #[serde(default)]
-    github_repo: Option<String>,
+    pub(crate) github_repo: Option<String>,
     #[serde(default)]
-    provider: String,
+    pub(crate) provider: String,
     #[serde(default)]
-    gitlab_project_path: Option<String>,
+    pub(crate) gitlab_project_path: Option<String>,
     #[serde(default)]
-    gitlab_project_id: Option<i64>,
-    created_at: String,
+    pub(crate) gitlab_project_id: Option<i64>,
+    pub(crate) created_at: String,
 }
 
 /// A skill / rule switched on for the project; `manual = false` when a group brought it in.
 #[derive(Serialize, Deserialize)]
-struct LinkedItem {
-    name: String,
+pub(crate) struct LinkedItem {
+    pub(crate) name: String,
     #[serde(default)]
-    manual: bool,
+    pub(crate) manual: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-struct ProjectServerEntry {
+pub(crate) struct ProjectServerEntry {
     /// VPS server label.
-    server: String,
-    role: String,
+    pub(crate) server: String,
+    pub(crate) role: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct SkillEntry {
-    id: String,
-    name: String,
-    description: String,
-    target: String,
-    files: Vec<FileEntry>,
+pub(crate) struct SkillEntry {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) target: String,
+    pub(crate) files: Vec<FileEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct FileEntry {
+pub(crate) struct FileEntry {
     /// `/`-separated path relative to the skill folder.
-    path: String,
+    pub(crate) path: String,
     /// Base64 file contents.
-    data: String,
+    pub(crate) data: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct RuleEntry {
-    id: String,
-    name: String,
-    description: String,
-    target: String,
-    content: String,
+pub(crate) struct RuleEntry {
+    pub(crate) id: String,
+    pub(crate) name: String,
+    pub(crate) description: String,
+    pub(crate) target: String,
+    pub(crate) content: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct GroupEntry {
-    name: String,
+pub(crate) struct GroupEntry {
+    pub(crate) name: String,
     #[serde(default)]
-    description: String,
+    pub(crate) description: String,
     #[serde(default)]
-    color: Option<String>,
+    pub(crate) color: Option<String>,
     /// Member skill / rule NAMES (ids differ between machines).
     #[serde(default)]
-    members: Vec<String>,
+    pub(crate) members: Vec<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct VpsEntry {
-    id: String,
-    label: String,
-    host: String,
-    port: i64,
-    username: String,
-    auth_method: String,
+pub(crate) struct VpsEntry {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) host: String,
+    pub(crate) port: i64,
+    pub(crate) username: String,
+    pub(crate) auth_method: String,
     /// A user path such as `~/.ssh/id_ed25519`; `None` for a Devdy-managed key.
     #[serde(default)]
-    private_key_path: Option<String>,
+    pub(crate) private_key_path: Option<String>,
     /// The key was copied into Devdy's key store; its contents travel in the sealed secrets.
     #[serde(default)]
-    managed_key: bool,
+    pub(crate) managed_key: bool,
     #[serde(default)]
-    tags: Option<String>,
+    pub(crate) tags: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct GithubEntry {
-    id: String,
-    label: String,
+pub(crate) struct GithubEntry {
+    pub(crate) id: String,
+    pub(crate) label: String,
     #[serde(default)]
-    username: Option<String>,
+    pub(crate) username: Option<String>,
     #[serde(default)]
-    scopes: Option<String>,
+    pub(crate) scopes: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct GitlabEntry {
-    id: String,
-    label: String,
+pub(crate) struct GitlabEntry {
+    pub(crate) id: String,
+    pub(crate) label: String,
     #[serde(default)]
-    username: Option<String>,
+    pub(crate) username: Option<String>,
     #[serde(default)]
-    host: Option<String>,
+    pub(crate) host: Option<String>,
     #[serde(default)]
-    email: Option<String>,
+    pub(crate) email: Option<String>,
     #[serde(default)]
-    scopes: Option<String>,
+    pub(crate) scopes: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct AwsEntry {
-    id: String,
-    label: String,
-    auth_method: String,
+pub(crate) struct AwsEntry {
+    pub(crate) id: String,
+    pub(crate) label: String,
+    pub(crate) auth_method: String,
     #[serde(default)]
-    account_id: Option<String>,
+    pub(crate) account_id: Option<String>,
     #[serde(default)]
-    arn: Option<String>,
-    region: String,
+    pub(crate) arn: Option<String>,
+    pub(crate) region: String,
     #[serde(default)]
-    profile_name: Option<String>,
+    pub(crate) profile_name: Option<String>,
     #[serde(default)]
-    tags: Option<String>,
+    pub(crate) tags: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct AzureEntry {
-    id: String,
-    label: String,
+pub(crate) struct AzureEntry {
+    pub(crate) id: String,
+    pub(crate) label: String,
     #[serde(default)]
-    tenant: Option<String>,
+    pub(crate) tenant: Option<String>,
     #[serde(default)]
-    subscription_id: Option<String>,
+    pub(crate) subscription_id: Option<String>,
     #[serde(default)]
-    subscription_name: Option<String>,
+    pub(crate) subscription_name: Option<String>,
     #[serde(default)]
-    tags: Option<String>,
+    pub(crate) tags: Option<String>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct GoogleEntry {
-    id: String,
-    label: String,
+pub(crate) struct GoogleEntry {
+    pub(crate) id: String,
+    pub(crate) label: String,
     #[serde(default)]
-    email: Option<String>,
+    pub(crate) email: Option<String>,
     #[serde(default)]
-    scope: Option<String>,
+    pub(crate) scope: Option<String>,
     #[serde(default)]
-    is_default: bool,
+    pub(crate) is_default: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-struct ClaudeEntry {
-    id: String,
-    label: String,
+pub(crate) struct ClaudeEntry {
+    pub(crate) id: String,
+    pub(crate) label: String,
 }
 
 #[derive(Serialize, Deserialize, Clone)]
-struct ProjectRef {
-    name: String,
-    path: String,
+pub(crate) struct ProjectRef {
+    pub(crate) name: String,
+    pub(crate) path: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct NoteEntry {
-    id: String,
-    title: String,
-    content: String,
-    position: i64,
-    created_at: String,
-    updated_at: String,
+pub(crate) struct NoteEntry {
+    pub(crate) id: String,
+    pub(crate) title: String,
+    pub(crate) content: String,
+    pub(crate) position: i64,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
     #[serde(default)]
-    project: Option<ProjectRef>,
+    pub(crate) project: Option<ProjectRef>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct TodoEntry {
-    id: String,
-    text: String,
-    done: bool,
-    position: i64,
-    created_at: String,
+pub(crate) struct TodoEntry {
+    pub(crate) id: String,
+    pub(crate) text: String,
+    pub(crate) done: bool,
+    pub(crate) position: i64,
+    pub(crate) created_at: String,
     #[serde(default)]
-    due_date: Option<String>,
+    pub(crate) due_date: Option<String>,
     #[serde(default)]
-    project: Option<ProjectRef>,
+    pub(crate) project: Option<ProjectRef>,
     /// Focus columns (`TODO_FOCUS_COLS`), nulls left out.
     #[serde(default, skip_serializing_if = "serde_json::Map::is_empty")]
-    focus: serde_json::Map<String, serde_json::Value>,
+    pub(crate) focus: serde_json::Map<String, serde_json::Value>,
 }
 
 /// Focus columns of `todos` (migration 0067) carried by a backup.
@@ -409,169 +409,169 @@ fn todo_focus_of(json: &str) -> serde_json::Map<String, serde_json::Value> {
 /// A fetched Slack thread with its messages (original + Vietnamese) and file metadata. File
 /// contents are not carried: an imported thread is re-fetched, which downloads them again.
 #[derive(Serialize, Deserialize)]
-struct SlackThreadEntry {
-    id: String,
-    title: String,
+pub(crate) struct SlackThreadEntry {
+    pub(crate) id: String,
+    pub(crate) title: String,
     #[serde(default)]
-    title_custom: bool,
-    position: i64,
-    created_at: String,
-    updated_at: String,
+    pub(crate) title_custom: bool,
+    pub(crate) position: i64,
+    pub(crate) created_at: String,
+    pub(crate) updated_at: String,
     #[serde(default)]
-    workspace_domain: Option<String>,
+    pub(crate) workspace_domain: Option<String>,
     #[serde(default)]
-    team_id: Option<String>,
+    pub(crate) team_id: Option<String>,
     #[serde(default)]
-    workspace: Option<String>,
+    pub(crate) workspace: Option<String>,
     #[serde(default)]
-    channel_id: Option<String>,
+    pub(crate) channel_id: Option<String>,
     #[serde(default)]
-    channel: Option<String>,
+    pub(crate) channel: Option<String>,
     #[serde(default)]
-    thread_ts: Option<String>,
+    pub(crate) thread_ts: Option<String>,
     #[serde(default)]
-    thread_url: Option<String>,
+    pub(crate) thread_url: Option<String>,
     #[serde(default)]
-    fetched_at: Option<String>,
+    pub(crate) fetched_at: Option<String>,
     #[serde(default)]
-    reply_count: i64,
+    pub(crate) reply_count: i64,
     #[serde(default)]
-    last_reply_ts: Option<String>,
+    pub(crate) last_reply_ts: Option<String>,
     #[serde(default)]
-    last_seen_ts: Option<String>,
+    pub(crate) last_seen_ts: Option<String>,
     #[serde(default)]
-    search_text: String,
+    pub(crate) search_text: String,
     #[serde(default)]
-    legacy: bool,
+    pub(crate) legacy: bool,
     #[serde(default)]
-    legacy_content: Option<String>,
+    pub(crate) legacy_content: Option<String>,
     #[serde(default)]
-    project: Option<ProjectRef>,
+    pub(crate) project: Option<ProjectRef>,
     #[serde(default)]
-    messages: Vec<SlackMessageEntry>,
+    pub(crate) messages: Vec<SlackMessageEntry>,
     #[serde(default)]
-    files: Vec<SlackFileEntry>,
+    pub(crate) files: Vec<SlackFileEntry>,
 }
 
 #[derive(Serialize, Deserialize)]
-struct SlackMessageEntry {
-    ts: String,
-    seq: i64,
+pub(crate) struct SlackMessageEntry {
+    pub(crate) ts: String,
+    pub(crate) seq: i64,
     #[serde(default)]
-    user_id: Option<String>,
+    pub(crate) user_id: Option<String>,
     #[serde(default)]
-    bot_id: Option<String>,
+    pub(crate) bot_id: Option<String>,
     #[serde(default)]
-    author_name: Option<String>,
+    pub(crate) author_name: Option<String>,
     #[serde(default)]
-    author_icon_url: Option<String>,
+    pub(crate) author_icon_url: Option<String>,
     #[serde(default)]
-    subtype: Option<String>,
-    text_raw: String,
+    pub(crate) subtype: Option<String>,
+    pub(crate) text_raw: String,
     #[serde(default)]
-    text_vi: Option<String>,
-    src_hash: String,
-    translate_status: String,
+    pub(crate) text_vi: Option<String>,
+    pub(crate) src_hash: String,
+    pub(crate) translate_status: String,
     #[serde(default)]
-    edited_ts: Option<String>,
+    pub(crate) edited_ts: Option<String>,
     /// JSON, as stored.
     #[serde(default)]
-    reactions: String,
+    pub(crate) reactions: String,
     /// JSON array of the EXPORTED `files[].id`.
     #[serde(default)]
-    file_ids: String,
+    pub(crate) file_ids: String,
 }
 
 #[derive(Serialize, Deserialize)]
-struct SlackFileEntry {
-    id: String,
-    slack_file_id: String,
+pub(crate) struct SlackFileEntry {
+    pub(crate) id: String,
+    pub(crate) slack_file_id: String,
     #[serde(default)]
-    message_ts: Option<String>,
-    name: String,
+    pub(crate) message_ts: Option<String>,
+    pub(crate) name: String,
     #[serde(default)]
-    title: Option<String>,
+    pub(crate) title: Option<String>,
     #[serde(default)]
-    mime: Option<String>,
+    pub(crate) mime: Option<String>,
     #[serde(default)]
-    filetype: Option<String>,
+    pub(crate) filetype: Option<String>,
     #[serde(default)]
-    size: i64,
+    pub(crate) size: i64,
     #[serde(default)]
-    remote_updated: Option<i64>,
+    pub(crate) remote_updated: Option<i64>,
     #[serde(default)]
-    permalink: Option<String>,
+    pub(crate) permalink: Option<String>,
     #[serde(default)]
-    width: Option<i64>,
+    pub(crate) width: Option<i64>,
     #[serde(default)]
-    height: Option<i64>,
+    pub(crate) height: Option<i64>,
 }
 
 /// Cached Slack user names, so imported messages show authors before the first re-fetch.
 #[derive(Serialize, Deserialize)]
-struct SlackUserEntry {
-    team_id: String,
-    user_id: String,
+pub(crate) struct SlackUserEntry {
+    pub(crate) team_id: String,
+    pub(crate) user_id: String,
     #[serde(default)]
-    display_name: Option<String>,
+    pub(crate) display_name: Option<String>,
     #[serde(default)]
-    real_name: Option<String>,
+    pub(crate) real_name: Option<String>,
     #[serde(default)]
-    avatar_url: Option<String>,
+    pub(crate) avatar_url: Option<String>,
     #[serde(default)]
-    is_bot: bool,
+    pub(crate) is_bot: bool,
 }
 
 #[derive(Serialize, Deserialize)]
-struct SlackChannelEntry {
-    team_id: String,
-    channel_id: String,
+pub(crate) struct SlackChannelEntry {
+    pub(crate) team_id: String,
+    pub(crate) channel_id: String,
     #[serde(default)]
-    name: Option<String>,
+    pub(crate) name: Option<String>,
     #[serde(default)]
-    kind: Option<String>,
+    pub(crate) kind: Option<String>,
 }
 
 #[derive(Clone, Serialize, Deserialize)]
-struct SealedSecrets {
-    kdf: String,
-    opslimit: u64,
-    memlimit: usize,
-    salt: String,
-    nonce: String,
-    ciphertext: String,
+pub(crate) struct SealedSecrets {
+    pub(crate) kdf: String,
+    pub(crate) opslimit: u64,
+    pub(crate) memlimit: usize,
+    pub(crate) salt: String,
+    pub(crate) nonce: String,
+    pub(crate) ciphertext: String,
 }
 
 /// Plaintext of the sealed secrets, keyed by the EXPORTED item ids. No `Debug`: it holds secrets.
 #[derive(Default, Serialize, Deserialize)]
-struct SecretPayload {
+pub(crate) struct SecretPayload {
     #[serde(default)]
-    github: BTreeMap<String, String>,
+    pub(crate) github: BTreeMap<String, String>,
     #[serde(default)]
-    gitlab: BTreeMap<String, String>,
+    pub(crate) gitlab: BTreeMap<String, String>,
     #[serde(default)]
-    mcp: BTreeMap<String, McpSecrets>,
+    pub(crate) mcp: BTreeMap<String, McpSecrets>,
     #[serde(default)]
-    servers: BTreeMap<String, ServerSecretEntry>,
+    pub(crate) servers: BTreeMap<String, ServerSecretEntry>,
     #[serde(default)]
-    google_client: Option<GoogleClientCreds>,
+    pub(crate) google_client: Option<GoogleClientCreds>,
     #[serde(default)]
-    google_accounts: BTreeMap<String, String>,
+    pub(crate) google_accounts: BTreeMap<String, String>,
     /// The secret notes vault as the Keychain holds it: already sealed under the vault
     /// password, so it needs that password too once imported.
     #[serde(default)]
-    secret_vault: Option<crate::secret_vault::VaultData>,
+    pub(crate) secret_vault: Option<crate::secret_vault::VaultData>,
 }
 
 #[derive(Default, Serialize, Deserialize)]
-struct ServerSecretEntry {
+pub(crate) struct ServerSecretEntry {
     #[serde(default)]
-    passphrase: Option<String>,
+    pub(crate) passphrase: Option<String>,
     #[serde(default)]
-    key_file_name: Option<String>,
+    pub(crate) key_file_name: Option<String>,
     /// Base64 contents of a Devdy-managed private key file.
     #[serde(default)]
-    key_data: Option<String>,
+    pub(crate) key_data: Option<String>,
 }
 
 // ---- Wire types for the UI ---------------------------------------------------
@@ -604,7 +604,7 @@ pub struct ImportReport {
 }
 
 impl ImportReport {
-    fn tally(&mut self, section: &str, outcome: Upsert) {
+    pub(crate) fn tally(&mut self, section: &str, outcome: Upsert) {
         let c = self.counts.entry(section.to_string()).or_default();
         match outcome {
             Upsert::Created => c.created += 1,
@@ -613,7 +613,7 @@ impl ImportReport {
         }
     }
 
-    fn record(&mut self, section: &str, label: &str, result: Result<Upsert, String>) {
+    pub(crate) fn record(&mut self, section: &str, label: &str, result: Result<Upsert, String>) {
         match result {
             Ok(outcome) => self.tally(section, outcome),
             Err(e) => self.warnings.push(format!("{section} '{label}': {e}")),
@@ -765,7 +765,12 @@ async fn free_id(db: &Db, table: &str, hint: &str) -> String {
     }
 }
 
-async fn id_by(db: &Db, table: &str, column: &str, value: &str) -> Result<Option<String>, String> {
+pub(crate) async fn id_by(
+    db: &Db,
+    table: &str,
+    column: &str,
+    value: &str,
+) -> Result<Option<String>, String> {
     sqlx::query_scalar::<_, String>(&format!(
         "SELECT id FROM {table} WHERE {column} = ? LIMIT 1"
     ))
@@ -775,11 +780,26 @@ async fn id_by(db: &Db, table: &str, column: &str, value: &str) -> Result<Option
     .map_err(|e| e.to_string())
 }
 
-/// Find the local project an exported note/todo belonged to: same path first, then same name.
-async fn resolve_project(db: &Db, project: &Option<ProjectRef>) -> Option<String> {
+/// How an imported item finds its local project.
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum ProjectMatch {
+    /// A backup file: same path first, then same name.
+    PathThenName,
+    /// A device sync: paths differ between machines, so by name only.
+    NameOnly,
+}
+
+/// Find the local project an exported note/todo/thread belonged to.
+async fn resolve_project(
+    db: &Db,
+    project: &Option<ProjectRef>,
+    how: ProjectMatch,
+) -> Option<String> {
     let project = project.as_ref()?;
-    if let Ok(Some(id)) = id_by(db, "projects", "path", &project.path).await {
-        return Some(id);
+    if how == ProjectMatch::PathThenName {
+        if let Ok(Some(id)) = id_by(db, "projects", "path", &project.path).await {
+            return Some(id);
+        }
     }
     id_by(db, "projects", "name", &project.name)
         .await
@@ -829,26 +849,157 @@ fn check_bundle(bundle: &Bundle) -> Result<(), String> {
 
 // ---- Export ------------------------------------------------------------------
 
-async fn collect(
+/// Which parts of the configuration `collect_sections` gathers. A backup takes everything; a
+/// device sync only what the user ticked (so a skipped section never touches the Keychain).
+#[derive(Debug, Clone, Copy)]
+pub(crate) struct Sections {
+    pub settings: bool,
+    /// Skills, rules and their groups (with the files).
+    pub library: bool,
+    pub mcp_servers: bool,
+    pub vps_servers: bool,
+    /// GitHub, GitLab, AWS, Azure, Google (+ OAuth client), Claude.
+    pub accounts: bool,
+    pub notes: bool,
+    pub todos: bool,
+    pub slack: bool,
+    pub projects: bool,
+    /// The secret notes vault (only ever read together with the other secrets).
+    pub secret_vault: bool,
+}
+
+impl Sections {
+    pub const ALL: Sections = Sections {
+        settings: true,
+        library: true,
+        mcp_servers: true,
+        vps_servers: true,
+        accounts: true,
+        notes: true,
+        todos: true,
+        slack: true,
+        projects: true,
+        secret_vault: true,
+    };
+}
+
+/// Account metadata (+ GitHub / GitLab / Google tokens and the Google OAuth client when
+/// `with_secrets`). Claude, AWS and Azure carry metadata only: their credentials live in
+/// per-account CLI config and never leave the machine.
+pub(crate) struct AccountsPart {
+    pub github: Vec<GithubEntry>,
+    pub gitlab: Vec<GitlabEntry>,
+    pub aws: Vec<AwsEntry>,
+    pub azure: Vec<AzureEntry>,
+    pub google: Vec<GoogleEntry>,
+    pub claude: Vec<ClaudeEntry>,
+}
+
+pub(crate) async fn collect_sections(
     app: &AppHandle,
     db: &Db,
     with_secrets: bool,
+    sections: Sections,
 ) -> Result<(Bundle, SecretPayload), String> {
     let mut secret = SecretPayload::default();
     let err = |e: sqlx::Error| e.to_string();
+    let mut bundle = Bundle {
+        format: FORMAT.to_string(),
+        version: VERSION,
+        exported_at: chrono::Utc::now().to_rfc3339(),
+        app_version: app.package_info().version.to_string(),
+        home_dir: std::env::var("HOME").ok().filter(|h| !h.is_empty()),
+        ..Default::default()
+    };
 
-    let mut settings = BTreeMap::new();
-    for row in sqlx::query("SELECT key, value FROM settings")
-        .fetch_all(db)
-        .await
-        .map_err(err)?
-    {
-        let key: String = row.get("key");
-        if PORTABLE_SETTING_KEYS.contains(&key.as_str()) {
-            settings.insert(key, row.get("value"));
+    if sections.settings {
+        for row in sqlx::query("SELECT key, value FROM settings")
+            .fetch_all(db)
+            .await
+            .map_err(err)?
+        {
+            let key: String = row.get("key");
+            if PORTABLE_SETTING_KEYS.contains(&key.as_str()) {
+                bundle.settings.insert(key, row.get("value"));
+            }
         }
     }
 
+    if sections.library {
+        let (skills, rules, skill_groups, rule_groups) = collect_library(db).await?;
+        bundle.skills = skills;
+        bundle.rules = rules;
+        bundle.skill_groups = skill_groups;
+        bundle.rule_groups = rule_groups;
+    }
+
+    if sections.mcp_servers {
+        for id in sqlx::query_scalar::<_, String>("SELECT id FROM mcp_servers ORDER BY name")
+            .fetch_all(db)
+            .await
+            .map_err(err)?
+        {
+            let server = mcp::get_mcp_server(app.state::<Db>(), id.clone()).await?;
+            if with_secrets {
+                let s = secrets::get_mcp_secrets(&id);
+                if !s.env.is_empty() || !s.headers.is_empty() {
+                    secret.mcp.insert(id, s);
+                }
+            }
+            bundle.mcp_servers.push(server);
+        }
+    }
+
+    if sections.vps_servers {
+        bundle.vps_servers = collect_vps(app, db, with_secrets, &mut secret).await?;
+    }
+
+    if sections.accounts {
+        let accounts = collect_accounts(db, with_secrets, &mut secret).await?;
+        bundle.github_accounts = accounts.github;
+        bundle.gitlab_accounts = accounts.gitlab;
+        bundle.aws_accounts = accounts.aws;
+        bundle.azure_accounts = accounts.azure;
+        bundle.google_accounts = accounts.google;
+        bundle.claude_accounts = accounts.claude;
+    }
+    if with_secrets && sections.secret_vault {
+        secret.secret_vault = secrets::with_vault(false, |v| Ok(v.clone()))
+            .ok()
+            .filter(|v| v.header.is_some() || !v.old_headers.is_empty());
+    }
+
+    if sections.notes {
+        bundle.notes = collect_notes(db).await?;
+    }
+    if sections.todos {
+        bundle.todos = collect_todos(db).await?;
+    }
+    if sections.slack {
+        let (threads, users, channels) = collect_slack(db).await?;
+        bundle.slack_threads = threads;
+        bundle.slack_users = users;
+        bundle.slack_channels = channels;
+    }
+    if sections.projects {
+        bundle.projects = collect_projects(db).await?;
+    }
+    Ok((bundle, secret))
+}
+
+#[allow(clippy::type_complexity)]
+async fn collect_library(
+    db: &Db,
+) -> Result<
+    (
+        Vec<SkillEntry>,
+        Vec<RuleEntry>,
+        Vec<GroupEntry>,
+        Vec<GroupEntry>,
+    ),
+    String,
+> {
+    let err = |e: sqlx::Error| e.to_string();
     let mut skill_entries = Vec::new();
     for row in
         sqlx::query("SELECT id, name, description, target, source_path FROM skills ORDER BY name")
@@ -903,23 +1054,16 @@ async fn collect(
     .await?;
     let rule_groups =
         collect_groups(db, "rule_groups", "rule_group_members", "rule_id", "rules").await?;
+    Ok((skill_entries, rule_entries, skill_groups, rule_groups))
+}
 
-    let mut mcp_servers = Vec::new();
-    for id in sqlx::query_scalar::<_, String>("SELECT id FROM mcp_servers ORDER BY name")
-        .fetch_all(db)
-        .await
-        .map_err(err)?
-    {
-        let server = mcp::get_mcp_server(app.state::<Db>(), id.clone()).await?;
-        if with_secrets {
-            let s = secrets::get_mcp_secrets(&id);
-            if !s.env.is_empty() || !s.headers.is_empty() {
-                secret.mcp.insert(id, s);
-            }
-        }
-        mcp_servers.push(server);
-    }
-
+async fn collect_vps(
+    app: &AppHandle,
+    db: &Db,
+    with_secrets: bool,
+    secret: &mut SecretPayload,
+) -> Result<Vec<VpsEntry>, String> {
+    let err = |e: sqlx::Error| e.to_string();
     let mut vps_entries = Vec::new();
     for row in sqlx::query(
         "SELECT id, label, host, port, username, auth_method, private_key_path, tags FROM servers ORDER BY label",
@@ -963,7 +1107,15 @@ async fn collect(
             tags: row.get("tags"),
         });
     }
+    Ok(vps_entries)
+}
 
+pub(crate) async fn collect_accounts(
+    db: &Db,
+    with_secrets: bool,
+    secret: &mut SecretPayload,
+) -> Result<AccountsPart, String> {
+    let err = |e: sqlx::Error| e.to_string();
     let mut github_accounts = Vec::new();
     for row in sqlx::query("SELECT id, label, username, scopes FROM github_accounts ORDER BY label")
         .fetch_all(db)
@@ -1068,9 +1220,6 @@ async fn collect(
     }
     if with_secrets {
         secret.google_client = secrets::get_google_client();
-        secret.secret_vault = secrets::with_vault(false, |v| Ok(v.clone()))
-            .ok()
-            .filter(|v| v.header.is_some() || !v.old_headers.is_empty());
     }
 
     let claude_accounts = sqlx::query("SELECT id, label FROM claude_accounts ORDER BY label")
@@ -1083,23 +1232,34 @@ async fn collect(
             label: row.get("label"),
         })
         .collect();
+    Ok(AccountsPart {
+        github: github_accounts,
+        gitlab: gitlab_accounts,
+        aws: aws_accounts,
+        azure: azure_accounts,
+        google: google_accounts,
+        claude: claude_accounts,
+    })
+}
 
-    let project_of = |row: &sqlx::sqlite::SqliteRow| -> Option<ProjectRef> {
-        let name: Option<String> = row.get("project_name");
-        let path: Option<String> = row.get("project_path");
-        Some(ProjectRef {
-            name: name?,
-            path: path?,
-        })
-    };
-    let notes = sqlx::query(
+fn project_of(row: &sqlx::sqlite::SqliteRow) -> Option<ProjectRef> {
+    let name: Option<String> = row.get("project_name");
+    let path: Option<String> = row.get("project_path");
+    Some(ProjectRef {
+        name: name?,
+        path: path?,
+    })
+}
+
+async fn collect_notes(db: &Db) -> Result<Vec<NoteEntry>, String> {
+    Ok(sqlx::query(
         "SELECT n.id, n.title, n.content, n.position, n.created_at, n.updated_at, \
                 p.name AS project_name, p.path AS project_path \
          FROM notes n LEFT JOIN projects p ON p.id = n.project_id ORDER BY n.position",
     )
     .fetch_all(db)
     .await
-    .map_err(err)?
+    .map_err(|e| e.to_string())?
     .iter()
     .map(|row| NoteEntry {
         id: row.get("id"),
@@ -1110,8 +1270,11 @@ async fn collect(
         updated_at: row.get("updated_at"),
         project: project_of(row),
     })
-    .collect();
-    let todos = sqlx::query(&format!(
+    .collect())
+}
+
+pub(crate) async fn collect_todos(db: &Db) -> Result<Vec<TodoEntry>, String> {
+    Ok(sqlx::query(&format!(
         "SELECT t.id, t.text, t.done, t.position, t.created_at, t.due_date, \
                 {} AS focus_json, p.name AS project_name, p.path AS project_path \
          FROM todos t LEFT JOIN projects p ON p.id = t.project_id ORDER BY t.position",
@@ -1119,7 +1282,7 @@ async fn collect(
     ))
     .fetch_all(db)
     .await
-    .map_err(err)?
+    .map_err(|e| e.to_string())?
     .iter()
     .map(|row| TodoEntry {
         id: row.get("id"),
@@ -1131,42 +1294,10 @@ async fn collect(
         project: project_of(row),
         focus: todo_focus_of(row.get("focus_json")),
     })
-    .collect();
-
-    let (slack_threads, slack_users, slack_channels) = collect_slack(db).await?;
-    let projects = collect_projects(db).await?;
-
-    let bundle = Bundle {
-        format: FORMAT.to_string(),
-        version: VERSION,
-        exported_at: chrono::Utc::now().to_rfc3339(),
-        app_version: app.package_info().version.to_string(),
-        settings,
-        skills: skill_entries,
-        rules: rule_entries,
-        skill_groups,
-        rule_groups,
-        mcp_servers,
-        vps_servers: vps_entries,
-        github_accounts,
-        gitlab_accounts,
-        aws_accounts,
-        azure_accounts,
-        google_accounts,
-        claude_accounts,
-        notes,
-        todos,
-        slack_threads,
-        slack_users,
-        slack_channels,
-        projects,
-        home_dir: std::env::var("HOME").ok().filter(|h| !h.is_empty()),
-        secrets: None,
-    };
-    Ok((bundle, secret))
+    .collect())
 }
 
-async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
+pub(crate) async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
     let err = |e: sqlx::Error| e.to_string();
     let mut out = Vec::new();
     for row in sqlx::query(
@@ -1327,7 +1458,7 @@ async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, String> {
     Ok(out)
 }
 
-async fn collect_slack(
+pub(crate) async fn collect_slack(
     db: &Db,
 ) -> Result<
     (
@@ -1506,7 +1637,6 @@ async fn collect_groups(
 #[tauri::command]
 pub async fn export_settings_backup(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     path: String,
     password: Option<String>,
@@ -1520,56 +1650,35 @@ pub async fn export_settings_backup(
             "The password must be at least {MIN_PASSWORD_LEN} characters"
         ));
     }
-    let (mut bundle, mut payload) = collect(&app, db.inner(), password.is_some()).await?;
-    if from_remote(&webview) {
-        payload.secret_vault = None;
-    }
+    let (mut bundle, payload) =
+        collect_sections(&app, db.inner(), password.is_some(), Sections::ALL).await?;
     if let Some(password) = password {
         let sealed = tokio::task::spawn_blocking(move || seal(&payload, &password))
             .await
             .map_err(|e| e.to_string())??;
         bundle.secrets = Some(sealed);
     }
-    // A remote desktop writes only where it may (never `~/.devdy`, app data…).
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::write(policy.as_ref(), std::path::Path::new(&path))?;
     let json = serde_json::to_vec_pretty(&bundle).map_err(|e| e.to_string())?;
-    write_private_file(&path.to_string_lossy(), &json)?;
+    write_private_file(&path, &json)?;
     Ok(bundle.info())
-}
-
-/// Called by a Remote Control controller: the secret notes vault stays out of
-/// it (its sealed data would allow offline guessing of the vault password, and
-/// an import could overwrite notes).
-fn from_remote(webview: &tauri::Webview) -> bool {
-    webview.label() == crate::remote::ipc::BRIDGE_LABEL
 }
 
 // ---- Import ------------------------------------------------------------------
 
 #[tauri::command]
-pub async fn inspect_settings_backup(
-    webview: tauri::Webview,
-    db: State<'_, Db>,
-    path: String,
-) -> Result<BackupInfo, String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
-    Ok(read_bundle(&path.to_string_lossy())?.info())
+pub async fn inspect_settings_backup(path: String) -> Result<BackupInfo, String> {
+    Ok(read_bundle(&path)?.info())
 }
 
 #[tauri::command]
 pub async fn import_settings_backup(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     path: String,
     password: Option<String>,
     create_missing_dirs: Option<bool>,
 ) -> Result<ImportReport, String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let path = crate::remote::fs_policy::read(policy.as_ref(), std::path::Path::new(&path))?;
-    let bundle = read_bundle(&path.to_string_lossy())?;
+    let bundle = read_bundle(&path)?;
     let password = password.filter(|p| !p.is_empty());
     let mut report = ImportReport::default();
 
@@ -1581,10 +1690,6 @@ pub async fn import_settings_backup(
                 .await
                 .map_err(|e| e.to_string())??;
             report.secrets_imported = true;
-            let mut payload = payload;
-            if from_remote(&webview) {
-                payload.secret_vault = None;
-            }
             Some(payload)
         }
         (Some(_), None) => {
@@ -1666,8 +1771,9 @@ async fn apply_bundle(
         let result = import_aws(db, entry).await;
         report.record("awsAccounts", &entry.label, result);
     }
+    let app_data = app.path().app_data_dir().ok();
     for entry in &bundle.azure_accounts {
-        let result = import_azure(&app, db, entry).await;
+        let result = import_azure(app_data.as_deref(), db, entry).await;
         report.record("azureAccounts", &entry.label, result);
     }
     if let Some(vault) = secret.secret_vault.clone() {
@@ -1691,11 +1797,10 @@ async fn apply_bundle(
         report.record("googleAccounts", &entry.label, result);
     }
     for entry in &bundle.claude_accounts {
-        let result = import_claude(&app, db, entry).await;
+        let result = import_claude(app_data.as_deref(), db, entry).await;
         report.record("claudeAccounts", &entry.label, result);
     }
     // Projects before notes / todos / threads so those can re-link to them.
-    let app_data = app.path().app_data_dir().ok();
     let mut project_ids: Vec<(usize, String)> = Vec::new();
     for (index, entry) in bundle.projects.iter().enumerate() {
         match import_project(db, entry, create_missing_dirs).await {
@@ -1794,7 +1899,7 @@ fn remap_bundle_paths(bundle: &mut Bundle, local_home: Option<&str>) {
 }
 
 /// Record a skill/rule upsert, surfacing per-project sync failures as warnings.
-fn record_with_sync(
+pub(crate) fn record_with_sync(
     report: &mut ImportReport,
     section: &str,
     name: &str,
@@ -1813,7 +1918,7 @@ fn record_with_sync(
     }
 }
 
-async fn import_settings(db: &Db, bundle: &Bundle, report: &mut ImportReport) {
+pub(crate) async fn import_settings(db: &Db, bundle: &Bundle, report: &mut ImportReport) {
     for (key, value) in &bundle.settings {
         if !PORTABLE_SETTING_KEYS.contains(&key.as_str()) {
             continue;
@@ -1846,7 +1951,7 @@ async fn import_settings(db: &Db, bundle: &Bundle, report: &mut ImportReport) {
     }
 }
 
-async fn import_skill(
+pub(crate) async fn import_skill(
     app: &AppHandle,
     db: &Db,
     entry: &SkillEntry,
@@ -1875,7 +1980,11 @@ async fn import_skill(
     .await
 }
 
-async fn import_group(db: &Db, kind: GroupKind, entry: &GroupEntry) -> Result<Upsert, String> {
+pub(crate) async fn import_group(
+    db: &Db,
+    kind: GroupKind,
+    entry: &GroupEntry,
+) -> Result<Upsert, String> {
     let (groups_table, members_table, item_col, items_table) = match kind {
         GroupKind::Skill => ("skill_groups", "skill_group_members", "skill_id", "skills"),
         GroupKind::Rule => ("rule_groups", "rule_group_members", "rule_id", "rules"),
@@ -1957,8 +2066,18 @@ async fn import_group(db: &Db, kind: GroupKind, entry: &GroupEntry) -> Result<Up
     if members.len() != before {
         let applied = set_group_members_inner(db, kind, &group_id, members).await?;
         if !applied.failures.is_empty() {
-            let names: Vec<String> = applied.failures.into_iter().map(|f| f.item_name).collect();
-            return Err(format!("could not apply to projects: {}", names.join(", ")));
+            // One failure per (project, member): name each member once, with its first error.
+            let mut seen = std::collections::BTreeSet::new();
+            let failures: Vec<String> = applied
+                .failures
+                .into_iter()
+                .filter(|f| seen.insert(f.item_name.clone()))
+                .map(|f| format!("{} ({})", f.item_name, f.error))
+                .collect();
+            return Err(format!(
+                "members saved, but could not apply to projects: {}",
+                failures.join(", ")
+            ));
         }
         if outcome == Upsert::Unchanged {
             outcome = Upsert::Updated;
@@ -1967,7 +2086,7 @@ async fn import_group(db: &Db, kind: GroupKind, entry: &GroupEntry) -> Result<Up
     Ok(outcome)
 }
 
-async fn import_vps(
+pub(crate) async fn import_vps(
     app: &AppHandle,
     db: &Db,
     entry: &VpsEntry,
@@ -2105,7 +2224,7 @@ fn apply_token(
     })
 }
 
-async fn import_github(
+pub(crate) async fn import_github(
     db: &Db,
     entry: &GithubEntry,
     pat: Option<&String>,
@@ -2159,7 +2278,7 @@ async fn import_github(
     )
 }
 
-async fn import_gitlab(
+pub(crate) async fn import_gitlab(
     db: &Db,
     entry: &GitlabEntry,
     pat: Option<&String>,
@@ -2220,7 +2339,7 @@ async fn import_gitlab(
     )
 }
 
-async fn import_aws(db: &Db, entry: &AwsEntry) -> Result<Upsert, String> {
+pub(crate) async fn import_aws(db: &Db, entry: &AwsEntry) -> Result<Upsert, String> {
     match id_by(db, "aws_accounts", "label", &entry.label).await? {
         Some(id) => {
             let changed = sqlx::query(
@@ -2270,7 +2389,11 @@ async fn import_aws(db: &Db, entry: &AwsEntry) -> Result<Upsert, String> {
     }
 }
 
-async fn import_azure(app: &AppHandle, db: &Db, entry: &AzureEntry) -> Result<Upsert, String> {
+pub(crate) async fn import_azure(
+    app_data: Option<&Path>,
+    db: &Db,
+    entry: &AzureEntry,
+) -> Result<Upsert, String> {
     match id_by(db, "azure_accounts", "label", &entry.label).await? {
         Some(id) => {
             let changed = sqlx::query(
@@ -2296,8 +2419,8 @@ async fn import_azure(app: &AppHandle, db: &Db, entry: &AzureEntry) -> Result<Up
             // The az login session lives in a per-account config dir and is not portable: the
             // account arrives logged out, with its subscription pinned for the next login.
             let id = free_id(db, "azure_accounts", &entry.id).await;
-            let root = app.path().app_data_dir().map_err(|e| e.to_string())?;
-            let dir = crate::azure_sandbox::account_dir(&root, &id)
+            let root = app_data.ok_or_else(|| "app data folder unavailable".to_string())?;
+            let dir = crate::azure_sandbox::account_dir(root, &id)
                 .ok_or_else(|| "invalid account id".to_string())?;
             crate::azure_sandbox::create_account_dir(&dir)
                 .map_err(|e| format!("Failed to create Azure config dir: {e}"))?;
@@ -2320,7 +2443,7 @@ async fn import_azure(app: &AppHandle, db: &Db, entry: &AzureEntry) -> Result<Up
     }
 }
 
-async fn import_google(
+pub(crate) async fn import_google(
     db: &Db,
     entry: &GoogleEntry,
     token: Option<&String>,
@@ -2380,7 +2503,11 @@ async fn import_google(
     )
 }
 
-async fn import_claude(app: &AppHandle, db: &Db, entry: &ClaudeEntry) -> Result<Upsert, String> {
+pub(crate) async fn import_claude(
+    app_data: Option<&Path>,
+    db: &Db,
+    entry: &ClaudeEntry,
+) -> Result<Upsert, String> {
     if id_by(db, "claude_accounts", "label", &entry.label)
         .await?
         .is_some()
@@ -2390,10 +2517,8 @@ async fn import_claude(app: &AppHandle, db: &Db, entry: &ClaudeEntry) -> Result<
     // Claude Code keeps the OAuth login in its own store for the config dir, so the account
     // arrives logged out (status unknown) and never as the default until it is logged in.
     let id = free_id(db, "claude_accounts", &entry.id).await;
-    let dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|e| e.to_string())?
+    let dir = app_data
+        .ok_or_else(|| "app data folder unavailable".to_string())?
         .join("claude-accounts")
         .join(&id);
     std::fs::create_dir_all(&dir).map_err(|e| e.to_string())?;
@@ -2411,8 +2536,17 @@ async fn import_claude(app: &AppHandle, db: &Db, entry: &ClaudeEntry) -> Result<
     Ok(Upsert::Created)
 }
 
-async fn import_note(db: &Db, entry: &NoteEntry) -> Result<Upsert, String> {
-    let project_id = resolve_project(db, &entry.project).await;
+pub(crate) async fn import_note(db: &Db, entry: &NoteEntry) -> Result<Upsert, String> {
+    import_note_matching(db, entry, ProjectMatch::PathThenName).await
+}
+
+/// [`import_note`] with the project found by `how`.
+pub(crate) async fn import_note_matching(
+    db: &Db,
+    entry: &NoteEntry,
+    how: ProjectMatch,
+) -> Result<Upsert, String> {
+    let project_id = resolve_project(db, &entry.project, how).await;
     let exists = id_by(db, "notes", "id", &entry.id).await?.is_some();
     if exists {
         // An unresolvable project keeps the note's current local project.
@@ -2496,31 +2630,54 @@ async fn import_todo_focus(db: &Db, id: &str, focus: &serde_json::Map<String, se
 }
 
 async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
-    let project_id = resolve_project(db, &entry.project).await;
+    let project_id = resolve_project(db, &entry.project, ProjectMatch::PathThenName).await;
+    write_todo(db, entry, project_id, false).await
+}
+
+/// Upsert todo `entry` by id. With `exact_project` the project link is set to `project_id` even
+/// when it is `None` (device sync copies the source's link); otherwise `None` keeps the local one.
+pub(crate) async fn write_todo(
+    db: &Db,
+    entry: &TodoEntry,
+    project_id: Option<String>,
+    exact_project: bool,
+) -> Result<Upsert, String> {
     let exists = id_by(db, "todos", "id", &entry.id).await?.is_some();
     if exists {
-        let changed = sqlx::query(
+        let (project_set, project_changed) = if exact_project {
+            ("?", "project_id IS NOT ?")
+        } else {
+            (
+                "COALESCE(?, project_id)",
+                "(? IS NOT NULL AND project_id IS NOT ?)",
+            )
+        };
+        let sql = format!(
             "UPDATE todos SET text = ?, done = ?, position = ?, due_date = ?, \
-             project_id = COALESCE(?, project_id) \
+             project_id = {project_set} \
              WHERE id = ? AND (text IS NOT ? OR done IS NOT ? OR position IS NOT ? \
-             OR due_date IS NOT ? OR (? IS NOT NULL AND project_id IS NOT ?))",
-        )
-        .bind(&entry.text)
-        .bind(entry.done as i64)
-        .bind(entry.position)
-        .bind(&entry.due_date)
-        .bind(&project_id)
-        .bind(&entry.id)
-        .bind(&entry.text)
-        .bind(entry.done as i64)
-        .bind(entry.position)
-        .bind(&entry.due_date)
-        .bind(&project_id)
-        .bind(&project_id)
-        .execute(db)
-        .await
-        .map_err(|e| e.to_string())?
-        .rows_affected()
+             OR due_date IS NOT ? OR {project_changed})"
+        );
+        let mut q = sqlx::query(&sql)
+            .bind(&entry.text)
+            .bind(entry.done as i64)
+            .bind(entry.position)
+            .bind(&entry.due_date)
+            .bind(&project_id)
+            .bind(&entry.id)
+            .bind(&entry.text)
+            .bind(entry.done as i64)
+            .bind(entry.position)
+            .bind(&entry.due_date)
+            .bind(&project_id);
+        if !exact_project {
+            q = q.bind(&project_id);
+        }
+        let changed = q
+            .execute(db)
+            .await
+            .map_err(|e| e.to_string())?
+            .rows_affected()
             > 0;
         let focus_changed = import_todo_focus(db, &entry.id, &entry.focus).await?;
         return Ok(if changed || focus_changed {
@@ -2549,7 +2706,7 @@ async fn import_todo(db: &Db, entry: &TodoEntry) -> Result<Upsert, String> {
 
 /// Slack user / channel name caches; local rows win. Imported users are marked stale so the
 /// next fetch refreshes them (and downloads their avatars).
-async fn import_slack_caches(db: &Db, bundle: &Bundle, report: &mut ImportReport) {
+pub(crate) async fn import_slack_caches(db: &Db, bundle: &Bundle, report: &mut ImportReport) {
     const STALE: &str = "1970-01-01T00:00:00Z";
     for user in &bundle.slack_users {
         if let Err(e) = sqlx::query(
@@ -2596,9 +2753,18 @@ async fn import_slack_caches(db: &Db, bundle: &Bundle, report: &mut ImportReport
 /// messages (the local fetch is newer); it only gains the project link, a custom title and
 /// translations it is missing. A new thread is inserted `pending` with its file rows
 /// undownloaded. Returns the local thread id.
-async fn import_slack_thread(
+pub(crate) async fn import_slack_thread(
     db: &Db,
     entry: &SlackThreadEntry,
+) -> Result<(Upsert, String), String> {
+    import_slack_thread_matching(db, entry, ProjectMatch::PathThenName).await
+}
+
+/// [`import_slack_thread`] with the project found by `how`.
+pub(crate) async fn import_slack_thread_matching(
+    db: &Db,
+    entry: &SlackThreadEntry,
+    how: ProjectMatch,
 ) -> Result<(Upsert, String), String> {
     let err = |e: sqlx::Error| e.to_string();
     let local: Option<String> = match (&entry.channel_id, &entry.thread_ts) {
@@ -2612,7 +2778,7 @@ async fn import_slack_thread(
         .map_err(err)?,
         _ => id_by(db, "slack_threads", "id", &entry.id).await?,
     };
-    let project_id = resolve_project(db, &entry.project).await;
+    let project_id = resolve_project(db, &entry.project, how).await;
 
     if let Some(id) = local {
         let mut changed = sqlx::query(
@@ -2783,7 +2949,7 @@ async fn import_slack_thread(
 }
 
 /// Id of the row of `table` whose `label` matches; `None` for no label or no match.
-async fn id_by_label(
+pub(crate) async fn id_by_label(
     db: &Db,
     table: &str,
     label: &Option<String>,
@@ -2830,55 +2996,9 @@ async fn import_project(
         }
     }
 
-    let github = id_by_label(db, "github_accounts", &entry.github_account).await?;
-    let gitlab = id_by_label(db, "gitlab_accounts", &entry.gitlab_account).await?;
-    let aws = id_by_label(db, "aws_accounts", &entry.aws_account).await?;
-    let azure = id_by_label(db, "azure_accounts", &entry.azure_account).await?;
-    let claude = id_by_label(db, "claude_accounts", &entry.claude_account).await?;
-
     let (id, mut outcome) = match local {
         Some(id) => {
-            // Account links only move when the imported account exists here.
-            let changed = sqlx::query(
-                "UPDATE projects SET default_engine = ?, github_owner = COALESCE(?, github_owner), \
-                 github_repo = COALESCE(?, github_repo), \
-                 github_project_board_url = COALESCE(?, github_project_board_url), \
-                 github_project_field_mappings = COALESCE(?, github_project_field_mappings), \
-                 github_account_id = COALESCE(?, github_account_id), \
-                 gitlab_account_id = COALESCE(?, gitlab_account_id), \
-                 aws_account_id = COALESCE(?, aws_account_id), \
-                 azure_account_id = COALESCE(?, azure_account_id), \
-                 claude_account_id = COALESCE(?, claude_account_id) \
-                 WHERE id = ? AND (default_engine IS NOT ? \
-                 OR (? IS NOT NULL AND github_owner IS NOT ?) OR (? IS NOT NULL AND github_repo IS NOT ?) \
-                 OR (? IS NOT NULL AND github_project_board_url IS NOT ?) \
-                 OR (? IS NOT NULL AND github_project_field_mappings IS NOT ?) \
-                 OR (? IS NOT NULL AND github_account_id IS NOT ?) \
-                 OR (? IS NOT NULL AND gitlab_account_id IS NOT ?) \
-                 OR (? IS NOT NULL AND aws_account_id IS NOT ?) \
-                 OR (? IS NOT NULL AND azure_account_id IS NOT ?) \
-                 OR (? IS NOT NULL AND claude_account_id IS NOT ?))",
-            );
-            let values = [
-                &entry.github_owner,
-                &entry.github_repo,
-                &entry.github_project_board_url,
-                &entry.github_project_field_mappings,
-                &github,
-                &gitlab,
-                &aws,
-                &azure,
-                &claude,
-            ];
-            let mut q = changed.bind(&entry.default_engine);
-            for v in values {
-                q = q.bind(v);
-            }
-            q = q.bind(&id).bind(&entry.default_engine);
-            for v in values {
-                q = q.bind(v).bind(v);
-            }
-            let changed = q.execute(db).await.map_err(err)?.rows_affected() > 0;
+            let changed = update_project_row(db, &id, entry).await?;
             (
                 id,
                 if changed {
@@ -2889,6 +3009,11 @@ async fn import_project(
             )
         }
         None => {
+            let github = id_by_label(db, "github_accounts", &entry.github_account).await?;
+            let gitlab = id_by_label(db, "gitlab_accounts", &entry.gitlab_account).await?;
+            let aws = id_by_label(db, "aws_accounts", &entry.aws_account).await?;
+            let azure = id_by_label(db, "azure_accounts", &entry.azure_account).await?;
+            let claude = id_by_label(db, "claude_accounts", &entry.claude_account).await?;
             let id = free_id(db, "projects", &entry.id).await;
             let position: i64 =
                 sqlx::query_scalar("SELECT COALESCE(MAX(position), -1) + 1 FROM projects")
@@ -2963,6 +3088,116 @@ async fn import_project(
         touched = true;
     }
 
+    let mut links = Vec::new();
+    touched |= apply_project_links(db, &id, entry, &mut links).await?;
+    warnings.extend(links.iter().map(ToString::to_string));
+
+    if touched && outcome == Upsert::Unchanged {
+        outcome = Upsert::Updated;
+    }
+    Ok((outcome, id, warnings))
+}
+
+/// Overwrite the project row's settings (engine, GitHub repo / board, default accounts) with
+/// `entry`. Values the export left empty, or accounts unknown here, keep the local ones. Returns
+/// whether anything changed.
+pub(crate) async fn update_project_row(
+    db: &Db,
+    id: &str,
+    entry: &ProjectEntry,
+) -> Result<bool, String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let github = id_by_label(db, "github_accounts", &entry.github_account).await?;
+    let gitlab = id_by_label(db, "gitlab_accounts", &entry.gitlab_account).await?;
+    let aws = id_by_label(db, "aws_accounts", &entry.aws_account).await?;
+    let azure = id_by_label(db, "azure_accounts", &entry.azure_account).await?;
+    let claude = id_by_label(db, "claude_accounts", &entry.claude_account).await?;
+
+    // Account links only move when the imported account exists here.
+    let changed = sqlx::query(
+        "UPDATE projects SET default_engine = ?, github_owner = COALESCE(?, github_owner), \
+         github_repo = COALESCE(?, github_repo), \
+         github_project_board_url = COALESCE(?, github_project_board_url), \
+         github_project_field_mappings = COALESCE(?, github_project_field_mappings), \
+         github_account_id = COALESCE(?, github_account_id), \
+         gitlab_account_id = COALESCE(?, gitlab_account_id), \
+         aws_account_id = COALESCE(?, aws_account_id), \
+         azure_account_id = COALESCE(?, azure_account_id), \
+         claude_account_id = COALESCE(?, claude_account_id) \
+         WHERE id = ? AND (default_engine IS NOT ? \
+         OR (? IS NOT NULL AND github_owner IS NOT ?) OR (? IS NOT NULL AND github_repo IS NOT ?) \
+         OR (? IS NOT NULL AND github_project_board_url IS NOT ?) \
+         OR (? IS NOT NULL AND github_project_field_mappings IS NOT ?) \
+         OR (? IS NOT NULL AND github_account_id IS NOT ?) \
+         OR (? IS NOT NULL AND gitlab_account_id IS NOT ?) \
+         OR (? IS NOT NULL AND aws_account_id IS NOT ?) \
+         OR (? IS NOT NULL AND azure_account_id IS NOT ?) \
+         OR (? IS NOT NULL AND claude_account_id IS NOT ?))",
+    );
+    let values = [
+        &entry.github_owner,
+        &entry.github_repo,
+        &entry.github_project_board_url,
+        &entry.github_project_field_mappings,
+        &github,
+        &gitlab,
+        &aws,
+        &azure,
+        &claude,
+    ];
+    let mut q = changed.bind(&entry.default_engine);
+    for v in values {
+        q = q.bind(v);
+    }
+    q = q.bind(&id).bind(&entry.default_engine);
+    for v in values {
+        q = q.bind(v).bind(v);
+    }
+    Ok(q.execute(db).await.map_err(err)?.rows_affected() > 0)
+}
+
+/// A project link `apply_project_links` could not switch on.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct LinkWarning {
+    /// `mcpServer`, `vpsServer`, `githubAccount`, `skillGroup`, `skill`, `rule`…; empty for a
+    /// failure applying an item that exists.
+    pub kind: &'static str,
+    pub name: String,
+    /// `None`: the linked item doesn't exist here.
+    pub error: Option<String>,
+}
+
+impl LinkWarning {
+    fn missing(kind: &'static str, name: &str) -> Self {
+        Self { kind, name: name.to_string(), error: None }
+    }
+
+    fn failed(name: &str, error: String) -> Self {
+        Self { kind: "", name: name.to_string(), error: Some(error) }
+    }
+}
+
+impl std::fmt::Display for LinkWarning {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match &self.error {
+            None => write!(f, "{} '{}' not found", self.kind, self.name),
+            Some(e) => write!(f, "'{}': {e}", self.name),
+        }
+    }
+}
+
+/// Switch on for project `id` everything `entry` links to (MCP / VPS servers, git and cloud
+/// accounts, skill / rule groups, skills, rules), matched by name / label. Links are added, never
+/// removed; a link to something missing here becomes a warning. Returns whether anything changed.
+pub(crate) async fn apply_project_links(
+    db: &Db,
+    id: &str,
+    entry: &ProjectEntry,
+    warnings: &mut Vec<LinkWarning>,
+) -> Result<bool, String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let id = id.to_string();
+    let mut touched = false;
     let now = chrono::Utc::now().to_rfc3339();
     for name in &entry.mcp_servers {
         match id_by(db, "mcp_servers", "name", name).await? {
@@ -2980,7 +3215,7 @@ async fn import_project(
                 .rows_affected()
                     > 0;
             }
-            None => warnings.push(format!("MCP server '{name}' not found")),
+            None => warnings.push(LinkWarning::missing("mcpServer", name)),
         }
     }
 
@@ -3001,7 +3236,7 @@ async fn import_project(
                 .rows_affected()
                     > 0;
             }
-            None => warnings.push(format!("VPS server '{}' not found", link.server)),
+            None => warnings.push(LinkWarning::missing("vpsServer", &link.server)),
         }
     }
 
@@ -3037,13 +3272,19 @@ async fn import_project(
         let mut labels = labels;
         labels.sort();
         labels.dedup();
+        let kind = match table {
+            "github_accounts" => "githubAccount",
+            "gitlab_accounts" => "gitlabAccount",
+            "aws_accounts" => "awsAccount",
+            _ => "azureAccount",
+        };
         for label in labels {
             match id_by(db, table, "label", label).await? {
                 Some(account_id) => {
                     touched |= super::project_git_accounts::enable(db, provider, &id, &account_id)
                         .await?;
                 }
-                None => warnings.push(format!("account '{label}' not found in {table}")),
+                None => warnings.push(LinkWarning::missing(kind, label)),
             }
         }
         super::project_git_accounts::repair_defaults(db, provider, Some(&id)).await?;
@@ -3054,13 +3295,13 @@ async fn import_project(
         (GroupKind::Skill, &entry.skill_groups),
         (GroupKind::Rule, &entry.rule_groups),
     ] {
-        let (groups_table, link_table) = match kind {
-            GroupKind::Skill => ("skill_groups", "project_skill_groups"),
-            GroupKind::Rule => ("rule_groups", "project_rule_groups"),
+        let (groups_table, link_table, missing_kind) = match kind {
+            GroupKind::Skill => ("skill_groups", "project_skill_groups", "skillGroup"),
+            GroupKind::Rule => ("rule_groups", "project_rule_groups", "ruleGroup"),
         };
         for name in names {
             let Some(group_id) = id_by(db, groups_table, "name", name).await? else {
-                warnings.push(format!("group '{name}' not found"));
+                warnings.push(LinkWarning::missing(missing_kind, name));
                 continue;
             };
             let enabled: Option<i64> = sqlx::query_scalar(&format!(
@@ -3076,21 +3317,21 @@ async fn import_project(
             }
             let applied = crate::commands::groups::enable_group(db, kind, &id, &group_id).await?;
             for failure in applied.failures {
-                warnings.push(format!("'{}': {}", failure.item_name, failure.error));
+                warnings.push(LinkWarning::failed(&failure.item_name, failure.error));
             }
             touched = true;
         }
     }
 
     for (is_skill, items) in [(true, &entry.skills), (false, &entry.rules)] {
-        let (items_table, link_table, item_col) = if is_skill {
-            ("skills", "project_skills", "skill_id")
+        let (items_table, link_table, item_col, missing_kind) = if is_skill {
+            ("skills", "project_skills", "skill_id", "skill")
         } else {
-            ("rules", "project_rules", "rule_id")
+            ("rules", "project_rules", "rule_id", "rule")
         };
         for item in items {
             let Some(item_id) = id_by(db, items_table, "name", &item.name).await? else {
-                warnings.push(format!("{items_table} '{}' not found", item.name));
+                warnings.push(LinkWarning::missing(missing_kind, &item.name));
                 continue;
             };
             let manual: Option<i64> = sqlx::query_scalar(&format!(
@@ -3113,15 +3354,12 @@ async fn import_project(
             };
             match applied {
                 Ok(()) => touched = true,
-                Err(e) => warnings.push(format!("'{}': {e}", item.name)),
+                Err(e) => warnings.push(LinkWarning::failed(&item.name, e)),
             }
         }
     }
 
-    if touched && outcome == Upsert::Unchanged {
-        outcome = Upsert::Updated;
-    }
-    Ok((outcome, id, warnings))
+    Ok(touched)
 }
 
 #[cfg(test)]

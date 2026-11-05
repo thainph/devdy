@@ -576,29 +576,34 @@ pub async fn delete_azure_account(
     db: State<'_, Db>,
     id: String,
 ) -> Result<(), String> {
-    let lock = account_lock(&id);
+    delete_azure_account_inner(app_data_dir(&app).ok().as_deref(), db.inner(), &id).await
+}
+
+/// `app_data_dir` holds the account's az config dir (`None` leaves it on disk).
+pub async fn delete_azure_account_inner(
+    app_data_dir: Option<&Path>,
+    db: &Db,
+    id: &str,
+) -> Result<(), String> {
+    let lock = account_lock(id);
     let _guard = lock.lock().await;
     let _ = sqlx::query("UPDATE projects SET azure_account_id = NULL WHERE azure_account_id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await;
     // project_azure_accounts cascades; a project that used it as the default
     // falls back to another enabled account.
     sqlx::query("DELETE FROM azure_accounts WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
-    super::project_git_accounts::repair_defaults(
-        db.inner(),
-        super::project_git_accounts::AZURE,
-        None,
-    )
-    .await?;
+    super::project_git_accounts::repair_defaults(db, super::project_git_accounts::AZURE, None)
+        .await?;
     // Dropping the dir discards the account's az session and token cache. There
     // are no per-project Azure sandboxes to clean: runs only ever see the shared
     // empty dir, and the shims hand out the account dir per call.
-    if let Ok(dir) = account_dir(&app, &id) {
+    if let Some(dir) = app_data_dir.and_then(|root| crate::azure_sandbox::account_dir(root, id)) {
         crate::azure_sandbox::remove_account_dir(&dir);
     }
     Ok(())

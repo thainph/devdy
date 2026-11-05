@@ -442,10 +442,16 @@ pub async fn delete_skill(
     db: State<'_, Db>,
     id: String,
 ) -> Result<(), String> {
+    delete_skill_inner(db.inner(), &id, false).await
+}
+
+/// Delete a library skill: its project links first, then the source folder (moved to the legacy
+/// backups with `back_up`, removed otherwise) and the row.
+pub async fn delete_skill_inner(db: &Db, id: &str, back_up: bool) -> Result<(), String> {
     use sqlx::Row;
     let row = sqlx::query("SELECT source_path FROM skills WHERE id = ?")
-        .bind(&id)
-        .fetch_one(db.inner())
+        .bind(id)
+        .fetch_one(db)
         .await
         .map_err(|e| format!("Skill not found: {}", e))?;
 
@@ -458,8 +464,8 @@ pub async fn delete_skill(
          JOIN skills s ON s.id = ps.skill_id
          WHERE ps.skill_id = ?",
     )
-    .bind(&id)
-    .fetch_all(db.inner())
+    .bind(id)
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
     let mut errors = Vec::new();
@@ -476,11 +482,15 @@ pub async fn delete_skill(
         return Err(format!("Not deleted — clean these up first:\n{}", errors.join("\n")));
     }
 
-    let _ = fs::remove_dir_all(&source_path);
+    if back_up && Path::new(&source_path).exists() {
+        project_links::back_up_library_orphan(Path::new(&source_path), "skills")?;
+    } else {
+        let _ = fs::remove_dir_all(&source_path);
+    }
 
     sqlx::query("DELETE FROM skills WHERE id = ?")
-        .bind(&id)
-        .execute(db.inner())
+        .bind(id)
+        .execute(db)
         .await
         .map_err(|e| e.to_string())?;
 
@@ -489,16 +499,10 @@ pub async fn delete_skill(
 
 #[tauri::command]
 pub async fn export_skill_zip(
-    webview: tauri::Webview,
     db: State<'_, Db>,
     id: String,
     dest_path: String,
 ) -> Result<(), String> {
-    // A remote desktop exports anywhere it may write.
-    let dest_path = match crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await? {
-        Some(p) => p.write(Path::new(&dest_path))?.to_string_lossy().into_owned(),
-        None => dest_path,
-    };
     use sqlx::Row;
     use std::io::Write;
     use zip::ZipWriter;
@@ -536,14 +540,9 @@ pub async fn export_skill_zip(
 #[tauri::command]
 pub async fn import_skill_zip(
     app: AppHandle,
-    webview: tauri::Webview,
     db: State<'_, Db>,
     zip_path: String,
 ) -> Result<Skill, String> {
-    let policy = crate::remote::fs_policy::RemoteFs::for_caller(&webview, db.inner()).await?;
-    let zip_path = crate::remote::fs_policy::read(policy.as_ref(), Path::new(&zip_path))?
-        .to_string_lossy()
-        .into_owned();
     use std::io::Read;
     use zip::ZipArchive;
 
@@ -815,6 +814,11 @@ pub async fn sync_skill_to_projects(db: &Db, skill_id: &str) -> Result<Vec<Strin
         let project_id: String = row.get("project_id");
         let project_path: String = row.get("path");
         let project_name: String = row.get("project_name");
+        // Folder not on this machine: nothing to refresh (and nothing to recreate). The link and
+        // its last-sync hashes stay, so the skill is installed once the folder shows up.
+        if !Path::new(&project_path).is_dir() {
+            continue;
+        }
 
         let prev_claude: Option<String> = row.get("synced_hash_claude");
         let prev_codex: Option<String> = row.get("synced_hash_codex");

@@ -1,6 +1,6 @@
 [package]
 name = "devdy"
-version = "0.13.0"
+version = "0.14.0"
 description = "AI coding agent for developers"
 authors = ["thainph"]
 edition = "2021"
@@ -63,6 +63,8 @@ remote-e2e = { path = "../remote-e2e" }
 dryoc = "1.0"
 # Wipes the secret notes vault key from memory on lock (already a dryoc dependency).
 zeroize = "1"
+# Device sync bundles are compressed before encryption (already in the tree via other crates).
+flate2 = "1"
 # Conductor: in-process localhost-only MCP server (Streamable HTTP) that lets a
 # conductor run drive worker runs via session_* tools. Bound to 127.0.0.1 only.
 axum = "0.7"

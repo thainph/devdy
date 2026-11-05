@@ -36,16 +36,23 @@ pub type ConnId = u64;
 /// silently dropping frames and leaving the session desynced.
 pub const OUTBOUND_MAX_QUEUE: usize = 4096;
 
+/// Payload bytes that may sit queued for one connection, for the same reason:
+/// the frame count alone lets a few large frames (a device-sync chunk is a few
+/// MiB) pile up to gigabytes. Twice the default 32 MiB message cap, so one
+/// maximal frame always fits behind a normal backlog.
+pub const OUTBOUND_MAX_BYTES: usize = 64 * 1024 * 1024;
+
 /// Sender half used to push envelopes to a connection's write task.
 ///
 /// The channel itself is unbounded — the relay routes from inside a lock and
 /// must never await on a send — so the depth is tracked explicitly. Exceeding
-/// [`OUTBOUND_MAX_QUEUE`] fires `kill`, which the connection task turns into a
-/// disconnect.
+/// [`OUTBOUND_MAX_QUEUE`] frames or [`OUTBOUND_MAX_BYTES`] fires `kill`, which
+/// the connection task turns into a disconnect.
 #[derive(Debug, Clone)]
 pub struct Outbound {
     tx: mpsc::UnboundedSender<Envelope>,
     depth: Arc<AtomicUsize>,
+    bytes: Arc<AtomicUsize>,
     kill: Arc<Notify>,
 }
 
@@ -53,19 +60,27 @@ pub struct Outbound {
 pub struct OutboundRx {
     rx: mpsc::UnboundedReceiver<Envelope>,
     depth: Arc<AtomicUsize>,
+    bytes: Arc<AtomicUsize>,
+}
+
+/// Queued size of a frame: its payload, the only part that can be large.
+fn weight(env: &Envelope) -> usize {
+    env.cipher.as_ref().map_or(0, String::len)
 }
 
 /// Create a connected pair for one connection.
 pub fn outbound_channel() -> (Outbound, OutboundRx) {
     let (tx, rx) = mpsc::unbounded_channel();
     let depth = Arc::new(AtomicUsize::new(0));
+    let bytes = Arc::new(AtomicUsize::new(0));
     (
         Outbound {
             tx,
             depth: depth.clone(),
+            bytes: bytes.clone(),
             kill: Arc::new(Notify::new()),
         },
-        OutboundRx { rx, depth },
+        OutboundRx { rx, depth, bytes },
     )
 }
 
@@ -74,16 +89,22 @@ impl Outbound {
     /// far behind; in the latter case the connection is also signalled to close.
     #[allow(clippy::result_unit_err)]
     pub fn send(&self, env: Envelope) -> Result<(), ()> {
-        if self.depth.load(Ordering::Relaxed) >= OUTBOUND_MAX_QUEUE {
+        let w = weight(&env);
+        let queued = self.bytes.load(Ordering::Relaxed);
+        if self.depth.load(Ordering::Relaxed) >= OUTBOUND_MAX_QUEUE
+            || (queued > 0 && queued + w > OUTBOUND_MAX_BYTES)
+        {
             self.kill.notify_one();
             return Err(());
         }
         // Count before sending so the receiver's decrement never underflows.
         self.depth.fetch_add(1, Ordering::Relaxed);
+        self.bytes.fetch_add(w, Ordering::Relaxed);
         match self.tx.send(env) {
             Ok(()) => Ok(()),
             Err(_) => {
                 self.depth.fetch_sub(1, Ordering::Relaxed);
+                self.bytes.fetch_sub(w, Ordering::Relaxed);
                 Err(())
             }
         }
@@ -111,8 +132,13 @@ impl OutboundRx {
     /// Await the next frame, keeping the depth gauge in step.
     pub async fn recv(&mut self) -> Option<Envelope> {
         let env = self.rx.recv().await?;
-        self.depth.fetch_sub(1, Ordering::Relaxed);
+        self.dequeued(&env);
         Some(env)
+    }
+
+    fn dequeued(&self, env: &Envelope) {
+        self.depth.fetch_sub(1, Ordering::Relaxed);
+        self.bytes.fetch_sub(weight(env), Ordering::Relaxed);
     }
 
     /// Take an already-queued frame without awaiting. Exercised by the tests.
@@ -120,7 +146,7 @@ impl OutboundRx {
     pub fn try_recv(&mut self) -> Result<Envelope, ()> {
         match self.rx.try_recv() {
             Ok(env) => {
-                self.depth.fetch_sub(1, Ordering::Relaxed);
+                self.dequeued(&env);
                 Ok(env)
             }
             Err(_) => Err(()),
@@ -138,6 +164,10 @@ pub struct Notice {
     /// `peer_left`, so it stops instead of re-joining and kicking the newcomer
     /// back (two tabs ping-ponging forever).
     pub superseded: bool,
+    /// `Some(slot)` when the recipient is a Host whose listen on that slot was
+    /// taken over by another connection: it gets `error{listen_superseded}`
+    /// so it knows joins no longer reach it (`room_id` is empty).
+    pub lost_slot: Option<String>,
 }
 
 /// One live room: exactly one Host and one Controller.
@@ -218,7 +248,8 @@ impl RoomRegistry {
     ///   code is dropped and its room closed.
     /// - Another connection held this code (a stale socket of the same Host that
     ///   has not timed out yet): the newer Host takes it over and the old room
-    ///   is closed so its Controller re-joins the live Host.
+    ///   is closed so its Controller re-joins the live Host. The old connection
+    ///   is told (`lost_slot`): if it is in fact alive, it can listen again.
     ///
     /// Returns the peers to notify.
     pub fn listen(&mut self, code: u64, host: ConnId, host_out: Outbound, next_room_id: String, slot: &str) -> Vec<Notice> {
@@ -229,8 +260,17 @@ impl RoomRegistry {
                 notices.extend(self.unlisten(prev, Some(host)));
             }
         }
-        if self.listeners.get(&code).is_some_and(|l| l.host != host || l.slot != slot) {
+        if let Some(l) = self.listeners.get(&code).filter(|l| l.host != host || l.slot != slot) {
+            let displaced = (l.host != host).then(|| (l.host_out.clone(), l.slot.clone()));
             notices.extend(self.unlisten(code, Some(host)));
+            if let Some((out, lost)) = displaced {
+                notices.push(Notice {
+                    room_id: String::new(),
+                    out,
+                    superseded: false,
+                    lost_slot: Some(lost),
+                });
+            }
         }
         self.listeners.insert(
             code,
@@ -358,6 +398,7 @@ impl RoomRegistry {
                 room_id: room_id.to_string(),
                 out: room.host_out,
                 superseded: false,
+                lost_slot: None,
             });
         }
         if Some(room.controller) != originator {
@@ -365,6 +406,7 @@ impl RoomRegistry {
                 room_id: room_id.to_string(),
                 out: room.controller_out,
                 superseded: false,
+                lost_slot: None,
             });
         }
         out
@@ -518,12 +560,40 @@ mod tests {
         let (new_host, _rx) = sink();
         let notices = reg.listen(1, 11, new_host.clone(), "rm_c".into(), "");
         assert!(notices.iter().any(|n| n.room_id == room), "controller told to re-join");
+        // The old connection learns it lost the listen (it may be alive after all).
+        let lost: Vec<_> = notices.iter().filter(|n| n.lost_slot.is_some()).collect();
+        assert_eq!(lost.len(), 1);
+        assert_eq!(lost[0].lost_slot.as_deref(), Some(""));
+        assert!(lost[0].room_id.is_empty() && !lost[0].superseded);
         let (room2, _) = joined(reg.join(1, 20, sink().0, "rm_d".into()));
         assert!(same_sink(&reg.route(&room2, 20).unwrap(), &new_host));
         // The stale socket finally dies: it must not tear down the new listen.
         assert!(reg.on_disconnect(10).is_empty());
         assert!(reg.is_listening(1));
         assert!(reg.in_room(&room2, 11));
+    }
+
+    #[test]
+    fn a_sync_listen_taken_over_and_dropped_is_reported_to_its_owner() {
+        // Host 10 listens on its sync code; another connection (11, same device
+        // id) arms the same code, then goes away: nobody listens any more, and
+        // 10 must have been told so it can arm again.
+        let mut reg = RoomRegistry::default();
+        let (host, _rx) = sink();
+        assert!(reg.listen(5, 10, host.clone(), "rm_a".into(), "sync").is_empty());
+        let notices = reg.listen(5, 11, sink().0, "rm_b".into(), "sync");
+        assert_eq!(notices.len(), 1);
+        assert!(same_sink(&notices[0].out, &host));
+        assert_eq!(notices[0].lost_slot.as_deref(), Some("sync"));
+        assert!(reg.on_disconnect(11).is_empty());
+        assert!(!reg.is_listening(5));
+        // Re-arming restores it.
+        assert!(reg.listen(5, 10, host, "rm_c".into(), "sync").is_empty());
+        assert!(matches!(reg.join(5, 20, sink().0, "rm_d".into()), JoinOutcome::Joined { .. }));
+        // A re-announce by the owner itself is not a takeover.
+        let (h, _r) = sink();
+        assert!(reg.listen(6, 12, h.clone(), "x".into(), "sync").is_empty());
+        assert!(reg.listen(6, 12, h, "y".into(), "sync").is_empty());
     }
 
     #[test]
@@ -615,5 +685,30 @@ mod tests {
         futures_util::FutureExt::now_or_never(tx.killed()).expect("kill signalled");
         assert!(rx.try_recv().is_ok());
         assert!(tx.send(Envelope::peer_left("rm_ok")).is_ok());
+    }
+
+    #[test]
+    fn outbound_kills_a_peer_that_queues_too_many_bytes() {
+        let big = |room: &str| {
+            let mut e = Envelope::peer_left(room);
+            e.cipher = Some("x".repeat(8 * 1024 * 1024));
+            e
+        };
+        let (tx, mut rx) = outbound_channel();
+        for i in 0..OUTBOUND_MAX_BYTES / (8 * 1024 * 1024) {
+            assert!(tx.send(big(&format!("rm_{i}"))).is_ok());
+        }
+        assert!(tx.depth() < 16, "far below the frame cap");
+        assert!(tx.send(big("rm_over")).is_err());
+        futures_util::FutureExt::now_or_never(tx.killed()).expect("kill signalled");
+        // Draining frees the bytes again.
+        assert!(rx.try_recv().is_ok());
+        assert!(tx.send(big("rm_ok")).is_ok());
+
+        // A single frame larger than the cap still goes to an idle peer.
+        let (tx, _rx) = outbound_channel();
+        let mut huge = Envelope::peer_left("rm_huge");
+        huge.cipher = Some("x".repeat(OUTBOUND_MAX_BYTES + 1));
+        assert!(tx.send(huge).is_ok());
     }
 }

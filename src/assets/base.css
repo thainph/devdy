@@ -499,6 +499,12 @@
   border: 1px solid hsl(var(--border));
   padding: 0.4rem 0.65rem;
   text-align: left;
+  /* The container's `overflow-wrap: anywhere` counts toward min-content width,
+     so auto table layout squeezes short columns to one glyph per line
+     ("Nh/ó/m"). `break-word` only breaks when a word truly can't fit, so a
+     column is never narrower than its longest word; wide tables scroll. */
+  overflow-wrap: break-word;
+  word-break: normal;
 }
 .markdown-output th { background: hsl(var(--muted)); font-weight: 600; color: hsl(var(--foreground)); }
 .markdown-output tbody tr:nth-child(even) { background: hsl(var(--muted) / 0.35); }

@@ -7,7 +7,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, Target,
+  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, Target, ArchiveRestore,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -16,7 +16,8 @@ import { Banner, Button, Input, Textarea, Card, AppSelect, PageHeader, ToggleSwi
 import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
-import DevicesSettings, { type DevicesTab } from '@/components/DevicesSettings.vue'
+import DevicesSettings from '@/components/DevicesSettings.vue'
+import SettingsBackup from '@/components/SettingsBackup.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
 import FocusSettings from '@/components/FocusSettings.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -488,6 +489,7 @@ const SECTIONS = [
   { id: 'google', labelKey: 'settings.sections.google', icon: HardDrive },
   { id: 'usage', labelKey: 'settings.sections.usage', icon: Gauge },
   { id: 'devices', labelKey: 'settings.sections.devices', icon: Radio },
+  { id: 'backup', labelKey: 'settings.sections.backup', icon: ArchiveRestore },
   { id: 'inbox', labelKey: 'settings.sections.inbox', icon: Inbox },
   { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
 ] as const
@@ -496,15 +498,11 @@ const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
 // Allow deep-linking to a specific section via `/settings?section=google` (used
 // by the "Google settings" button on the MCP Servers screen's built-in row).
 const route = useRoute()
-const devicesTab = ref<DevicesTab>('remote')
-// Remote Control and Backup (once Sync) were sections of their own: now tabs of `devices`.
-const DEVICES_TAB_OF: Record<string, DevicesTab> = { remote: 'remote', sync: 'backup', backup: 'backup' }
+// Old section ids still deep-linked from elsewhere (`remote` lives in `devices`, Sync became `backup`).
+const SECTION_ALIASES: Record<string, string> = { remote: 'devices', sync: 'backup' }
 function applySectionFromRoute() {
   let target = route.query.section
-  if (typeof target === 'string' && DEVICES_TAB_OF[target]) {
-    devicesTab.value = DEVICES_TAB_OF[target]
-    target = 'devices'
-  }
+  if (typeof target === 'string' && SECTION_ALIASES[target]) target = SECTION_ALIASES[target]
   if (typeof target === 'string' && SECTIONS.some(s => s.id === target)) {
     activeSection.value = target as (typeof SECTIONS)[number]['id']
   }
@@ -2970,10 +2968,15 @@ watch(() => settings.value.language, (v) => {
 
         </div>
 
-        <!-- Remote Control + Sync & backup under their shared relay / device name / master password
+        <!-- Remote Control under its relay / device name / master password
              (wider than the max-w-lg forms to fit the audit table) -->
         <div v-if="!loading && activeSection === 'devices'" class="max-w-3xl">
-          <DevicesSettings v-model:tab="devicesTab" />
+          <DevicesSettings />
+        </div>
+
+        <!-- Backup: export / import the whole Devdy configuration as a file -->
+        <div v-if="!loading && activeSection === 'backup'" class="max-w-3xl">
+          <SettingsBackup @open-devices="activeSection = 'devices'" />
         </div>
 
         <!-- Focus board: working hours. Mounted only while shown so it reads the live settings. -->

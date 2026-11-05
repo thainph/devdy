@@ -65,52 +65,29 @@
     "compactTitle": "Nén hội thoại để giải phóng context (gửi /compact)",
     "fiveHourTitle": "Cửa sổ mức dùng 5 giờ của gói đăng ký claude.ai"
   },
-  "activeRuns": {
-    "heading": "Run đang hoạt động",
-    "review": "Duyệt",
-    "stopped": "Đã dừng",
-    "failed": "Thất bại",
-    "done": "Xong",
-    "run": "Run",
-    "project": "Dự án"
-  },
-  "activeRemote": {
-    "heading": "Remote đang hoạt động",
-    "live": "Trực tiếp",
-    "pairing": "Đang ghép nối",
-    "run": "Run",
-    "project": "Dự án"
-  },
-  "remoteDesktopHost": {
-    "hint": "Một Devdy khác đang điều khiển ứng dụng này qua Remote Control. Ngắt kết nối sẽ cắt ngay và đăng xuất thiết bị đó: nó phải đăng nhập lại bằng mật khẩu chính hoặc mã ghép nối. Để chặn hẳn, hãy đổi mật khẩu chính.",
-    "disconnect": "Ngắt kết nối và đăng xuất",
-    "disconnectFailed": "Không thể ngắt kết nối: {error}"
-  },
   "remoteIndicator": {
     "title": "Điều khiển từ xa",
     "short": "Remote",
-    "controlled": "Đang bị điều khiển",
-    "relayOnline": "Relay đang kết nối",
-    "relayOffline": "Relay mất kết nối",
-    "relayReconnecting": "Đang kết nối lại relay…",
-    "agentStopped": "Không chạy — kiểm tra cấu hình relay",
-    "desktopSince": "Devdy khác từ {time}",
+    "state": {
+      "hidden": "Chưa thiết lập",
+      "off": "Đang tắt",
+      "error": "Đã dừng — kiểm tra cài đặt relay",
+      "conflict": "Trùng tên / mã máy",
+      "offline": "Đang kết nối relay…",
+      "online": "Sẵn sàng",
+      "phone": "Điện thoại đang điều khiển"
+    },
     "controller": "Điện thoại / web controller đã đăng nhập",
-    "nobody": "Chưa có controller nào kết nối",
-    "pair": "Ghép thiết bị…",
-    "settings": "Cài đặt Điều khiển từ xa"
+    "aliasConflict": "Một máy khác trên relay cũng tên “{name}”.",
+    "idConflict": "Một máy Devdy khác đang chạy với cùng mã máy.",
+    "view": "Xem",
+    "settings": "Cài đặt thiết bị",
+    "disconnectHint": "Một điện thoại / web controller đang điều khiển app này qua điều khiển từ xa. Ngắt kết nối sẽ cắt ngay và đăng xuất thiết bị đó: nó phải đăng nhập lại bằng mật khẩu chính. Để chặn hẳn, hãy đổi mật khẩu chính.",
+    "disconnectFailed": "Không ngắt kết nối được: {error}",
+    "enableFailed": "Không bật được điều khiển từ xa: {error}"
   },
-  "ide": {
-    "openFile": "Mở {path}",
-    "selected": "Đã chọn",
-    "opened": "Đã mở"
-  },
-  "backToRun": {
-    "title": "Về lại AI run",
-    "label": "Run AI"
-  },
-  "modal": {
-    "close": "Đóng",
-    "closeEsc": "Đóng (Esc)"
+  "savedWithoutFolder": {
+    "one": "Đã lưu cho {project} — chưa có thư mục trên máy này, sẽ cài khi thư mục xuất hiện.",
+    "many": "Đã lưu cho {projects} — chưa có thư mục trên máy này, sẽ cài khi thư mục xuất hiện."
   }
 }
