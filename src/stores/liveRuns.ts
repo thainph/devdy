@@ -622,11 +622,11 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
           // The Host names the tool with an Always, so the choice is kept even
           // when this window never queued the prompt (or already dropped it).
           const tool = tool_name ?? (i !== -1 ? s.permissionQueue[i].tool_name : null)
-          if (tool && tool !== 'MCP' && tool !== 'AskUserQuestion' && tool !== 'ExitPlanMode') {
-            if (remember === 'allow') rememberAllowedTool(runId, tool)
-            else if (remember === 'deny') rememberDeniedTool(runId, tool)
-          }
           if (i !== -1) s.permissionQueue.splice(i, 1)
+          if (tool && tool !== 'MCP' && tool !== 'AskUserQuestion' && tool !== 'ExitPlanMode') {
+            if (remember === 'allow') rememberAllowedTool(runId, tool, request_id)
+            else if (remember === 'deny') rememberDeniedTool(runId, tool, request_id)
+          }
         },
       ),
     )
@@ -746,24 +746,49 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     }
   }
 
-  function rememberAllowedTool(runId: string, tool: string) {
-    const s = sessions.get(runId)
-    if (!s) return
-    if (!s.allowedTools.includes(tool)) s.allowedTools.push(tool)
-    const d = s.deniedTools.indexOf(tool)
-    if (d !== -1) s.deniedTools.splice(d, 1)
-    // Persist per project so "allow always" survives new runs and app restarts.
-    useToolPermissionsStore().allow(s.projectId, tool)
+  /**
+   * Apply a new standing choice to every live run of the project: their allow /
+   * deny lists, and the prompts for `tool` they already queued. Parallel tool
+   * calls queue several prompts for one tool before the first is answered, and
+   * those never pass `handlePermissionRequest` again — without this sweep each
+   * would still be asked after Always. `skipRequestId` is the prompt whose own
+   * answer is already being delivered.
+   */
+  function applyStandingChoice(
+    projectId: string,
+    tool: string,
+    decision: 'allow' | 'deny',
+    skipRequestId?: string,
+  ) {
+    sessions.forEach((s, id) => {
+      if (s.projectId !== projectId) return
+      const [add, drop] = decision === 'allow' ? [s.allowedTools, s.deniedTools] : [s.deniedTools, s.allowedTools]
+      if (!add.includes(tool)) add.push(tool)
+      const i = drop.indexOf(tool)
+      if (i !== -1) drop.splice(i, 1)
+      if (tool === 'AskUserQuestion') return
+      for (const req of [...s.permissionQueue]) {
+        if (req.tool_name !== tool || req.once_only || req.request_id === skipRequestId) continue
+        if (decision === 'deny') void respondPermission(id, req, 'deny', { reason: 'Auto-denied for this project' })
+        else void respondPermission(id, req, 'allow', { reason: 'Auto-allowed for this session', remember: true })
+      }
+    })
   }
 
-  function rememberDeniedTool(runId: string, tool: string) {
+  function rememberAllowedTool(runId: string, tool: string, skipRequestId?: string) {
     const s = sessions.get(runId)
     if (!s) return
-    if (!s.deniedTools.includes(tool)) s.deniedTools.push(tool)
-    const a = s.allowedTools.indexOf(tool)
-    if (a !== -1) s.allowedTools.splice(a, 1)
+    // Persist per project so "allow always" survives new runs and app restarts.
+    useToolPermissionsStore().allow(s.projectId, tool)
+    applyStandingChoice(s.projectId, tool, 'allow', skipRequestId)
+  }
+
+  function rememberDeniedTool(runId: string, tool: string, skipRequestId?: string) {
+    const s = sessions.get(runId)
+    if (!s) return
     // Persist per project so "deny always" survives new runs and app restarts.
     useToolPermissionsStore().deny(s.projectId, tool)
+    applyStandingChoice(s.projectId, tool, 'deny', skipRequestId)
   }
 
   /**
