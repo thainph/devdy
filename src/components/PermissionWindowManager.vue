@@ -68,8 +68,8 @@ function sync(runId: string) {
 function decide(runId: string, decision: 'allow' | 'deny' | 'ask', remember: boolean) {
   const req = headOf(runId)
   if (!req) return
-  if (remember && decision === 'allow') live.rememberAllowedTool(runId, req.tool_name)
-  else if (remember && decision === 'deny') live.rememberDeniedTool(runId, req.tool_name)
+  if (remember && decision === 'allow') live.rememberAllowedTool(runId, req.tool_name, req.request_id)
+  else if (remember && decision === 'deny') live.rememberDeniedTool(runId, req.tool_name, req.request_id)
   void live.respondPermission(runId, req, decision, { remember }).then((ok) => {
     if (!ok) sync(runId)
   })
