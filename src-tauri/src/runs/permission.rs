@@ -37,6 +37,64 @@ pub struct PermissionRequestEvent {
     pub once_only: bool,
 }
 
+/// Built-in `devdy` MCP tools that never need a prompt: the user's own todos,
+/// notes and saved Slack threads (Devdy-local data, nothing is posted to Slack),
+/// plus read-only lookups (accounts, skills, rules, projects, sessions, git).
+/// Anything that runs commands remotely (`vps_run`) or changes skills, rules,
+/// projects or repos still asks.
+const AUTO_ALLOWED_DEVDY_TOOLS: &[&str] = &[
+    "todos_add",
+    "todos_clear_done",
+    "todos_delete",
+    "todos_done",
+    "todos_list",
+    "todos_reorder",
+    "todos_set_due",
+    "todos_set_project",
+    "todos_update",
+    "notes_append",
+    "notes_create",
+    "notes_delete",
+    "notes_list",
+    "notes_read",
+    "notes_reorder",
+    "notes_search",
+    "notes_set_project",
+    "notes_update",
+    "slack_threads_delete",
+    "slack_threads_list",
+    "slack_threads_read",
+    "slack_threads_rename",
+    "slack_threads_search",
+    "slack_threads_set_project",
+    "git_accounts_list",
+    "cloud_accounts_list",
+    "vps_list",
+    "skills_list",
+    "skills_read",
+    "skills_list_files",
+    "skills_read_file",
+    "rules_list",
+    "rules_read",
+    "project_info",
+    "projects_list",
+    "repos_list",
+    "sessions_recent",
+    "sessions_search",
+    "session_read",
+    "file_tree",
+    "git_status",
+    "git_diff",
+];
+
+/// Whether a permission prompt for `tool_name` is answered "allow" without
+/// asking (both engines name these `mcp__devdy__<tool>`).
+pub fn is_auto_allowed(tool_name: &str) -> bool {
+    tool_name
+        .strip_prefix("mcp__devdy__")
+        .is_some_and(|t| AUTO_ALLOWED_DEVDY_TOOLS.contains(&t))
+}
+
 /// A permission request the sidecar is still blocked on.
 #[derive(Debug, Clone)]
 pub struct PendingPermission {
@@ -129,6 +187,23 @@ pub fn all_pending() -> Vec<PendingPermission> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn auto_allows_only_safe_devdy_tools() {
+        assert!(is_auto_allowed("mcp__devdy__todos_add"));
+        assert!(is_auto_allowed("mcp__devdy__notes_delete"));
+        assert!(is_auto_allowed("mcp__devdy__slack_threads_read"));
+        assert!(is_auto_allowed("mcp__devdy__git_accounts_list"));
+        assert!(is_auto_allowed("mcp__devdy__skills_read"));
+        assert!(is_auto_allowed("mcp__devdy__rules_read"));
+        assert!(!is_auto_allowed("mcp__devdy__vps_run"));
+        assert!(!is_auto_allowed("mcp__devdy__skills_update"));
+        assert!(!is_auto_allowed("mcp__devdy__rules_delete"));
+        assert!(!is_auto_allowed("mcp__devdy__projects_create"));
+        assert!(!is_auto_allowed("mcp__other__todos_add"));
+        assert!(!is_auto_allowed("todos_add"));
+        assert!(!is_auto_allowed("Bash"));
+    }
 
     fn evt(run_id: &str, request_id: &str) -> PermissionRequestEvent {
         PermissionRequestEvent {
