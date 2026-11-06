@@ -375,6 +375,8 @@ export interface RunInfo {
   updated_at?: string | null
   /** When the last turn ended (a multi-turn session finishes every turn). */
   finished_at?: string | null
+  /** Pinned to the top of the desktop History (an older Host omits it). */
+  pinned?: boolean
 }
 
 /** A snapshot of every run the Controller may browse/control (FR-004+). */
@@ -541,7 +543,7 @@ export interface NoteKind {
   note: NoteInfo
 }
 
-/** Which event kinds push notifications cover (desktop switches). */
+/** Which event kinds push notifications cover (desktop or device switches). */
 export interface PushEventsWire {
   pending: boolean
   done: boolean
@@ -551,12 +553,16 @@ export interface PushEventsWire {
 }
 
 /** Web Push setup (`push_config`): the VAPID key to subscribe with, whether
- * the endpoint asked about is subscribed, and the desktop's switches. */
+ * the endpoint asked about is subscribed, the desktop's switches and this
+ * device's own (a kind is sent only when both have it on). */
 export interface PushConfigKind {
   kind: 'push_config'
   vapid_public_key: string
   subscribed: boolean
   events: PushEventsWire
+  /** This device's switches; null when not subscribed or from an older Host
+   * (which cannot set them). */
+  device_events: PushEventsWire | null
 }
 
 /** Everything the Host can send the Controller inside a sealed `stream` frame. */
@@ -829,12 +835,19 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
       return isNoteInfo(o.note) ? { kind: 'note', note: o.note } : null
     case 'push_config': {
       if (typeof o.vapid_public_key !== 'string' || !o.vapid_public_key) return null
-      const e = (o.events ?? {}) as Record<string, unknown>
+      const switches = (raw: unknown): PushEventsWire => {
+        const e = (raw ?? {}) as Record<string, unknown>
+        const out: PushEventsWire = { pending: e.pending !== false, done: e.done !== false, failed: e.failed !== false }
+        // Kept absent from a Host without Focus reminders (the row is hidden).
+        if (typeof e.focus === 'boolean') out.focus = e.focus
+        return out
+      }
       return {
         kind: 'push_config',
         vapid_public_key: o.vapid_public_key,
         subscribed: o.subscribed === true,
-        events: { pending: e.pending !== false, done: e.done !== false, failed: e.failed !== false },
+        events: switches(o.events),
+        device_events: o.device_events && typeof o.device_events === 'object' ? switches(o.device_events) : null,
       }
     }
     case 'project_toggles': {
@@ -1078,6 +1091,7 @@ export interface CmdPayload {
     | 'push_subscribe'
     | 'push_unsubscribe'
     | 'push_test'
+    | 'push_events_set'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -1154,6 +1168,8 @@ export interface CmdPayload {
   /** `push_subscribe`: sent on the phone's own initiative (a desktop removal
    * stands), not from a tap on "turn on". */
   auto?: boolean
+  /** `push_events_set`: the kinds this device wants. */
+  events?: PushEventsWire
 }
 
 /** The fields a `todo_update` may change (the Host refuses any other key). */
@@ -1590,6 +1606,12 @@ export function pushUnsubscribeCmd(endpoint: string): CmdPayload {
 /** `push_test` — a test notification to this device. */
 export function pushTestCmd(endpoint: string): CmdPayload {
   return { kind: 'cmd', action: 'push_test', endpoint }
+}
+
+/** `push_events_set` — this device's own kinds; answered with a fresh
+ * {@link PushConfigKind}. */
+export function pushEventsSetCmd(endpoint: string, events: PushEventsWire): CmdPayload {
+  return { kind: 'cmd', action: 'push_events_set', endpoint, events }
 }
 
 // ---- Session link payload (per-run link: QR / copy / manual) ----

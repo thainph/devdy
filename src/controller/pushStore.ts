@@ -22,6 +22,7 @@ import {
 import type { SendCommand } from './dataStore'
 import {
   pushConfigCmd,
+  pushEventsSetCmd,
   pushSubscribeCmd,
   pushTestCmd,
   pushUnsubscribeCmd,
@@ -86,7 +87,10 @@ export interface PushState {
   endpoint: string | null
   /** Whether the Host has that endpoint; null until it answered. */
   hostSubscribed: boolean | null
+  /** The desktop's switches (a kind off there is off for every device). */
   events: PushEventsWire | null
+  /** This device's own switches; null when the Host cannot set them. */
+  deviceEvents: PushEventsWire | null
   busy: boolean
   error: PushError | null
   /** Outcome of the last test send. */
@@ -102,6 +106,7 @@ export function createPushStore(send: SendCommand) {
     endpoint: null,
     hostSubscribed: null,
     events: null,
+    deviceEvents: null,
     busy: false,
     error: null,
     test: null,
@@ -151,6 +156,7 @@ export function createPushStore(send: SendCommand) {
     state.vapidKey = p.vapid_public_key
     state.hostSubscribed = p.subscribed
     state.events = p.events
+    state.deviceEvents = p.device_events
     void reconcile()
   }
 
@@ -276,6 +282,22 @@ export function createPushStore(send: SendCommand) {
     if (!send(pushTestCmd(state.endpoint), done)) done(false)
   }
 
+  /** Switch one kind for this device. Shown at once; put back if the Host
+   * refuses (its fresh `push_config` confirms an accepted change). */
+  function setKind(kind: keyof PushEventsWire, on: boolean): void {
+    const before = state.deviceEvents
+    if (!state.endpoint || !before || state.busy) return
+    state.error = null
+    const next = { ...before, [kind]: on }
+    state.deviceEvents = next
+    const done = (accepted: boolean) => {
+      if (accepted) return
+      if (state.deviceEvents === next) state.deviceEvents = before
+      state.error = 'host'
+    }
+    if (!send(pushEventsSetCmd(state.endpoint, next), done)) done(false)
+  }
+
   /** Tell the Host whether the app is on screen (it stays quiet while it is). */
   function setVisible(visible: boolean): void {
     send(pushVisibilityCmd(visible))
@@ -285,7 +307,7 @@ export function createPushStore(send: SendCommand) {
     }
   }
 
-  return { state, ui, refresh, apply, enable, disable, sendTest, setVisible }
+  return { state, ui, refresh, apply, enable, disable, sendTest, setKind, setVisible }
 }
 
 export type PushStore = ReturnType<typeof createPushStore>

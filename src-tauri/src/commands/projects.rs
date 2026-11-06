@@ -8,7 +8,7 @@ use crate::db::Db;
 use serde::{Deserialize, Serialize};
 use std::path::Path;
 use std::process::Command;
-use tauri::{AppHandle, Manager, State};
+use tauri::{AppHandle, Emitter, Manager, State};
 use uuid::Uuid;
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -612,12 +612,24 @@ fn split_ids(csv: Option<String>) -> Vec<String> {
         .unwrap_or_default()
 }
 
+/// The desktop project order: manual order first (drag-and-drop), then usage
+/// frequency / recency / name as a stable tiebreaker for any projects sharing a
+/// position. Needs `p` = projects and `r` = its LEFT JOINed runs, grouped by
+/// `p.id`. Shared with the Remote Control project list so the phone lists
+/// projects exactly like the desktop.
+pub(crate) const PROJECT_ORDER_BY: &str =
+    "ORDER BY p.position ASC, COUNT(r.id) DESC, MAX(r.created_at) DESC, p.name COLLATE NOCASE ASC";
+
+/// Tell every listener (the Remote Control sessions) that the project list or
+/// its order changed.
+pub(crate) fn emit_projects_changed(app: &AppHandle) {
+    let _ = app.emit(crate::remote::live_lists::PROJECTS_CHANGED_EVENT, ());
+}
+
 #[tauri::command]
 pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
     use sqlx::Row;
-    // Manual order first (drag-and-drop), then usage frequency / recency / name
-    // as a stable tiebreaker for any projects sharing a position.
-    let rows = sqlx::query(
+    let rows = sqlx::query(&format!(
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_github_accounts WHERE project_id = p.id) AS github_account_ids, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_gitlab_accounts WHERE project_id = p.id) AS gitlab_account_ids, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
@@ -628,8 +640,8 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
          FROM projects p \
          LEFT JOIN runs r ON r.project_id = p.id \
          GROUP BY p.id \
-         ORDER BY p.position ASC, run_count DESC, last_used_at DESC, p.name COLLATE NOCASE ASC"
-    )
+         {PROJECT_ORDER_BY}"
+    ))
     .fetch_all(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -664,7 +676,11 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
 }
 
 #[tauri::command]
-pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Result<Project, String> {
+pub async fn add_project(
+    app: AppHandle,
+    db: State<'_, Db>,
+    payload: AddProjectPayload,
+) -> Result<Project, String> {
     if !Path::new(&payload.path).exists() {
         return Err("Project path does not exist".to_string());
     }
@@ -722,6 +738,7 @@ pub async fn add_project(db: State<'_, Db>, payload: AddProjectPayload) -> Resul
             .map_err(|e| e.to_string())?;
         }
     }
+    emit_projects_changed(&app);
 
     Ok(Project {
         id,
@@ -775,11 +792,13 @@ pub async fn remove_project(
     if let Ok(app_data_dir) = app.path().app_data_dir() {
         crate::aws_sandbox::remove_project_aws_config(&app_data_dir, &id);
     }
+    emit_projects_changed(&app);
     Ok(())
 }
 
 #[tauri::command]
 pub async fn update_project(
+    app: AppHandle,
     db: State<'_, Db>,
     id: String,
     name: String,
@@ -797,6 +816,7 @@ pub async fn update_project(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    emit_projects_changed(&app);
 
     let row = sqlx::query(
         "SELECT p.id, p.name, p.path, p.created_at, p.github_account_id, p.gitlab_account_id, \
@@ -841,7 +861,11 @@ pub async fn update_project(
 /// top-to-bottom; each row's position becomes its index, so ordering is stable
 /// regardless of prior values. Done in one transaction to avoid partial writes.
 #[tauri::command]
-pub async fn reorder_projects(db: State<'_, Db>, ids: Vec<String>) -> Result<(), String> {
+pub async fn reorder_projects(
+    app: AppHandle,
+    db: State<'_, Db>,
+    ids: Vec<String>,
+) -> Result<(), String> {
     let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
     for (index, id) in ids.iter().enumerate() {
         sqlx::query("UPDATE projects SET position = ? WHERE id = ?")
@@ -852,6 +876,7 @@ pub async fn reorder_projects(db: State<'_, Db>, ids: Vec<String>) -> Result<(),
             .map_err(|e| e.to_string())?;
     }
     tx.commit().await.map_err(|e| e.to_string())?;
+    emit_projects_changed(&app);
     Ok(())
 }
 

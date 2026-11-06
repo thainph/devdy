@@ -105,6 +105,9 @@ pub struct HandlerCtx {
     /// The live Focus board of a `data` + `focus` session; dropped (unlisten
     /// + abort) with the context ([`crate::remote::focus::start_live_board`]).
     pub live_board: std::sync::OnceLock<crate::remote::focus::LiveBoard>,
+    /// Re-pushes the run / project lists when the desktop changes them; dropped
+    /// with the context ([`crate::remote::live_lists::start_live_lists`]).
+    pub live_lists: std::sync::OnceLock<crate::remote::live_lists::LiveLists>,
 }
 
 impl HandlerCtx {
@@ -131,7 +134,7 @@ impl HandlerCtx {
 
     /// `None` for a multi-run Controller (list every run), otherwise the single
     /// run a legacy Controller is allowed to see.
-    fn list_filter(&self) -> Option<&str> {
+    pub(crate) fn list_filter(&self) -> Option<&str> {
         if self.multi_run {
             None
         } else {
@@ -751,6 +754,7 @@ async fn handle_start_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
         };
         match crate::commands::runs::send_user_message_inner(&ctx.db, &ctx.registry, payload, true).await {
             Ok(()) => {
+                crate::remote::live_lists::emit_runs_changed(&ctx.app);
                 accept(ctx, action, Some(&run_id), None).await;
                 command_ack(ctx, cmd, true, None).await;
             }
@@ -914,6 +918,7 @@ async fn handle_send_chat(ctx: &HandlerCtx, cmd: &CmdPayload) {
     };
     match crate::commands::runs::send_user_message_inner(&ctx.db, &ctx.registry, payload, true).await {
         Ok(()) => {
+            crate::remote::live_lists::emit_runs_changed(&ctx.app);
             accept(ctx, action, Some(&run_id), None).await;
             command_ack(ctx, cmd, true, None).await;
         }

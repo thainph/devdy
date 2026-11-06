@@ -7,10 +7,12 @@
  * to RUN_LIST_MAX runs. A flat list of that many rows is unusable on a phone, so
  * this drills down: projects first, then that project's runs.
  *
+ * Order is the desktop's, exactly: the Host sends projects in the sidebar order
+ * and runs pinned-first, then by last activity, and nothing here re-sorts.
  * Runs awaiting a decision live in the Inbox tab (every prompt, answerable in
- * place); here they only keep a badge and sort first. **Search** escapes the
- * drill-down: it matches across every project at once, because the run you want
- * is often easier to name than to locate.
+ * place); here they only keep a badge. **Search** escapes the drill-down: it
+ * matches across every project at once, because the run you want is often
+ * easier to name than to locate.
  *
  * Backend-agnostic like the other controller views: state in via props, intent
  * out via events. The selected project lives in the PARENT (the tab header's
@@ -18,11 +20,12 @@
  */
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, ChevronRight, FolderGit2 } from 'lucide-vue-next'
+import { AlertTriangle, ChevronRight, FolderGit2, Pin } from 'lucide-vue-next'
 import FabButton from './FabButton.vue'
 import SearchField from './SearchField.vue'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, RunInfo } from '../protocol'
+import { browserProjectRows } from '@/lib/controllerRunBrowser'
 
 const props = defineProps<{
   status: ConnStatus
@@ -63,59 +66,32 @@ function runTitle(run: RunInfo): string {
   return title ? title : t('controller.browser.untitled', { id: run.id.slice(0, 8) })
 }
 
-/** Pending-first ordering. `runs` already arrives newest-activity-first from the
- * Host and Array.prototype.sort is stable, so that order survives within a tier. */
-function pendingFirst(items: RunInfo[]): RunInfo[] {
-  return [...items].sort(
-    (a, b) => Number(pending.value.has(b.id)) - Number(pending.value.has(a.id)),
-  )
-}
-
-/** One row per project, ordered by most recent activity (runs arrive sorted, so
- * first appearance wins). Projects with nothing waiting sort after those that
- * have something waiting. */
-const projectRows = computed(() => {
-  const byId = new Map<string, { id: string; name: string; total: number; pending: number }>()
-  for (const run of props.runs) {
-    const id = run.project_id
-    let row = byId.get(id)
-    if (!row) {
-      row = { id, name: projectName(run), total: 0, pending: 0 }
-      byId.set(id, row)
-    }
-    row.total += 1
-    if (pending.value.has(run.id)) row.pending += 1
-  }
-  return [...byId.values()].sort((a, b) => Number(b.pending > 0) - Number(a.pending > 0))
-})
+/** One row per project, in the desktop sidebar's order (projects with no
+ * session yet included). */
+const projectRows = computed(() =>
+  browserProjectRows(props.projects, props.runs, pending.value, t('controller.browser.ungrouped')),
+)
 
 /** The project picked in the header — also one with no session yet, so a
  * first session can be started there. */
-const selectedProject = computed(() => {
-  const id = props.selectedProjectId
-  if (!id) return undefined
-  const row = projectRows.value.find((p) => p.id === id)
-  if (row) return row
-  const p = props.projects.find((x) => x.id === id)
-  return p ? { id: p.id, name: p.name, total: 0, pending: 0 } : undefined
-})
+const selectedProject = computed(() =>
+  props.selectedProjectId ? projectRows.value.find((p) => p.id === props.selectedProjectId) : undefined,
+)
 
 /** What the run list shows: search hits across everything, else the open
  * project's runs. */
 const visibleRuns = computed(() => {
   if (searching.value) {
     const q = query.value.trim().toLowerCase()
-    return pendingFirst(
-      props.runs.filter(
-        (r) =>
-          runTitle(r).toLowerCase().includes(q) ||
-          projectName(r).toLowerCase().includes(q) ||
-          r.id.toLowerCase().includes(q),
-      ),
+    return props.runs.filter(
+      (r) =>
+        runTitle(r).toLowerCase().includes(q) ||
+        projectName(r).toLowerCase().includes(q) ||
+        r.id.toLowerCase().includes(q),
     )
   }
   if (!props.selectedProjectId) return []
-  return pendingFirst(props.runs.filter((r) => r.project_id === props.selectedProjectId))
+  return props.runs.filter((r) => r.project_id === props.selectedProjectId)
 })
 
 /** Project list is the view only when nothing is selected and nothing is typed. */
@@ -203,6 +179,12 @@ function statusDotClass(run: RunInfo): string {
           >
             <AlertTriangle class="h-3 w-3" :stroke-width="2" />
           </span>
+          <Pin
+            v-if="run.pinned"
+            class="shrink-0 h-3.5 w-3.5 text-foreground/40"
+            :stroke-width="2"
+            :aria-label="t('controller.browser.pinned')"
+          />
           <ChevronRight class="shrink-0 h-4 w-4 text-foreground/30" :stroke-width="2" />
         </button>
       </template>

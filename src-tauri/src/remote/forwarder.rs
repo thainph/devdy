@@ -409,33 +409,49 @@ fn flush_all(
     Ok(())
 }
 
-/// Cap on how many runs a browse list returns. Beyond this the Controller is
-/// scrolling history, which belongs to the desktop.
-pub const RUN_LIST_MAX: i64 = 100;
+/// Cap on how many runs a browse list returns PER PROJECT. Capping per project
+/// (not overall) keeps a quiet project from vanishing behind a busy one; beyond
+/// this the Controller is scrolling history, which belongs to the desktop.
+pub const RUN_LIST_PER_PROJECT_MAX: i64 = 50;
 
-/// Build a run-list snapshot, newest activity first. Non-secret metadata only.
+/// Build a run-list snapshot in the desktop History order: pinned first, then
+/// last activity (`commands::github::list_runs`). Non-secret metadata only.
+///
+/// Conductor workers are left out, as on the desktop: they live in their
+/// conductor's worker panel, not in History.
 ///
 /// `only_run_id` scopes the list to a single run — used for a legacy Controller
-/// that can only render the run its link was minted for. `None` lists every run
-/// the Host has (capped at [`RUN_LIST_MAX`]), which is what the run browser
-/// needs; the trust boundary is device approval, not per-run share
-/// (SRS BR-005 v1.1).
+/// that can only render the run its link was minted for. `None` lists every
+/// project's runs (capped at [`RUN_LIST_PER_PROJECT_MAX`] each), which is what
+/// the run browser needs; the trust boundary is device approval, not per-run
+/// share (SRS BR-005 v1.1).
 pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> {
-    const COLUMNS: &str = "SELECT r.id AS id, r.project_id AS project_id, p.name AS project_name,
+    const ACTIVITY: &str = "COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at)";
+    let columns = format!(
+        "SELECT r.id AS id, r.project_id AS project_id, p.name AS project_name,
                 r.title AS title, r.type AS run_type, r.ref_number AS ref_number,
                 r.status AS status, r.engine AS engine, r.created_at AS created_at,
-                COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) AS updated_at,
-                r.finished_at AS finished_at
-         FROM runs r JOIN projects p ON p.id = r.project_id";
+                {ACTIVITY} AS updated_at, r.finished_at AS finished_at, r.pinned AS pinned
+         FROM runs r JOIN projects p ON p.id = r.project_id"
+    );
     let rows = match only_run_id {
-        Some(run_id) => sqlx::query(&format!("{COLUMNS} WHERE r.id = ?"))
+        Some(run_id) => sqlx::query(&format!("{columns} WHERE r.id = ?"))
             .bind(run_id)
             .fetch_all(db)
             .await,
-        None => sqlx::query(&format!("{COLUMNS} ORDER BY updated_at DESC LIMIT ?"))
-            .bind(RUN_LIST_MAX)
-            .fetch_all(db)
-            .await,
+        None => sqlx::query(&format!(
+            "SELECT * FROM (
+                 SELECT *, ROW_NUMBER() OVER (
+                     PARTITION BY project_id ORDER BY pinned DESC, updated_at DESC
+                 ) AS rank_in_project
+                 FROM ({columns} WHERE r.conductor_run_id IS NULL)
+             )
+             WHERE rank_in_project <= ?
+             ORDER BY pinned DESC, updated_at DESC"
+        ))
+        .bind(RUN_LIST_PER_PROJECT_MAX)
+        .fetch_all(db)
+        .await,
     }
     .unwrap_or_default();
     rows.into_iter()
@@ -451,6 +467,7 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
             created_at: r.get("created_at"),
             updated_at: r.get("updated_at"),
             finished_at: r.get("finished_at"),
+            pinned: r.get::<i64, _>("pinned") != 0,
         })
         .collect()
 }
@@ -804,10 +821,16 @@ fn list_project_files(root: &str) -> Vec<String> {
 
 /// Build the project list the Controller can create a new run in (Phase 2).
 pub async fn build_project_list(db: &Db) -> Vec<ProjectInfo> {
-    let rows = sqlx::query("SELECT id, name, path FROM projects ORDER BY name")
-        .fetch_all(db)
-        .await
-        .unwrap_or_default();
+    // The desktop sidebar's order, so the phone lists projects the same way.
+    let rows = sqlx::query(&format!(
+        "SELECT p.id AS id, p.name AS name, p.path AS path
+         FROM projects p LEFT JOIN runs r ON r.project_id = p.id
+         GROUP BY p.id {}",
+        crate::commands::projects::PROJECT_ORDER_BY
+    ))
+    .fetch_all(db)
+    .await
+    .unwrap_or_default();
     rows.into_iter()
         .map(|r| ProjectInfo {
             id: r.get("id"),
@@ -1027,6 +1050,97 @@ mod tests {
             multi_run,
             batch_output: false,
         }
+    }
+
+    async fn list_db() -> Db {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        db
+    }
+
+    async fn add_project(db: &Db, id: &str, name: &str, position: i64) {
+        sqlx::query("INSERT INTO projects (id, name, path, created_at, position) VALUES (?, ?, ?, '2026-01-01', ?)")
+            .bind(id)
+            .bind(name)
+            .bind(format!("/tmp/{id}"))
+            .bind(position)
+            .execute(db)
+            .await
+            .unwrap();
+    }
+
+    async fn add_run(db: &Db, id: &str, project: &str, activity: &str, pinned: bool, conductor: Option<&str>) {
+        sqlx::query(
+            "INSERT INTO runs (id, project_id, type, created_at, last_activity_at, pinned, conductor_run_id)
+             VALUES (?, ?, 'session', '2026-01-01', ?, ?, ?)",
+        )
+        .bind(id)
+        .bind(project)
+        .bind(activity)
+        .bind(pinned as i64)
+        .bind(conductor)
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn run_list_follows_the_desktop_history_order() {
+        let db = list_db().await;
+        add_project(&db, "p", "proj", 0).await;
+        add_run(&db, "old_pinned", "p", "2026-01-02", true, None).await;
+        add_run(&db, "newest", "p", "2026-03-01", false, None).await;
+        add_run(&db, "older", "p", "2026-02-01", false, None).await;
+        // A conductor worker lives in its conductor's panel, not in History.
+        add_run(&db, "worker", "p", "2026-04-01", false, Some("newest")).await;
+
+        let runs = build_run_list(&db, None).await;
+        let ids: Vec<&str> = runs.iter().map(|r| r.id.as_str()).collect();
+        assert_eq!(ids, ["old_pinned", "newest", "older"]);
+        assert!(runs[0].pinned);
+        assert!(!runs[1].pinned);
+    }
+
+    #[tokio::test]
+    async fn run_list_caps_each_project_without_starving_a_quiet_one() {
+        let db = list_db().await;
+        add_project(&db, "busy", "busy", 0).await;
+        add_project(&db, "quiet", "quiet", 1).await;
+        add_run(&db, "quiet_run", "quiet", "2025-01-01", false, None).await;
+        for i in 0..RUN_LIST_PER_PROJECT_MAX + 5 {
+            add_run(&db, &format!("b{i:03}"), "busy", &format!("2026-01-01T00:{:02}:{:02}", i / 60, i % 60), false, None)
+                .await;
+        }
+        // A pinned run is never the one cut, however old.
+        add_run(&db, "busy_pinned", "busy", "2020-01-01", true, None).await;
+
+        let runs = build_run_list(&db, None).await;
+        let busy = runs.iter().filter(|r| r.project_id == "busy").count() as i64;
+        assert_eq!(busy, RUN_LIST_PER_PROJECT_MAX);
+        assert!(runs.iter().any(|r| r.id == "quiet_run"));
+        assert!(runs.iter().any(|r| r.id == "busy_pinned"));
+    }
+
+    #[tokio::test]
+    async fn project_list_follows_the_desktop_sidebar_order() {
+        let db = list_db().await;
+        // Manual (drag-and-drop) order wins over the name.
+        add_project(&db, "z", "Zeta", 0).await;
+        add_project(&db, "a", "alpha", 2).await;
+        add_project(&db, "m", "Mu", 1).await;
+        // Same position: more runs first, then the name.
+        add_project(&db, "y", "Yota", 3).await;
+        add_project(&db, "b", "beta", 3).await;
+        add_project(&db, "c", "Gamma", 3).await;
+        add_run(&db, "r1", "y", "2026-01-01", false, None).await;
+
+        let projects = build_project_list(&db).await;
+        let ids: Vec<&str> = projects.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["z", "m", "a", "y", "b", "c"]);
     }
 
     #[test]

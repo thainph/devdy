@@ -1401,8 +1401,10 @@ async fn try_authenticate_first_frame(
         push,
         push_session_tag: crate::remote::push::session_tag(&session_secret),
         live_board: Default::default(),
+        live_lists: Default::default(),
     });
     crate::remote::focus::start_live_board(&ctx);
+    crate::remote::live_lists::start_live_lists(&ctx);
     *room_ctx = Some(ctx.clone());
 
     // Dispatch the first (already-decrypted) frame as a normal command.

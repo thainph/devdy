@@ -257,6 +257,18 @@ pub async fn mark_ok(db: &Db, id: &str, now: &str) {
         .await;
 }
 
+/// Save one device's own per-kind switches (the phone's Setting → Notifications).
+/// `false` when no live subscription has that endpoint.
+pub async fn set_device_events(db: &Db, endpoint: &str, events: PushEvents) -> Result<bool, String> {
+    sqlx::query("UPDATE remote_push_subscriptions SET events = ? WHERE endpoint = ? AND removed_at IS NULL")
+        .bind(events.to_list())
+        .bind(endpoint)
+        .execute(db)
+        .await
+        .map(|r| r.rows_affected() > 0)
+        .map_err(|e| e.to_string())
+}
+
 /// The desktop's per-kind switches (all on until changed).
 pub async fn events(db: &Db) -> PushEvents {
     crate::remote::get_setting(db, KEY_PUSH_EVENTS)
@@ -308,6 +320,23 @@ pub(crate) mod tests {
         assert_eq!((all[0].p256dh.as_str(), all[0].label.as_str()), ("k2", "Phone 2"));
         assert_eq!(all[0].created_at, "t0");
         assert_eq!(all[0].events, PushEvents::default());
+    }
+
+    #[tokio::test]
+    async fn a_device_keeps_its_own_kinds_across_resubscribes() {
+        let db = mem_db().await;
+        let e = "https://fcm.googleapis.com/x";
+        upsert(&db, row(e), "t0").await.unwrap();
+        let mine = PushEvents { done: false, focus: false, ..Default::default() };
+        assert_eq!(set_device_events(&db, e, mine).await, Ok(true));
+        upsert(&db, NewRow { automatic: true, ..row(e) }, "t1").await.unwrap();
+        assert_eq!(by_endpoint(&db, e).await.unwrap().events, mine);
+        // The desktop's own switches are a separate setting.
+        assert_eq!(events(&db).await, PushEvents::default());
+        // Unknown or desktop-removed devices are not written.
+        assert_eq!(set_device_events(&db, "https://fcm.googleapis.com/none", mine).await, Ok(false));
+        remove_endpoint(&db, e).await;
+        assert_eq!(set_device_events(&db, e, mine).await, Ok(false));
     }
 
     #[tokio::test]

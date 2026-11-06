@@ -91,6 +91,7 @@
     "needsApproval": "Đang chờ bạn duyệt",
     "pendingElsewhere": "{count} run đang chờ bạn duyệt",
     "ungrouped": "Khác",
+    "pinned": "Đã ghim",
     "untitled": "Run {id}",
     "newSession": "Session mới",
     "search": "Tìm run",
@@ -247,6 +248,9 @@
     "receive": "Nhận thông báo trên thiết bị này",
     "sendsTitle": "Máy tính gửi thông báo khi có",
     "kindsHint": "Bật / tắt từng loại trên máy tính.",
+    "deviceTitle": "Thiết bị này nhận thông báo khi có",
+    "deviceHint": "Chỉ áp dụng cho thiết bị này. Loại nào đang tắt trên máy tính thì mọi thiết bị đều không nhận.",
+    "offOnDesktop": "Đang tắt trên máy tính",
     "kindRows": {
       "pending": "Việc cần duyệt",
       "done": "Phiên đã xong",
