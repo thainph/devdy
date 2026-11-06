@@ -426,6 +426,35 @@ fn ends_with_newline(path: &Path) -> bool {
         .is_ok_and(|()| last[0] == b'\n')
 }
 
+/// Show a permission request to the user: desktop drawer and paired phones.
+fn surface_permission_request(
+    app: &AppHandle,
+    remote_bus: &Option<crate::remote::RemoteBus>,
+    evt: PermissionRequestEvent,
+) {
+    // Remember it until answered — BEFORE anything can see it: the emit below is
+    // lost if no webview listener is attached right now (a re-attached one
+    // recovers it from this store), and an answer that races in from a phone
+    // must find it pending or it is refused.
+    crate::runs::permission::track_pending(evt.clone());
+    // Remote tap: forward the permission_request with full context so a
+    // Controller can decide (FR-006/BR-007). Conductor workers use the SAME flow
+    // as any session: the request surfaces in the standard permission drawer
+    // (shown in the Conductor tab for worker runs), with the per-project
+    // "always allow/deny" list applying as usual.
+    if let Some(bus) = remote_bus {
+        bus.publish(crate::remote::RemoteRunEvent::PermissionRequest {
+            run_id: evt.run_id.clone(),
+            request_id: evt.request_id.clone(),
+            tool: evt.tool_name.clone(),
+            input: evt.tool_input.clone(),
+            cwd: evt.cwd.clone(),
+            once_only: false,
+        });
+    }
+    let _ = app.emit(&format!("run:permission_request:{}", evt.run_id), evt);
+}
+
 #[allow(clippy::too_many_arguments)]
 pub async fn drain_sidecar(
     app: AppHandle,
@@ -794,29 +823,33 @@ pub async fn drain_sidecar(
                                     display_name: v.get("display_name").and_then(|x| x.as_str()).map(str::to_string),
                                     once_only: false,
                                 };
-                                // Remember it until answered — BEFORE anything can see
-                                // it: the emit below is lost if no webview listener is
-                                // attached right now (a re-attached one recovers it from
-                                // this store), and an answer that races in from a phone
-                                // must find it pending or it is refused.
-                                crate::runs::permission::track_pending(evt.clone());
-                                // Remote tap: forward the permission_request with full
-                                // context so a Controller can decide (FR-006/BR-007).
-                                // Conductor workers use the SAME flow as any session:
-                                // the request surfaces in the standard permission drawer
-                                // (shown in the Conductor tab for worker runs), with the
-                                // per-project "always allow/deny" list applying as usual.
-                                if let Some(bus) = &remote_bus {
-                                    bus.publish(crate::remote::RemoteRunEvent::PermissionRequest {
-                                        run_id: run_id.clone(),
-                                        request_id: evt.request_id.clone(),
-                                        tool: evt.tool_name.clone(),
-                                        input: evt.tool_input.clone(),
-                                        cwd: evt.cwd.clone(),
-                                        once_only: false,
+                                // Safe built-in devdy tools (todos, notes, Slack
+                                // threads, read-only lookups) are allowed without a
+                                // prompt. `remember` lets codex cache it for the
+                                // session. A failed delivery falls back to the prompt.
+                                if crate::runs::permission::is_auto_allowed(&evt.tool_name) {
+                                    let line = format!(
+                                        "{}\n",
+                                        serde_json::json!({
+                                            "type": "permission_response",
+                                            "requestId": evt.request_id,
+                                            "decision": "allow",
+                                            "reason": "Auto-allowed Devdy tool",
+                                            "remember": true,
+                                        })
+                                    );
+                                    let (app, registry, remote_bus) = (app.clone(), registry.clone(), remote_bus.clone());
+                                    tauri::async_runtime::spawn(async move {
+                                        if crate::commands::runs::write_run_stdin(&registry, &evt.run_id, &line, "run is not accepting input")
+                                            .await
+                                            .is_err()
+                                        {
+                                            surface_permission_request(&app, &remote_bus, evt);
+                                        }
                                     });
+                                } else {
+                                    surface_permission_request(&app, &remote_bus, evt);
                                 }
-                                let _ = app.emit(&format!("run:permission_request:{}", run_id), evt);
                             }
                             // ---- control: diagnostic log (codex tracing / notes) -
                             // Carries a level so the UI renders it calmly, not as a
