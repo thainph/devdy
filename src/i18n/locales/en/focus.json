@@ -168,7 +168,14 @@
     "save": "Save",
     "cancel": "Cancel",
     "unsaved": "Discard your changes?",
-    "discard": "Discard"
+    "discard": "Discard",
+    "description": "Details",
+    "editText": "Edit text",
+    "doneEditing": "Done",
+    "textHint": "The first line is the title, the rest is the description (markdown supported).",
+    "addDescription": "Add a description…",
+    "properties": "Properties",
+    "schedule": "Snooze, reminder & actual time"
   },
   "capture": {
     "title": "New todo",

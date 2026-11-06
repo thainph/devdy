@@ -1,14 +1,31 @@
 <script setup lang="ts">
-// Detail drawer of one todo (spec §3.2): every field editable — title, project,
-// status, deadline (date + time), priority, estimate, snooze, reminder, actual
-// time — plus the source link, linked sessions and the AI section (FocusAiPanel:
-// analyze, start with AI, the editable plan). Save sends only what changed
+// Detail drawer of one todo (spec §3.2), laid out for reading first: the title
+// (first line) in the header, a chip row of the saved status / priority /
+// deadline / estimate / project / source, the description rendered as markdown
+// (a click edits the whole text), the AI section (FocusAiPanel: analyze, start
+// with AI, the editable plan), then the editable properties and a folded
+// snooze / reminder / actual-time section. Save sends only what changed
 // (`update_todo_fields`); an estimate applied from the AI is saved as `ai`.
-import { computed, ref, watch } from 'vue'
+import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, ExternalLink, Link as LinkIcon, Trash2, Undo2, X } from 'lucide-vue-next'
-import { AppSelect, Button, Drawer, Input, Textarea } from '@/components/ui'
+import { openUrl } from '@tauri-apps/plugin-opener'
+import {
+  CalendarClock,
+  Check,
+  ChevronRight,
+  ExternalLink,
+  Link as LinkIcon,
+  Pencil,
+  Timer,
+  Trash2,
+  Undo2,
+  X,
+} from 'lucide-vue-next'
+import { AppSelect, Badge, Button, Drawer, Input, Textarea } from '@/components/ui'
 import ProjectSelect from '@/components/ProjectSelect.vue'
+import { useMarkdown } from '@/lib/markdown'
+import { firstLine } from '@/lib/itemText'
+import { useProjectsStore } from '@/stores/projects'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFocusStore } from '@/stores/focus'
@@ -17,8 +34,10 @@ import {
   formatEstimate,
   fromLocalInput,
   parseEstimate,
+  projectHue,
   rebaseForm,
   sourceShortLabel,
+  todoBody,
   toLocalInput,
   type AiApply,
   type FocusItem,
@@ -41,7 +60,11 @@ const { toast } = useToast()
 const { confirm } = useConfirm()
 const store = useFocusStore()
 const actions = useFocusActions()
-const { stamp } = useFocusText()
+const text = useFocusText()
+const { stamp } = text
+const projects = useProjectsStore()
+const { renderText, loadMarkdown } = useMarkdown()
+onMounted(loadMarkdown)
 
 const draft = ref<TodoDraft>(emptyTodoDraft())
 const status = ref<TodoStatus>('todo')
@@ -51,6 +74,11 @@ const actual = ref('')
 const saving = ref(false)
 /** Minutes last applied from an AI analysis: saved with `estimate_source = 'ai'` while unchanged. */
 const aiEstimate = ref<number | null>(null)
+
+/** The description is shown rendered until clicked; then the whole text is a Textarea. */
+const editingText = ref(false)
+const editorEl = ref<HTMLElement | null>(null)
+const showSchedule = ref(false)
 
 const todo = computed(() => props.item?.todo ?? null)
 
@@ -108,6 +136,8 @@ function reset() {
   base = formOf(td)
   setForm(base)
   aiEstimate.value = null
+  editingText.value = false
+  showSchedule.value = false
 }
 
 /** Same todo refreshed (e.g. status → doing after Start with AI): untouched fields follow it. */
@@ -222,6 +252,62 @@ async function toggleDone() {
   }
 }
 
+const title = computed(() => firstLine(draft.value.text) || firstLine(todo.value?.text ?? ''))
+const body = computed(() => todoBody(draft.value.text))
+
+const STATUS_TONE = { todo: 'neutral', doing: 'running', waiting: 'warning' } as const
+const PRIORITY_TONE: Record<number, string> = {
+  1: 'border-destructive bg-destructive text-destructive-foreground',
+  2: 'border-border text-foreground',
+  3: 'border-border text-muted-foreground',
+}
+const DUE_TONE = {
+  danger: 'border-destructive/40 bg-destructive/10 text-destructive font-medium',
+  warn: 'border-warning/40 bg-warning/10 text-warning font-medium',
+  muted: 'border-border text-muted-foreground',
+}
+const due = computed(() => (props.item ? text.due(props.item, Date.now()) : null))
+
+const project = computed(() =>
+  todo.value?.project_id ? projects.projects.find((p) => p.id === todo.value?.project_id) ?? null : null,
+)
+const projectChipStyle = computed(() => {
+  const h = projectHue(todo.value?.project_id ?? '')
+  return { backgroundColor: `hsl(${h} 70% 50% / 0.14)`, color: `hsl(${h} 60% 42%)`, borderColor: `hsl(${h} 70% 50% / 0.3)` }
+})
+
+/** What the folded snooze / reminder / actual section holds, shown beside its heading. */
+const scheduleHint = computed(() => {
+  const td = todo.value
+  if (!td) return ''
+  const parts: string[] = []
+  if (td.snoozed_until) parts.push(`${t('focus.drawer.snoozedUntil')} ${stamp(td.snoozed_until)}`)
+  if (td.remind_at) parts.push(`${t('focus.drawer.remindAt')} ${stamp(td.remind_at)}`)
+  if (td.actual_min != null) parts.push(`${t('focus.drawer.actual')} ${formatEstimate(td.actual_min)}`)
+  return parts.join(' · ')
+})
+
+async function startEditing() {
+  editingText.value = true
+  await nextTick()
+  const ta = editorEl.value?.querySelector('textarea')
+  ta?.focus()
+  ta?.setSelectionRange(ta.value.length, ta.value.length)
+}
+
+/** A link opens outside the app; any other click (not ending a text selection) edits. */
+function onBodyClick(e: MouseEvent) {
+  const anchor = (e.target as HTMLElement).closest('a') as HTMLAnchorElement | null
+  if (anchor) {
+    e.preventDefault()
+    const href = anchor.getAttribute('href') ?? ''
+    if (/^(https?:|mailto:)/i.test(href)) openUrl(href).catch(() => {})
+    return
+  }
+  if (window.getSelection()?.toString()) return
+  void startEditing()
+}
+
 const sourceText = computed(() => {
   const td = todo.value
   if (!td?.source_url) return ''
@@ -239,85 +325,149 @@ function onKeydown(e: KeyboardEvent) {
 <template>
   <Drawer :open="!!item" size="lg" :dismiss-on-overlay="false" @close="close">
     <template #header>
-      <h3 class="min-w-0 flex-1 truncate text-sm font-semibold">{{ todo?.text.split('\n')[0] }}</h3>
+      <h3
+        class="line-clamp-3 min-w-0 flex-1 break-words text-[15px] font-semibold leading-snug"
+        :class="todo?.done ? 'text-muted-foreground line-through' : ''"
+        :title="title"
+      >{{ title }}</h3>
     </template>
 
-    <div v-if="item && todo" class="space-y-4 p-4 text-sm" @keydown="onKeydown">
-      <div class="space-y-1">
-        <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.text') }}</label>
-        <Textarea v-model="draft.text" class="min-h-[4.5rem] w-full" />
-      </div>
-
-      <div class="grid grid-cols-2 gap-2.5">
-        <div class="space-y-1">
-          <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.project') }}</label>
-          <ProjectSelect v-model="projectId" variant="default" size="sm" />
-        </div>
-        <div class="space-y-1">
-          <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.status.label') }}</label>
-          <AppSelect v-model="status" :options="statusOptions" :disabled="todo.done" />
-        </div>
-      </div>
-
-      <TodoMetaFields v-model="draft" />
-      <p v-if="item.effective_estimate_min !== todo.estimate_min" class="-mt-2 text-[11px] text-muted-foreground">
-        {{ t('focus.drawer.effectiveEstimate', { estimate: formatEstimate(item.effective_estimate_min) }) }}
-        <template v-if="todo.estimate_source === 'ai'"> · {{ t('focus.estimate.ai') }}</template>
-      </p>
-
-      <div class="grid grid-cols-2 gap-2.5">
-        <div class="space-y-1">
-          <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.snoozedUntil') }}</label>
-          <div class="flex items-center gap-1">
-            <Input v-model="snoozedUntil" type="datetime-local" size="sm" class="min-w-0 flex-1" />
-            <Button v-if="snoozedUntil" variant="ghost" size="icon-sm" :title="t('focus.drawer.clear')" :aria-label="t('focus.drawer.clear')" @click="snoozedUntil = ''">
-              <X class="h-3.5 w-3.5" :stroke-width="2" />
-            </Button>
-          </div>
-        </div>
-        <div class="space-y-1">
-          <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.remindAt') }}</label>
-          <div class="flex items-center gap-1">
-            <Input v-model="remindAt" type="datetime-local" size="sm" class="min-w-0 flex-1" />
-            <Button v-if="remindAt" variant="ghost" size="icon-sm" :title="t('focus.drawer.clear')" :aria-label="t('focus.drawer.clear')" @click="remindAt = ''">
-              <X class="h-3.5 w-3.5" :stroke-width="2" />
-            </Button>
-          </div>
-        </div>
-      </div>
-
-      <div v-if="todo.done || todo.started_at || todo.actual_min != null" class="space-y-1">
-        <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.actual') }}</label>
-        <Input
-          v-model="actual"
-          size="sm"
-          class="w-40"
-          :class="actualMin === undefined ? 'border-destructive' : ''"
-          :placeholder="t('focus.drawer.estimatePlaceholder')"
-        />
-        <p v-if="actualMin === undefined" class="text-[11px] text-destructive">{{ t('focus.drawer.estimateInvalid') }}</p>
-      </div>
-
-      <!-- Source + linked sessions -->
-      <div v-if="todo.source_url || todo.linked_run_count > 0" class="flex flex-wrap items-center gap-3 text-xs">
+    <div v-if="item && todo" class="space-y-5 p-4 text-sm" @keydown="onKeydown">
+      <!-- At a glance: status · priority · deadline · estimate · project · source · sessions (saved values) -->
+      <div class="flex flex-wrap items-center gap-1.5 text-[11px]">
+        <Badge v-if="todo.done" tone="success">{{ t('focus.actions.done') }}</Badge>
+        <Badge v-else :tone="STATUS_TONE[todo.status]">{{ t(`focus.status.${todo.status}`) }}</Badge>
+        <span class="rounded border px-1.5 py-0.5 font-medium" :class="PRIORITY_TONE[todo.priority]">
+          {{ t(`focus.priority.${todo.priority}`) }}
+        </span>
+        <span v-if="due" class="inline-flex items-center gap-1 rounded border px-1.5 py-0.5" :class="DUE_TONE[due.tone]">
+          <CalendarClock class="h-3 w-3" :stroke-width="2" />{{ due.text }}
+        </span>
+        <span
+          class="inline-flex items-center gap-1 rounded border border-border px-1.5 py-0.5 tabular-nums text-muted-foreground"
+          :title="item.estimate_missing ? t('focus.estimate.missing', { estimate: formatEstimate(item.effective_estimate_min) }) : undefined"
+        >
+          <Timer class="h-3 w-3" :stroke-width="2" />~{{ formatEstimate(item.effective_estimate_min) }}<span v-if="item.estimate_missing" class="text-warning">?</span>
+        </span>
+        <span v-if="project" class="max-w-40 truncate rounded border px-1.5 py-0.5 font-medium" :style="projectChipStyle">{{ project.name }}</span>
         <button
           v-if="todo.source_url"
           type="button"
-          class="inline-flex min-w-0 cursor-pointer items-center gap-1.5 rounded-md border border-border px-2 py-1 transition-colors hover:bg-accent"
+          class="inline-flex min-w-0 cursor-pointer items-center gap-1 rounded border border-border px-1.5 py-0.5 transition-colors hover:bg-accent"
           :title="todo.source_url"
           @click="actions.openSource(todo)"
         >
-          <component :is="SOURCE_ICON[todo.source_type ?? 'url']" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-          <span class="max-w-72 truncate">{{ sourceText }}</span>
+          <component :is="SOURCE_ICON[todo.source_type ?? 'url']" class="h-3 w-3 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+          <span class="max-w-48 truncate">{{ sourceText }}</span>
           <ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground" :stroke-width="1.75" />
         </button>
         <span v-if="todo.linked_run_count > 0" class="inline-flex items-center gap-1 text-muted-foreground">
-          <LinkIcon class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <LinkIcon class="h-3 w-3" :stroke-width="1.75" />
           {{ t('focus.actions.sessions', { n: todo.linked_run_count }, todo.linked_run_count) }}
         </span>
       </div>
 
+      <!-- Content: rendered for reading, a click switches to editing the whole text -->
+      <section class="space-y-1.5">
+        <div class="flex items-center gap-2">
+          <h4 class="mr-auto text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('focus.drawer.description') }}</h4>
+          <Button v-if="editingText" variant="ghost" size="xs" :disabled="!draft.text.trim()" @click="editingText = false">
+            {{ t('focus.drawer.doneEditing') }}
+          </Button>
+          <Button v-else variant="ghost" size="icon-sm" :title="t('focus.drawer.editText')" :aria-label="t('focus.drawer.editText')" @click="startEditing">
+            <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+        </div>
+        <div v-if="editingText" ref="editorEl">
+          <Textarea v-model="draft.text" class="min-h-[10rem] w-full" />
+          <p class="mt-1 text-[11px] text-muted-foreground">{{ t('focus.drawer.textHint') }}</p>
+        </div>
+        <div
+          v-else-if="body"
+          class="markdown-output cursor-text rounded-md px-1 py-0.5 text-sm leading-relaxed text-foreground transition-colors hover:bg-accent/30"
+          @click="onBodyClick"
+          v-html="renderText(body)"
+        />
+        <button
+          v-else
+          type="button"
+          class="w-full cursor-pointer rounded-md border border-dashed border-border px-3 py-2 text-left text-xs text-muted-foreground transition-colors hover:bg-accent/50 hover:text-foreground"
+          @click="startEditing"
+        >
+          {{ t('focus.drawer.addDescription') }}
+        </button>
+      </section>
+
       <FocusAiPanel :todo="todo" @apply="onAiApply" />
+
+      <!-- Properties -->
+      <section class="space-y-2.5 border-t border-border/60 pt-4">
+        <h4 class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('focus.drawer.properties') }}</h4>
+        <div class="grid grid-cols-2 gap-2.5">
+          <div class="space-y-1">
+            <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.project') }}</label>
+            <ProjectSelect v-model="projectId" variant="default" size="sm" />
+          </div>
+          <div class="space-y-1">
+            <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.status.label') }}</label>
+            <AppSelect v-model="status" :options="statusOptions" :disabled="todo.done" />
+          </div>
+        </div>
+
+        <TodoMetaFields v-model="draft" />
+        <p v-if="item.effective_estimate_min !== todo.estimate_min" class="-mt-1 text-[11px] text-muted-foreground">
+          {{ t('focus.drawer.effectiveEstimate', { estimate: formatEstimate(item.effective_estimate_min) }) }}
+          <template v-if="todo.estimate_source === 'ai'"> · {{ t('focus.estimate.ai') }}</template>
+        </p>
+      </section>
+
+      <!-- Snooze, reminder, actual time: rarely edited, folded by default -->
+      <section class="space-y-2.5 border-t border-border/60 pt-4">
+        <button
+          type="button"
+          class="flex w-full cursor-pointer items-center gap-1.5 text-left"
+          :aria-expanded="showSchedule"
+          @click="showSchedule = !showSchedule"
+        >
+          <ChevronRight class="h-3.5 w-3.5 text-muted-foreground transition-transform" :class="showSchedule ? 'rotate-90' : ''" :stroke-width="1.75" />
+          <span class="text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('focus.drawer.schedule') }}</span>
+          <span v-if="!showSchedule && scheduleHint" class="ml-auto truncate text-[11px] text-muted-foreground">{{ scheduleHint }}</span>
+        </button>
+        <template v-if="showSchedule">
+          <div class="grid grid-cols-2 gap-2.5">
+            <div class="space-y-1">
+              <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.snoozedUntil') }}</label>
+              <div class="flex items-center gap-1">
+                <Input v-model="snoozedUntil" type="datetime-local" size="sm" class="min-w-0 flex-1" />
+                <Button v-if="snoozedUntil" variant="ghost" size="icon-sm" :title="t('focus.drawer.clear')" :aria-label="t('focus.drawer.clear')" @click="snoozedUntil = ''">
+                  <X class="h-3.5 w-3.5" :stroke-width="2" />
+                </Button>
+              </div>
+            </div>
+            <div class="space-y-1">
+              <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.remindAt') }}</label>
+              <div class="flex items-center gap-1">
+                <Input v-model="remindAt" type="datetime-local" size="sm" class="min-w-0 flex-1" />
+                <Button v-if="remindAt" variant="ghost" size="icon-sm" :title="t('focus.drawer.clear')" :aria-label="t('focus.drawer.clear')" @click="remindAt = ''">
+                  <X class="h-3.5 w-3.5" :stroke-width="2" />
+                </Button>
+              </div>
+            </div>
+          </div>
+
+          <div v-if="todo.done || todo.started_at || todo.actual_min != null" class="space-y-1">
+            <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.drawer.actual') }}</label>
+            <Input
+              v-model="actual"
+              size="sm"
+              class="w-40"
+              :class="actualMin === undefined ? 'border-destructive' : ''"
+              :placeholder="t('focus.drawer.estimatePlaceholder')"
+            />
+            <p v-if="actualMin === undefined" class="text-[11px] text-destructive">{{ t('focus.drawer.estimateInvalid') }}</p>
+          </div>
+        </template>
+      </section>
 
       <div class="space-y-0.5 text-[11px] text-muted-foreground">
         <p>{{ t('focus.drawer.created', { time: stamp(todo.created_at) }) }}</p>

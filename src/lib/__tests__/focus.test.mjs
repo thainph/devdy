@@ -25,6 +25,7 @@ import {
   parseReason,
   snoozePresets,
   sourceShortLabel,
+  todoBody,
   spanOf,
   toLocalInput,
   topItems,
@@ -314,4 +315,10 @@ test('rebaseForm takes changes for untouched fields only', async () => {
   assert.deepEqual(rebaseForm(form, base, next), { text: 'Fix', status: 'doing', priority: 2, estimate: '2h' })
   // Nothing edited: the form becomes the new todo (not dirty).
   assert.deepEqual(rebaseForm(base, base, next), next)
+})
+
+test('todoBody: text after the title line', () => {
+  assert.equal(todoBody('Fix login'), '')
+  assert.equal(todoBody('\n\nFix login\n\n- step 1\n- step 2\n'), '- step 1\n- step 2')
+  assert.equal(todoBody('  \n'), '')
 })
