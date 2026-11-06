@@ -3,7 +3,9 @@
  * Setting → Thông báo, this phone's push notifications, laid out like the
  * other Setting screens: a switch to turn them on / off (or, where it cannot
  * work yet, why — iOS needs the app on the Home Screen first), a test send,
- * and which kinds the desktop sends (switched there, shown here read-only).
+ * and a switch per kind for this device. A kind the desktop switched off is
+ * off for every device, so its row says so and cannot be turned on here. An
+ * older Host cannot store device switches: the desktop's are shown read-only.
  * Only shown when the Host advertises `push`.
  */
 import { computed } from 'vue'
@@ -24,6 +26,8 @@ const kinds = computed(() =>
   s.value.events?.focus === undefined ? RUN_KINDS : ([...RUN_KINDS, 'focus'] as const),
 )
 const switchable = computed(() => ui.value === 'on' || ui.value === 'off')
+/** Per-device switches: subscribed, and a Host that can store them. */
+const perDevice = computed(() => ui.value === 'on' && !!s.value.deviceEvents)
 
 function toggle(): void {
   if (s.value.busy) return
@@ -94,7 +98,34 @@ const row = 'flex w-full items-center gap-2.5 px-3 py-2.5 border-b border-border
       {{ t(`controller.push.test.${s.test}`) }}
     </p>
 
-    <template v-if="switchable && s.events">
+    <template v-if="perDevice && s.events && s.deviceEvents">
+      <h2 :class="heading">{{ t('controller.push.deviceTitle') }}</h2>
+      <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
+        <div v-for="k in kinds" :key="k" :class="row">
+          <div class="min-w-0 flex-1">
+            <p class="truncate text-sm font-medium">{{ t(`controller.push.kindRows.${k}`) }}</p>
+            <p v-if="!s.events[k]" class="text-[11px] text-muted-foreground">{{ t('controller.push.offOnDesktop') }}</p>
+          </div>
+          <button
+            type="button"
+            role="switch"
+            :aria-checked="s.events[k] && s.deviceEvents[k] !== false"
+            :aria-label="t(`controller.push.kindRows.${k}`)"
+            :disabled="s.busy || !s.events[k]"
+            class="ui-switch relative inline-flex h-6 w-11 shrink-0 items-center rounded-full transition-colors cursor-pointer focus:outline-none focus-visible:ring-2 focus-visible:ring-primary/50 disabled:opacity-50 disabled:cursor-not-allowed"
+            :class="s.events[k] && s.deviceEvents[k] !== false ? 'bg-success' : 'bg-muted'"
+            @click="push.setKind(k, s.deviceEvents[k] === false)"
+          >
+            <span
+              class="ui-switch-knob inline-block h-5 w-5 rounded-full bg-white shadow transition-transform"
+              :class="s.events[k] && s.deviceEvents[k] !== false ? 'translate-x-[22px]' : 'translate-x-0.5'"
+            />
+          </button>
+        </div>
+      </div>
+      <p class="mt-1.5 px-0.5 text-[11px] text-muted-foreground">{{ t('controller.push.deviceHint') }}</p>
+    </template>
+    <template v-else-if="switchable && s.events">
       <h2 :class="heading">{{ t('controller.push.sendsTitle') }}</h2>
       <div class="ui-card overflow-hidden rounded-xl border border-border bg-card">
         <div v-for="k in kinds" :key="k" :class="row">

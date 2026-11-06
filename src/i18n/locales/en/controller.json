@@ -248,6 +248,9 @@
     "receive": "Notifications on this device",
     "sendsTitle": "The desktop notifies about",
     "kindsHint": "Switched per kind on the desktop.",
+    "deviceTitle": "Notify this device about",
+    "deviceHint": "Only for this device. A kind switched off on the desktop is off for every device.",
+    "offOnDesktop": "Off on the desktop",
     "kindRows": {
       "pending": "Requests waiting for you",
       "done": "Finished runs",

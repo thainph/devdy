@@ -500,6 +500,11 @@ pub enum StreamPayload {
         vapid_public_key: String,
         subscribed: bool,
         events: crate::remote::push::coalesce::PushEvents,
+        /// This device's own switches (`push_events_set`); a kind is sent only
+        /// when both these and the desktop's `events` have it on. Absent when
+        /// the endpoint is not subscribed.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        device_events: Option<crate::remote::push::coalesce::PushEvents>,
     },
 }
 
@@ -874,6 +879,9 @@ pub struct CmdPayload {
     /// "turn on"), so a removal on the desktop stands.
     #[serde(default)]
     pub auto: Option<bool>,
+    /// `push_events_set`: the kinds this device wants.
+    #[serde(default)]
+    pub events: Option<crate::remote::push::coalesce::PushEvents>,
 }
 
 /// The E2E handshake exchange (spec §3). Ephemeral public keys are NOT secret,
@@ -906,6 +914,7 @@ pub enum HandshakePayload {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::remote::push::coalesce::PushEvents;
 
     #[test]
     fn session_token_advertises_host_features() {
@@ -926,15 +935,28 @@ mod tests {
             vapid_public_key: "BPk".into(),
             subscribed: true,
             events: Default::default(),
+            device_events: Some(PushEvents { done: false, ..Default::default() }),
         })
         .unwrap();
         assert_eq!(
             v,
             serde_json::json!({
                 "kind": "push_config", "vapid_public_key": "BPk", "subscribed": true,
-                "events": { "pending": true, "done": true, "failed": true, "focus": true }
+                "events": { "pending": true, "done": true, "failed": true, "focus": true },
+                "device_events": { "pending": true, "done": false, "failed": true, "focus": true }
             })
         );
+    }
+
+    #[test]
+    fn cmd_payload_parses_push_events_set() {
+        let cmd: CmdPayload = serde_json::from_value(serde_json::json!({
+            "kind": "cmd", "action": "push_events_set", "endpoint": "https://fcm.googleapis.com/x",
+            "events": { "pending": true, "done": false, "failed": true }
+        }))
+        .unwrap();
+        // A Controller that predates Focus reminders leaves them on.
+        assert_eq!(cmd.events, Some(PushEvents { done: false, ..Default::default() }));
     }
 
     #[test]

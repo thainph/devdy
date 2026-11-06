@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 45] = [
+pub const ALLOW_LIST: [&str; 46] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -77,6 +77,7 @@ pub const ALLOW_LIST: [&str; 45] = [
     "push_subscribe",
     "push_unsubscribe",
     "push_test",
+    "push_events_set",
 ];
 
 /// The data actions: allow-listed, but only for a Controller that advertised
@@ -139,12 +140,14 @@ pub fn focus_action_permitted(action: &str, focus_enabled: bool) -> bool {
 
 /// The Web Push actions: allow-listed, but only for a Controller that
 /// advertised [`crate::remote::protocol::FEATURE_PUSH`].
-pub const PUSH_ACTIONS: [&str; 5] = [
+pub const PUSH_ACTIONS: [&str; 6] = [
     "push_config",
     "push_visibility",
     "push_subscribe",
     "push_unsubscribe",
     "push_test",
+    // This device's own kinds; the desktop's switches stay desktop-only.
+    "push_events_set",
 ];
 
 /// Whether `action` is one of the [`PUSH_ACTIONS`].
@@ -563,7 +566,7 @@ mod tests {
     fn push_reads_and_writes_use_the_right_budget() {
         assert!(is_read_only_action("push_config"));
         assert!(is_read_only_action("push_visibility"));
-        for a in ["push_subscribe", "push_unsubscribe", "push_test"] {
+        for a in ["push_subscribe", "push_unsubscribe", "push_test", "push_events_set"] {
             assert!(!is_read_only_action(a), "{a} is on the command budget");
         }
     }

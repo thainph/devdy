@@ -70,6 +70,7 @@ pub async fn handle(ctx: &HandlerCtx, cmd: &CmdPayload) {
         "push_visibility" => visibility(ctx, cmd),
         "push_subscribe" => subscribe(ctx, cmd).await,
         "push_unsubscribe" => unsubscribe(ctx, cmd).await,
+        "push_events_set" => set_events(ctx, cmd).await,
         "push_test" => match start_test(ctx, cmd).await {
             // Audited and acknowledged by the send task.
             Ok(()) => return,
@@ -107,16 +108,18 @@ async fn send_config(ctx: &HandlerCtx, endpoint: Option<&str>) -> Result<(), &'s
         "push_unavailable"
     })?;
     let public = super::vapid_public_key(&key);
-    let subscribed = match endpoint.map(str::trim).filter(|e| !e.is_empty()) {
-        Some(e) => counts_as_subscribed(store::by_endpoint(&ctx.db, e).await.as_ref(), &public),
-        None => false,
+    let row = match endpoint.map(str::trim).filter(|e| !e.is_empty()) {
+        Some(e) => store::by_endpoint(&ctx.db, e).await,
+        None => None,
     };
+    let subscribed = counts_as_subscribed(row.as_ref(), &public);
     send_payload(
         ctx,
         StreamPayload::PushConfig {
             vapid_public_key: public,
             subscribed,
             events: store::events(&ctx.db).await,
+            device_events: row.filter(|_| subscribed).map(|r| r.events),
         },
     )
     .await;
@@ -174,6 +177,20 @@ async fn unsubscribe(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static 
     let endpoint = cmd.endpoint.as_deref().map(str::trim).filter(|e| !e.is_empty()).ok_or("malformed")?;
     store::remove_endpoint(&ctx.db, endpoint).await;
     send_config(ctx, Some(endpoint)).await
+}
+
+/// Save this device's own per-kind switches, then reply with the fresh config.
+async fn set_events(ctx: &HandlerCtx, cmd: &CmdPayload) -> Result<(), &'static str> {
+    let endpoint = validate_endpoint(cmd).map_err(RejectReason::as_str)?;
+    let events = cmd.events.ok_or("malformed")?;
+    let saved = store::set_device_events(&ctx.db, &endpoint, events).await.map_err(|e| {
+        tracing::warn!(event = "remote_push_events_failed", error = %e);
+        "failed"
+    })?;
+    if !saved {
+        return Err("not_found");
+    }
+    send_config(ctx, Some(&endpoint)).await
 }
 
 /// The ack reason for a test send's outcome (`None` = delivered).
