@@ -9,6 +9,7 @@ mod github;
 mod gitlab;
 mod inbox_api;
 mod item_links;
+mod pr_inbox;
 mod procs;
 mod remote;
 mod runs;
@@ -317,6 +318,8 @@ pub fn run() {
             }
             // Focus reminders (focus::scheduler): a 60 s tick while the app runs.
             focus::scheduler::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
+            // PR Inbox poller (pr_inbox): cache + "new PR to review" notifications.
+            pr_inbox::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
             commands::secret_vault::spawn_auto_lock(app.handle().clone());
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
@@ -594,6 +597,9 @@ pub fn run() {
             fetch_pr,
             refetch_run,
             list_review_requested_prs,
+            pr_inbox::get_cached_pr_inbox,
+            pr_inbox::get_pr_inbox_poll_minutes,
+            pr_inbox::set_pr_inbox_poll_minutes,
             resolve_project_board,
             list_milestone_board,
             list_milestone_issues,

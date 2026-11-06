@@ -89,6 +89,13 @@
     "button": "Hiển thị",
     "hideBotsHint": "Gộp PR của bot vào một dòng tóm tắt"
   },
+  "poll": {
+    "label": "Kiểm tra PR mới",
+    "hint": "Báo khi có PR mời bạn review",
+    "off": "Tắt",
+    "minutes": "{n} phút",
+    "saveFailed": "Không lưu được: {error}"
+  },
   "clearSearch": "Xoá tìm kiếm",
   "reviewAs": "Review bằng {account}",
   "reviewAsMulti": "Review bằng {account} · cũng được mời qua {others}",

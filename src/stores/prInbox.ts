@@ -1,6 +1,7 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
 import { ref } from 'vue'
+import { listen } from '@tauri-apps/api/event'
 import { PR_GROUP_BY_OPTIONS, type PrGroupBy } from '@/lib/prInboxGrouping'
 import { normalizeLogin, sanitizeBotLogins, sanitizeFilters, emptyFilters, type PrFilters } from '@/lib/prInboxFilters'
 
@@ -64,6 +65,18 @@ export interface PrInboxResult {
   items: PrInboxItem[]
   errors: PrInboxAccountError[]
 }
+
+/** The backend's last fetched inbox — mirrors the Rust `CachedPrInbox`. */
+export interface CachedPrInbox extends PrInboxResult {
+  fetched_at: string
+}
+
+/** Broadcast by the backend after every inbox fetch (pr_inbox::UPDATED_EVENT). */
+const PR_INBOX_UPDATED = 'pr-inbox-updated'
+/** A cached inbox older than this is re-fetched behind the shown list. */
+const CACHE_FRESH_MS = 60_000
+/** Choices for the background check interval, in minutes (0 = off). */
+export const PR_POLL_MINUTES_OPTIONS = [0, 2, 5, 15, 30] as const
 
 /** Stable key for a PR across accounts (owner/repo#number). */
 export function prKey(item: Pick<PrInboxItem, 'owner' | 'repo' | 'number'>): string {
@@ -171,6 +184,67 @@ export const usePrInboxStore = defineStore('prInbox', () => {
   // Extra logins the user treats as bots, on top of GitHub's own bot flag.
   const botLogins = ref<string[]>(sanitizeBotLogins(readJson(BOT_LOGINS_KEY)))
 
+  // Background check interval (pr_inbox poller), in minutes; 0 = off.
+  const pollMinutes = ref<number | null>(null)
+
+  function apply(inbox: CachedPrInbox) {
+    items.value = inbox.items
+    warnings.value = inbox.errors
+    error.value = null
+    lastRefreshedAt.value = inbox.fetched_at
+  }
+
+  // Every fetch — the poller's or another window's — lands here too.
+  let listening = false
+  async function listenUpdates() {
+    if (listening) return
+    listening = true
+    try {
+      await listen<CachedPrInbox>(PR_INBOX_UPDATED, (e) => apply(e.payload))
+    } catch {
+      /* outside the Tauri shell */
+    }
+  }
+
+  /** Show the backend's cached inbox at once, then re-fetch behind it when
+   * there is none or it is older than a minute. */
+  async function load() {
+    void listenUpdates()
+    if (items.value.length === 0) {
+      // Skeleton, not "no PRs", while the cache is read.
+      loading.value = true
+      try {
+        const cached = await invoke<CachedPrInbox | null>('get_cached_pr_inbox')
+        if (cached) apply(cached)
+      } catch {
+        /* no cache — the refresh below fills the list */
+      } finally {
+        loading.value = false
+      }
+    }
+    const fetchedAt = lastRefreshedAt.value ? Date.parse(lastRefreshedAt.value) : 0
+    if (Date.now() - fetchedAt > CACHE_FRESH_MS) await refresh()
+  }
+
+  async function loadPollMinutes() {
+    try {
+      pollMinutes.value = await invoke<number>('get_pr_inbox_poll_minutes')
+    } catch {
+      /* keep unknown — the control shows no selection */
+    }
+  }
+
+  async function setPollMinutes(minutes: number) {
+    const prev = pollMinutes.value
+    pollMinutes.value = minutes
+    try {
+      await invoke('set_pr_inbox_poll_minutes', { minutes })
+    } catch (e) {
+      pollMinutes.value = prev
+      throw e
+    }
+  }
+
   async function refresh() {
     loading.value = true
     lastAttemptAt.value = Date.now()
@@ -262,7 +336,8 @@ export const usePrInboxStore = defineStore('prInbox', () => {
   return {
     items, loading, error, warnings, lastRefreshedAt, lastAttemptAt, reviewingKeys,
     groupBy, hideBots, collapsedGroups, filters, density, botLogins,
-    refresh, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
+    pollMinutes,
+    load, refresh, loadPollMinutes, setPollMinutes, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
     setFilters, clearFilters, setDensity, setBotLogins, addBotLogin, removeBotLogin,
   }
 })

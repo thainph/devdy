@@ -17,6 +17,13 @@ export const PR_INBOX_WINDOW_LABEL = 'pr-inbox'
  */
 export const PR_INBOX_WINDOW_OPEN_ROUTE = 'pr-inbox-window:open-route'
 
+/**
+ * Emitted by the backend (pr_inbox::open_window) to the main window when a
+ * "new PR to review" notification is clicked while this window is closed.
+ * Handled in App.vue.
+ */
+export const PR_INBOX_OPEN_WINDOW = 'pr-inbox-open-window'
+
 export interface PrInboxWindowOpenRoute {
   path: string
 }

@@ -31,7 +31,7 @@ import ItemListWindow from '@/views/ItemListWindow.vue'
 import SecretNotesWindow from '@/views/SecretNotesWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import PrInboxWindow from '@/views/PrInboxWindow.vue'
-import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
+import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, openPrInboxWindow, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import FocusWindow from '@/views/FocusWindow.vue'
@@ -344,6 +344,7 @@ let unlistenActivated: UnlistenFn | null = null
 // Listener for a session row clicked in the menu-bar switcher (see lib/tray.ts).
 let unlistenTrayRun: UnlistenFn | null = null
 let unlistenFocusOpen: UnlistenFn | null = null
+let unlistenPrInboxOpen: UnlistenFn | null = null
 
 // Listener for the tray's "Background processes" row (lib/tray.ts).
 let unlistenTrayProcs: UnlistenFn | null = null
@@ -488,6 +489,8 @@ onBeforeUnmount(() => {
   unlistenTrayRun = null
   unlistenFocusOpen?.()
   unlistenFocusOpen = null
+  unlistenPrInboxOpen?.()
+  unlistenPrInboxOpen = null
   unlistenTrayProcs?.()
   unlistenTrayProcs = null
   unlistenCaptureNotification?.()
@@ -669,6 +672,16 @@ onMounted(async () => {
   try {
     unlistenFocusOpen = await listen<FocusOpenTodo>(FOCUS_OPEN_WINDOW, () => {
       void openFocusWindow()
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // A "new PR to review" notification click while the PR Inbox window is
+  // closed (pr_inbox::open_window): open it.
+  try {
+    unlistenPrInboxOpen = await listen(PR_INBOX_OPEN_WINDOW, () => {
+      void openPrInboxWindow()
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).

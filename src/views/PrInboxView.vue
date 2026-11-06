@@ -81,7 +81,7 @@ const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | null = null
 
 onMounted(() => {
-  if (store.items.length === 0) store.refresh()
+  void store.load()
   // The configured account list decides whether cards show the "review as"
   // account chip. This window has its own Pinia, so Settings edits made in the
   // main window only arrive on a re-fetch (see the focus resync below).
@@ -389,7 +389,7 @@ async function reviewAll(group: PrGroup) {
     <!-- Page header -->
     <PageHeader
       :title="t('prInbox.title')"
-      :count="!store.loading && store.items.length > 0
+      :count="store.items.length > 0
         ? (grouped.visibleCount < store.items.length ? `${grouped.visibleCount} / ${store.items.length}` : store.items.length)
         : null"
       :count-title="grouped.visibleCount < store.items.length ? t('prInbox.visibleOfTotal', { visible: grouped.visibleCount, total: store.items.length }) : undefined"

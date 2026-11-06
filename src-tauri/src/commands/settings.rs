@@ -141,6 +141,8 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "cyber_fox_voice_rate",
     "cyber_fox_voice_pitch",
     "quit_background_policy",
+    // PR Inbox poller (pr_inbox).
+    "pr_inbox.poll_minutes",
     // Focus (focus::settings); the calendar choice stays per machine.
     "focus.work_start",
     "focus.work_end",

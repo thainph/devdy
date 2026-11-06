@@ -5,13 +5,15 @@
 // control and full-row `role="switch"` toggle — so view settings look the same
 // on every screen. Group-by is a radio list rather than an AppSelect: the
 // select's teleported menu sits outside the panel, so picking an option would
-// count as an outside click and close the popover.
-import { computed, ref } from 'vue'
+// count as an outside click and close the popover. Also holds the background
+// check interval (pr_inbox poller — new-PR notifications).
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
-import { usePrInboxStore, type PrInboxDensity } from '@/stores/prInbox'
+import { useToast } from '@/composables/useToast'
+import { usePrInboxStore, PR_POLL_MINUTES_OPTIONS, type PrInboxDensity } from '@/stores/prInbox'
 import { PR_GROUP_BY_OPTIONS, type PrGroupBy } from '@/lib/prInboxGrouping'
 import { Button, SegmentedControl } from '@/components/ui'
 import { Check, EyeOff, KeyRound, SlidersHorizontal, ChevronRight } from 'lucide-vue-next'
@@ -20,6 +22,7 @@ const emit = defineEmits<{ 'manage-bots': [] }>()
 
 const { t } = useI18n()
 const store = usePrInboxStore()
+const { toast } = useToast()
 
 const open = ref(false)
 const wrap = ref<HTMLElement | null>(null)
@@ -48,6 +51,21 @@ function onRadioKey(e: KeyboardEvent, current: PrGroupBy) {
 
 const DENSITIES: readonly PrInboxDensity[] = ['comfortable', 'compact']
 const densityOptions = computed(() => DENSITIES.map(d => ({ value: d, label: t(`prInbox.density.${d}`) })))
+
+// Read on open: the poller interval is a backend setting another window may change.
+watch(open, (o) => { if (o) void store.loadPollMinutes() })
+const pollOptions = computed(() => PR_POLL_MINUTES_OPTIONS.map(n => ({
+  value: n as number,
+  label: n === 0 ? t('prInbox.poll.off') : t('prInbox.poll.minutes', { n }),
+})))
+
+async function setPoll(minutes: number) {
+  try {
+    await store.setPollMinutes(minutes)
+  } catch (e) {
+    toast.error(t('prInbox.poll.saveFailed', { error: String(e) }))
+  }
+}
 
 function manageBots() {
   open.value = false
@@ -108,6 +126,18 @@ function manageBots() {
           :aria-label="t('prInbox.density.label')"
           @update:model-value="store.setDensity"
         />
+      </div>
+
+      <!-- Background check + new-PR notifications -->
+      <div class="mb-3">
+        <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('prInbox.poll.label') }}</div>
+        <SegmentedControl
+          :model-value="store.pollMinutes ?? -1"
+          :options="pollOptions"
+          :aria-label="t('prInbox.poll.label')"
+          @update:model-value="setPoll"
+        />
+        <div class="mt-1 text-[11px] text-muted-foreground">{{ t('prInbox.poll.hint') }}</div>
       </div>
 
       <!-- Bots -->
