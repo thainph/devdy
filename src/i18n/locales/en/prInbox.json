@@ -89,6 +89,13 @@
     "button": "Display",
     "hideBotsHint": "Collapse bot PRs into one summary row"
   },
+  "poll": {
+    "label": "Check for new PRs",
+    "hint": "Notifies you when a PR asks for your review",
+    "off": "Off",
+    "minutes": "{n}m",
+    "saveFailed": "Could not save: {error}"
+  },
   "clearSearch": "Clear search",
   "reviewAs": "Review as {account}",
   "reviewAsMulti": "Review as {account} · also requested from {others}",

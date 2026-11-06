@@ -995,6 +995,10 @@ pub struct PrInboxAccountError {
 pub struct PrInboxResult {
     pub items: Vec<PrInboxItem>,
     pub errors: Vec<PrInboxAccountError>,
+    /// Accounts whose fetch succeeded — lets the new-PR notifier (pr_inbox)
+    /// tell a new review request from an account's first fetch. Backend-only.
+    #[serde(skip)]
+    pub fetched_accounts: Vec<String>,
 }
 
 /// Parse `owner`/`repo` from a GitHub API `repository_url`
@@ -1135,70 +1139,47 @@ async fn fetch_requested_reviewers(
     map
 }
 
-/// List every open PR where the signed-in user is a requested reviewer, gathered
-/// across all validated GitHub accounts and mapped to devdy projects when the
-/// repo is already tracked. Read-only; a failing account is skipped, not fatal.
+/// List every open PR where the signed-in user is a requested reviewer — a
+/// fresh fetch (see `fetch_review_requested_prs`) that also refreshes the
+/// inbox cache and tells every window (`pr_inbox::refresh`).
 #[tauri::command]
-pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResult, String> {
-    use sqlx::Row;
+pub async fn list_review_requested_prs(
+    app: tauri::AppHandle,
+    db: State<'_, Db>,
+) -> Result<PrInboxResult, String> {
+    crate::pr_inbox::refresh(&app, db.inner(), false).await
+}
 
-    // Accounts that have been validated (username present). A PAT is required to
-    // build a client, so skip any account missing one.
-    let account_rows = sqlx::query(
-        "SELECT id, label, username FROM github_accounts WHERE username IS NOT NULL AND username != '' ORDER BY created_at ASC",
-    )
-    .fetch_all(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
+/// One account's share of the inbox: its search hits plus the other pending
+/// reviewers of those PRs, or why the fetch failed.
+type AccountHits = Result<
+    (Vec<SearchPrItem>, std::collections::HashMap<String, Vec<PrRequestedReviewer>>),
+    String,
+>;
 
-    // Dedup a PR that multiple accounts are asked to review onto its first hit,
-    // recording the later accounts in `reviewer_accounts` (key -> items index).
-    let mut seen: std::collections::HashMap<(String, String, u64), usize> = std::collections::HashMap::new();
-    // The user's own logins — excluded from `requested_reviewers`.
-    let own_logins: std::collections::HashSet<String> = account_rows
-        .iter()
-        .map(|r| r.get::<String, _>("username").to_lowercase())
-        .collect();
-    // pr_map_key -> other pending reviewers, merged across accounts.
-    let mut reviewers_by_pr: std::collections::HashMap<String, Vec<PrRequestedReviewer>> =
-        std::collections::HashMap::new();
-    let mut items: Vec<PrInboxItem> = Vec::new();
-    // Accounts whose fetch failed after retries — surfaced to the UI so a
-    // transiently-missing PR reads as "try again" instead of "no PRs".
-    let mut errors: Vec<PrInboxAccountError> = Vec::new();
+/// Fetch one account's review requests: the REST search (for the PR fields)
+/// and the GraphQL reviewers lookup run concurrently.
+async fn fetch_account_review_requests(
+    account_id: &str,
+    own_logins: &std::collections::HashSet<String>,
+) -> AccountHits {
+    let client = github::client_for_account(account_id).map_err(|e| e.to_string())?;
 
-    for account in &account_rows {
-        let account_id: String = account.get("id");
-        let account_label: String = account.get("label");
-        if !secrets::has_account_pat(&account_id) {
-            continue;
-        }
-        let client = match github::client_for_account(&account_id) {
-            Ok(c) => c,
-            Err(e) => {
-                errors.push(PrInboxAccountError {
-                    account_id: account_id.clone(),
-                    account_label: account_label.clone(),
-                    message: e.to_string(),
-                });
-                continue;
-            }
-        };
+    // `@me` resolves to the token's own user, so each account contributes its
+    // own review requests without us needing to know the login here.
+    // Use `user-review-requested` (NOT `review-requested`): the latter also
+    // matches PRs requested from a TEAM the user belongs to, surfacing PRs
+    // the user was never personally asked to review. We only want direct
+    // requests. See GitHub search docs: user-review-requested = "directly
+    // been asked to review".
+    let query = "is:open is:pr user-review-requested:@me archived:false";
 
-        // `@me` resolves to the token's own user, so each account contributes its
-        // own review requests without us needing to know the login here.
-        // Use `user-review-requested` (NOT `review-requested`): the latter also
-        // matches PRs requested from a TEAM the user belongs to, surfacing PRs
-        // the user was never personally asked to review. We only want direct
-        // requests. See GitHub search docs: user-review-requested = "directly
-        // been asked to review".
-        let query = "is:open is:pr user-review-requested:@me archived:false";
+    let search = async {
         // Retry transient failures (rate limit / network blips) with a short
         // backoff before giving up on the account. Without this a single flaky
         // response silently drops ALL of the account's PRs until the next manual
         // refresh — the root cause of PRs intermittently vanishing from the inbox.
         let mut last_err: Option<String> = None;
-        let mut first_page = None;
         for attempt in 0u32..3 {
             match client
                 .get::<octocrab::Page<SearchPrItem>, _, _>(
@@ -1207,10 +1188,7 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
                 )
                 .await
             {
-                Ok(p) => {
-                    first_page = Some(p);
-                    break;
-                }
+                Ok(p) => return Ok(client.all_pages(p).await.unwrap_or_default()),
                 Err(e) => {
                     last_err = Some(e.to_string());
                     // 300ms, 600ms backoff between the 3 attempts.
@@ -1223,26 +1201,114 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
                 }
             }
         }
-        let first_page = match first_page {
-            Some(p) => p,
-            None => {
+        Err(last_err.unwrap_or_else(|| "GitHub search failed".to_string()))
+    };
+    // Non-fatal: a failed lookup only leaves `requested_reviewers` empty.
+    let reviewers = fetch_requested_reviewers(&client, query, own_logins);
+    let (issues, reviewers) = tokio::join!(search, reviewers);
+    Ok((issues?, reviewers))
+}
+
+/// Gather the review-requested PRs across all validated GitHub accounts (in
+/// parallel) and map them to devdy projects when the repo is already tracked.
+/// Read-only; a failing account is reported in `errors`, not fatal.
+pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult, String> {
+    use sqlx::Row;
+
+    // Accounts that have been validated (username present). A PAT is required to
+    // build a client, so skip any account missing one.
+    let account_rows = sqlx::query(
+        "SELECT id, label, username FROM github_accounts WHERE username IS NOT NULL AND username != '' ORDER BY created_at ASC",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+
+    // The user's own logins — excluded from `requested_reviewers`.
+    let own_logins: std::collections::HashSet<String> = account_rows
+        .iter()
+        .map(|r| r.get::<String, _>("username").to_lowercase())
+        .collect();
+    let accounts: Vec<(String, String)> = account_rows
+        .iter()
+        .map(|r| (r.get::<String, _>("id"), r.get::<String, _>("label")))
+        .filter(|(id, _)| secrets::has_account_pat(id))
+        .collect();
+
+    // All accounts at once; `join_all` keeps account order, which decides the
+    // account a PR shared by several accounts is reviewed as.
+    let fetched = futures_util::future::join_all(
+        accounts.iter().map(|(id, _)| fetch_account_review_requests(id, &own_logins)),
+    )
+    .await;
+
+    // Repo -> project mapping and the latest review run per PR, each loaded in
+    // one query instead of two per PR.
+    let mut repo_map: std::collections::HashMap<(String, String), (String, String, String)> =
+        std::collections::HashMap::new();
+    for row in sqlx::query(
+        "SELECT r.id AS repo_id, r.project_id AS project_id, p.name AS project_name,
+                r.github_owner AS owner, r.github_repo AS repo
+         FROM repos r JOIN projects p ON p.id = r.project_id
+         WHERE r.github_owner IS NOT NULL AND r.github_repo IS NOT NULL
+         ORDER BY r.created_at ASC",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?
+    {
+        let key = (
+            row.get::<String, _>("owner").to_lowercase(),
+            row.get::<String, _>("repo").to_lowercase(),
+        );
+        // First row wins, like the old `LIMIT 1`.
+        repo_map.entry(key).or_insert((
+            row.get("repo_id"),
+            row.get("project_id"),
+            row.get("project_name"),
+        ));
+    }
+    let mut latest_runs: std::collections::HashMap<(String, i64), (String, String)> =
+        std::collections::HashMap::new();
+    for row in sqlx::query(
+        "SELECT id, status, project_id, ref_number FROM runs
+         WHERE type = 'review_pr' AND ref_number IS NOT NULL
+         ORDER BY created_at DESC",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?
+    {
+        latest_runs
+            .entry((row.get("project_id"), row.get("ref_number")))
+            .or_insert((row.get("id"), row.get("status")));
+    }
+
+    // Dedup a PR that multiple accounts are asked to review onto its first hit,
+    // recording the later accounts in `reviewer_accounts` (key -> items index).
+    let mut seen: std::collections::HashMap<(String, String, u64), usize> = std::collections::HashMap::new();
+    // pr_map_key -> other pending reviewers, merged across accounts.
+    let mut reviewers_by_pr: std::collections::HashMap<String, Vec<PrRequestedReviewer>> =
+        std::collections::HashMap::new();
+    let mut items: Vec<PrInboxItem> = Vec::new();
+    // Accounts whose fetch failed after retries — surfaced to the UI so a
+    // transiently-missing PR reads as "try again" instead of "no PRs".
+    let mut errors: Vec<PrInboxAccountError> = Vec::new();
+    let mut fetched_accounts: Vec<String> = Vec::new();
+
+    for ((account_id, account_label), hits) in accounts.into_iter().zip(fetched) {
+        let (issues, reviewers) = match hits {
+            Ok(v) => v,
+            Err(message) => {
                 // Give up on this account but keep the others; record why so the
                 // UI can warn instead of silently dropping this account's PRs.
-                errors.push(PrInboxAccountError {
-                    account_id: account_id.clone(),
-                    account_label: account_label.clone(),
-                    message: last_err.unwrap_or_else(|| "GitHub search failed".to_string()),
-                });
+                errors.push(PrInboxAccountError { account_id, account_label, message });
                 continue;
             }
         };
-        let issues = client.all_pages(first_page).await.unwrap_or_default();
-        // Non-fatal: a failed lookup only leaves `requested_reviewers` empty.
-        // Skipped when the account has nothing to review — saves a GraphQL call.
-        if !issues.is_empty() {
-            for (key, reviewers) in fetch_requested_reviewers(&client, query, &own_logins).await {
-                reviewers_by_pr.entry(key).or_insert(reviewers);
-            }
+        fetched_accounts.push(account_id.clone());
+        for (key, reviewers) in reviewers {
+            reviewers_by_pr.entry(key).or_insert(reviewers);
         }
 
         for SearchPrItem { issue, draft } in issues {
@@ -1265,52 +1331,19 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
             seen.insert(key, items.len());
 
             // Map to a devdy project via a tracked repo row (case-insensitive).
-            let mapping = sqlx::query(
-                "SELECT r.id AS repo_id, r.project_id AS project_id, p.name AS project_name
-                 FROM repos r JOIN projects p ON p.id = r.project_id
-                 WHERE lower(r.github_owner) = lower(?) AND lower(r.github_repo) = lower(?)
-                 LIMIT 1",
-            )
-            .bind(&owner)
-            .bind(&repo)
-            .fetch_optional(db.inner())
-            .await
-            .map_err(|e| e.to_string())?;
-
-            let (mapped, project_id, repo_id, project_name) = match mapping {
-                Some(row) => (
-                    true,
-                    Some(row.get::<String, _>("project_id")),
-                    Some(row.get::<String, _>("repo_id")),
-                    Some(row.get::<String, _>("project_name")),
-                ),
-                None => (false, None, None, None),
+            let mapping = repo_map.get(&(owner.to_lowercase(), repo.to_lowercase())).cloned();
+            let mapped = mapping.is_some();
+            let (repo_id, project_id, project_name) = match mapping {
+                Some((r, p, n)) => (Some(r), Some(p), Some(n)),
+                None => (None, None, None),
             };
 
             // Link the latest existing review run for this PR (same project +
             // ref_number) so the UI can resume it instead of duplicating.
-            let (existing_run_id, existing_run_status) = match &project_id {
-                Some(pid) => {
-                    let run_row = sqlx::query(
-                        "SELECT id, status FROM runs
-                         WHERE project_id = ? AND type = 'review_pr' AND ref_number = ?
-                         ORDER BY created_at DESC LIMIT 1",
-                    )
-                    .bind(pid)
-                    .bind(number as i64)
-                    .fetch_optional(db.inner())
-                    .await
-                    .map_err(|e| e.to_string())?;
-                    match run_row {
-                        Some(r) => (
-                            Some(r.get::<String, _>("id")),
-                            Some(r.get::<String, _>("status")),
-                        ),
-                        None => (None, None),
-                    }
-                }
-                None => (None, None),
-            };
+            let (existing_run_id, existing_run_status) = project_id
+                .as_ref()
+                .and_then(|pid| latest_runs.get(&(pid.clone(), number as i64)).cloned())
+                .map_or((None, None), |(id, status)| (Some(id), Some(status)));
 
             items.push(PrInboxItem {
                 account_id: account_id.clone(),
@@ -1349,7 +1382,7 @@ pub async fn list_review_requested_prs(db: State<'_, Db>) -> Result<PrInboxResul
 
     // Most recently updated first.
     items.sort_by(|a, b| b.updated_at.cmp(&a.updated_at));
-    Ok(PrInboxResult { items, errors })
+    Ok(PrInboxResult { items, errors, fetched_accounts })
 }
 
 // ---------------------------------------------------------------------------
