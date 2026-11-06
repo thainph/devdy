@@ -91,6 +91,7 @@
     "needsApproval": "Needs your approval",
     "pendingElsewhere": "{count} run needs your approval | {count} runs need your approval",
     "ungrouped": "Other",
+    "pinned": "Pinned",
     "untitled": "Run {id}",
     "newSession": "New session",
     "search": "Search runs",

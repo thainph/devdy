@@ -732,6 +732,10 @@ pub struct RunInfo {
     /// last visit" keys on this.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub finished_at: Option<String>,
+    /// Pinned to the top of the desktop History. The list already arrives in
+    /// desktop order; this only lets the Controller badge the row.
+    #[serde(default)]
+    pub pinned: bool,
 }
 
 /// A command from the Controller (SRS §5.2). `action` is validated against the

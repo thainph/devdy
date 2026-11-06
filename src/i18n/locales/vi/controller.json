@@ -91,6 +91,7 @@
     "needsApproval": "Đang chờ bạn duyệt",
     "pendingElsewhere": "{count} run đang chờ bạn duyệt",
     "ungrouped": "Khác",
+    "pinned": "Đã ghim",
     "untitled": "Run {id}",
     "newSession": "Session mới",
     "search": "Tìm run",

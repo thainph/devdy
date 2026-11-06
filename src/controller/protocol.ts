@@ -375,6 +375,8 @@ export interface RunInfo {
   updated_at?: string | null
   /** When the last turn ended (a multi-turn session finishes every turn). */
   finished_at?: string | null
+  /** Pinned to the top of the desktop History (an older Host omits it). */
+  pinned?: boolean
 }
 
 /** A snapshot of every run the Controller may browse/control (FR-004+). */

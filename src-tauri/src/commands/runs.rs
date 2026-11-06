@@ -363,6 +363,8 @@ pub(crate) async fn start_run_inner(
     .execute(db)
     .await
     .map_err(|e| e.to_string())?;
+    // A new (or restarted) run moves to the top of the phone's run browser too.
+    crate::remote::live_lists::emit_runs_changed(&app);
 
     // Build extra args vec
     let extra: Vec<String> = extra_args
@@ -1190,11 +1192,15 @@ pub struct SendUserMessagePayload {
 
 #[tauri::command]
 pub async fn send_user_message(
+    app: AppHandle,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     payload: SendUserMessagePayload,
 ) -> Result<(), String> {
-    send_user_message_inner(db.inner(), registry.inner(), payload, true).await
+    send_user_message_inner(db.inner(), registry.inner(), payload, true).await?;
+    // The turn stamped last_activity_at: the phone's run order follows.
+    crate::remote::live_lists::emit_runs_changed(&app);
+    Ok(())
 }
 
 /// Core of [`send_user_message`] over concrete refs so the Remote Control host
@@ -3033,13 +3039,19 @@ pub async fn delete_run(
     prune_run_audit(db.inner(), &outcome.deleted_ids).await;
     crate::slack_threads::emit_all_changed(&app);
     crate::item_links::emit_changed(&app, None);
+    crate::remote::live_lists::emit_runs_changed(&app);
     Ok(outcome.leftover_files)
 }
 
 /// Rename a run's title (shown in the History list). An empty/whitespace title
 /// clears it back to NULL, letting the UI fall back to its derived label.
 #[tauri::command]
-pub async fn rename_run(db: State<'_, Db>, run_id: String, title: String) -> Result<(), String> {
+pub async fn rename_run(
+    app: AppHandle,
+    db: State<'_, Db>,
+    run_id: String,
+    title: String,
+) -> Result<(), String> {
     let trimmed = title.trim();
     let value: Option<&str> = if trimmed.is_empty() {
         None
@@ -3052,6 +3064,7 @@ pub async fn rename_run(db: State<'_, Db>, run_id: String, title: String) -> Res
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    crate::remote::live_lists::emit_runs_changed(&app);
     Ok(())
 }
 
@@ -3275,13 +3288,20 @@ pub async fn set_run_claude_account_inner(
 
 /// Pin or unpin a run so it sorts to the top of the History list.
 #[tauri::command]
-pub async fn set_run_pinned(db: State<'_, Db>, run_id: String, pinned: bool) -> Result<(), String> {
+pub async fn set_run_pinned(
+    app: AppHandle,
+    db: State<'_, Db>,
+    run_id: String,
+    pinned: bool,
+) -> Result<(), String> {
     sqlx::query("UPDATE runs SET pinned = ? WHERE id = ?")
         .bind(if pinned { 1 } else { 0 })
         .bind(&run_id)
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    // The phone's run browser follows the desktop's pinned-first order.
+    crate::remote::live_lists::emit_runs_changed(&app);
     Ok(())
 }
 
@@ -3349,6 +3369,7 @@ pub async fn delete_all_runs(
     if deleted > 0 {
         crate::slack_threads::emit_all_changed(&app);
         crate::item_links::emit_changed(&app, None);
+        crate::remote::live_lists::emit_runs_changed(&app);
     }
     Ok(deleted)
 }
@@ -3598,6 +3619,9 @@ pub(crate) async fn resume_run_with(
         .execute(db.inner())
         .await
         .map_err(|e| e.to_string())?;
+    if stamp_activity {
+        crate::remote::live_lists::emit_runs_changed(&app);
+    }
 
     let (node_bin, sidecar_script) = if engine == "codex" {
         resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?
