@@ -168,7 +168,14 @@
     "save": "Lưu",
     "cancel": "Huỷ",
     "unsaved": "Bỏ các thay đổi chưa lưu?",
-    "discard": "Bỏ thay đổi"
+    "discard": "Bỏ thay đổi",
+    "description": "Nội dung",
+    "editText": "Sửa nội dung",
+    "doneEditing": "Xong",
+    "textHint": "Dòng đầu là tiêu đề, phần còn lại là mô tả (hỗ trợ markdown).",
+    "addDescription": "Thêm mô tả…",
+    "properties": "Thuộc tính",
+    "schedule": "Hoãn, nhắc & thời gian thực tế"
   },
   "capture": {
     "title": "Todo mới",

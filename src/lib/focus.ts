@@ -745,6 +745,15 @@ export function sourceShortLabel(type: TodoSourceType | null, ref: string | null
   return null
 }
 
+// ── Todo text ───────────────────────────────────────────────────────────────
+
+/** Description of a todo: everything after its first non-empty line (the title), trimmed. */
+export function todoBody(text: string): string {
+  const lines = text.split('\n')
+  const i = lines.findIndex((l) => l.trim())
+  return i < 0 ? '' : lines.slice(i + 1).join('\n').trim()
+}
+
 // ── Project chips ───────────────────────────────────────────────────────────
 
 /** Stable hue (0–359) for a project id: projects have no colour of their own. */
