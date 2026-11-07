@@ -55,6 +55,10 @@ import {
 import { firstLine } from '@/lib/itemText'
 import { refreshTray } from '@/lib/tray'
 import { secretNoteFromNote, vaultError } from '@/lib/secretVault'
+import { countFocus, latenessById, type FocusRadarStatus } from '@/lib/focusRadar'
+import { useFocusStore } from '@/stores/focus'
+import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
+import { useFocusAiActions } from '@/components/focus/useFocusAiActions'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 
 const { t } = useI18n()
@@ -85,11 +89,20 @@ const filter = ref<string>(kind === 'note' ? '' : 'active')
 
 const loadError = computed(() => (kind === 'note' ? notes.error : todos.error))
 
+// ── Todos: lateness (lib/focusRadar) from the Focus board ───────────────────
+// The board carries what the plain todo list lacks (status, due time, the
+// effective due moment); it stays live through `focus:changed` / `item:changed`.
+const focus = useFocusStore()
+const lateness = computed(() => (kind === 'todo' && focus.loaded ? latenessById(focus.items, focus.now) : null))
+/** null = every lateness status. */
+const latenessFilter = ref<FocusRadarStatus | null>(null)
+
 const allRows = computed<ItemRow[]>(() =>
   kind === 'note' ? notes.notes.map(noteRow) : todos.todos.map(todoRow),
 )
 
 function matchesFilters(row: ItemRow): boolean {
+  if (latenessFilter.value && lateness.value?.[row.id]?.radar !== latenessFilter.value) return false
   if (filter.value === 'linked' && row.linkedRunCount === 0) return false
   if (filter.value === 'active' && row.done) return false
   if (filter.value === 'done' && !row.done) return false
@@ -97,6 +110,22 @@ function matchesFilters(row: ItemRow): boolean {
   if (projectFilter.value) return row.projectId === projectFilter.value
   return true
 }
+
+/** Lateness chip counts: open todos of the project in scope, before the chip filter. */
+const latenessCounts = computed(() => {
+  const late = lateness.value
+  if (!late) return null
+  const inScope = allRows.value.filter((row) =>
+    !row.done &&
+    (projectFilter.value === NO_PROJECT ? !row.projectId : !projectFilter.value || row.projectId === projectFilter.value),
+  )
+  return countFocus(inScope.map((row) => late[row.id]).filter((x) => !!x))
+})
+
+// Picking a lateness chip means open todos.
+watch(latenessFilter, (s) => {
+  if (s && filter.value === 'done') filter.value = 'active'
+})
 
 const visibleRows = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -182,6 +211,7 @@ function revealRow(id: string) {
   const row = allRows.value.find((r) => r.id === id)
   if (!row) return
   search.value = ''
+  latenessFilter.value = null
   if (!matchesFilters(row)) {
     projectFilter.value = ''
     filter.value = kind === 'note' ? '' : 'all'
@@ -267,6 +297,14 @@ async function setDueDate(next: string | null) {
   if (kind !== 'todo' || !it || next === it.due_date) return
   await todos.setDueDate(it.id, next)
   announce()
+}
+
+// "Start with AI" (todos): a session working on the todo, like the old Focus board.
+const ai = useFocusAiActions()
+function startWithAi() {
+  const it = item.value
+  const focusTodo = it ? focus.items.find((x) => x.todo.id === it.id)?.todo : null
+  if (focusTodo) void ai.startWithAi(focusTodo)
 }
 
 async function toggleDone(id: string) {
@@ -489,6 +527,7 @@ async function selectFresh(id: string) {
 
 onMounted(async () => {
   void projects.fetchProjects()
+  if (kind === 'todo') void focus.start()
   try {
     unlisten.push(
       // A write elsewhere (capture window, link commands, other windows).
@@ -538,6 +577,7 @@ onMounted(async () => {
 })
 
 onBeforeUnmount(() => {
+  if (kind === 'todo') focus.stop()
   if (reloadTimer) clearTimeout(reloadTimer)
   unlisten.forEach((off) => off())
   unlisten = []
@@ -550,6 +590,7 @@ onBeforeUnmount(() => {
       v-model:search="search"
       v-model:project="projectFilter"
       v-model:filter="filter"
+      v-model:lateness-filter="latenessFilter"
       :kind="kind"
       :rows="visibleRows"
       :empty-store="emptyStore"
@@ -559,6 +600,8 @@ onBeforeUnmount(() => {
       :error="loadError"
       :pinned="pinned"
       :reloading="reloading"
+      :lateness="lateness"
+      :lateness-counts="latenessCounts"
       @select="select"
       @add="openCreate"
       @toggle-done="toggleDone"
@@ -579,6 +622,7 @@ onBeforeUnmount(() => {
         :saving="!!bodyRef?.saving"
         :copied-id="copiedId"
         :can-make-secret="canSecret"
+        :can-start-with-ai="kind === 'todo' && focus.loaded"
         @start-rename="startRename"
         @commit-rename="commitRename"
         @cancel-rename="renaming = false"
@@ -590,6 +634,7 @@ onBeforeUnmount(() => {
         @unlink-run="unlinkRun"
         @link-run="linkRun"
         @new-session="newSession"
+        @start-with-ai="startWithAi"
         @copy-id="copyId"
         @make-secret="makeSecret"
         @delete="remove"
@@ -625,6 +670,7 @@ onBeforeUnmount(() => {
     </div>
 
     <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->
+    <FocusAiDialogs v-if="kind === 'todo'" />
     <ConfirmModal />
     <ToastHost />
   </div>

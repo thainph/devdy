@@ -9,7 +9,6 @@ import {
   Radar,
   BarChart3,
   CalendarDays,
-  Target,
   Cpu,
   Settings,
   Info,
@@ -17,7 +16,6 @@ import {
 import { openPrInboxWindow } from '@/lib/prInboxWindow'
 import { openCalendarWindow } from '@/lib/calendarWindow'
 import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
-import { openFocusWindow } from '@/lib/focusWindow'
 
 /**
  * The app's top-level destinations, in sidebar order. Shared by the sidebar and
@@ -46,7 +44,6 @@ export interface NavRoute {
 
 export const NAV_ROUTES: NavRoute[] = [
   { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work' },
-  { path: '/focus', labelKey: 'nav.focus', icon: Target, group: 'work', openWindow: openFocusWindow },
   { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
   { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', openWindow: () => openCalendarWindow() },
   { path: '/radar', labelKey: 'nav.radar', icon: Radar, group: 'work', openWindow: () => openDeliveryRadarWindow() },

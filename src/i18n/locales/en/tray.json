@@ -11,6 +11,6 @@
   "runningSessions": "Running Sessions ({count})",
   "noRunningSessions": "No running sessions",
   "backgroundProcesses": "Background Processes ({count})",
-  "focus": "Focus",
-  "focusOverdue": "Focus — {count} overdue"
+  "focus": "Todos",
+  "focusOverdue": "Todos — {count} overdue"
 }

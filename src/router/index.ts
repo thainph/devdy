@@ -8,14 +8,13 @@ import PrInboxView from '../views/PrInboxView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
 import { openCalendarWindow } from '../lib/calendarWindow'
 import { openDeliveryRadarWindow } from '../lib/deliveryRadarWindow'
-import { openFocusWindow } from '../lib/focusWindow'
+import { openItemListWindow } from '../lib/itemListWindow'
 import DeliveryRadarView from '../views/DeliveryRadarView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
 import SettingsView from '../views/SettingsView.vue'
 import StatsView from '../views/StatsView.vue'
 import CalendarView from '../views/CalendarView.vue'
-import FocusView from '../views/FocusView.vue'
 import AboutView from '../views/AboutView.vue'
 import BackgroundProcessesView from '../views/BackgroundProcessesView.vue'
 
@@ -54,8 +53,8 @@ const router = createRouter({
         return from.matched.length > 0 ? false : '/projects'
       },
     },
-    // Delivery Radar and Focus too (lib/deliveryRadarWindow, lib/focusWindow).
-    // `?project=` deep links (Projects screen) carry over to the radar window.
+    // Delivery Radar too (lib/deliveryRadarWindow). `?project=` deep links
+    // (Projects screen) carry over to the radar window.
     { path: '/gantt', redirect: '/radar' },
     {
       path: '/radar',
@@ -66,12 +65,13 @@ const router = createRouter({
         return from.matched.length > 0 ? false : '/projects'
       },
     },
+    // The Focus board became the Todos window (lateness chips + ordering).
     {
       path: '/focus',
       name: 'focus',
-      component: FocusView,
+      component: ProjectsView,
       beforeEnter: (_to, from) => {
-        void openFocusWindow()
+        void openItemListWindow('todo')
         return from.matched.length > 0 ? false : '/projects'
       },
     },

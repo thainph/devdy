@@ -124,3 +124,36 @@ export function filterFocus(
     (!q || i.item.todo.text.toLowerCase().includes(q) || (i.item.todo.source_ref ?? '').toLowerCase().includes(q)),
   )
 }
+
+/** Open todos by id → their lateness (done / unknown todos are absent). */
+export function latenessById(items: FocusItem[], now: number): Record<string, FocusRadarItem> {
+  return Object.fromEntries(classifyTodos(items, now).map((i) => [i.item.todo.id, i]))
+}
+
+/** Row order of the Todos list: open todos most late first, then the rest (done) in list order. */
+export function compareLateness(a: FocusRadarItem | undefined, b: FocusRadarItem | undefined): number {
+  if (a && b) return compareFocus(a, b)
+  return (a ? 0 : 1) - (b ? 0 : 1)
+}
+
+export interface GroupLateness {
+  overdue: number
+  /** Days past the deadline of its latest todo; null when nothing is late. */
+  worstLateDays: number | null
+}
+
+export function groupLateness(items: (FocusRadarItem | undefined)[]): GroupLateness {
+  let overdue = 0
+  let worstLateDays: number | null = null
+  for (const i of items) {
+    if (i?.radar !== 'overdue') continue
+    overdue++
+    worstLateDays = Math.max(worstLateDays ?? 0, -(i.daysLeft ?? 0))
+  }
+  return { overdue, worstLateDays }
+}
+
+/** Group order: the most late work first; ties keep the caller's order (stable sort). */
+export function compareGroupLateness(a: GroupLateness, b: GroupLateness): number {
+  return b.overdue - a.overdue || (b.worstLateDays ?? -1) - (a.worstLateDays ?? -1)
+}

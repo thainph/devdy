@@ -3,6 +3,7 @@ import { computed, ref } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import { ITEM_CHANGED } from '@/lib/itemWindow'
+import { classifyTodos } from '@/lib/focusRadar'
 import {
   DEFAULT_FOCUS_SETTINGS,
   FOCUS_CHANGED,
@@ -40,7 +41,8 @@ export const useFocusStore = defineStore('focus', () => {
   const items = computed(() => board.value?.items ?? [])
   /** Backend clock of the last board, for relative labels. */
   const now = computed(() => (board.value ? Date.parse(board.value.now) : Date.now()))
-  const overdueCount = computed(() => items.value.filter((it) => it.bucket === 'overdue').length)
+  /** Late open todos, counted like the Todos window (a `doing` todo past its deadline included). */
+  const overdueCount = computed(() => classifyTodos(items.value, now.value).filter((i) => i.radar === 'overdue').length)
 
   // Coalesce bursts (a write + its own echo events) into one fetch in flight + one queued.
   let inflight: Promise<void> | null = null
