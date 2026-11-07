@@ -1463,6 +1463,16 @@ pub struct MilestoneBoard {
     pub board_linked: bool,
     pub truncated: bool,
     pub skipped_non_github: bool,
+    /// Options of the board's Status field, in board order (empty when unmapped).
+    pub status_options: Vec<StatusOption>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct StatusOption {
+    pub name: String,
+    /// GitHub colour enum (GRAY/BLUE/GREEN/...), like `IssueRow::status_color`.
+    pub color: Option<String>,
 }
 
 /// Parse a GitHub Projects V2 board URL into (owner_type, owner, number).
@@ -1619,19 +1629,21 @@ fn add_days(date: &str, days: i64) -> Option<String> {
     Some((d + chrono::Duration::days(days)).format("%Y-%m-%d").to_string())
 }
 
-/// Fetch the status single-select field's option colours (option name -> GitHub
-/// colour enum, e.g. "GREEN"), so the UI can tint the badge like the board.
-async fn fetch_status_colors(
+/// Fetch the status single-select field's options: their colours (lowercased
+/// option name -> GitHub colour enum, e.g. "GREEN") so the UI can tint the badge
+/// like the board, and their names in board order.
+async fn fetch_status_options(
     client: &octocrab::Octocrab,
     board_id: &str,
     status_field_id: &str,
-) -> std::collections::HashMap<String, String> {
+) -> (std::collections::HashMap<String, String>, Vec<StatusOption>) {
     let mut map = std::collections::HashMap::new();
+    let mut names = Vec::new();
     let query = "query($id:ID!){ node(id:$id){ ... on ProjectV2{ fields(first:50){ nodes{ __typename ... on ProjectV2SingleSelectField{ id options{ name color } } } } } } }";
     let payload = serde_json::json!({ "query": query, "variables": { "id": board_id } });
     let resp: serde_json::Value = match client.graphql(&payload).await {
         Ok(v) => v,
-        Err(_) => return map,
+        Err(_) => return (map, names),
     };
     if let Some(nodes) = resp.pointer("/data/node/fields/nodes").and_then(|n| n.as_array()) {
         for f in nodes {
@@ -1640,17 +1652,17 @@ async fn fetch_status_colors(
             }
             if let Some(options) = f.get("options").and_then(|o| o.as_array()) {
                 for opt in options {
-                    if let (Some(name), Some(color)) = (
-                        opt.get("name").and_then(|v| v.as_str()),
-                        opt.get("color").and_then(|v| v.as_str()),
-                    ) {
-                        map.insert(name.to_lowercase(), color.to_string());
+                    let Some(name) = opt.get("name").and_then(|v| v.as_str()) else { continue };
+                    let color = opt.get("color").and_then(|v| v.as_str()).map(|c| c.to_string());
+                    if let Some(color) = &color {
+                        map.insert(name.to_lowercase(), color.clone());
                     }
+                    names.push(StatusOption { name: name.to_string(), color });
                 }
             }
         }
     }
-    map
+    (map, names)
 }
 
 /// Start / Deadline / Status of one board item (`fieldValues` of a
@@ -1907,6 +1919,7 @@ async fn fetch_repo_board(
 
 /// Aggregate open issues across all GitHub repos of a project, grouped by
 /// milestone and enriched with the linked board's Start/Deadline/Status fields.
+/// Feeds the Delivery Radar (one call per project).
 #[tauri::command]
 pub async fn list_milestone_board(
     db: State<'_, Db>,
@@ -1964,18 +1977,18 @@ pub async fn list_milestone_board(
     // 4) Fetch the board enrichment map and every repo concurrently.
     let board_fut = async {
         if let Some(m) = &mappings {
-            let status_colors = match (&m.board_id, &m.status_field_id) {
-                (Some(bid), Some(sfid)) => fetch_status_colors(&client, bid, sfid).await,
-                _ => std::collections::HashMap::new(),
+            let (status_colors, status_options) = match (&m.board_id, &m.status_field_id) {
+                (Some(bid), Some(sfid)) => fetch_status_options(&client, bid, sfid).await,
+                _ => Default::default(),
             };
-            fetch_board_item_map(&client, m, &status_colors).await
+            (fetch_board_item_map(&client, m, &status_colors).await, status_options)
         } else {
-            std::collections::HashMap::new()
+            Default::default()
         }
     };
     let repos_fut =
         futures_util::future::join_all(repos.iter().map(|(o, n)| fetch_repo_board(&client, o, n)));
-    let (board_map, repo_results) = tokio::join!(board_fut, repos_fut);
+    let ((board_map, status_options), repo_results) = tokio::join!(board_fut, repos_fut);
 
     // 5) Assemble: aggregate milestone summaries + enrich issues from the board.
     let mut truncated = false;
@@ -2075,201 +2088,8 @@ pub async fn list_milestone_board(
         board_linked,
         truncated,
         skipped_non_github,
+        status_options,
     })
-}
-
-/// Fetch EVERY issue (open + closed) of a single milestone (matched by title)
-/// within one repo, paginated. Milestones are per-repo and keyed by number, so
-/// we first resolve the title to this repo's milestone number, then page through
-/// that milestone's issues. Returns an empty vec when the repo has no milestone
-/// with the given title.
-async fn fetch_repo_milestone_issues(
-    client: &octocrab::Octocrab,
-    owner: &str,
-    name: &str,
-    milestone_title: &str,
-) -> Result<Vec<IssueRow>, String> {
-    // 1) Resolve the milestone title -> number for this repo.
-    let resolve_q = "query($owner:String!,$repo:String!,$cursor:String){ repository(owner:$owner,name:$repo){ milestones(first:100, after:$cursor, states:[OPEN,CLOSED]){ pageInfo{ hasNextPage endCursor } nodes{ number title } } } }";
-    let target = milestone_title.to_lowercase();
-    let mut number: Option<i64> = None;
-    let mut cursor: Option<String> = None;
-    'resolve: for _ in 0..5 {
-        let payload = serde_json::json!({
-            "query": resolve_q,
-            "variables": { "owner": owner, "repo": name, "cursor": cursor }
-        });
-        let resp: serde_json::Value = client
-            .graphql(&payload)
-            .await
-            .map_err(|e| format!("Failed to resolve milestone for {owner}/{name}: {e}"))?;
-        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
-            if !errors.is_empty() {
-                let msg = errors[0].get("message").and_then(|m| m.as_str()).unwrap_or("GraphQL error");
-                return Err(format!("GraphQL error for {owner}/{name}: {msg}"));
-            }
-        }
-        let repository = match resp.pointer("/data/repository") {
-            Some(r) if !r.is_null() => r,
-            _ => return Ok(Vec::new()),
-        };
-        if let Some(nodes) = repository.pointer("/milestones/nodes").and_then(|n| n.as_array()) {
-            for ms in nodes {
-                let title = ms.get("title").and_then(|t| t.as_str()).unwrap_or("");
-                if title.to_lowercase() == target {
-                    number = ms.get("number").and_then(|n| n.as_i64());
-                    break 'resolve;
-                }
-            }
-        }
-        let has_next = repository
-            .pointer("/milestones/pageInfo/hasNextPage")
-            .and_then(|v| v.as_bool())
-            .unwrap_or(false);
-        if !has_next {
-            break;
-        }
-        cursor = repository
-            .pointer("/milestones/pageInfo/endCursor")
-            .and_then(|v| v.as_str())
-            .map(|s| s.to_string());
-        if cursor.is_none() {
-            break;
-        }
-    }
-    let Some(number) = number else { return Ok(Vec::new()) };
-
-    // 2) Page through the milestone's issues (open + closed).
-    let issues_q = "query($owner:String!,$repo:String!,$num:Int!,$cursor:String){ repository(owner:$owner,name:$repo){ milestone(number:$num){ issues(first:100, after:$cursor, states:[OPEN,CLOSED], orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url state createdAt updatedAt closedAt comments{ totalCount } milestone{ title dueOn } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } } }";
-    let mut out: Vec<IssueRow> = Vec::new();
-    let mut cursor: Option<String> = None;
-    for _ in 0..30 {
-        let payload = serde_json::json!({
-            "query": issues_q,
-            "variables": { "owner": owner, "repo": name, "num": number, "cursor": cursor }
-        });
-        let resp: serde_json::Value = client
-            .graphql(&payload)
-            .await
-            .map_err(|e| format!("Failed to load milestone issues for {owner}/{name}: {e}"))?;
-        if let Some(errors) = resp.get("errors").and_then(|e| e.as_array()) {
-            if !errors.is_empty() {
-                let msg = errors[0].get("message").and_then(|m| m.as_str()).unwrap_or("GraphQL error");
-                return Err(format!("GraphQL error for {owner}/{name}: {msg}"));
-            }
-        }
-        let conn = match resp.pointer("/data/repository/milestone/issues") {
-            Some(c) if !c.is_null() => c,
-            _ => break,
-        };
-        if let Some(nodes) = conn.pointer("/nodes").and_then(|n| n.as_array()) {
-            for issue in nodes {
-                out.push(parse_issue_node(issue, name));
-            }
-        }
-        let has_next = conn.pointer("/pageInfo/hasNextPage").and_then(|v| v.as_bool()).unwrap_or(false);
-        if !has_next {
-            break;
-        }
-        cursor = conn.pointer("/pageInfo/endCursor").and_then(|v| v.as_str()).map(|s| s.to_string());
-        if cursor.is_none() {
-            break;
-        }
-    }
-    Ok(out)
-}
-
-/// Load every issue (open + closed) of a single milestone across all GitHub
-/// repos of a project, enriched with the linked board's Start/Deadline/Status
-/// fields. Loaded on demand (per milestone) so the main Gantt board stays light.
-#[tauri::command]
-pub async fn list_milestone_issues(
-    db: State<'_, Db>,
-    project_id: String,
-    milestone_title: String,
-) -> Result<Vec<IssueRow>, String> {
-    use sqlx::Row;
-
-    // 1) Load repos for the project.
-    let repo_rows = sqlx::query(
-        "SELECT name, github_owner, github_repo, provider FROM repos WHERE project_id = ?",
-    )
-    .bind(&project_id)
-    .fetch_all(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
-
-    // 2) Load board config (if any).
-    let proj = sqlx::query(
-        "SELECT github_project_field_mappings FROM projects WHERE id = ?",
-    )
-    .bind(&project_id)
-    .fetch_one(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
-    let mappings_json: Option<String> = proj.get("github_project_field_mappings");
-    let mappings = mappings_json.as_deref().map(parse_board_mappings);
-
-    let client = github::client_for_project(db.inner(), &project_id)
-        .await
-        .map_err(|e| e.to_string())?;
-
-    // 3) Collect GitHub repos (GitLab not supported here).
-    let mut repos: Vec<(String, String)> = Vec::new();
-    for repo in &repo_rows {
-        let provider: Option<String> = repo.get("provider");
-        let provider = provider.filter(|p| !p.is_empty()).unwrap_or_else(|| "github".to_string());
-        if provider != "github" {
-            continue;
-        }
-        let owner: Option<String> = repo.get("github_owner");
-        let name: Option<String> = repo.get("github_repo");
-        let (Some(owner), Some(name)) = (owner, name) else { continue };
-        if owner.is_empty() || name.is_empty() {
-            continue;
-        }
-        repos.push((owner, name));
-    }
-
-    // 4) Fetch the board enrichment map and each repo's milestone issues concurrently.
-    let board_fut = async {
-        if let Some(m) = &mappings {
-            let status_colors = match (&m.board_id, &m.status_field_id) {
-                (Some(bid), Some(sfid)) => fetch_status_colors(&client, bid, sfid).await,
-                _ => std::collections::HashMap::new(),
-            };
-            fetch_board_item_map(&client, m, &status_colors).await
-        } else {
-            std::collections::HashMap::new()
-        }
-    };
-    let repos_fut = futures_util::future::join_all(
-        repos
-            .iter()
-            .map(|(o, n)| fetch_repo_milestone_issues(&client, o, n, &milestone_title)),
-    );
-    let (board_map, repo_results) = tokio::join!(board_fut, repos_fut);
-
-    // 5) Aggregate + enrich. join_all preserves order, so zip back with repos to
-    //    recover each result's owner for the board-map key.
-    let mut all_issues: Vec<IssueRow> = Vec::new();
-    for ((owner, name), res) in repos.iter().zip(repo_results) {
-        let issues = res?;
-        let owner_l = owner.to_lowercase();
-        let name_l = name.to_lowercase();
-        for mut issue in issues {
-            let key = format!("{}/{}#{}", owner_l, name_l, issue.number);
-            if let Some(bf) = board_map.get(&key) {
-                issue.start_date = bf.start.clone();
-                issue.deadline = bf.deadline.clone();
-                issue.status = bf.status.clone();
-                issue.status_color = bf.status_color.clone();
-            }
-            all_issues.push(issue);
-        }
-    }
-
-    Ok(all_issues)
 }
 
 #[cfg(test)]

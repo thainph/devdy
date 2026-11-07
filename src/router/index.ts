@@ -7,9 +7,9 @@ import ProjectsView from '../views/ProjectsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
 import { openCalendarWindow } from '../lib/calendarWindow'
-import { openGanttWindow } from '../lib/ganttWindow'
+import { openDeliveryRadarWindow } from '../lib/deliveryRadarWindow'
 import { openFocusWindow } from '../lib/focusWindow'
-import IssuesGanttView from '../views/IssuesGanttView.vue'
+import DeliveryRadarView from '../views/DeliveryRadarView.vue'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
 import SettingsView from '../views/SettingsView.vue'
@@ -54,14 +54,15 @@ const router = createRouter({
         return from.matched.length > 0 ? false : '/projects'
       },
     },
-    // Gantt and Focus too (lib/ganttWindow, lib/focusWindow). `?project=` deep
-    // links (Projects screen) carry over to the Gantt window.
+    // Delivery Radar and Focus too (lib/deliveryRadarWindow, lib/focusWindow).
+    // `?project=` deep links (Projects screen) carry over to the radar window.
+    { path: '/gantt', redirect: '/radar' },
     {
-      path: '/gantt',
-      name: 'gantt',
-      component: IssuesGanttView,
+      path: '/radar',
+      name: 'radar',
+      component: DeliveryRadarView,
       beforeEnter: (to, from) => {
-        void openGanttWindow(typeof to.query.project === 'string' ? to.query.project : undefined)
+        void openDeliveryRadarWindow(typeof to.query.project === 'string' ? to.query.project : undefined)
         return from.matched.length > 0 ? false : '/projects'
       },
     },

@@ -9,7 +9,7 @@
 // handlers as the app menu's File items.
 //
 // The menu lists every open window: the main window first, then each pop-out
-// (session, gantt, file viewer, item editor). Clicking a row focuses that window;
+// (session, delivery radar, file viewer, item editor). Clicking a row focuses that window;
 // Rust maps the item id (the window label) back to the window. The mascot pet is
 // skipped — it isn't a window you'd "switch to".
 //
@@ -51,7 +51,7 @@ type TrayItem =
  * Keep the menu-bar switcher in sync as a pop-out comes and goes: call this right
  * after `new WebviewWindow(...)` so the window appears in the switcher once it's
  * created and drops out when it's closed. Any window the user can switch to should
- * be tracked (session, file viewer, gantt, item editor, …).
+ * be tracked (session, file viewer, delivery radar, item editor, …).
  */
 export function trackWindowForTray(win: WebviewWindow): void {
   win.once('tauri://created', () => {
@@ -105,7 +105,7 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel === 'main') return t('tray.mainWindow')
   if (windowLabel.startsWith('session-')) return meaningful || t('tray.untitledSession')
   if (windowLabel.startsWith('fileviewer-')) return meaningful || t('tray.fileWindow')
-  if (windowLabel === 'gantt') return t('tray.ganttWindow')
+  if (windowLabel === 'delivery-radar') return t('tray.radarWindow')
   if (windowLabel === 'item-create') return meaningful || t('tray.newItem')
   if (windowLabel === 'item-list-todo') return meaningful || t('tray.todoListWindow')
   if (windowLabel === 'item-list-note') return meaningful || t('tray.noteListWindow')

@@ -220,7 +220,7 @@ pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(),
 /// Forward a menu click to the main window. Registered once on the builder.
 ///
 /// On macOS the menu bar is app-global, so an item can be clicked while a
-/// pop-out (mascot / permission / gantt) holds focus — hence focusing main
+/// pop-out (mascot / permission / delivery radar) holds focus — hence focusing main
 /// first: a "Go → Todos" that navigated an invisible window would look broken.
 pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) {
     let id = event.id().0.clone();

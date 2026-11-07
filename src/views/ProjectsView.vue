@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { openGanttWindow } from '@/lib/ganttWindow'
+import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
 import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@/stores/projects'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
@@ -12,7 +12,7 @@ import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
 import { parseRepoUrl, repoKey } from '@/lib/repoUrl'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, GanttChartSquare, GripVertical } from 'lucide-vue-next'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, Radar, GripVertical } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card, PageHeader, Banner } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -454,10 +454,11 @@ async function handleOpenInFolder(project: { path: string }) {
               <Button
                 variant="ghost"
                 size="icon-sm"
-                :title="t('projects.gantt')"
-                @click="openGanttWindow(project.id)"
+                :title="t('projects.radar')"
+                :aria-label="t('projects.radar')"
+                @click="openDeliveryRadarWindow(project.id)"
               >
-                <GanttChartSquare class="h-3.5 w-3.5" :stroke-width="1.75" />
+                <Radar class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>
               <Button
                 variant="ghost"

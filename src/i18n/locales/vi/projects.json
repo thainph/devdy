@@ -8,7 +8,7 @@
   "openInVscode": "Mở dự án trong VS Code",
   "openFolder": "Mở thư mục dự án",
   "openInTerminal": "Mở thư mục dự án trong terminal",
-  "gantt": "Issue theo milestone (Gantt)",
+  "radar": "Delivery Radar — ai đang trễ issue của dự án này",
   "projectSettings": "Cài đặt dự án",
   "removeProject": "Gỡ dự án",
   "dragToReorder": "Kéo để sắp xếp",
