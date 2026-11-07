@@ -348,13 +348,10 @@ pub fn compose(notices: &[Notice], lang: &str) -> Option<(String, String, Option
 
 // ---- Runtime -------------------------------------------------------------
 
-/// Sent to every window when a reminder asks to show a todo: `{ todo_id }`.
-pub const OPEN_TODO_EVENT: &str = "focus:open-todo";
-/// Sent to the main window when the Focus window must be created (only the
-/// frontend knows its URL / options, `src/lib/focusWindow.ts`).
+/// Sent to the main window to show a todo in the Todos window (only the
+/// frontend knows that window's URL / options, `src/lib/itemListWindow.ts`):
+/// `{ todo_id }`, null for the list alone.
 pub const OPEN_WINDOW_EVENT: &str = "focus:open-window";
-/// Label of the Focus window.
-pub const FOCUS_WINDOW: &str = "focus";
 const TICK: std::time::Duration = std::time::Duration::from_secs(60);
 const FIRST_TICK: std::time::Duration = std::time::Duration::from_secs(10);
 /// `todo_notifications` rows kept this long.
@@ -375,29 +372,16 @@ pub fn take_pending_open() -> Option<String> {
     pending().lock().ok().and_then(|mut p| p.take())
 }
 
-/// Bring up the Focus window on `todo_id` (a reminder click, the tray row).
-/// An open Focus window is raised and told directly; otherwise the main
-/// window creates it (`focus:open-window`) and the new window picks the todo
-/// up with `focus_take_open_todo` on mount.
-pub fn open_focus(app: &tauri::AppHandle, todo_id: Option<String>) {
-    use tauri::{Emitter, Manager};
+/// Show the Todos window on `todo_id` (a reminder click, the tray row): the
+/// main window opens it, or raises it and selects the todo when already open.
+/// The id is also parked for `focus_take_open_todo`, which the main window
+/// takes so it is not reused later.
+pub fn open_focus<R: tauri::Runtime>(app: &tauri::AppHandle<R>, todo_id: Option<String>) {
+    use tauri::Emitter;
     if let Ok(mut p) = pending().lock() {
         *p = todo_id.clone();
     }
-    let payload = OpenTodo { todo_id };
-    if let Some(win) = app.get_webview_window(FOCUS_WINDOW) {
-        let _ = win.unminimize();
-        let _ = win.show();
-        let _ = win.set_focus();
-        let _ = app.emit(OPEN_TODO_EVENT, payload);
-    } else {
-        if let Some(main) = app.get_webview_window("main") {
-            let _ = main.unminimize();
-            let _ = main.show();
-            let _ = main.set_focus();
-        }
-        let _ = app.emit_to("main", OPEN_WINDOW_EVENT, payload);
-    }
+    let _ = app.emit_to("main", OPEN_WINDOW_EVENT, OpenTodo { todo_id });
 }
 
 async fn fired_set(db: &crate::db::Db) -> Result<Fired, String> {

@@ -4,8 +4,8 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
 import { useFocusStore } from '@/stores/focus'
-import { openFocusWindow } from '@/lib/focusWindow'
 import { FOCUS_OPEN_WINDOW, type FocusOpenTodo } from '@/lib/focus'
+import { invoke } from '@/lib/tauri'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
@@ -35,7 +35,6 @@ import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, openPrInboxWindow, ty
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
-import FocusWindow from '@/views/FocusWindow.vue'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -89,7 +88,6 @@ const isRadarWindow = new URLSearchParams(window.location.search).get('radarWind
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInboxWindow') === '1'
 const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
-const isFocusWindow = new URLSearchParams(window.location.search).get('focusWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
 // RunView (routed to one run) with the app chrome hidden, so it still needs the
@@ -108,7 +106,6 @@ const isPopoutWindow =
   isSlackWindow ||
   isPrInboxWindow ||
   isCalendarWindow ||
-  isFocusWindow ||
   isMascotWindow
 
 const route = useRoute()
@@ -671,11 +668,13 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
 
-  // A Focus reminder click (or the tray's Focus row) while the Focus window is
-  // closed: open it here; it picks the todo up itself (`focus_take_open_todo`).
+  // A todo reminder click (or the tray's Todos row): open the Todos window on
+  // that todo. The id is also parked in Rust for a window that reads it on
+  // mount — taken here so it is not reused later.
   try {
-    unlistenFocusOpen = await listen<FocusOpenTodo>(FOCUS_OPEN_WINDOW, () => {
-      void openFocusWindow()
+    unlistenFocusOpen = await listen<FocusOpenTodo>(FOCUS_OPEN_WINDOW, (e) => {
+      void invoke('focus_take_open_todo').catch(() => {})
+      void openItemListWindow('todo', e.payload?.todo_id ? { id: e.payload.todo_id } : {})
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
@@ -818,8 +817,6 @@ onMounted(async () => {
   <!-- THE Calendar window: the Calendar screen on its own OS window. -->
   <CalendarWindow v-else-if="isCalendarWindow" />
 
-  <!-- THE Focus window: the Focus board on its own OS window. -->
-  <FocusWindow v-else-if="isFocusWindow" />
 
   <!-- Delivery Radar pop-out: the radar plus the dialog / toast hosts its row
        menu ("+ Todo") needs, like PrInboxWindow. -->
@@ -926,6 +923,13 @@ onMounted(async () => {
                 >
                   <ListTodo class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                   <span class="flex-1 truncate text-left">{{ t('item.navTodos') }}</span>
+                  <span
+                    v-if="focusStore.overdueCount > 0"
+                    class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground leading-none"
+                    :title="t('item.lateness.overdue')"
+                  >
+                    {{ focusStore.overdueCount }}
+                  </span>
                 </button>
 
                 <button
@@ -991,13 +995,6 @@ onMounted(async () => {
                 />
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                 <span class="flex-1 truncate">{{ item.label }}</span>
-                <span
-                  v-if="item.path === '/focus' && focusStore.overdueCount > 0"
-                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground leading-none"
-                  :title="t('focus.buckets.overdue')"
-                >
-                  {{ focusStore.overdueCount }}
-                </span>
                 <span
                   v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
                   class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none"

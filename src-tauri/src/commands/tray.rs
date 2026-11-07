@@ -217,14 +217,7 @@ fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEvent) 
         return;
     }
     if id == FOCUS_ID {
-        use crate::focus::scheduler::{FOCUS_WINDOW, OPEN_WINDOW_EVENT};
-        if let Some(win) = app.get_webview_window(FOCUS_WINDOW) {
-            let _ = win.unminimize();
-            let _ = win.show();
-            let _ = win.set_focus();
-        } else {
-            let _ = app.emit_to("main", OPEN_WINDOW_EVENT, serde_json::json!({ "todo_id": null }));
-        }
+        crate::focus::scheduler::open_focus(app, None);
         return;
     }
     if let Some(label) = id.strip_prefix(WIN_PREFIX) {

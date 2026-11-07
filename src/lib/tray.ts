@@ -169,9 +169,9 @@ export function buildSessionItems(): TrayItem[] {
   return [...buildFocusItems(), ...buildRunItems(), ...buildProcessItems()]
 }
 
-// "Focus (N overdue)": opens the Focus window (Rust raises it, or asks this
-// window to create it — `focus:open-window`). Lives in the main-window-owned
-// section because only the main window keeps the board loaded.
+// "Todos (N overdue)": opens the Todos window (Rust asks this window to, via
+// `focus:open-window`). Lives in the main-window-owned section because only
+// the main window keeps the board loaded.
 function buildFocusItems(): TrayItem[] {
   const overdue = useFocusStore().overdueCount
   return [

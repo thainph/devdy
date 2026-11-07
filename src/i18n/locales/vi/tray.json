@@ -11,6 +11,6 @@
   "runningSessions": "Phiên đang chạy ({count})",
   "noRunningSessions": "Không có phiên nào đang chạy",
   "backgroundProcesses": "Tiến trình nền ({count})",
-  "focus": "Focus",
-  "focusOverdue": "Focus — {count} việc quá hạn"
+  "focus": "Todos",
+  "focusOverdue": "Todos — {count} việc quá hạn"
 }

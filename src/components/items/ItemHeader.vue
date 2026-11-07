@@ -14,7 +14,7 @@
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Copy, LockKeyhole, Pencil } from 'lucide-vue-next'
+import { Check, Copy, LockKeyhole, Pencil, Rocket } from 'lucide-vue-next'
 import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
@@ -40,6 +40,8 @@ const props = defineProps<{
   copiedId: boolean
   /** A note can move into the secret notes vault (local windows only). */
   canMakeSecret?: boolean
+  /** An open todo can start an AI session working on it ("Start with AI"). */
+  canStartWithAi?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -54,6 +56,7 @@ const emit = defineEmits<{
   unlinkRun: [link: SessionLink]
   linkRun: [runId: string]
   newSession: []
+  startWithAi: []
   copyId: []
   makeSecret: []
   delete: []
@@ -177,6 +180,17 @@ const newSessionLabel = computed(() =>
         </Button>
       </template>
       <template v-else>
+        <Button
+          v-if="todo && !todo.done && canStartWithAi"
+          variant="outline"
+          size="sm"
+          class="shrink-0"
+          :title="t('focus.ai.start')"
+          @click="emit('startWithAi')"
+        >
+          <Rocket class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('focus.ai.start') }}
+        </Button>
         <Button
           v-if="todo"
           :variant="todo.done ? 'primary' : 'outline'"

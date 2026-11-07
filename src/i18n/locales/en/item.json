@@ -93,5 +93,14 @@
   "dueOn": "Due {date}",
   "deleteFolder": "Delete folder",
   "deleteFolderFailed": "Could not delete the folder: {error}",
-  "folderDeleted": "Deleted {n} item | Deleted {n} items"
+  "folderDeleted": "Deleted {n} item | Deleted {n} items",
+  "lateDays": "{n}d late",
+  "lateCount": "{n} late",
+  "groupLate": "{n} late todo(s), the latest {days} day(s) past its deadline",
+  "lateness": {
+    "overdue": "Overdue",
+    "today": "Today",
+    "due-soon": "Due soon",
+    "waiting": "Waiting"
+  }
 }

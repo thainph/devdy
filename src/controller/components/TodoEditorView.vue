@@ -7,7 +7,7 @@
  * and the AI: a new todo takes a source link with ✨ Suggest (fills the form,
  * nothing saved until Save); an existing one shows its AI plan as Markdown,
  * ✨ Analyze (spinner + Cancel) with the analysis' estimate / priority /
- * deadline to Apply into the form (mirrors the desktop's FocusAiPanel), and
+ * deadline to Apply into the form (like the desktop's former AI panel), and
  * 🚀 Start with AI.
  *
  * Writes go through the `save` / `remove` props; the screen only goes back once

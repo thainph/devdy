@@ -8,8 +8,12 @@
 //
 // A note row: title, a one-line preview, its age and a link mark with the
 // linked-session count. A todo row: a clickable checkbox, its first line, its
-// deadline (red when overdue, amber when due within a few days), age and the
+// deadline (red + "Nd late" when overdue, amber when due today), age and the
 // link mark.
+//
+// Todos with `lateness` (lib/focusRadar) also get count chips that filter by
+// lateness (overdue / today / due soon / waiting), and are ordered by it: the
+// projects with the most late work first, the most late todo first inside.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -31,6 +35,14 @@ import { AppSelect, Banner, Button, Input, SegmentedControl } from '@/components
 import { relativeAge } from '@/lib/itemText'
 import { formatDate, ymdToDate } from '@/lib/dateValue'
 import { dueStatus, localYmd } from '@/lib/todoDue'
+import {
+  compareGroupLateness,
+  compareLateness,
+  groupLateness,
+  type FocusRadarCounts,
+  type FocusRadarItem,
+  type FocusRadarStatus,
+} from '@/lib/focusRadar'
 import { formatFullDate } from '@/lib/slackThreadUtils'
 import type { ItemRow } from './itemRow'
 import { groupClass, groupHeaderClass, rowClass, rowListClass, rowSubClass, rowTitleClass } from '@/components/listDetail/rowStyles'
@@ -48,12 +60,28 @@ const props = defineProps<{
   error: string | null
   pinned: boolean
   reloading: boolean
+  /** Todos: lateness of each open todo by id (done / unknown ones absent). */
+  lateness?: Record<string, FocusRadarItem> | null
+  /** Todos: counts behind the lateness chips. */
+  latenessCounts?: FocusRadarCounts | null
 }>()
 
 const search = defineModel<string>('search', { required: true })
 const projectFilter = defineModel<string>('project', { required: true })
 /** notes: '' | 'linked'; todos: 'active' | 'done' | 'all'. */
 const filter = defineModel<string>('filter', { required: true })
+/** Todos: show only one lateness status (null = all). */
+const latenessFilter = defineModel<FocusRadarStatus | null>('latenessFilter', { default: null })
+
+const CHIPS: { status: FocusRadarStatus, tone: string }[] = [
+  { status: 'overdue', tone: 'border-destructive/30 bg-destructive/10 text-destructive' },
+  { status: 'today', tone: 'border-warning/30 bg-warning/10 text-warning' },
+  { status: 'due-soon', tone: 'border-info/30 bg-info/10 text-info' },
+  { status: 'waiting', tone: 'border-border bg-muted text-foreground' },
+]
+function toggleLateness(s: FocusRadarStatus) {
+  latenessFilter.value = latenessFilter.value === s ? null : s
+}
 
 const emit = defineEmits<{
   select: [id: string]
@@ -75,13 +103,21 @@ const dueBadges = computed(() => {
   for (const row of props.rows) {
     const d = ymdToDate(row.dueDate)
     if (!d) continue
-    const status = row.done ? 'later' : dueStatus(row.dueDate, today)
+    const late = props.lateness?.[row.id]
+    const status = row.done
+      ? 'later'
+      : late
+        ? late.radar === 'overdue' ? 'overdue' : late.radar === 'today' ? 'today' : 'later'
+        : dueStatus(row.dueDate, today)
+    const daysLate = late?.radar === 'overdue' && (late.daysLeft ?? 0) < 0 ? -late.daysLeft! : 0
     out[row.id] = {
-      label: formatDate(d, locale.value, {
-        day: 'numeric',
-        month: 'short',
-        ...(row.dueDate!.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' }),
-      }),
+      label: daysLate
+        ? t('item.lateDays', { n: daysLate })
+        : formatDate(d, locale.value, {
+            day: 'numeric',
+            month: 'short',
+            ...(row.dueDate!.slice(0, 4) === today.slice(0, 4) ? {} : { year: 'numeric' }),
+          }),
       title: t('item.dueOn', { date: formatDate(d, locale.value, { dateStyle: 'full' }) }),
       tone:
         status === 'overdue' ? 'bg-destructive/15 font-medium text-destructive'
@@ -132,8 +168,12 @@ function toggle(key: string) {
 
 const NONE = '__none__'
 
-/** Rows by project (A–Z), "No project" last; list order kept inside a group. */
+/**
+ * Rows by project, "No project" last. Projects A–Z and list order inside a
+ * group — or, for todos with lateness, the most late project / todo first.
+ */
 const groups = computed(() => {
+  const late = props.lateness
   const map = new Map<string, ItemRow[]>()
   for (const row of props.rows) {
     const key = row.projectId ?? NONE
@@ -145,9 +185,14 @@ const groups = computed(() => {
     .map(([key, rows]) => ({
       key,
       label: key === NONE ? t('item.noProject') : props.projectNames[key] ?? key,
-      rows,
+      rows: late ? [...rows].sort((a, b) => compareLateness(late[a.id], late[b.id])) : rows,
+      late: groupLateness(late ? rows.map((r) => late[r.id]) : []),
     }))
-    .sort((a, b) => (a.key === NONE ? 1 : b.key === NONE ? -1 : a.label.localeCompare(b.label)))
+    .sort((a, b) =>
+      (a.key === NONE ? 1 : 0) - (b.key === NONE ? 1 : 0) ||
+      compareGroupLateness(a.late, b.late) ||
+      a.label.localeCompare(b.label),
+    )
 })
 </script>
 
@@ -214,6 +259,24 @@ const groups = computed(() => {
         :options="FILTERS"
         :aria-label="kind === 'note' ? t('item.filterLinkedTitle') : t('item.filterStatusTitle')"
       />
+      <div v-if="latenessCounts" class="flex flex-wrap items-center gap-1">
+        <button
+          v-for="c in CHIPS"
+          :key="c.status"
+          type="button"
+          class="flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors"
+          :class="[
+            latenessCounts[c.status] > 0 ? c.tone : 'border-border/60 text-muted-foreground',
+            latenessFilter === c.status ? 'ring-1 ring-primary/60' : 'hover:bg-accent/50',
+          ]"
+          :aria-pressed="latenessFilter === c.status"
+          :title="t(`focus.radar.hint.${c.status}`, { days: 7 })"
+          @click="toggleLateness(c.status)"
+        >
+          {{ t(`item.lateness.${c.status}`) }}
+          <span class="font-semibold tabular-nums">{{ latenessCounts[c.status] }}</span>
+        </button>
+      </div>
     </div>
 
     <!-- Groups -->
@@ -259,6 +322,13 @@ const groups = computed(() => {
             />
             <Folder class="h-3 w-3 shrink-0 text-muted-foreground" :stroke-width="1.75" />
             <span class="min-w-0 flex-1 truncate">{{ g.label }}</span>
+            <span
+              v-if="g.late.overdue"
+              class="shrink-0 rounded-full bg-destructive/15 px-1.5 text-[10px] font-medium tabular-nums text-destructive"
+              :title="t('item.groupLate', { n: g.late.overdue, days: g.late.worstLateDays ?? 0 })"
+            >
+              {{ t('item.lateCount', { n: g.late.overdue }) }}
+            </span>
             <span class="shrink-0 text-[10px] font-normal tabular-nums text-muted-foreground/80">
               {{ g.rows.length }}
             </span>

@@ -202,9 +202,7 @@ export const DEFAULT_FOCUS_SETTINGS: FocusSettings = {
 
 /** Emitted by the backend after every Focus write. */
 export const FOCUS_CHANGED = 'focus:changed'
-/** Backend → every window: a reminder click asks to show a todo (`{ todo_id }`). */
-export const FOCUS_OPEN_TODO = 'focus:open-todo'
-/** Backend → main window: create the Focus window (it doesn't exist yet). */
+/** Backend → main window: open the Todos window on a todo (reminder click, tray row). */
 export const FOCUS_OPEN_WINDOW = 'focus:open-window'
 export interface FocusOpenTodo {
   todo_id: string | null

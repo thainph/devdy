@@ -93,5 +93,14 @@
   "dueOn": "Hạn {date}",
   "deleteFolder": "Xóa thư mục",
   "deleteFolderFailed": "Không xóa được thư mục: {error}",
-  "folderDeleted": "Đã xóa {n} mục"
+  "folderDeleted": "Đã xóa {n} mục",
+  "lateDays": "trễ {n} ngày",
+  "lateCount": "{n} trễ",
+  "groupLate": "{n} việc trễ, lâu nhất {days} ngày",
+  "lateness": {
+    "overdue": "Quá hạn",
+    "today": "Hôm nay",
+    "due-soon": "Sắp hạn",
+    "waiting": "Đang chờ"
+  }
 }
