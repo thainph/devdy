@@ -34,6 +34,7 @@ import PrInboxWindow from '@/views/PrInboxWindow.vue'
 import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, openPrInboxWindow, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
+import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
 import FocusWindow from '@/views/FocusWindow.vue'
 import {
   SLACK_API_RECEIVED,
@@ -64,7 +65,7 @@ import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
-import IssuesGanttView from '@/views/IssuesGanttView.vue'
+import DeliveryRadarView from '@/views/DeliveryRadarView.vue'
 import { getVersion } from '@tauri-apps/api/app'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useRunsStore } from '@/stores/runs'
@@ -84,7 +85,7 @@ const isPermissionWindow = new URLSearchParams(window.location.search).get('perm
 const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow') === '1'
 const isItemListWindow = new URLSearchParams(window.location.search).get('itemListWindow') === '1'
 const isSecretNotesWindow = new URLSearchParams(window.location.search).get('secretNotesWindow') === '1'
-const isGanttWindow = new URLSearchParams(window.location.search).get('ganttWindow') === '1'
+const isRadarWindow = new URLSearchParams(window.location.search).get('radarWindow') === '1'
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInboxWindow') === '1'
 const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
@@ -103,7 +104,7 @@ const isPopoutWindow =
   isItemWindow ||
   isItemListWindow ||
   isSecretNotesWindow ||
-  isGanttWindow ||
+  isRadarWindow ||
   isSlackWindow ||
   isPrInboxWindow ||
   isCalendarWindow ||
@@ -224,7 +225,7 @@ async function openRunFromTray(runId: string, projectHint?: string) {
     .catch(() => {})
 }
 
-// A router-less pop-out (Slack threads / PR Inbox window) asked to show an app
+// A router-less pop-out (Slack threads / PR Inbox / Delivery Radar window) asked to show an app
 // screen: bring this window forward and navigate. Only in-app paths.
 async function openRouteFromWindow(path: string | undefined) {
   if (!path || !path.startsWith('/')) return
@@ -361,6 +362,7 @@ let unlistenSlackRoute: UnlistenFn | null = null
 // Listener for the PR Inbox window asking to navigate (e.g. "Add to devdy").
 let unlistenPrInboxRoute: UnlistenFn | null = null
 let unlistenCalendarRoute: UnlistenFn | null = null
+let unlistenRadarRoute: UnlistenFn | null = null
 
 // Listeners for the Slack / Notes / Todos windows opening a linked session or
 // starting a new one (lib/sessionLinks).
@@ -503,6 +505,8 @@ onBeforeUnmount(() => {
   unlistenPrInboxRoute = null
   unlistenCalendarRoute?.()
   unlistenCalendarRoute = null
+  unlistenRadarRoute?.()
+  unlistenRadarRoute = null
   unlistenWindowRun?.()
   unlistenWindowRun = null
   unlistenWindowNewSession?.()
@@ -749,6 +753,15 @@ onMounted(async () => {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
 
+  // Same for the Delivery Radar window (e.g. "Open settings" → a project's settings).
+  try {
+    unlistenRadarRoute = await listen<DeliveryRadarOpenRoute>(DELIVERY_RADAR_OPEN_ROUTE, (e) => {
+      void openRouteFromWindow(e.payload?.path)
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
   // Linked sessions / "New session from this …" of the Slack, Notes and Todos
   // windows (no router of this app there).
   try {
@@ -808,14 +821,13 @@ onMounted(async () => {
   <!-- THE Focus window: the Focus board on its own OS window. -->
   <FocusWindow v-else-if="isFocusWindow" />
 
-  <!-- Pop-out Gantt window: bare Gantt chart on its own OS window. -->
-  <!-- Gantt pop-out: the board plus the dialog / toast hosts its row menu
-       ("+ Todo") needs, like PrInboxWindow. -->
+  <!-- Delivery Radar pop-out: the radar plus the dialog / toast hosts its row
+       menu ("+ Todo") needs, like PrInboxWindow. -->
   <div
-    v-else-if="isGanttWindow"
+    v-else-if="isRadarWindow"
     class="app-shell flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground"
   >
-    <IssuesGanttView class="min-h-0 flex-1" />
+    <DeliveryRadarView class="min-h-0 flex-1" />
     <ConfirmModal />
     <ToastHost />
   </div>

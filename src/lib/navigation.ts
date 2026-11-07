@@ -6,7 +6,7 @@ import {
   HardDrive,
   FolderOpen,
   GitPullRequest,
-  GanttChartSquare,
+  Radar,
   BarChart3,
   CalendarDays,
   Target,
@@ -16,7 +16,7 @@ import {
 } from 'lucide-vue-next'
 import { openPrInboxWindow } from '@/lib/prInboxWindow'
 import { openCalendarWindow } from '@/lib/calendarWindow'
-import { openGanttWindow } from '@/lib/ganttWindow'
+import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
 import { openFocusWindow } from '@/lib/focusWindow'
 
 /**
@@ -49,7 +49,7 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/focus', labelKey: 'nav.focus', icon: Target, group: 'work', openWindow: openFocusWindow },
   { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
   { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', openWindow: () => openCalendarWindow() },
-  { path: '/gantt', labelKey: 'nav.gantt', icon: GanttChartSquare, group: 'work', openWindow: () => openGanttWindow() },
+  { path: '/radar', labelKey: 'nav.radar', icon: Radar, group: 'work', openWindow: () => openDeliveryRadarWindow() },
   { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config' },
   { path: '/rules', labelKey: 'nav.rules', icon: ScrollText, group: 'config' },
   { path: '/mcp', labelKey: 'nav.mcp', icon: Server, group: 'config' },

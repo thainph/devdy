@@ -45,7 +45,7 @@ use commands::files::{
     read_file_base64, read_project_file, rename_entry, write_project_file,
 };
 use commands::github::{
-    fetch_issue, fetch_pr, list_milestone_board, list_milestone_issues,
+    fetch_issue, fetch_pr, list_milestone_board,
     list_review_requested_prs, list_runs, refetch_run, resolve_project_board,
 };
 use commands::github_accounts::{
@@ -602,7 +602,6 @@ pub fn run() {
             pr_inbox::set_pr_inbox_poll_minutes,
             resolve_project_board,
             list_milestone_board,
-            list_milestone_issues,
             list_runs,
             start_run,
             cancel_run,
@@ -778,7 +777,7 @@ pub fn run() {
             match event {
                 // Closing the MAIN window quits the whole app. On macOS this would
                 // otherwise leave the process alive because the frameless,
-                // always-on-top mascot pet (and any quick-create / gantt / file
+                // always-on-top mascot pet (and any quick-create / delivery radar / file
                 // pop-outs) keep running — so the hidden sidecars never get killed.
                 // Ask first when work is still running (see `procs::quit`), then
                 // close every auxiliary window and exit.

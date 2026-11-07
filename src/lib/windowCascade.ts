@@ -1,4 +1,4 @@
-// Where to place a newly opened pop-out (note / todo editor, file viewer, gantt,
+// Where to place a newly opened pop-out (note / todo editor, file viewer, delivery radar,
 // session, permission) so it lands on the SAME monitor as the window the user is
 // acting from — and, for the cascading kinds, offset from the pop-outs already
 // open instead of dead-on top of them.

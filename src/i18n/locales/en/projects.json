@@ -8,7 +8,7 @@
   "openInVscode": "Open project in VS Code",
   "openFolder": "Open project folder",
   "openInTerminal": "Open project folder in terminal",
-  "gantt": "Issues by milestone (Gantt)",
+  "radar": "Delivery Radar — who is late on this project's issues",
   "projectSettings": "Project settings",
   "removeProject": "Remove project",
   "dragToReorder": "Drag to reorder",
