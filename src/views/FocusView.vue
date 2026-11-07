@@ -1,149 +1,138 @@
 <script setup lang="ts">
-// Focus board (docs/focus-board-spec.md §3.2): every open todo of every project,
-// ranked by the backend (BR-04/05) — the UI only groups by bucket and sorts by
-// score. Three views: by time ("Do now" top 3 + collapsible buckets), by project
-// (one column each), and the week (Mon → Sun columns by due date). Rows open the
-// detail drawer. Refreshes on `focus:changed` / `item:changed` and every minute.
-// A reminder click (`focus:open-todo`, or the pending id taken on mount when the
-// click created this window) opens that todo's drawer and flashes its row.
+// Focus: which of my open todos are late, per project (lib/focusRadar). The
+// board comes from the backend (`focus_board`, kept live by the focus store);
+// summary cards filter it by status, each project row folds open its todos
+// (most late first). A todo is ticked done in place; a click opens the detail
+// drawer. A reminder click (`focus:open-todo`, or the pending id taken on mount
+// when the click created this window) opens that todo's drawer and flashes it.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { CalendarClock, ChevronDown, ChevronRight, Gauge, RefreshCw, Target, TriangleAlert } from 'lucide-vue-next'
+import { Check, ChevronRight, Play, SearchX, Target } from 'lucide-vue-next'
 import { invoke } from '@/lib/tauri'
-import { AppSelect, Banner, Button, Card, PageHeader, SegmentedControl, Skeleton } from '@/components/ui'
+import { Banner, Button, Card, Input, PageHeader, Skeleton } from '@/components/ui'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import FocusDialogs from '@/components/focus/FocusDialogs.vue'
 import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
-import FocusDayPlan from '@/components/focus/FocusDayPlan.vue'
 import FocusTodoDrawer from '@/components/focus/FocusTodoDrawer.vue'
-import FocusTodoRow from '@/components/focus/FocusTodoRow.vue'
-import { useFocusText } from '@/components/focus/useFocusText'
+import { useFocusActions } from '@/components/focus/useFocusActions'
 import { useFocusStore } from '@/stores/focus'
 import { useProjectsStore } from '@/stores/projects'
+import { FOCUS_OPEN_TODO, projectHue, type FocusOpenTodo } from '@/lib/focus'
+import { firstLine } from '@/lib/itemText'
 import {
-  CAPACITY_LOADING,
-  CAPACITY_NO_ACCOUNT,
-  DEFAULT_OPEN_BUCKETS,
-  FOCUS_OPEN_TODO,
-  FILTER_NONE,
-  calibrationHint,
-  filterItems,
-  formatEstimate,
-  groupByBucket,
+  classifyTodos,
+  countFocus,
+  filterFocus,
   groupByProject,
-  groupByWeek,
-  isActiveBucket,
-  projectHue,
-  topItems,
-  ymdOf,
-  type FocusBucket,
-  type FocusOpenTodo,
-} from '@/lib/focus'
+  DUE_SOON_DAYS,
+  type FocusProjectGroup,
+  type FocusRadarItem,
+  type FocusRadarStatus,
+} from '@/lib/focusRadar'
 
-type FocusViewMode = 'time' | 'project' | 'week'
-
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const store = useFocusStore()
 const projects = useProjectsStore()
-const { span } = useFocusText()
+const actions = useFocusActions()
 
-// ── View + filters (remembered) ──
-const VIEW_KEY = 'devdy:focusView'
-const OPEN_KEY = 'devdy:focusOpenBuckets'
-const FILTER_KEY = 'devdy:focusFilter'
-
-const VIEWS: FocusViewMode[] = ['time', 'project', 'week']
-const view = ref<FocusViewMode>(VIEWS.find((v) => v === localStorage.getItem(VIEW_KEY)) ?? 'time')
-watch(view, (v) => localStorage.setItem(VIEW_KEY, v))
-const viewOptions = computed(() => VIEWS.map((v) => ({ value: v, label: t(`focus.views.${v}`) })))
-
-function readJson<T>(key: string, fallback: T): T {
-  try {
-    const raw = localStorage.getItem(key)
-    return raw ? (JSON.parse(raw) as T) : fallback
-  } catch {
-    return fallback
-  }
-}
-const openBuckets = ref(new Set<FocusBucket>(readJson<FocusBucket[]>(OPEN_KEY, DEFAULT_OPEN_BUCKETS)))
-function toggleBucket(b: FocusBucket) {
-  const next = new Set(openBuckets.value)
-  if (next.has(b)) next.delete(b)
-  else next.add(b)
-  openBuckets.value = next
-  localStorage.setItem(OPEN_KEY, JSON.stringify([...next]))
-}
-
-const filter = ref(readJson(FILTER_KEY, { projectId: '', sourceType: '' }))
-watch(filter, (f) => localStorage.setItem(FILTER_KEY, JSON.stringify(f)), { deep: true })
-
-const projectOptions = computed(() => [
-  { value: '', label: t('focus.filters.allProjects') },
-  ...projects.projects.map((p) => ({ value: p.id, label: p.name })),
-  { value: FILTER_NONE, label: t('focus.filters.noProject') },
-])
-const SOURCES = ['slack', 'github', 'gitlab', 'run', 'url'] as const
-const sourceOptions = computed(() => [
-  { value: '', label: t('focus.filters.allSources') },
-  ...SOURCES.map((s) => ({ value: s, label: t(`focus.sources.${s}`) })),
-  { value: FILTER_NONE, label: t('focus.filters.noSource') },
-])
-
-// ── Board ──
+// ── Classification ──
 const now = computed(() => store.now)
-const visible = computed(() => filterItems(store.items, filter.value))
-const openCount = computed(() => store.items.filter((it) => isActiveBucket(it.bucket)).length)
-const top = computed(() => topItems(visible.value, store.board?.top ?? []))
-const buckets = computed(() => groupByBucket(visible.value))
-const projectColumns = computed(() => groupByProject(visible.value))
-const weekColumns = computed(() => groupByWeek(visible.value, now.value))
-const today = computed(() => ymdOf(now.value))
+const classified = computed(() => classifyTodos(store.items, now.value))
+const counts = computed(() => countFocus(classified.value))
 
-// BR-10: shown only while calibration is on (the backend reports it with the board).
-const calibration = computed(() => calibrationHint(store.board?.calibration))
-const capacity = computed(() => store.board?.capacity ?? null)
-/** Why there is no capacity bar: no Google account → connect hint; other errors → retry. */
-const capacityError = computed(() => (store.board && !store.board.capacity ? store.board.capacity_error ?? null : null))
-const refreshingCalendar = ref(false)
-async function refreshCalendar() {
-  if (refreshingCalendar.value) return
-  refreshingCalendar.value = true
+const statusFilter = ref<FocusRadarStatus | null>(null)
+const query = ref('')
+const groups = computed(() =>
+  groupByProject(filterFocus(classified.value, { status: statusFilter.value, query: query.value })),
+)
+function toggleStatus(s: FocusRadarStatus) {
+  statusFilter.value = statusFilter.value === s ? null : s
+}
+
+// Cards / columns ("later" only counts towards "Open").
+const COLUMNS: FocusRadarStatus[] = ['overdue', 'today', 'due-soon', 'waiting', 'no-due']
+
+const TONE_TEXT: Record<FocusRadarStatus, string> = {
+  overdue: 'text-destructive',
+  today: 'text-warning',
+  'due-soon': 'text-info',
+  waiting: 'text-foreground',
+  'no-due': 'text-muted-foreground',
+  later: 'text-success',
+}
+const TONE_PILL: Record<FocusRadarStatus, string> = {
+  overdue: 'bg-destructive/15 text-destructive border-destructive/30',
+  today: 'bg-warning/15 text-warning border-warning/30',
+  'due-soon': 'bg-info/15 text-info border-info/30',
+  waiting: 'bg-muted text-foreground border-border',
+  'no-due': 'bg-muted/60 text-muted-foreground border-border/70',
+  later: 'bg-success/15 text-success border-success/30',
+}
+
+function statusLabel(s: FocusRadarStatus): string {
+  return t(`focus.radar.status.${s}`, { days: DUE_SOON_DAYS })
+}
+
+// ── Project rows (open by default; folded ones remembered) ──
+const COLLAPSED_KEY = 'devdy:focusCollapsedProjects'
+const NO_PROJECT = '__none'
+const collapsed = ref<Set<string>>(new Set(readCollapsed()))
+function readCollapsed(): string[] {
   try {
-    await store.refreshCalendar()
-  } finally {
-    refreshingCalendar.value = false
+    return JSON.parse(localStorage.getItem(COLLAPSED_KEY) ?? '[]') as string[]
+  } catch {
+    return []
   }
 }
-const overloadMin = computed(() => (capacity.value ? capacity.value.need_min - capacity.value.free_min : 0))
-const capacityPct = computed(() => {
-  const c = capacity.value
-  if (!c) return 0
-  return c.free_min <= 0 ? 100 : Math.min(100, Math.round((c.need_min / c.free_min) * 100))
-})
-
-function bucketEstimate(items: { effective_estimate_min: number }[]): string {
-  return formatEstimate(items.reduce((n, it) => n + it.effective_estimate_min, 0))
+function groupKey(g: FocusProjectGroup): string {
+  return g.projectId ?? NO_PROJECT
+}
+function setCollapsed(next: Set<string>) {
+  collapsed.value = next
+  localStorage.setItem(COLLAPSED_KEY, JSON.stringify([...next]))
+}
+function toggleGroup(g: FocusProjectGroup) {
+  const next = new Set(collapsed.value)
+  if (next.has(groupKey(g))) next.delete(groupKey(g))
+  else next.add(groupKey(g))
+  setCollapsed(next)
+}
+const allOpen = computed(() => groups.value.every((g) => !collapsed.value.has(groupKey(g))))
+function toggleAll() {
+  setCollapsed(allOpen.value ? new Set(groups.value.map(groupKey)) : new Set())
+}
+// Narrowing to one status or a search means "show me those todos".
+function isOpen(g: FocusProjectGroup): boolean {
+  return !!statusFilter.value || !!query.value.trim() || !collapsed.value.has(groupKey(g))
 }
 
 function projectName(id: string | null): string {
-  if (!id) return t('focus.columns.noProject')
+  if (!id) return t('focus.radar.noProject')
   return projects.projects.find((p) => p.id === id)?.name ?? id
 }
-function chipStyle(id: string | null) {
-  if (!id) return {}
-  const h = projectHue(id)
-  return { backgroundColor: `hsl(${h} 70% 50%)` }
+function dotStyle(id: string | null) {
+  return id ? { backgroundColor: `hsl(${projectHue(id)} 70% 50%)` } : {}
 }
 
-function weekdayLabel(ymd: string): string {
-  const [y, m, d] = ymd.split('-').map(Number)
-  const date = new Date(y, m - 1, d)
-  return `${date.toLocaleDateString(locale.value, { weekday: 'short' })} ${String(d).padStart(2, '0')}/${String(m).padStart(2, '0')}`
+// ── Todo rows ──
+function title(i: FocusRadarItem): string {
+  return firstLine(i.item.todo.text) || i.item.todo.text
 }
-/** Overload is only known for today, and only with Calendar data (BR-08). */
-function dayOverloaded(date: string): boolean {
-  return date === today.value && !!capacity.value && overloadMin.value > 0
+function deadlineText(i: FocusRadarItem): string {
+  const { daysLeft } = i
+  const time = i.item.todo.due_time
+  if (daysLeft === null) return t('focus.radar.noDeadline')
+  if (daysLeft < 0) return t('focus.radar.lateDays', { n: -daysLeft })
+  if (daysLeft === 0) {
+    if (i.radar === 'overdue') return t('focus.radar.lateToday', { time: time ?? '' })
+    return time ? t('focus.radar.dueTodayAt', { time }) : t('focus.radar.dueToday')
+  }
+  return t('focus.radar.daysLeft', { n: daysLeft })
+}
+function deadlineDate(i: FocusRadarItem): string {
+  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(i.item.todo.due_date ?? '')
+  return m && i.daysLeft !== 0 ? `${m[3]}/${m[2]}` : ''
 }
 
 // ── Drawer ──
@@ -160,11 +149,17 @@ let flashTimer: ReturnType<typeof setTimeout> | null = null
 async function showTodo(id: string | null | undefined) {
   if (!id) return
   if (!store.loaded) await store.load()
-  if (!store.items.some((it) => it.todo.id === id)) return
-  openId.value = id
-  // Make sure its bucket is visible in the time view, then flash the row.
   const it = store.items.find((x) => x.todo.id === id)
-  if (it && view.value === 'time' && !openBuckets.value.has(it.bucket)) toggleBucket(it.bucket)
+  if (!it) return
+  openId.value = id
+  statusFilter.value = null
+  query.value = ''
+  const key = it.todo.project_id ?? NO_PROJECT
+  if (collapsed.value.has(key)) {
+    const next = new Set(collapsed.value)
+    next.delete(key)
+    setCollapsed(next)
+  }
   flashId.value = id
   if (flashTimer) clearTimeout(flashTimer)
   flashTimer = setTimeout(() => (flashId.value = null), 2500)
@@ -192,91 +187,28 @@ onBeforeUnmount(() => {
   unlistenOpen?.()
   if (flashTimer) clearTimeout(flashTimer)
 })
+
+const GRID = 'grid grid-cols-[minmax(160px,1.4fr)_repeat(5,minmax(64px,84px))_52px_76px] items-center gap-x-2'
 </script>
 
 <template>
   <div class="flex h-full flex-col">
-    <PageHeader :title="t('focus.title')" :count="store.loaded && openCount > 0 ? openCount : null">
-      <template #meta>
-        <span v-if="calibration" class="flex min-w-0 items-center gap-1 truncate text-[11px] text-muted-foreground">
-          <Gauge class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">
-            {{ calibration > 1 ? t('focus.calibration.slower', { factor: calibration }) : t('focus.calibration.faster', { factor: calibration }) }}
-          </span>
-        </span>
-      </template>
+    <PageHeader :title="t('focus.title')" :count="store.loaded && classified.length > 0 ? classified.length : null">
       <template #actions>
-        <FocusDayPlan @open="openId = $event" />
+        <Input v-model="query" size="sm" class="w-56" :placeholder="t('focus.radar.searchPlaceholder')" />
         <AddTodoButton button-variant="primary" size="sm" />
       </template>
     </PageHeader>
 
-    <!-- Today's load (BR-08) — only once the backend has Calendar data -->
-    <div v-if="capacity" class="flex shrink-0 items-center gap-3 border-b border-border/60 px-6 py-2 text-xs">
-      <span class="shrink-0">{{ t('focus.capacity.summary', { need: formatEstimate(capacity.need_min), free: formatEstimate(Math.max(0, capacity.free_min)) }) }}</span>
-      <div class="h-1.5 min-w-24 flex-1 overflow-hidden rounded-full bg-muted">
-        <div class="h-full rounded-full" :class="overloadMin > 0 ? 'bg-destructive' : 'bg-success'" :style="{ width: `${capacityPct}%` }" />
-      </div>
-      <span v-if="overloadMin > 0" class="flex shrink-0 items-center gap-1 font-medium text-destructive">
-        <TriangleAlert class="h-3.5 w-3.5" :stroke-width="1.75" />
-        {{ t('focus.capacity.overloaded', { over: formatEstimate(overloadMin) }) }}
-      </span>
-      <span v-if="capacity.busy.length" class="shrink-0 text-muted-foreground" :title="capacity.busy.map((b) => b.title).join('\n')">
-        {{ t('focus.capacity.busy', { n: capacity.busy.length }, capacity.busy.length) }}
-      </span>
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        :disabled="refreshingCalendar"
-        :title="t('focus.capacity.refresh')"
-        :aria-label="t('focus.capacity.refresh')"
-        @click="refreshCalendar"
-      >
-        <RefreshCw class="h-3.5 w-3.5" :class="refreshingCalendar ? 'animate-spin' : ''" :stroke-width="1.75" />
-      </Button>
-    </div>
-    <div
-      v-else-if="capacityError && capacityError !== CAPACITY_LOADING"
-      class="flex shrink-0 items-center gap-2 border-b border-border/60 px-6 py-1.5 text-[11px] text-muted-foreground"
-    >
-      <CalendarClock class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-      <span v-if="capacityError === CAPACITY_NO_ACCOUNT" class="truncate">{{ t('focus.capacity.connect') }}</span>
-      <span v-else class="truncate" :title="capacityError">{{ t('focus.capacity.error') }}</span>
-      <Button
-        v-if="capacityError !== CAPACITY_NO_ACCOUNT"
-        variant="ghost"
-        size="icon-sm"
-        :disabled="refreshingCalendar"
-        :title="t('focus.capacity.refresh')"
-        :aria-label="t('focus.capacity.refresh')"
-        @click="refreshCalendar"
-      >
-        <RefreshCw class="h-3.5 w-3.5" :class="refreshingCalendar ? 'animate-spin' : ''" :stroke-width="1.75" />
-      </Button>
-    </div>
-
-    <!-- Toolbar: view switcher + filters -->
-    <div class="flex shrink-0 flex-wrap items-center gap-3 border-b border-border/60 px-6 py-2">
-      <SegmentedControl
-        v-model="view"
-        :options="viewOptions"
-        :stretch="false"
-        :aria-label="t('focus.views.label')"
-      />
-      <div class="ml-auto flex items-center gap-2">
-        <div class="w-44">
-          <AppSelect v-model="filter.projectId" :options="projectOptions" size="xs" variant="outline" />
-        </div>
-        <div class="w-36">
-          <AppSelect v-model="filter.sourceType" :options="sourceOptions" size="xs" variant="outline" />
-        </div>
-      </div>
-    </div>
-
     <!-- First load -->
-    <div v-if="!store.loaded && store.loading" class="space-y-3 p-6">
-      <Skeleton class="h-24 w-full rounded-lg" />
-      <Skeleton v-for="i in 6" :key="i" class="h-8 w-full rounded" />
+    <div v-if="!store.loaded && store.loading" class="space-y-4 p-6">
+      <div class="grid grid-cols-5 gap-3">
+        <div v-for="i in 5" :key="i" class="space-y-2.5 rounded-lg border border-border/60 bg-card p-3">
+          <Skeleton class="h-2.5 w-16 rounded" />
+          <Skeleton class="h-6 w-10 rounded" />
+        </div>
+      </div>
+      <Skeleton v-for="i in 5" :key="i" class="h-10 w-full rounded" />
     </div>
 
     <!-- Error before anything loaded -->
@@ -289,8 +221,8 @@ onBeforeUnmount(() => {
       </Banner>
     </div>
 
-    <!-- Empty -->
-    <div v-else-if="store.items.length === 0" class="flex min-h-80 flex-1 flex-col items-center justify-center text-center">
+    <!-- Nothing open -->
+    <div v-else-if="classified.length === 0" class="flex min-h-80 flex-1 flex-col items-center justify-center text-center">
       <div class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
         <Target class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
       </div>
@@ -298,106 +230,113 @@ onBeforeUnmount(() => {
       <p class="mt-1 max-w-96 text-xs text-muted-foreground">{{ t('focus.empty.hint') }}</p>
     </div>
 
-    <p v-else-if="visible.length === 0" class="py-12 text-center text-sm text-muted-foreground">{{ t('focus.empty.filtered') }}</p>
-
-    <!-- By time -->
-    <div v-else-if="view === 'time'" class="min-h-0 flex-1 space-y-4 overflow-y-auto px-6 py-4">
-      <Card v-if="top.length" class="border-primary/30" body-class="p-2">
-        <h2 class="flex items-center gap-1.5 px-2 pb-1 pt-0.5 text-[11px] font-semibold uppercase tracking-wide text-primary">
-          <Target class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('focus.nowSection') }}
-        </h2>
-        <FocusTodoRow
-          :data-focus-row="it.todo.id"
-          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''"
-          v-for="(it, i) in top"
-          :key="it.todo.id"
-          :item="it"
-          :now="now"
-          :rank="i + 1"
-          @open="openId = $event"
-        />
-      </Card>
-
-      <section v-for="g in buckets" :key="g.bucket">
-        <button
-          type="button"
-          class="flex w-full cursor-pointer items-center gap-1.5 rounded px-1 py-1 text-left text-xs font-semibold transition-colors hover:bg-accent/40"
-          :class="g.bucket === 'overdue' ? 'text-destructive' : 'text-foreground'"
-          :aria-expanded="openBuckets.has(g.bucket)"
-          @click="toggleBucket(g.bucket)"
-        >
-          <component :is="openBuckets.has(g.bucket) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
-          {{ t(`focus.buckets.${g.bucket}`) }}
-          <span class="font-normal text-muted-foreground">({{ g.items.length }})</span>
-          <span v-if="isActiveBucket(g.bucket)" class="ml-auto font-normal text-muted-foreground tabular-nums">~{{ bucketEstimate(g.items) }}</span>
-        </button>
-        <div v-if="openBuckets.has(g.bucket)" class="mt-0.5">
-          <FocusTodoRow
-          :data-focus-row="it.todo.id"
-          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''" v-for="it in g.items" :key="it.todo.id" :item="it" :now="now" @open="openId = $event" />
+    <div v-else class="min-h-0 flex-1 overflow-y-auto">
+      <div class="space-y-4 p-6">
+        <!-- Summary cards (click = filter to that status) -->
+        <div class="grid grid-cols-5 gap-3">
+          <Card
+            v-for="s in COLUMNS"
+            :key="s"
+            body-class="p-3"
+            role="button"
+            tabindex="0"
+            class="cursor-pointer transition-colors hover:bg-accent/50"
+            :class="statusFilter === s ? 'ring-2 ring-primary/60' : ''"
+            :title="t(`focus.radar.hint.${s}`, { days: DUE_SOON_DAYS })"
+            :aria-pressed="statusFilter === s"
+            @click="toggleStatus(s)"
+            @keydown.enter.prevent="toggleStatus(s)"
+          >
+            <div class="text-[11px] text-muted-foreground">{{ statusLabel(s) }}</div>
+            <div class="mt-0.5 text-xl font-semibold" :class="counts[s] > 0 ? TONE_TEXT[s] : ''">{{ counts[s] }}</div>
+          </Card>
         </div>
-      </section>
-    </div>
 
-    <!-- By project -->
-    <div v-else-if="view === 'project'" class="flex min-h-0 flex-1 gap-3 overflow-x-auto px-6 py-4">
-      <div
-        v-for="col in projectColumns"
-        :key="col.projectId ?? '__none'"
-        class="flex w-72 shrink-0 flex-col rounded-lg border border-border/60 bg-muted/20"
-      >
-        <div class="flex shrink-0 items-center gap-2 border-b border-border/60 px-3 py-2">
-          <span v-if="col.projectId" class="h-2.5 w-2.5 shrink-0 rounded-full" :style="chipStyle(col.projectId)" />
-          <span class="min-w-0 flex-1 truncate text-xs font-semibold">{{ projectName(col.projectId) }}</span>
-          <span class="shrink-0 text-[11px] tabular-nums text-muted-foreground">~{{ formatEstimate(col.estimateMin) }}</span>
-          <span v-if="col.overdue" class="shrink-0 text-[11px] font-medium text-destructive">
-            {{ t('focus.columns.overdue', { n: col.overdue }) }}
-          </span>
-        </div>
-        <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-2">
-          <FocusTodoRow
-          :data-focus-row="it.todo.id"
-          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''"
-            v-for="it in col.items"
-            :key="it.todo.id"
-            :item="it"
-            :now="now"
-            layout="card"
-            hide-project
-            @open="openId = $event"
-          />
-        </div>
-      </div>
-    </div>
-
-    <!-- Week -->
-    <div v-else class="min-h-0 flex-1 overflow-x-auto px-6 py-4">
-      <div class="grid h-full min-w-[56rem] grid-cols-7 gap-2">
-        <div
-          v-for="col in weekColumns"
-          :key="col.date"
-          class="flex min-w-0 flex-col rounded-lg border"
-          :class="[
-            dayOverloaded(col.date) ? 'border-destructive/50 bg-destructive/5' : 'border-border/60 bg-muted/20',
-            col.date === today ? 'ring-1 ring-primary/40' : '',
-          ]"
-        >
-          <div class="flex shrink-0 items-center gap-1 border-b border-border/60 px-2 py-1.5">
-            <span class="flex-1 truncate text-[11px] font-semibold" :class="col.date === today ? 'text-primary' : ''">{{ weekdayLabel(col.date) }}</span>
-            <span v-if="col.estimateMin" class="text-[10px] tabular-nums text-muted-foreground" :title="t('focus.week.estimateHint')">
-              ~{{ formatEstimate(col.estimateMin) }}
-            </span>
+        <!-- Empty after filtering -->
+        <div v-if="groups.length === 0" class="flex min-h-60 flex-col items-center justify-center text-center">
+          <div class="mb-4 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
+            <SearchX class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
           </div>
-          <p v-if="dayOverloaded(col.date)" class="px-2 pt-1 text-[10px] font-medium text-destructive">
-            {{ t('focus.week.overloaded') }} · {{ span(overloadMin) }}
-          </p>
-          <div class="min-h-0 flex-1 space-y-1.5 overflow-y-auto p-1.5">
-            <FocusTodoRow
-          :data-focus-row="it.todo.id"
-          :class="flashId === it.todo.id ? 'ring-2 ring-primary/70' : ''" v-for="it in col.items" :key="it.todo.id" :item="it" :now="now" layout="card" @open="openId = $event" />
-          </div>
+          <p class="text-sm font-medium">{{ t('focus.empty.filtered') }}</p>
         </div>
+
+        <!-- Per-project rollup -->
+        <Card v-else body-class="text-xs">
+          <div :class="GRID" class="sticky top-0 z-10 h-8 border-b border-border/60 bg-muted/30 px-3 text-[11px] font-medium text-muted-foreground">
+            <button class="flex items-center gap-1 text-left hover:text-foreground" @click="toggleAll">
+              <ChevronRight class="h-3 w-3 transition-transform" :class="{ 'rotate-90': allOpen }" :stroke-width="2" />
+              {{ t('focus.radar.colProject') }}
+            </button>
+            <div v-for="s in COLUMNS" :key="s" class="truncate text-center">{{ statusLabel(s) }}</div>
+            <div class="text-center">{{ t('focus.radar.colOpen') }}</div>
+            <div class="text-center">{{ t('focus.radar.colWorst') }}</div>
+          </div>
+
+          <div v-for="g in groups" :key="groupKey(g)" class="border-b border-border/40 last:border-b-0">
+            <button
+              :class="GRID"
+              class="h-10 w-full px-3 text-left transition-colors hover:bg-accent/50"
+              :aria-expanded="isOpen(g)"
+              @click="toggleGroup(g)"
+            >
+              <span class="flex min-w-0 items-center gap-1.5">
+                <ChevronRight class="h-3 w-3 shrink-0 text-muted-foreground transition-transform" :class="{ 'rotate-90': isOpen(g) }" :stroke-width="2" />
+                <span v-if="g.projectId" class="h-2 w-2 shrink-0 rounded-full" :style="dotStyle(g.projectId)" />
+                <span class="truncate text-[13px] font-medium" :class="{ 'italic text-muted-foreground': !g.projectId }">{{ projectName(g.projectId) }}</span>
+              </span>
+              <span v-for="s in COLUMNS" :key="s" class="flex justify-center">
+                <span
+                  v-if="g.counts[s] > 0"
+                  class="min-w-7 rounded-full border px-1.5 py-0.5 text-center text-[11px] font-semibold"
+                  :class="TONE_PILL[s]"
+                >{{ g.counts[s] }}</span>
+                <span v-else class="text-muted-foreground/40">–</span>
+              </span>
+              <span class="text-center font-medium">{{ g.total }}</span>
+              <span class="text-center" :class="g.worstLateDays !== null ? 'font-medium text-destructive' : 'text-muted-foreground/40'">
+                {{ g.worstLateDays === null ? '–' : g.worstLateDays === 0 ? t('focus.radar.today') : t('focus.radar.lateDays', { n: g.worstLateDays }) }}
+              </span>
+            </button>
+
+            <div v-if="isOpen(g)" class="border-t border-border/30 bg-muted/20 py-1">
+              <div
+                v-for="i in g.items"
+                :key="i.item.todo.id"
+                :data-focus-row="i.item.todo.id"
+                role="button"
+                tabindex="0"
+                class="group flex h-8 cursor-pointer items-center gap-2 pl-7 pr-3 hover:bg-accent/50"
+                :class="flashId === i.item.todo.id ? 'ring-2 ring-inset ring-primary/70' : ''"
+                @click="openId = i.item.todo.id"
+                @keydown.enter.self="openId = i.item.todo.id"
+              >
+                <button
+                  type="button"
+                  class="flex h-4 w-4 shrink-0 items-center justify-center rounded border border-muted-foreground/40 transition-colors hover:border-primary hover:bg-primary/10"
+                  :title="t('focus.actions.done')"
+                  :aria-label="t('focus.actions.done')"
+                  @click.stop="actions.done(i.item.todo)"
+                >
+                  <Check class="h-3 w-3 opacity-0 group-hover:opacity-40" :stroke-width="2.5" />
+                </button>
+                <span class="w-24 shrink-0 truncate rounded border px-1.5 py-0.5 text-center text-[10px] font-medium" :class="TONE_PILL[i.radar]">
+                  {{ t(`focus.radar.status.${i.radar}`, { days: DUE_SOON_DAYS }) }}
+                </span>
+                <span class="min-w-0 flex-1 truncate text-[13px]" :title="i.item.todo.text">{{ title(i) }}</span>
+                <span v-if="i.item.todo.status === 'doing'" class="flex shrink-0 items-center gap-0.5 text-[11px] text-primary">
+                  <Play class="h-3 w-3" :stroke-width="2" />{{ t('focus.status.doing') }}
+                </span>
+                <span v-if="i.item.todo.priority === 1" class="shrink-0 rounded bg-destructive px-1 py-px text-[9px] font-bold text-destructive-foreground">P1</span>
+                <span
+                  class="w-32 shrink-0 text-right text-[11px]"
+                  :class="i.radar === 'overdue' ? 'font-medium text-destructive' : i.radar === 'today' ? 'text-warning' : 'text-muted-foreground'"
+                >
+                  {{ deadlineText(i) }}<span v-if="deadlineDate(i)" class="text-muted-foreground/60"> · {{ deadlineDate(i) }}</span>
+                </span>
+              </div>
+            </div>
+          </div>
+        </Card>
       </div>
     </div>
 

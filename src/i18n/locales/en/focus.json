@@ -10,7 +10,7 @@
   "retry": "Retry",
   "empty": {
     "title": "Nothing to do yet",
-    "hint": "Create a todo here, or with “+ Todo” from a Slack thread, an issue, a PR or a session. Devdy ranks them by deadline, estimate and priority.",
+    "hint": "Create a todo here, or click “+ Todo” on a Slack thread, issue, PR or session. Devdy shows which ones are late, per project.",
     "filtered": "No todo matches the filters."
   },
   "buckets": {
@@ -306,5 +306,35 @@
     "dropped": "{n} block was dropped (outside free time or unknown todo) | {n} blocks were dropped (outside free time or unknown todo)",
     "deferred": "Not today",
     "createdAt": "Planned {time}"
+  },
+  "radar": {
+    "status": {
+      "overdue": "Overdue",
+      "today": "Due today",
+      "due-soon": "Due ≤{days} days",
+      "waiting": "Waiting",
+      "no-due": "No deadline",
+      "later": "Later"
+    },
+    "hint": {
+      "overdue": "Past the deadline and still open",
+      "today": "Deadline is later today",
+      "due-soon": "Deadline within the next {days} days",
+      "waiting": "Waiting on someone else — not counted as late",
+      "no-due": "No deadline set",
+      "later": "Deadline is further out"
+    },
+    "searchPlaceholder": "Search todos…",
+    "colProject": "Project",
+    "colOpen": "Open",
+    "colWorst": "Most late",
+    "noProject": "No project",
+    "lateDays": "{n}d late",
+    "lateToday": "late today {time}",
+    "today": "today",
+    "dueToday": "due today",
+    "dueTodayAt": "due today {time}",
+    "daysLeft": "{n}d left",
+    "noDeadline": "no deadline"
   }
 }

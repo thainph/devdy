@@ -10,7 +10,7 @@
   "retry": "Thử lại",
   "empty": {
     "title": "Chưa có việc nào",
-    "hint": "Tạo todo tại đây, hoặc bấm “+ Todo” ở Slack thread, issue, PR hay session. Devdy xếp thứ tự theo hạn, estimate và ưu tiên.",
+    "hint": "Tạo todo tại đây, hoặc bấm “+ Todo” ở Slack thread, issue, PR hay session. Devdy cho biết việc nào đang trễ theo từng dự án.",
     "filtered": "Không có todo nào khớp bộ lọc."
   },
   "buckets": {
@@ -306,5 +306,35 @@
     "dropped": "Đã bỏ {n} block (ngoài giờ trống hoặc todo không tồn tại)",
     "deferred": "Để sau",
     "createdAt": "Lập lúc {time}"
+  },
+  "radar": {
+    "status": {
+      "overdue": "Quá hạn",
+      "today": "Hạn hôm nay",
+      "due-soon": "Sắp hạn ≤{days} ngày",
+      "waiting": "Đang chờ",
+      "no-due": "Chưa có hạn",
+      "later": "Còn xa"
+    },
+    "hint": {
+      "overdue": "Đã qua hạn mà vẫn chưa xong",
+      "today": "Hạn là trong hôm nay",
+      "due-soon": "Hạn trong {days} ngày tới",
+      "waiting": "Đang chờ người khác — không tính là trễ",
+      "no-due": "Chưa đặt hạn",
+      "later": "Hạn còn xa"
+    },
+    "searchPlaceholder": "Tìm todo…",
+    "colProject": "Dự án",
+    "colOpen": "Đang mở",
+    "colWorst": "Trễ nhất",
+    "noProject": "Không dự án",
+    "lateDays": "trễ {n} ngày",
+    "lateToday": "quá giờ hôm nay {time}",
+    "today": "hôm nay",
+    "dueToday": "hạn hôm nay",
+    "dueTodayAt": "hạn hôm nay {time}",
+    "daysLeft": "còn {n} ngày",
+    "noDeadline": "chưa có hạn"
   }
 }
