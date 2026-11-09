@@ -32,6 +32,8 @@ pub const DEFAULT_POLL_MINUTES: u64 = 5;
 const FIRST_TICK: Duration = Duration::from_secs(10);
 /// Sleep while polling is off; a settings change wakes the poller earlier.
 const IDLE_TICK: Duration = Duration::from_secs(3600);
+/// Upper bound on one whole inbox fetch (all accounts, all pages).
+const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
 
 /// The last fetched inbox, as sent to the UI.
 #[derive(Debug, Serialize, Clone)]
@@ -92,7 +94,11 @@ pub async fn refresh(app: &AppHandle, db: &Db, notify: bool) -> Result<PrInboxRe
         }
     };
 
-    let result = fetch_review_requested_prs(db).await?;
+    // Backstop over the per-request HTTP timeouts: a hung fetch would hold the
+    // lock forever, leaving every later refresh spinning and the poller silent.
+    let result = tokio::time::timeout(FETCH_TIMEOUT, fetch_review_requested_prs(db))
+        .await
+        .map_err(|_| "Timed out fetching review requests from GitHub".to_string())??;
     let inbox = CachedPrInbox { result: result.clone(), fetched_at: chrono::Utc::now().to_rfc3339() };
     if let Ok(mut cache) = st.cache.lock() {
         *cache = Some(Cached { inbox: inbox.clone(), at: Instant::now() });
