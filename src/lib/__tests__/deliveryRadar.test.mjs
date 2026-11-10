@@ -12,6 +12,7 @@ import {
   filterIssues,
   isDefaultDoneStatus,
   isDone,
+  nestIssues,
 } from '../deliveryRadar.ts'
 
 // 2026-11-07 10:00 local time.
@@ -158,5 +159,77 @@ test('a project list of done statuses replaces the default rule', () => {
   assert.equal(isDone(issue({ state: 'CLOSED', status: 'Todo' }), []), true)
   // Late but handed to QA: not overdue for the dev.
   assert.equal(classifyAll([qa], NOW, TH).length, 0)
-  assert.equal(classifyAll([qa], NOW, TH, { p1: ['Done'] })[0].radar, 'overdue')
+  assert.equal(classifyAll([qa], NOW, TH, { dev: { p1: ['Done'] } })[0].radar, 'overdue')
+})
+
+test('default QA rule: only release / done columns count as done for a tester', () => {
+  for (const s of ['Ready for release', 'Released', 'Done', 'Closed', 'Hoàn thành', 'Cancelled']) {
+    assert.equal(isDefaultDoneStatus(s, 'tester'), true, s)
+  }
+  for (const s of ['Ready for QA', 'In QA', 'Testing', 'In progress', 'UAT', '', null]) {
+    assert.equal(isDefaultDoneStatus(s, 'tester'), false, String(s))
+  }
+  assert.equal(isDone(issue({ status: 'Ready for QA' }), null, 'tester'), false)
+  assert.equal(isDone(issue({ status: 'Ready for QA' }), ['ready for qa'], 'tester'), true)
+})
+
+test('an issue in QA leaves the developer but stays with the tester', () => {
+  const rules = { testers: ['Tina'] }
+  const [qa] = classifyAll(
+    [issue({ assignees: ['dan', 'tina'], status: 'Ready for QA', deadline: '2026-11-01' })],
+    NOW, TH, rules,
+  )
+  assert.deepEqual(qa.activeAssignees, ['tina'])
+  const groups = buildGroups([qa], 'person')
+  assert.deepEqual(groups.map((g) => g.key), ['tina'])
+  assert.deepEqual(buildGroups([qa], 'project')[0].related, ['tina'])
+  // Ready for release: done for both roles.
+  assert.equal(classifyAll([issue({ assignees: ['dan', 'tina'], status: 'Ready for release' })], NOW, TH, rules).length, 0)
+  // Still in progress: both still owe work.
+  assert.deepEqual(
+    classifyAll([issue({ assignees: ['dan', 'tina'] })], NOW, TH, rules)[0].activeAssignees,
+    ['dan', 'tina'],
+  )
+  // A project's own QA list replaces the default tester rule.
+  const custom = { ...rules, qa: { p1: ['Ready for QA'] } }
+  assert.equal(classifyAll([issue({ assignees: ['tina'], status: 'Ready for QA' })], NOW, TH, custom).length, 0)
+})
+
+function parentOf(n) {
+  return { owner: 'acme', repo: 'web', number: n, title: `Issue ${n}`, htmlUrl: '' }
+}
+
+test('nestIssues puts sub-issues under their parent, ordered by the most urgent subtree', () => {
+  const calm = issue({ number: 100, deadline: '2026-12-20' })
+  const epic = issue({ number: 1, title: 'Epic' })
+  const story = issue({ number: 2, parent: parentOf(1), deadline: '2026-12-01' })
+  const lateTask = issue({ number: 3, parent: parentOf(2), deadline: '2026-11-01' })
+  const task = issue({ number: 4, parent: parentOf(1), deadline: '2026-12-10' })
+  const orphan = issue({ number: 5, parent: parentOf(99), deadline: '2026-12-15' })
+  const rows = nestIssues(classifyAll([calm, epic, story, lateTask, task, orphan], NOW, TH))
+  assert.deepEqual(
+    rows.map((r) => [r.issue.number, r.depth, r.hasChildren]),
+    [
+      // The epic has no deadline but its late task pulls it to the top.
+      [1, 0, true],
+      [2, 1, true],
+      [3, 2, false],
+      [4, 1, false],
+      [5, 0, false], // parent not in the list: top level
+      [100, 0, false],
+    ],
+  )
+})
+
+test('nestIssues survives a parent cycle and buildGroups exposes rows', () => {
+  const a = issue({ number: 1, parent: parentOf(2) })
+  const b = issue({ number: 2, parent: parentOf(1) })
+  assert.equal(nestIssues(classifyAll([a, b], NOW, TH)).length, 2)
+  const groups = buildGroups(classifyAll([issue({ number: 7 }), issue({ number: 8, parent: parentOf(7) })], NOW, TH), 'person')
+  assert.deepEqual(groups[0].rows.map((r) => r.depth), [0, 1])
+})
+
+test('filterIssues matches the parent title', () => {
+  const issues = classifyAll([issue({ parent: { ...parentOf(1), title: 'Checkout epic' } }), issue()], NOW, TH)
+  assert.equal(filterIssues(issues, { query: 'checkout' }).length, 1)
 })

@@ -60,15 +60,25 @@
   "hoursAgo": "{hours}h ago",
   "daysAgo": "{days}d ago",
   "doneStatuses": {
-    "button": "Done statuses",
-    "buttonHint": "Choose which board statuses count as done for the developer (e.g. Ready for QA)",
-    "title": "Statuses that count as done",
-    "hint": "Issues in a ticked column are treated as finished by the developer and no longer count as late.",
+    "button": "Done rules",
+    "buttonHint": "Choose which board statuses count as done for developers (e.g. Ready for QA) and testers (e.g. Ready for release), and who the testers are",
+    "title": "When is an issue done?",
+    "hint": "An issue drops off a person's list once it reaches a status ticked for their role: developers are done at Ready for QA, testers only at Ready for release / Done.",
+    "testersTitle": "Testers",
+    "testersHint": "Ticked people are judged by the QA column; everyone else by the Dev column.",
+    "noPeople": "No assignee found yet — refresh the radar first.",
+    "colStatus": "Status",
+    "col": {
+      "dev": "Dev done",
+      "tester": "QA done"
+    },
     "usingDefault": "Default",
     "resetDefault": "Use default",
     "noOptions": "No status found yet — refresh the radar after mapping the board's Status field.",
-    "doneTag": "Done",
-    "activeTag": "In dev",
     "issueCount": "{n} open"
-  }
+  },
+  "tester": "QA",
+  "testerHint": "Tester — done only at Ready for release / Done",
+  "parentHint": "Sub-issue of {title}",
+  "inheritedDeadline": "Deadline taken from the parent issue"
 }

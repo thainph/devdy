@@ -2,7 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@/lib/tauri'
 import {
-  DEFAULT_THRESHOLDS, type DoneStatusMap, type RadarIssue, type RadarIssueRow, type RadarThresholds,
+  DEFAULT_THRESHOLDS, type DoneRules, type DoneStatusMap, type RadarIssue, type RadarIssueRow, type RadarRole,
+  type RadarThresholds,
 } from '@/lib/deliveryRadar'
 
 /** Mirrors the Rust `MilestoneBoard` (only what the radar reads). */
@@ -34,6 +35,8 @@ export interface ProjectBoardState {
 const PERSIST_PREFIX = 'devdy:radarBoard:'
 const THRESHOLDS_KEY = 'devdy:radarThresholds'
 const DONE_STATUSES_KEY = 'devdy:radarDoneStatuses'
+const QA_DONE_STATUSES_KEY = 'devdy:radarQaDoneStatuses'
+const TESTERS_KEY = 'devdy:radarTesters'
 // Snapshots newer than this are served as-is with no network call at all.
 const REVALIDATE_MS = 5 * 60 * 1000
 // Each project already fetches its repos + board in parallel on the Rust side;
@@ -68,13 +71,26 @@ function readThresholds(): RadarThresholds {
   }
 }
 
-function readDoneStatuses(): DoneStatusMap {
+function readDoneStatuses(key: string): DoneStatusMap {
   try {
-    const parsed = JSON.parse(localStorage.getItem(DONE_STATUSES_KEY) ?? 'null') as DoneStatusMap | null
+    const parsed = JSON.parse(localStorage.getItem(key) ?? 'null') as DoneStatusMap | null
     return parsed && typeof parsed === 'object' ? parsed : {}
   } catch {
     return {}
   }
+}
+
+function readTesters(): string[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(TESTERS_KEY) ?? 'null') as unknown
+    return Array.isArray(parsed) ? parsed.filter((l): l is string => typeof l === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function persist(key: string, value: unknown) {
+  try { localStorage.setItem(key, JSON.stringify(value)) } catch { /* best-effort */ }
 }
 
 export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
@@ -82,24 +98,49 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const errors = ref<Record<string, string>>({})
   const loading = ref<Set<string>>(new Set())
   const thresholds = ref<RadarThresholds>(readThresholds())
-  // Board statuses each project counts as "dev done"; a project absent here
-  // uses the default rule (Ready for QA, Testing, Done, …).
-  const doneStatuses = ref<DoneStatusMap>(readDoneStatuses())
+  // Board statuses each project counts as done for a developer / a tester; a
+  // project absent here uses the default rule (dev: Ready for QA, Testing,
+  // Done, …; tester: Ready for release, Done, …).
+  const doneStatuses = ref<DoneStatusMap>(readDoneStatuses(DONE_STATUSES_KEY))
+  const qaDoneStatuses = ref<DoneStatusMap>(readDoneStatuses(QA_DONE_STATUSES_KEY))
+  // GitHub logins (lowercased) of the testers; every other assignee is a developer.
+  const testers = ref<string[]>(readTesters())
 
-  watch(thresholds, (v) => {
-    try { localStorage.setItem(THRESHOLDS_KEY, JSON.stringify(v)) } catch { /* best-effort */ }
-  }, { deep: true })
+  watch(thresholds, (v) => persist(THRESHOLDS_KEY, v), { deep: true })
+  watch(doneStatuses, (v) => persist(DONE_STATUSES_KEY, v), { deep: true })
+  watch(qaDoneStatuses, (v) => persist(QA_DONE_STATUSES_KEY, v), { deep: true })
+  watch(testers, (v) => persist(TESTERS_KEY, v), { deep: true })
 
-  watch(doneStatuses, (v) => {
-    try { localStorage.setItem(DONE_STATUSES_KEY, JSON.stringify(v)) } catch { /* best-effort */ }
-  }, { deep: true })
+  const doneRules = computed<DoneRules>(() => ({
+    dev: doneStatuses.value, qa: qaDoneStatuses.value, testers: testers.value,
+  }))
 
-  /** `null` restores the default rule for the project. */
-  function setDoneStatuses(projectId: string, statuses: string[] | null) {
-    const next = { ...doneStatuses.value }
+  /** `null` restores the default rule of the role for the project. */
+  function setDoneStatuses(projectId: string, statuses: string[] | null, role: RadarRole = 'dev') {
+    const target = role === 'tester' ? qaDoneStatuses : doneStatuses
+    const next = { ...target.value }
     if (statuses) next[projectId] = statuses
     else delete next[projectId]
-    doneStatuses.value = next
+    target.value = next
+  }
+
+  function roleOf(login: string): RadarRole {
+    return testers.value.includes(login.toLowerCase()) ? 'tester' : 'dev'
+  }
+
+  function setTesters(logins: string[]) {
+    testers.value = [...new Set(logins.map((l) => l.toLowerCase()))].sort()
+  }
+
+  /** Every assignee seen on the given projects' issues (for the role picker). */
+  function assigneesFor(projectIds: string[]): string[] {
+    const byKey = new Map<string, string>()
+    for (const id of projectIds) {
+      for (const g of boards.value[id]?.board.milestones ?? []) {
+        for (const i of g.issues) for (const a of i.assignees) byKey.set(a.toLowerCase(), a)
+      }
+    }
+    return [...byKey.values()].sort((a, b) => a.localeCompare(b))
   }
 
   /** The board's Status options, plus any status seen on its issues (renamed / removed columns). */
@@ -186,7 +227,7 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const isLoading = computed(() => loading.value.size > 0)
 
   return {
-    boards, errors, loading, isLoading, thresholds, doneStatuses,
-    refresh, issuesFor, oldestSavedAt, setDoneStatuses, statusOptionsFor,
+    boards, errors, loading, isLoading, thresholds, doneStatuses, qaDoneStatuses, testers, doneRules,
+    refresh, issuesFor, oldestSavedAt, setDoneStatuses, statusOptionsFor, roleOf, setTesters, assigneesFor,
   }
 })
