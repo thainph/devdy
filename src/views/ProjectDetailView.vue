@@ -10,6 +10,7 @@ import { useMcpServersStore, type ProjectBuiltinMcp, type ProjectMcpServer } fro
 import { useServersStore, type ProjectServer, type VpsServer } from '@/stores/servers'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
+import { useGithubBoardsStore } from '@/stores/githubBoards'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore } from '@/stores/awsAccounts'
 import { useAzureAccountsStore } from '@/stores/azureAccounts'
@@ -19,7 +20,7 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import {
   AlertTriangle, Puzzle, ScrollText, Server, Github, Gitlab, Cloud, CloudCog,
   GitMerge, CheckCircle2, XCircle, Trash2, Plus, GitBranch, Settings,
-  Rocket, ShieldCheck, Loader2, KanbanSquare, ExternalLink, UserCircle
+  Rocket, ShieldCheck, KanbanSquare, ExternalLink, UserCircle
 } from 'lucide-vue-next'
 import { Button, Input, Card, Badge, AppSelect, ToggleSwitch, PageHeader, Banner } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
@@ -359,9 +360,6 @@ async function handleReapplyGroup(kind: GroupKind, group: ProjectGroupState) {
   }
 }
 
-const linkedAccountId = computed(() => project.value?.github_account_id ?? null)
-const linkedAccount = computed(() => ghStore.accounts.find(a => a.id === linkedAccountId.value) ?? null)
-
 // --- GitHub / GitLab accounts (several per project, toggled like servers) ---
 const githubAccountRows = computed<AccountRow[]>(() => ghStore.accounts.map(a => ({
   id: a.id,
@@ -404,116 +402,23 @@ async function handleMakeDefaultGitAccount(provider: 'github' | 'gitlab', accoun
   }
 }
 
-// --- GitHub Project V2 board config (start date / deadline / status mapping) ---
-interface BoardField { id: string; name: string; dataType: string }
-interface BoardInfo {
-  id: string; title: string; url: string; number: number
-  owner: string; ownerType: string; fields: BoardField[]
-}
+// --- GitHub Project V2 board: boards are configured under GitHub accounts in
+// Settings; a project only switches one on (enabling another replaces it). ---
+const boardsStore = useGithubBoardsStore()
+const busyBoard = ref<string | null>(null)
+const boardGroups = computed(() => ghStore.accounts
+  .map(account => ({ account, boards: boardsStore.boards.filter(b => b.account_id === account.id) }))
+  .filter(g => g.boards.length > 0))
 
-const boardUrl = ref('')
-const boardInfo = ref<BoardInfo | null>(null)
-const resolvingBoard = ref(false)
-const savingBoard = ref(false)
-const boardError = ref<string | null>(null)
-const mapStart = ref('')
-const mapDeadline = ref('')
-const mapStatus = ref('')
-
-const noneOpt = { value: '', label: '— None —' }
-const dateFieldOptions = computed(() => [
-  noneOpt,
-  ...(boardInfo.value?.fields ?? [])
-    .filter(f => f.dataType === 'DATE' || f.dataType === 'ITERATION')
-    .map(f => ({ value: f.id, label: `${f.name} (${f.dataType})` })),
-])
-const statusFieldOptions = computed(() => [
-  noneOpt,
-  ...(boardInfo.value?.fields ?? [])
-    .filter(f => f.dataType === 'SINGLE_SELECT')
-    .map(f => ({ value: f.id, label: f.name })),
-])
-
-// Load saved config into the form when the project changes.
-watch(project, (p) => {
-  if (!p) return
-  boardUrl.value = p.github_project_board_url ?? ''
-  boardInfo.value = null
-  boardError.value = null
-  mapStart.value = ''
-  mapDeadline.value = ''
-  mapStatus.value = ''
-  if (p.github_project_field_mappings) {
-    try {
-      const m = JSON.parse(p.github_project_field_mappings)
-      mapStart.value = m.startFieldId ?? ''
-      mapDeadline.value = m.deadlineFieldId ?? ''
-      mapStatus.value = m.statusFieldId ?? ''
-    } catch { /* ignore malformed */ }
-  }
-}, { immediate: true })
-
-async function resolveBoard() {
-  if (!boardUrl.value.trim()) return
-  resolvingBoard.value = true
-  boardError.value = null
+async function toggleBoard(boardId: string, on: boolean) {
+  busyBoard.value = boardId
   try {
-    boardInfo.value = await projectStore.resolveProjectBoard(projectId.value, boardUrl.value.trim())
-  } catch (e) {
-    boardInfo.value = null
-    boardError.value = String(e)
-  } finally {
-    resolvingBoard.value = false
-  }
-}
-
-async function saveBoard() {
-  if (!project.value || !boardInfo.value) return
-  savingBoard.value = true
-  try {
-    const mappings = {
-      boardId: boardInfo.value.id,
-      ownerType: boardInfo.value.ownerType,
-      owner: boardInfo.value.owner,
-      number: boardInfo.value.number,
-      startFieldId: mapStart.value || null,
-      deadlineFieldId: mapDeadline.value || null,
-      statusFieldId: mapStatus.value || null,
-    }
-    await projectStore.updateProject({
-      id: projectId.value,
-      name: project.value.name,
-      github_project_board_url: boardUrl.value.trim(),
-      github_project_field_mappings: JSON.stringify(mappings),
-    })
-    toast.success(t('projectDetail.toastBoardSaved'))
+    await projectStore.setProjectBoard(projectId.value, on ? boardId : null)
+    toast.success(t(on ? 'projectDetail.toastBoardEnabled' : 'projectDetail.toastBoardDisabled'))
   } catch (e) {
     toast.error(String(e))
   } finally {
-    savingBoard.value = false
-  }
-}
-
-async function unlinkBoard() {
-  if (!project.value) return
-  savingBoard.value = true
-  try {
-    await projectStore.updateProject({
-      id: projectId.value,
-      name: project.value.name,
-      github_project_board_url: null,
-      github_project_field_mappings: null,
-    })
-    boardUrl.value = ''
-    boardInfo.value = null
-    mapStart.value = ''
-    mapDeadline.value = ''
-    mapStatus.value = ''
-    toast.success(t('projectDetail.toastBoardUnlinked'))
-  } catch (e) {
-    toast.error(String(e))
-  } finally {
-    savingBoard.value = false
+    busyBoard.value = null
   }
 }
 
@@ -673,6 +578,7 @@ onMounted(async () => {
   if (ghStore.accounts.length === 0) {
     await ghStore.fetch()
   }
+  void boardsStore.fetch()
   if (glStore.accounts.length === 0) {
     await glStore.fetch()
   }
@@ -735,8 +641,6 @@ async function autoSaveProject() {
       await projectStore.updateProject({
         id: projectId.value,
         name: editName.value,
-        github_project_board_url: project.value.github_project_board_url,
-        github_project_field_mappings: project.value.github_project_field_mappings,
       })
       changed = true
     }
@@ -1398,76 +1302,43 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 
         <!-- GitHub Project (V2 board) tab -->
         <div v-if="activeTab === 'board'" class="max-w-lg space-y-4">
-          <Card body-class="p-4 space-y-4">
+          <Card>
             <template #header>
               <KanbanSquare class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />
               <span class="text-xs font-semibold">{{ t('projectDetail.githubProjectBoard') }}</span>
+              <RouterLink to="/settings?section=github" class="ml-auto text-[11px] text-primary hover:underline">{{ t('projectDetail.manage') }}</RouterLink>
             </template>
-            <p class="text-[11px] text-muted-foreground leading-relaxed">
-              {{ t('projectDetail.boardIntroPrefix') }}
-              <code class="text-primary">read:project</code>{{ t('projectDetail.boardIntroScope') }}
+            <p class="px-4 pt-3 text-[11px] text-muted-foreground leading-relaxed">
+              {{ t('projectDetail.boardIntro') }}
             </p>
 
-            <Banner v-if="!linkedAccount" tone="warning">
-              {{ t('projectDetail.linkGithubFirst', { tab: t('projectDetail.githubTab') }) }}
-            </Banner>
+            <div v-if="boardGroups.length === 0" class="px-4 py-5 text-center text-xs text-muted-foreground">
+              {{ t('projectDetail.noBoards') }}
+              <RouterLink to="/settings?section=github" class="text-primary hover:underline">{{ t('projectDetail.addInSettings') }}</RouterLink>
+              {{ t('projectDetail.toLinkHere') }}
+            </div>
 
             <template v-else>
-              <div class="space-y-1.5">
-                <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.boardUrl') }}</label>
-                <div class="flex gap-2">
-                  <Input
-                    v-model="boardUrl"
-                    size="sm"
-                    placeholder="https://github.com/orgs/<owner>/projects/<n>"
-                    class="flex-1"
-                    :disabled="resolvingBoard || savingBoard"
-                    @keyup.enter="resolveBoard"
+            <div v-for="group in boardGroups" :key="group.account.id" class="mt-2 border-t border-border/50">
+              <div class="px-4 pt-2 text-[10px] font-medium uppercase tracking-wider text-muted-foreground">
+                {{ group.account.label }}<span v-if="group.account.username" class="normal-case font-mono"> · @{{ group.account.username }}</span>
+              </div>
+              <div class="divide-y divide-border/50">
+                <div v-for="board in group.boards" :key="board.id" class="flex items-center gap-3 px-4 py-3">
+                  <div class="flex-1 min-w-0">
+                    <p class="text-xs font-medium truncate">{{ board.title || board.url }}</p>
+                    <p class="text-[10px] text-muted-foreground font-mono truncate mt-0.5">{{ board.url }}</p>
+                  </div>
+                  <ToggleSwitch
+                    :checked="project?.github_board_id === board.id"
+                    :disabled="busyBoard !== null"
+                    :loading="busyBoard === board.id"
+                    :label="project?.github_board_id === board.id ? t('projectDetail.disableForProject') : t('projectDetail.enableForProject')"
+                    @toggle="toggleBoard(board.id, project?.github_board_id !== board.id)"
                   />
-                  <Button variant="outline" size="sm" :disabled="resolvingBoard || !boardUrl.trim()" @click="resolveBoard">
-                    <Loader2 v-if="resolvingBoard" class="h-3.5 w-3.5 animate-spin" />
-                    <span>{{ resolvingBoard ? t('projectDetail.connecting') : t('projectDetail.connect') }}</span>
-                  </Button>
                 </div>
               </div>
-
-              <Banner v-if="boardError" tone="destructive">
-                {{ boardError }}
-              </Banner>
-
-              <div v-if="boardInfo" class="space-y-3">
-                <div class="text-[11px] text-muted-foreground">
-                  {{ t('projectDetail.boardLabel') }} <span class="text-foreground font-medium">{{ boardInfo.title }}</span>
-                  · {{ t('projectDetail.fieldsCount', { count: boardInfo.fields.length }) }}
-                </div>
-                <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.startDateField') }}</label>
-                  <AppSelect size="sm" v-model="mapStart" :options="dateFieldOptions" />
-                </div>
-                <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.deadlineField') }}</label>
-                  <AppSelect size="sm" v-model="mapDeadline" :options="dateFieldOptions" />
-                </div>
-                <div class="space-y-1.5">
-                  <label class="text-[11px] font-medium text-muted-foreground">{{ t('projectDetail.statusField') }}</label>
-                  <AppSelect size="sm" v-model="mapStatus" :options="statusFieldOptions" />
-                </div>
-                <div class="flex gap-2 pt-1">
-                  <Button size="sm" :disabled="savingBoard" @click="saveBoard">
-                    <Loader2 v-if="savingBoard" class="h-3.5 w-3.5 animate-spin" />
-                    <span>{{ t('projectDetail.saveConfiguration') }}</span>
-                  </Button>
-                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">{{ t('projectDetail.unlink') }}</Button>
-                </div>
-              </div>
-
-              <div v-else-if="project?.github_project_board_url" class="text-[11px] text-muted-foreground">
-                {{ t('projectDetail.savedBoardPrefix') }} <span class="text-foreground">{{ project.github_project_board_url }}</span>.
-                {{ t('projectDetail.savedBoardSuffix') }}
-                <div class="pt-2">
-                  <Button variant="ghost" size="sm" :disabled="savingBoard" @click="unlinkBoard">{{ t('projectDetail.unlink') }}</Button>
-                </div>
-              </div>
+            </div>
             </template>
           </Card>
         </div>

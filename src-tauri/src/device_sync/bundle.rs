@@ -1199,6 +1199,7 @@ mod tests {
         let missing = dir.join("not-created");
         exec(&db, &[
             "INSERT INTO projects (id, name, path, created_at) VALUES ('p-shop', 'shop', '/nowhere/b/shop', 'c')",
+            "INSERT INTO github_accounts (id, label, created_at) VALUES ('gh1', 'work', 'c')",
             "INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m1', 'slack', 'stdio', 'c')",
             "INSERT INTO project_builtin_mcp_disabled (project_id, name, created_at) VALUES ('p-shop', 'devdy', 'c')",
         ]).await;
@@ -1213,6 +1214,7 @@ mod tests {
                 {
                     "id": "src-1", "name": "shop", "path": missing.to_string_lossy(), "default_engine": "codex",
                     "created_at": "c", "github_project_board_url": "https://board",
+                    "github_project_field_mappings": "{}", "github_board_account": "work",
                     "repos": [{ "name": "api", "path": "/source/shop/api", "created_at": "c" }],
                     "mcp_servers": ["slack"],
                     "servers": [{ "server": "prod", "role": "production" }],
@@ -1228,7 +1230,8 @@ mod tests {
         assert_eq!((c.created, c.updated, c.skipped, c.deleted), (0, 1, 1, 0));
         assert_eq!(count(&db, "SELECT COUNT(*) FROM projects").await, 1);
         let (path, engine, board): (String, String, Option<String>) = sqlx::query_as(
-            "SELECT path, default_engine, github_project_board_url FROM projects WHERE id = 'p-shop'",
+            "SELECT p.path, p.default_engine, b.url FROM projects p \
+             LEFT JOIN github_boards b ON b.id = p.github_board_id WHERE p.id = 'p-shop'",
         )
         .fetch_one(&db)
         .await

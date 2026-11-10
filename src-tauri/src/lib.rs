@@ -46,7 +46,10 @@ use commands::files::{
 };
 use commands::github::{
     fetch_issue, fetch_pr, list_milestone_board,
-    list_review_requested_prs, list_runs, refetch_run, resolve_project_board,
+    list_review_requested_prs, list_runs, refetch_run, resolve_github_board,
+};
+use commands::github_boards::{
+    delete_github_board, list_github_boards, save_github_board, set_project_github_board,
 };
 use commands::github_accounts::{
     create_github_account, delete_github_account, list_github_accounts, set_project_github_account,
@@ -600,7 +603,11 @@ pub fn run() {
             pr_inbox::get_cached_pr_inbox,
             pr_inbox::get_pr_inbox_poll_minutes,
             pr_inbox::set_pr_inbox_poll_minutes,
-            resolve_project_board,
+            resolve_github_board,
+            list_github_boards,
+            save_github_board,
+            delete_github_board,
+            set_project_github_board,
             list_milestone_board,
             list_runs,
             start_run,

@@ -275,25 +275,31 @@ impl GithubFetch for OctoGithub {
             );
         }
 
-        let mappings: Option<String> =
-            sqlx::query_scalar("SELECT github_project_field_mappings FROM projects WHERE id = ?")
-                .bind(project_id)
-                .fetch_optional(&self.db)
-                .await
-                .ok()
-                .flatten();
+        let project_board = crate::commands::github_boards::project_board(&self.db, project_id)
+            .await
+            .ok()
+            .flatten();
         // Board data is optional: a failing query only drops it, flagged so
-        // the refresh does not mistake the gap for a content change.
+        // the refresh does not mistake the gap for a content change. It is
+        // read with the PAT of the account the board was configured under.
         let mut board_unavailable = false;
-        let board = match mappings.filter(|m| !m.trim().is_empty()) {
-            Some(m) => match fetch_board(&client, &owner, &repo, number, &m).await {
-                Ok(b) => b,
-                Err(e) => {
-                    tracing::warn!(event = "focus_board_query_failed", error = %e);
-                    board_unavailable = true;
-                    None
+        let board = match project_board {
+            Some(b) => {
+                let fetched = match crate::github::client_for_account(&b.account_id) {
+                    Ok(board_client) => {
+                        fetch_board(&board_client, &owner, &repo, number, &b.field_mappings).await
+                    }
+                    Err(e) => Err(e.to_string()),
+                };
+                match fetched {
+                    Ok(b) => b,
+                    Err(e) => {
+                        tracing::warn!(event = "focus_board_query_failed", error = %e);
+                        board_unavailable = true;
+                        None
+                    }
                 }
-            },
+            }
             None => None,
         };
 

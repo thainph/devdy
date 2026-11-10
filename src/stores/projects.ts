@@ -26,27 +26,14 @@ export interface Project {
   azure_account_id: string | null
   azure_account_ids: string[]
   claude_account_id: string | null
+  /** GitHub Project V2 board enabled on the project (configured under a GitHub account). */
+  github_board_id: string | null
+  /** URL / field mappings of the enabled board (read-only, from the board). */
   github_project_board_url: string | null
   github_project_field_mappings: string | null
   run_count: number
   last_used_at: string | null
   position: number
-}
-
-export interface BoardField {
-  id: string
-  name: string
-  dataType: string
-}
-
-export interface BoardInfo {
-  id: string
-  title: string
-  url: string
-  number: number
-  owner: string
-  ownerType: string
-  fields: BoardField[]
 }
 
 export interface Repo {
@@ -207,24 +194,16 @@ export const useProjectsStore = defineStore('projects', () => {
     await fetchProjects()
   }
 
-  async function updateProject(payload: {
-    id: string
-    name: string
-    github_project_board_url?: string | null
-    github_project_field_mappings?: string | null
-  }): Promise<Project> {
-    const project = await invoke<Project>('update_project', {
-      id: payload.id,
-      name: payload.name,
-      githubProjectBoardUrl: payload.github_project_board_url ?? null,
-      githubProjectFieldMappings: payload.github_project_field_mappings ?? null,
-    })
+  async function updateProject(payload: { id: string; name: string }): Promise<Project> {
+    const project = await invoke<Project>('update_project', { id: payload.id, name: payload.name })
     await fetchProjects()
     return project
   }
 
-  async function resolveProjectBoard(project_id: string, url: string): Promise<BoardInfo> {
-    return invoke<BoardInfo>('resolve_project_board', { projectId: project_id, url })
+  /** Enable a GitHub board on the project (replacing any other), or disable with null. */
+  async function setProjectBoard(project_id: string, board_id: string | null): Promise<void> {
+    await invoke('set_project_github_board', { projectId: project_id, boardId: board_id })
+    await fetchProjects()
   }
 
   async function listRepos(project_id: string): Promise<Repo[]> {
@@ -399,7 +378,7 @@ export const useProjectsStore = defineStore('projects', () => {
   return {
     projects, loading, error, conflicts, ruleConflicts,
     fetchProjects, reorder, detectProjectInfo, addProject, removeProject, updateProject,
-    resolveProjectBoard, listRepos, addRepo, updateRepo, removeRepo,
+    setProjectBoard, listRepos, addRepo, updateRepo, removeRepo,
     getAppliedSkills, applySkill, removeSkillFromProject,
     setProjectAccount, setProjectGitAccountEnabled, setProjectGitlabAccount, setProjectAwsAccount, setProjectAzureAccount, setProjectCloudAccountEnabled, setProjectClaudeAccount, fetchConflicts, resolveConflict,
     openInVscode, openInFolder, openInTerminal,

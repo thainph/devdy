@@ -13,6 +13,7 @@ pub mod focus_ai;
 pub mod gcalendar;
 pub mod github;
 pub mod github_accounts;
+pub mod github_boards;
 pub mod gitlab_accounts;
 pub mod google;
 pub mod grammar;
