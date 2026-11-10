@@ -64,6 +64,7 @@ import {
   listPendingCmd,
   hostHas,
   listProjectFilesCmd,
+  listSavedPromptsCmd,
   listProjectsCmd,
   listRunsCmd,
   newSessionCmd,
@@ -1003,6 +1004,11 @@ function onRequestFiles(): void {
   const id = runId.value
   if (id) conn.value?.sendCommand(listProjectFilesCmd(id))
 }
+
+/** Re-pull the saved prompt library (it is edited on the desktop). */
+function onRequestSavedPrompts(): void {
+  conn.value?.sendCommand(listSavedPromptsCmd())
+}
 </script>
 
 <template>
@@ -1242,6 +1248,7 @@ function onRequestFiles(): void {
     :pending-elsewhere="pendingElsewhere"
     :render-text="renderText"
     :slash-commands="store.state.slashCommands"
+    :saved-prompts="store.state.savedPrompts"
     :project-files="store.state.projectFiles"
     :discovered-models="store.state.discoveredModels"
     :claude-account-choices="store.state.claudeAccountChoices"
@@ -1270,5 +1277,6 @@ function onRequestFiles(): void {
     @update:permission-mode="onPermissionMode"
     @update:claude-account-id="onClaudeAccount"
     @request-files="onRequestFiles"
+    @request-saved-prompts="onRequestSavedPrompts"
   />
 </template>

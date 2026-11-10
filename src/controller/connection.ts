@@ -31,6 +31,7 @@ import {
   listRunsCmd,
   listProjectsCmd,
   CLIENT_FEATURES,
+  listSavedPromptsCmd,
   listSlashCommandsCmd,
   listEngineModelsCmd,
   listProjectFilesCmd,
@@ -867,6 +868,7 @@ export class ControllerConnection {
     })
     // Parity data for the composer (host also pushes some of this on activation).
     this.sendCommand(listSlashCommandsCmd())
+    this.sendCommand(listSavedPromptsCmd())
     this.sendCommand(listEngineModelsCmd())
     this.sendCommand(listProjectFilesCmd(this.link.run_id))
     this.sendCommand(listPlanUsageCmd())

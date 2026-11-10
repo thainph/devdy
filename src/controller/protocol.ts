@@ -273,6 +273,17 @@ export interface SlashCommandListKind {
   kind: 'slash_command_list'
   commands: SlashCommand[]
 }
+/** One saved prompt (Settings → Prompt Templates on the Host). */
+export interface SavedPromptInfo {
+  id: string
+  title: string
+  body: string
+}
+/** The user's saved prompt library (composer "insert saved prompt" picker). */
+export interface SavedPromptListKind {
+  kind: 'saved_prompt_list'
+  prompts: SavedPromptInfo[]
+}
 /** One engine + its selectable models (composer footer selectors). */
 export interface EngineModelOption {
   id: string
@@ -579,6 +590,7 @@ export type StreamPayload =
   | SessionTokenKind
   | AuthResultKind
   | SlashCommandListKind
+  | SavedPromptListKind
   | EngineModelOptionsKind
   | ProjectFileListKind
   | RunMetaKind
@@ -708,6 +720,10 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
     case 'slash_command_list':
       return Array.isArray(o.commands)
         ? { kind: 'slash_command_list', commands: (o.commands as unknown[]).filter(isSlashCommand) }
+        : null
+    case 'saved_prompt_list':
+      return Array.isArray(o.prompts)
+        ? { kind: 'saved_prompt_list', prompts: (o.prompts as unknown[]).filter(isSavedPrompt) }
         : null
     case 'engine_model_options': {
       if (!Array.isArray(o.engines)) return null
@@ -980,6 +996,13 @@ function isSlashCommand(v: unknown): v is SlashCommand {
   return typeof o.name === 'string'
 }
 
+/** Narrow one saved-prompt row. */
+function isSavedPrompt(v: unknown): v is SavedPromptInfo {
+  if (!v || typeof v !== 'object') return false
+  const o = v as Record<string, unknown>
+  return typeof o.id === 'string' && typeof o.title === 'string' && typeof o.body === 'string'
+}
+
 /** Narrow one engine/model-options row (drops rows without a valid models list). */
 function isEngineModelOption(v: unknown): v is EngineModelOption {
   if (!v || typeof v !== 'object') return false
@@ -1054,6 +1077,7 @@ export interface CmdPayload {
     | 'list_engine_models'
     | 'list_project_files'
     | 'list_plan_usage'
+    | 'list_saved_prompts'
     | 'open_run'
     | 'close_run'
     // Inbox: re-send every open permission prompt.
@@ -1318,6 +1342,12 @@ export function closeRunCmd(runId: string): CmdPayload {
 /** `list_slash_commands` — refresh the composer's slash palette. */
 export function listSlashCommandsCmd(): CmdPayload {
   return { kind: 'cmd', action: 'list_slash_commands' }
+}
+
+/** `list_saved_prompts` — refresh the composer's saved prompt picker. An older
+ * Host refuses the unknown action and the picker simply stays hidden. */
+export function listSavedPromptsCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'list_saved_prompts' }
 }
 
 /** `list_plan_usage` — refresh the subscription usage badges (Claude + Codex). */

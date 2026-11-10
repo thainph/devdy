@@ -354,6 +354,9 @@ pub enum StreamPayload {
     ProjectList { projects: Vec<ProjectInfo> },
     /// Slash commands the Controller may offer in its composer palette.
     SlashCommandList { commands: Vec<SlashCommandInfo> },
+    /// The user's saved prompt library (Settings → Prompt Templates), for the
+    /// composer's "insert saved prompt" picker.
+    SavedPromptList { prompts: Vec<SavedPromptInfo> },
     /// Engine + model options the Controller may offer in its selectors.
     EngineModelOptions {
         /// LEGACY: the curated alias table, duplicated host-side. No shipped
@@ -663,6 +666,14 @@ pub struct SlashCommandInfo {
     pub name: String,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub description: Option<String>,
+}
+
+/// One saved prompt exposed to the Controller's composer.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct SavedPromptInfo {
+    pub id: String,
+    pub title: String,
+    pub body: String,
 }
 
 /// One selectable model within an engine.

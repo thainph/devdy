@@ -23,7 +23,8 @@ use crate::remote::command::{
 };
 use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
-    send_project_file_list, send_project_list, send_run_list, send_slash_command_list, SeqCounter,
+    send_project_file_list, send_project_list, send_run_list, send_saved_prompt_list,
+    send_slash_command_list, SeqCounter,
 };
 use crate::remote::outbound::OutboundTx;
 use crate::remote::{FocusRun, RunSubscriptions};
@@ -415,6 +416,7 @@ pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: CmdPayload) {
         "list_slash_commands" => handle_list_slash_commands(ctx).await,
         "list_engine_models" => handle_list_engine_models(ctx).await,
         "list_plan_usage" => handle_list_plan_usage(ctx, &cmd).await,
+        "list_saved_prompts" => handle_list_saved_prompts(ctx).await,
         "list_project_files" => handle_list_project_files(ctx, &cmd).await,
         "open_run" => handle_open_run(ctx, &cmd).await,
         "close_run" => handle_close_run(ctx, &cmd).await,
@@ -1088,6 +1090,13 @@ async fn handle_list_projects(ctx: &HandlerCtx) {
 async fn handle_list_slash_commands(ctx: &HandlerCtx) {
     let action = "list_slash_commands";
     send_slash_command_list(&ctx.session, &ctx.room_id, &ctx.out, &ctx.seq).await;
+    accept(ctx, action, None, None).await;
+}
+
+/// Send the Controller the saved prompt library.
+async fn handle_list_saved_prompts(ctx: &HandlerCtx) {
+    let action = "list_saved_prompts";
+    send_saved_prompt_list(&ctx.db, &ctx.session, &ctx.room_id, &ctx.out, &ctx.seq).await;
     accept(ctx, action, None, None).await;
 }
 

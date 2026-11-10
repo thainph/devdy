@@ -40,6 +40,7 @@ import type {
   PlanBudget,
   ProjectInfo,
   RunInfo,
+  SavedPromptInfo,
   SlashCommand,
   StreamPayload,
 } from './protocol'
@@ -176,6 +177,8 @@ export interface RunStoreState {
   notice: string | null
   /** Slash commands the Host advertises for the bound run (composer palette). */
   slashCommands: SlashCommand[]
+  /** The Host's saved prompt library (composer picker). */
+  savedPrompts: SavedPromptInfo[]
   /** Engine/model options the Host offers (composer footer selectors). */
   engineModelOptions: EngineModelOption[]
   /** Codex models the Host discovered, which replace the composer's curated
@@ -214,6 +217,7 @@ export function createRunStore() {
     pendingSeenAt: {},
     notice: null,
     slashCommands: [],
+    savedPrompts: [],
     engineModelOptions: [],
     discoveredModels: { codex: [] },
     projectFiles: [],
@@ -326,6 +330,9 @@ export function createRunStore() {
         break
       case 'slash_command_list':
         state.slashCommands = payload.commands
+        break
+      case 'saved_prompt_list':
+        state.savedPrompts = payload.prompts
         break
       case 'engine_model_options':
         state.engineModelOptions = payload.engines
@@ -587,6 +594,7 @@ export function createRunStore() {
     syncGate.reset()
     state.notice = null
     state.slashCommands = []
+    state.savedPrompts = []
     state.engineModelOptions = []
     state.discoveredModels = { codex: [] }
     state.projectFiles = []
