@@ -135,6 +135,10 @@ pub(crate) struct ProjectEntry {
     pub(crate) github_project_board_url: Option<String>,
     #[serde(default)]
     pub(crate) github_project_field_mappings: Option<String>,
+    /// GitHub account (label) the enabled board is configured under; older backups
+    /// leave it empty and the board lands under the project's default account.
+    #[serde(default)]
+    pub(crate) github_board_account: Option<String>,
     /// Default GitHub account (label).
     #[serde(default)]
     pub(crate) github_account: Option<String>,
@@ -272,6 +276,17 @@ pub(crate) struct GithubEntry {
     pub(crate) username: Option<String>,
     #[serde(default)]
     pub(crate) scopes: Option<String>,
+    /// Project V2 boards configured under the account.
+    #[serde(default)]
+    pub(crate) boards: Vec<GithubBoardEntry>,
+}
+
+#[derive(Serialize, Deserialize)]
+pub(crate) struct GithubBoardEntry {
+    pub(crate) url: String,
+    #[serde(default)]
+    pub(crate) title: String,
+    pub(crate) field_mappings: String,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1128,11 +1143,26 @@ pub(crate) async fn collect_accounts(
                 secret.github.insert(id.clone(), pat);
             }
         }
+        let boards = sqlx::query(
+            "SELECT url, title, field_mappings FROM github_boards WHERE account_id = ? ORDER BY url",
+        )
+        .bind(&id)
+        .fetch_all(db)
+        .await
+        .map_err(err)?
+        .iter()
+        .map(|b| GithubBoardEntry {
+            url: b.get("url"),
+            title: b.get("title"),
+            field_mappings: b.get("field_mappings"),
+        })
+        .collect();
         github_accounts.push(GithubEntry {
             id,
             label: row.get("label"),
             username: row.get("username"),
             scopes: row.get("scopes"),
+            boards,
         });
     }
 
@@ -1302,10 +1332,12 @@ pub(crate) async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, Strin
     let mut out = Vec::new();
     for row in sqlx::query(
         "SELECT p.id, p.name, p.path, p.github_owner, p.github_repo, p.default_engine, p.created_at, \
-                p.position, p.github_project_board_url, p.github_project_field_mappings, \
-                gh.label AS github_account, gl.label AS gitlab_account, aws.label AS aws_account, az.label AS azure_account, \
+                p.position, b.url AS github_project_board_url, b.field_mappings AS github_project_field_mappings, \
+                bgh.label AS github_board_account, gh.label AS github_account, gl.label AS gitlab_account, aws.label AS aws_account, az.label AS azure_account, \
                 cl.label AS claude_account \
          FROM projects p \
+         LEFT JOIN github_boards b ON b.id = p.github_board_id \
+         LEFT JOIN github_accounts bgh ON bgh.id = b.account_id \
          LEFT JOIN github_accounts gh ON gh.id = p.github_account_id \
          LEFT JOIN gitlab_accounts gl ON gl.id = p.gitlab_account_id \
          LEFT JOIN aws_accounts aws ON aws.id = p.aws_account_id \
@@ -1436,6 +1468,7 @@ pub(crate) async fn collect_projects(db: &Db) -> Result<Vec<ProjectEntry>, Strin
             position: row.get("position"),
             github_project_board_url: row.get("github_project_board_url"),
             github_project_field_mappings: row.get("github_project_field_mappings"),
+            github_board_account: row.get("github_board_account"),
             github_account: row.get("github_account"),
             github_reviewer_account: None,
             gitlab_account: row.get("gitlab_account"),
@@ -2270,6 +2303,20 @@ pub(crate) async fn import_github(
             (id, Upsert::Created)
         }
     };
+    let mut outcome = outcome;
+    for board in &entry.boards {
+        let (_, changed) = super::github_boards::upsert_board(
+            db,
+            &id,
+            &board.url,
+            &board.title,
+            &board.field_mappings,
+        )
+        .await?;
+        if changed && outcome == Upsert::Unchanged {
+            outcome = Upsert::Updated;
+        }
+    }
     apply_token(
         outcome,
         pat,
@@ -3022,10 +3069,10 @@ async fn import_project(
                     .map_err(err)?;
             sqlx::query(
                 "INSERT INTO projects (id, name, path, github_owner, github_repo, default_engine, \
-                 created_at, position, github_project_board_url, github_project_field_mappings, \
+                 created_at, position, \
                  github_account_id, gitlab_account_id, aws_account_id, \
                  azure_account_id, claude_account_id) \
-                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                 VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
             )
             .bind(&id)
             .bind(&entry.name)
@@ -3035,8 +3082,6 @@ async fn import_project(
             .bind(&entry.default_engine)
             .bind(&entry.created_at)
             .bind(position)
-            .bind(&entry.github_project_board_url)
-            .bind(&entry.github_project_field_mappings)
             .bind(&github)
             .bind(&gitlab)
             .bind(&aws)
@@ -3045,6 +3090,7 @@ async fn import_project(
             .execute(db)
             .await
             .map_err(err)?;
+            link_project_board(db, &id, entry).await?;
             (id, Upsert::Created)
         }
     };
@@ -3117,8 +3163,6 @@ pub(crate) async fn update_project_row(
     let changed = sqlx::query(
         "UPDATE projects SET default_engine = ?, github_owner = COALESCE(?, github_owner), \
          github_repo = COALESCE(?, github_repo), \
-         github_project_board_url = COALESCE(?, github_project_board_url), \
-         github_project_field_mappings = COALESCE(?, github_project_field_mappings), \
          github_account_id = COALESCE(?, github_account_id), \
          gitlab_account_id = COALESCE(?, gitlab_account_id), \
          aws_account_id = COALESCE(?, aws_account_id), \
@@ -3126,8 +3170,6 @@ pub(crate) async fn update_project_row(
          claude_account_id = COALESCE(?, claude_account_id) \
          WHERE id = ? AND (default_engine IS NOT ? \
          OR (? IS NOT NULL AND github_owner IS NOT ?) OR (? IS NOT NULL AND github_repo IS NOT ?) \
-         OR (? IS NOT NULL AND github_project_board_url IS NOT ?) \
-         OR (? IS NOT NULL AND github_project_field_mappings IS NOT ?) \
          OR (? IS NOT NULL AND github_account_id IS NOT ?) \
          OR (? IS NOT NULL AND gitlab_account_id IS NOT ?) \
          OR (? IS NOT NULL AND aws_account_id IS NOT ?) \
@@ -3137,8 +3179,6 @@ pub(crate) async fn update_project_row(
     let values = [
         &entry.github_owner,
         &entry.github_repo,
-        &entry.github_project_board_url,
-        &entry.github_project_field_mappings,
         &github,
         &gitlab,
         &aws,
@@ -3153,7 +3193,49 @@ pub(crate) async fn update_project_row(
     for v in values {
         q = q.bind(v).bind(v);
     }
-    Ok(q.execute(db).await.map_err(err)?.rows_affected() > 0)
+    let changed = q.execute(db).await.map_err(err)?.rows_affected() > 0;
+    Ok(link_project_board(db, id, entry).await? || changed)
+}
+
+/// Enable the entry's board on the project: the board of that URL under the board's
+/// account (else the project's default account), created from the entry's mapping
+/// when missing. No board in the entry, or no such account here, keeps the local
+/// one. Returns whether the project's board changed.
+async fn link_project_board(db: &Db, id: &str, entry: &ProjectEntry) -> Result<bool, String> {
+    let err = |e: sqlx::Error| e.to_string();
+    let Some(url) = entry.github_project_board_url.as_deref().filter(|u| !u.is_empty()) else {
+        return Ok(false);
+    };
+    let account = match id_by_label(db, "github_accounts", &entry.github_board_account).await? {
+        Some(a) => Some(a),
+        None => id_by_label(db, "github_accounts", &entry.github_account).await?,
+    };
+    let Some(account) = account else {
+        return Ok(false);
+    };
+    let existing: Option<String> =
+        sqlx::query_scalar("SELECT id FROM github_boards WHERE account_id = ? AND url = ?")
+            .bind(&account)
+            .bind(url)
+            .fetch_optional(db)
+            .await
+            .map_err(err)?;
+    let board = match (existing, &entry.github_project_field_mappings) {
+        (Some(b), _) => b,
+        (None, Some(m)) => super::github_boards::upsert_board(db, &account, url, "", m).await?.0,
+        (None, None) => return Ok(false),
+    };
+    Ok(sqlx::query(
+        "UPDATE projects SET github_board_id = ? WHERE id = ? AND github_board_id IS NOT ?",
+    )
+    .bind(&board)
+    .bind(id)
+    .bind(&board)
+    .execute(db)
+    .await
+    .map_err(err)?
+    .rows_affected()
+        > 0)
 }
 
 /// A project link `apply_project_links` could not switch on.
@@ -3469,6 +3551,7 @@ mod tests {
             label: "work".into(),
             username: Some("me".into()),
             scopes: Some("repo".into()),
+            boards: vec![],
         };
         assert_eq!(
             import_github(&db, &entry, None).await.unwrap(),
@@ -3678,8 +3761,11 @@ mod tests {
     async fn projects_round_trip_with_links_and_missing_folder() {
         let source = test_db().await;
         for sql in [
-            "INSERT INTO projects (id, name, path, default_engine, created_at, github_project_board_url) \
-             VALUES ('p1', 'shop', '/old/home/shop', 'codex', 'c', 'https://board')",
+            "INSERT INTO github_accounts (id, label, created_at) VALUES ('gh1', 'work', 'c')",
+            "INSERT INTO github_boards (id, account_id, url, title, field_mappings, created_at) \
+             VALUES ('b1', 'gh1', 'https://board', 'Board', '{}', 'c')",
+            "INSERT INTO projects (id, name, path, default_engine, created_at, github_board_id) \
+             VALUES ('p1', 'shop', '/old/home/shop', 'codex', 'c', 'b1')",
             "INSERT INTO repos (id, project_id, name, path, created_at, provider) \
              VALUES ('r1', 'p1', 'api', '/old/home/shop/api', 'c', 'gitlab')",
             "INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m1', 'slack', 'stdio', 'c')",
@@ -3698,6 +3784,7 @@ mod tests {
 
         let target = test_db().await;
         for sql in [
+            "INSERT INTO github_accounts (id, label, created_at) VALUES ('gh9', 'work', 'c')",
             "INSERT INTO mcp_servers (id, name, transport, created_at) VALUES ('m9', 'slack', 'stdio', 'c')",
             "INSERT INTO servers (id, label, host, username, auth_method, created_at) \
              VALUES ('s9', 'prod', 'h', 'root', 'agent', 'c')",
@@ -3712,8 +3799,11 @@ mod tests {
         assert!(warnings.is_empty(), "{warnings:?}");
         assert!(new_path.is_dir());
 
+        // The board is recreated under the board account of the same label.
         let (engine, board): (String, Option<String>) = sqlx::query_as(
-            "SELECT default_engine, github_project_board_url FROM projects WHERE id = ?",
+            "SELECT p.default_engine, b.url FROM projects p \
+             LEFT JOIN github_boards b ON b.id = p.github_board_id AND b.account_id = 'gh9' \
+             WHERE p.id = ?",
         )
         .bind(&id)
         .fetch_one(&target)

@@ -49,10 +49,14 @@ pub struct Project {
     /// default Claude account, or the global profile when none exists.
     #[serde(default)]
     pub claude_account_id: Option<String>,
-    /// GitHub Project V2 board URL for milestone/issue tracking (`None` = not linked).
+    /// GitHub Project V2 board enabled on the project (`github_boards.id`,
+    /// configured under a GitHub account; `None` = none).
+    #[serde(default)]
+    pub github_board_id: Option<String>,
+    /// URL of the enabled board, for milestone/issue tracking (`None` = not linked).
     #[serde(default)]
     pub github_project_board_url: Option<String>,
-    /// JSON-encoded field mappings for the linked board (start/deadline/status field ids).
+    /// JSON-encoded field mappings of the enabled board (start/deadline/status field ids).
     #[serde(default)]
     pub github_project_field_mappings: Option<String>,
     /// Number of runs recorded against this project (usage frequency).
@@ -635,9 +639,10 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
                 (SELECT GROUP_CONCAT(account_id) FROM project_gitlab_accounts WHERE project_id = p.id) AS gitlab_account_ids, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_aws_accounts WHERE project_id = p.id) AS aws_account_ids, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_azure_accounts WHERE project_id = p.id) AS azure_account_ids, \
-                p.github_project_board_url, p.github_project_field_mappings, p.position, \
+                p.github_board_id, b.url AS github_project_board_url, b.field_mappings AS github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
          FROM projects p \
+         LEFT JOIN github_boards b ON b.id = p.github_board_id \
          LEFT JOIN runs r ON r.project_id = p.id \
          GROUP BY p.id \
          {PROJECT_ORDER_BY}"
@@ -664,6 +669,7 @@ pub async fn list_projects(db: State<'_, Db>) -> Result<Vec<Project>, String> {
             aws_account_ids: split_ids(row.get("aws_account_ids")),
             azure_account_ids: split_ids(row.get("azure_account_ids")),
             claude_account_id: row.get("claude_account_id"),
+            github_board_id: row.get("github_board_id"),
             github_project_board_url: row.get("github_project_board_url"),
             github_project_field_mappings: row.get("github_project_field_mappings"),
             run_count: row.get("run_count"),
@@ -756,6 +762,7 @@ pub async fn add_project(
         aws_account_ids: Vec::new(),
         azure_account_ids: Vec::new(),
         claude_account_id: None,
+        github_board_id: None,
         github_project_board_url: None,
         github_project_field_mappings: None,
         run_count: 0,
@@ -802,16 +809,10 @@ pub async fn update_project(
     db: State<'_, Db>,
     id: String,
     name: String,
-    github_project_board_url: Option<String>,
-    github_project_field_mappings: Option<String>,
 ) -> Result<Project, String> {
     use sqlx::Row;
-    sqlx::query(
-        "UPDATE projects SET name = ?, github_project_board_url = ?, github_project_field_mappings = ? WHERE id = ?"
-    )
+    sqlx::query("UPDATE projects SET name = ? WHERE id = ?")
         .bind(&name)
-        .bind(&github_project_board_url)
-        .bind(&github_project_field_mappings)
         .bind(&id)
         .execute(db.inner())
         .await
@@ -824,9 +825,10 @@ pub async fn update_project(
                 (SELECT GROUP_CONCAT(account_id) FROM project_gitlab_accounts WHERE project_id = p.id) AS gitlab_account_ids, p.aws_account_id, p.azure_account_id, p.claude_account_id, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_aws_accounts WHERE project_id = p.id) AS aws_account_ids, \
                 (SELECT GROUP_CONCAT(account_id) FROM project_azure_accounts WHERE project_id = p.id) AS azure_account_ids, \
-                p.github_project_board_url, p.github_project_field_mappings, p.position, \
+                p.github_board_id, b.url AS github_project_board_url, b.field_mappings AS github_project_field_mappings, p.position, \
                 COUNT(r.id) AS run_count, MAX(r.created_at) AS last_used_at \
-         FROM projects p LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
+         FROM projects p LEFT JOIN github_boards b ON b.id = p.github_board_id \
+         LEFT JOIN runs r ON r.project_id = p.id WHERE p.id = ? GROUP BY p.id"
     )
         .bind(&id)
         .fetch_one(db.inner())
@@ -849,6 +851,7 @@ pub async fn update_project(
         aws_account_ids: split_ids(row.get("aws_account_ids")),
         azure_account_ids: split_ids(row.get("azure_account_ids")),
         claude_account_id: row.get("claude_account_id"),
+        github_board_id: row.get("github_board_id"),
         github_project_board_url: row.get("github_project_board_url"),
         github_project_field_mappings: row.get("github_project_field_mappings"),
         run_count: row.get("run_count"),

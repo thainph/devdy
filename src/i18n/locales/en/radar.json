@@ -60,15 +60,31 @@
   "hoursAgo": "{hours}h ago",
   "daysAgo": "{days}d ago",
   "doneStatuses": {
-    "button": "Done statuses",
-    "buttonHint": "Choose which board statuses count as done for the developer (e.g. Ready for QA)",
-    "title": "Statuses that count as done",
-    "hint": "Issues in a ticked column are treated as finished by the developer and no longer count as late.",
-    "usingDefault": "Default",
-    "resetDefault": "Use default",
+    "button": "Done rules",
+    "buttonHint": "Who the testers are and which board statuses mean handed to QA / done — set once for all projects",
+    "title": "When is an issue done?",
+    "testersTitle": "Testers",
+    "testersHint": "Click to mark someone as a tester: they stay on an issue until it is Done. Everyone else is a developer, done once it reaches QA.",
+    "noPeople": "No assignee found yet — refresh the radar first.",
+    "stagesTitle": "Status stages",
+    "hint": "Applies to every project; statuses with the same name share a stage. Guessed from the name — only fix the wrong ones.",
+    "stage": {
+      "dev": "Dev",
+      "qa": "QA",
+      "done": "Done"
+    },
+    "stageHint": {
+      "dev": "The developer is still on it",
+      "qa": "Done for the developer, the tester is on it",
+      "done": "Done for everyone"
+    },
+    "custom": "edited",
+    "resetDefault": "Reset all",
     "noOptions": "No status found yet — refresh the radar after mapping the board's Status field.",
-    "doneTag": "Done",
-    "activeTag": "In dev",
     "issueCount": "{n} open"
-  }
+  },
+  "tester": "QA",
+  "testerHint": "Tester — done only at Ready for release / Done",
+  "parentHint": "Sub-issue of {title}",
+  "inheritedDeadline": "Deadline taken from the parent issue"
 }
