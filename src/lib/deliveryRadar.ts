@@ -6,8 +6,8 @@
 // from the project's linked GitHub Project board and rolls them up per
 // assignee (or per project). Sub-issues are nested under their parent (epic /
 // user story) when both land in the same group, and "done" depends on the
-// assignee's role: a developer is done once the issue reaches QA, a tester
-// only once it is ready for release.
+// assignee's role: every board status maps to a stage (dev → QA → done) — a
+// developer is done once the issue reaches QA, a tester only once it is done.
 
 /** The fields of the Rust `IssueRow` the radar reads. */
 export interface RadarIssueRow {
@@ -78,14 +78,22 @@ export const DEFAULT_THRESHOLDS: RadarThresholds = { dueSoonDays: 3, staleDays: 
 
 const DAY = 86_400_000
 const NOT_STARTED = new Set(['', 'todo', 'to do', 'backlog', 'triage', 'ready', 'new', 'no status', 'chưa bắt đầu'])
-// Board columns that mean the developer's part is finished (handed to QA,
-// testing, staging, released, cancelled, …) when a project hasn't picked its own list.
-const DEV_DONE_PATTERN = /qa|test|uat|verif|staging|deploy|releas|done|closed|complet|shipped|resolved|merged|cancel|won.?t ?fix|hoàn thành|xong|hủy/
-// Board columns that mean the tester's part is finished too (Ready for release, Done, …).
-const QA_DONE_PATTERN = /releas|done|closed|complet|shipped|resolved|merged|cancel|won.?t ?fix|hoàn thành|xong|hủy/
+// Default stage of a board column (until the user picks one): finished for
+// everyone (released, done, cancelled, …), handed to QA (the developer's part
+// is finished: QA, testing, staging, …), otherwise still in development.
+const DONE_PATTERN = /releas|done|closed|complet|shipped|resolved|merged|cancel|won.?t ?fix|hoàn thành|xong|hủy/
+const QA_PATTERN = /qa|test|uat|verif|staging|deploy/
 
 /** Whose definition of done applies to an assignee. */
 export type RadarRole = 'dev' | 'tester'
+
+/** Where a board status sits: developer still on it → with the tester → finished. */
+export type RadarStage = 'dev' | 'qa' | 'done'
+
+export const RADAR_STAGES: RadarStage[] = ['dev', 'qa', 'done']
+
+/** Stage picked per board status (lowercased name), shared by every project; absent = `defaultStage`. */
+export type StageMap = Record<string, RadarStage | undefined>
 
 /** Local midnight of a `YYYY-MM-DD` (or ISO) date; null when unparsable. */
 export function dayStart(date: string | null | undefined): number | null {
@@ -111,25 +119,28 @@ function normStatus(status: string | null | undefined): string {
   return (status ?? '').trim().toLowerCase()
 }
 
-/**
- * Whether a board status means done for the role by default: Ready for QA,
- * Testing, Done, … for a developer; Ready for release, Done, … for a tester.
- */
-export function isDefaultDoneStatus(status: string | null | undefined, role: RadarRole = 'dev'): boolean {
+/** Stage of a board status by name: Ready for QA, Testing → qa; Ready for release, Done → done. */
+export function defaultStage(status: string | null | undefined): RadarStage {
   const s = normStatus(status)
-  return !!s && (role === 'tester' ? QA_DONE_PATTERN : DEV_DONE_PATTERN).test(s)
+  if (!s) return 'dev'
+  if (DONE_PATTERN.test(s)) return 'done'
+  if (QA_PATTERN.test(s)) return 'qa'
+  return 'dev'
+}
+
+/** The user's pick for the status, else `defaultStage`. */
+export function stageOf(status: string | null | undefined, stages?: StageMap | null): RadarStage {
+  return stages?.[normStatus(status)] ?? defaultStage(status)
 }
 
 /**
- * Done from the role's point of view: closed on GitHub, or in a board column
- * the project counts as done for that role — its own list (`doneStatuses`,
- * compared case-insensitively) when set, otherwise `isDefaultDoneStatus`.
+ * Done from the role's point of view: closed on GitHub, or a status past the
+ * role's stage — a developer is done from QA on, a tester only at done.
  */
-export function isDone(issue: RadarIssueRow, doneStatuses?: string[] | null, role: RadarRole = 'dev'): boolean {
+export function isDone(issue: RadarIssueRow, stages?: StageMap | null, role: RadarRole = 'dev'): boolean {
   if (issue.state === 'CLOSED') return true
-  if (!doneStatuses) return isDefaultDoneStatus(issue.status, role)
-  const s = normStatus(issue.status)
-  return !!s && doneStatuses.some((d) => normStatus(d) === s)
+  const stage = stageOf(issue.status, stages)
+  return role === 'tester' ? stage === 'done' : stage !== 'dev'
 }
 
 function isNotStarted(issue: RadarIssueRow): boolean {
@@ -163,14 +174,9 @@ export interface ClassifiedIssue extends RadarIssue {
   activeAssignees: string[]
 }
 
-/** Per project id: the board statuses counted as done (absent = the default rule). */
-export type DoneStatusMap = Record<string, string[] | undefined>
-
 export interface DoneRules {
-  /** Statuses done for a developer, per project. */
-  dev?: DoneStatusMap
-  /** Statuses done for a tester, per project. */
-  qa?: DoneStatusMap
+  /** Stage per board status (see `StageMap`). */
+  stages?: StageMap
   /** Logins of the testers (case-insensitive); everyone else is a developer. */
   testers?: string[]
 }
@@ -194,8 +200,7 @@ export function classifyAll(
   const seen = new Set<string>()
   const out: ClassifiedIssue[] = []
   for (const issue of issues) {
-    const doneFor = (role: RadarRole) =>
-      isDone(issue, (role === 'tester' ? rules.qa : rules.dev)?.[issue.projectId], role)
+    const doneFor = (role: RadarRole) => isDone(issue, rules.stages, role)
     let activeAssignees: string[] = []
     if (issue.assignees.length) {
       activeAssignees = issue.assignees.filter((a) => !doneFor(testers.has(a.toLowerCase()) ? 'tester' : 'dev'))

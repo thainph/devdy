@@ -61,19 +61,25 @@
   "daysAgo": "{days}d ago",
   "doneStatuses": {
     "button": "Done rules",
-    "buttonHint": "Choose which board statuses count as done for developers (e.g. Ready for QA) and testers (e.g. Ready for release), and who the testers are",
+    "buttonHint": "Who the testers are and which board statuses mean handed to QA / done — set once for all projects",
     "title": "When is an issue done?",
-    "hint": "An issue drops off a person's list once it reaches a status ticked for their role: developers are done at Ready for QA, testers only at Ready for release / Done.",
     "testersTitle": "Testers",
-    "testersHint": "Ticked people are judged by the QA column; everyone else by the Dev column.",
+    "testersHint": "Click to mark someone as a tester: they stay on an issue until it is Done. Everyone else is a developer, done once it reaches QA.",
     "noPeople": "No assignee found yet — refresh the radar first.",
-    "colStatus": "Status",
-    "col": {
-      "dev": "Dev done",
-      "tester": "QA done"
+    "stagesTitle": "Status stages",
+    "hint": "Applies to every project; statuses with the same name share a stage. Guessed from the name — only fix the wrong ones.",
+    "stage": {
+      "dev": "Dev",
+      "qa": "QA",
+      "done": "Done"
     },
-    "usingDefault": "Default",
-    "resetDefault": "Use default",
+    "stageHint": {
+      "dev": "The developer is still on it",
+      "qa": "Done for the developer, the tester is on it",
+      "done": "Done for everyone"
+    },
+    "custom": "edited",
+    "resetDefault": "Reset all",
     "noOptions": "No status found yet — refresh the radar after mapping the board's Status field.",
     "issueCount": "{n} open"
   },

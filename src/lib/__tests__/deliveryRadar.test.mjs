@@ -10,9 +10,10 @@ import {
   countByStatus,
   daysUntil,
   filterIssues,
-  isDefaultDoneStatus,
+  defaultStage,
   isDone,
   nestIssues,
+  stageOf,
 } from '../deliveryRadar.ts'
 
 // 2026-11-07 10:00 local time.
@@ -142,35 +143,37 @@ test('filterIssues by status and search text', () => {
   assert.equal(filterIssues(issues, { status: 'overdue', query: 'csv' }).length, 0)
 })
 
-test('default rule: QA / testing / release columns count as dev done', () => {
-  for (const s of ['Ready for QA', 'In QA', 'Testing', 'UAT', 'Verified', 'Staging', 'Released', 'Done', 'Hoàn thành', 'Canceled', 'Cancelled', "Won't fix"]) {
-    assert.equal(isDefaultDoneStatus(s), true, s)
+test('defaultStage guesses dev / QA / done from the status name', () => {
+  for (const s of ['Ready for QA', 'In QA', 'Testing', 'UAT', 'Verified', 'Staging', 'Deployed']) {
+    assert.equal(defaultStage(s), 'qa', s)
+  }
+  for (const s of ['Ready for release', 'Released', 'Done', 'Closed', 'Hoàn thành', 'Canceled', 'Cancelled', "Won't fix", 'QA done']) {
+    assert.equal(defaultStage(s), 'done', s)
   }
   for (const s of ['Todo', 'In progress', 'In review', 'Changes Requested', 'Blocked', '', null]) {
-    assert.equal(isDefaultDoneStatus(s), false, String(s))
+    assert.equal(defaultStage(s), 'dev', String(s))
   }
 })
 
-test('a project list of done statuses replaces the default rule', () => {
+test('a picked stage overrides the guess, case-insensitively, for every project', () => {
+  const stages = { 'ready for qa': 'done', 'in review': 'qa' }
+  assert.equal(stageOf('Ready for QA', stages), 'done')
+  assert.equal(stageOf('In Review', stages), 'qa')
+  assert.equal(stageOf('Testing', stages), 'qa')
   const qa = issue({ status: 'Ready for QA', deadline: '2026-11-01' })
   assert.equal(isDone(qa), true)
-  assert.equal(isDone(qa, ['done']), false)
-  assert.equal(isDone(issue({ status: 'In review' }), ['in review', 'Done']), true)
-  assert.equal(isDone(issue({ state: 'CLOSED', status: 'Todo' }), []), true)
+  assert.equal(isDone(qa, { 'ready for qa': 'dev' }), false)
+  assert.equal(isDone(issue({ state: 'CLOSED', status: 'Todo' }), {}), true)
   // Late but handed to QA: not overdue for the dev.
   assert.equal(classifyAll([qa], NOW, TH).length, 0)
-  assert.equal(classifyAll([qa], NOW, TH, { dev: { p1: ['Done'] } })[0].radar, 'overdue')
+  assert.equal(classifyAll([qa], NOW, TH, { stages: { 'ready for qa': 'dev' } })[0].radar, 'overdue')
+  assert.equal(classifyAll([{ ...qa, projectId: 'p2' }], NOW, TH, { stages: { 'ready for qa': 'dev' } }).length, 1)
 })
 
-test('default QA rule: only release / done columns count as done for a tester', () => {
-  for (const s of ['Ready for release', 'Released', 'Done', 'Closed', 'Hoàn thành', 'Cancelled']) {
-    assert.equal(isDefaultDoneStatus(s, 'tester'), true, s)
-  }
-  for (const s of ['Ready for QA', 'In QA', 'Testing', 'In progress', 'UAT', '', null]) {
-    assert.equal(isDefaultDoneStatus(s, 'tester'), false, String(s))
-  }
+test('a tester is done only at the done stage', () => {
   assert.equal(isDone(issue({ status: 'Ready for QA' }), null, 'tester'), false)
-  assert.equal(isDone(issue({ status: 'Ready for QA' }), ['ready for qa'], 'tester'), true)
+  assert.equal(isDone(issue({ status: 'Ready for release' }), null, 'tester'), true)
+  assert.equal(isDone(issue({ status: 'Ready for QA' }), { 'ready for qa': 'done' }, 'tester'), true)
 })
 
 test('an issue in QA leaves the developer but stays with the tester', () => {
@@ -190,8 +193,8 @@ test('an issue in QA leaves the developer but stays with the tester', () => {
     classifyAll([issue({ assignees: ['dan', 'tina'] })], NOW, TH, rules)[0].activeAssignees,
     ['dan', 'tina'],
   )
-  // A project's own QA list replaces the default tester rule.
-  const custom = { ...rules, qa: { p1: ['Ready for QA'] } }
+  // A status picked as done counts for the tester too.
+  const custom = { ...rules, stages: { 'ready for qa': 'done' } }
   assert.equal(classifyAll([issue({ assignees: ['tina'], status: 'Ready for QA' })], NOW, TH, custom).length, 0)
 })
 

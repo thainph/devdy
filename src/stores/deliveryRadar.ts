@@ -2,8 +2,8 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@/lib/tauri'
 import {
-  DEFAULT_THRESHOLDS, type DoneRules, type DoneStatusMap, type RadarIssue, type RadarIssueRow, type RadarRole,
-  type RadarThresholds,
+  DEFAULT_THRESHOLDS, type DoneRules, type RadarIssue, type RadarIssueRow, type RadarRole, type RadarStage,
+  type RadarThresholds, type StageMap,
 } from '@/lib/deliveryRadar'
 
 /** Mirrors the Rust `MilestoneBoard` (only what the radar reads). */
@@ -20,8 +20,10 @@ interface MilestoneBoard {
 export interface StatusOptionInfo {
   name: string
   color: string | null
-  /** Open issues of the project currently in this status. */
+  /** Open issues currently in this status. */
   count: number
+  /** Projects whose board has this status. */
+  projectIds: string[]
 }
 
 export interface ProjectBoardState {
@@ -34,9 +36,10 @@ export interface ProjectBoardState {
 // window or a cold start paints at once, then revalidates in the background.
 const PERSIST_PREFIX = 'devdy:radarBoard:'
 const THRESHOLDS_KEY = 'devdy:radarThresholds'
-const DONE_STATUSES_KEY = 'devdy:radarDoneStatuses'
-const QA_DONE_STATUSES_KEY = 'devdy:radarQaDoneStatuses'
+const STAGES_KEY = 'devdy:radarStatusStages'
 const TESTERS_KEY = 'devdy:radarTesters'
+// Per-project done lists of earlier versions, superseded by the shared stages.
+const LEGACY_KEYS = ['devdy:radarDoneStatuses', 'devdy:radarQaDoneStatuses']
 // Snapshots newer than this are served as-is with no network call at all.
 const REVALIDATE_MS = 5 * 60 * 1000
 // Each project already fetches its repos + board in parallel on the Rust side;
@@ -71,10 +74,11 @@ function readThresholds(): RadarThresholds {
   }
 }
 
-function readDoneStatuses(key: string): DoneStatusMap {
+function readStages(): StageMap {
   try {
-    const parsed = JSON.parse(localStorage.getItem(key) ?? 'null') as DoneStatusMap | null
-    return parsed && typeof parsed === 'object' ? parsed : {}
+    for (const k of LEGACY_KEYS) localStorage.removeItem(k)
+    const parsed = JSON.parse(localStorage.getItem(STAGES_KEY) ?? 'null') as StageMap | null
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed : {}
   } catch {
     return {}
   }
@@ -98,30 +102,23 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const errors = ref<Record<string, string>>({})
   const loading = ref<Set<string>>(new Set())
   const thresholds = ref<RadarThresholds>(readThresholds())
-  // Board statuses each project counts as done for a developer / a tester; a
-  // project absent here uses the default rule (dev: Ready for QA, Testing,
-  // Done, …; tester: Ready for release, Done, …).
-  const doneStatuses = ref<DoneStatusMap>(readDoneStatuses(DONE_STATUSES_KEY))
-  const qaDoneStatuses = ref<DoneStatusMap>(readDoneStatuses(QA_DONE_STATUSES_KEY))
+  // Stage the user picked per board status (lowercased name), shared by every
+  // project; a status absent here uses `defaultStage`.
+  const stages = ref<StageMap>(readStages())
   // GitHub logins (lowercased) of the testers; every other assignee is a developer.
   const testers = ref<string[]>(readTesters())
 
   watch(thresholds, (v) => persist(THRESHOLDS_KEY, v), { deep: true })
-  watch(doneStatuses, (v) => persist(DONE_STATUSES_KEY, v), { deep: true })
-  watch(qaDoneStatuses, (v) => persist(QA_DONE_STATUSES_KEY, v), { deep: true })
+  watch(stages, (v) => persist(STAGES_KEY, v), { deep: true })
   watch(testers, (v) => persist(TESTERS_KEY, v), { deep: true })
 
-  const doneRules = computed<DoneRules>(() => ({
-    dev: doneStatuses.value, qa: qaDoneStatuses.value, testers: testers.value,
-  }))
+  const doneRules = computed<DoneRules>(() => ({ stages: stages.value, testers: testers.value }))
 
-  /** `null` restores the default rule of the role for the project. */
-  function setDoneStatuses(projectId: string, statuses: string[] | null, role: RadarRole = 'dev') {
-    const target = role === 'tester' ? qaDoneStatuses : doneStatuses
-    const next = { ...target.value }
-    if (statuses) next[projectId] = statuses
-    else delete next[projectId]
-    target.value = next
+  /** Overrides keyed by status name; anything not listed falls back to the default. */
+  function setStages(next: Record<string, RadarStage>) {
+    const out: StageMap = {}
+    for (const [name, stage] of Object.entries(next)) out[name.trim().toLowerCase()] = stage
+    stages.value = out
   }
 
   function roleOf(login: string): RadarRole {
@@ -143,25 +140,34 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
     return [...byKey.values()].sort((a, b) => a.localeCompare(b))
   }
 
-  /** The board's Status options, plus any status seen on its issues (renamed / removed columns). */
-  function statusOptionsFor(projectId: string): StatusOptionInfo[] {
-    const board = boards.value[projectId]?.board
+  /**
+   * The Status options of the projects' boards merged by name (case-insensitive),
+   * in board order, plus any status seen on their issues (renamed / removed columns).
+   */
+  function statusOptionsFor(projectIds: string[]): StatusOptionInfo[] {
     const byKey = new Map<string, StatusOptionInfo>()
-    for (const o of board?.statusOptions ?? []) {
-      // Snapshots from before colours were returned hold plain names.
-      const opt = typeof o === 'string' ? { name: o as string, color: null } : o
-      byKey.set(opt.name.toLowerCase(), { name: opt.name, color: opt.color, count: 0 })
+    const add = (projectId: string, name: string, color: string | null) => {
+      let info = byKey.get(name.toLowerCase())
+      if (!info) {
+        info = { name, color, count: 0, projectIds: [] }
+        byKey.set(name.toLowerCase(), info)
+      }
+      if (!info.color) info.color = color
+      if (!info.projectIds.includes(projectId)) info.projectIds.push(projectId)
+      return info
     }
-    for (const g of board?.milestones ?? []) {
-      for (const i of g.issues) {
-        const name = i.status?.trim()
-        if (!name) continue
-        let info = byKey.get(name.toLowerCase())
-        if (!info) {
-          info = { name, color: i.statusColor, count: 0 }
-          byKey.set(name.toLowerCase(), info)
+    for (const id of projectIds) {
+      const board = boards.value[id]?.board
+      for (const o of board?.statusOptions ?? []) {
+        // Snapshots from before colours were returned hold plain names.
+        const opt = typeof o === 'string' ? { name: o as string, color: null } : o
+        add(id, opt.name, opt.color)
+      }
+      for (const g of board?.milestones ?? []) {
+        for (const i of g.issues) {
+          const name = i.status?.trim()
+          if (name) add(id, name, i.statusColor).count++
         }
-        info.count++
       }
     }
     return [...byKey.values()]
@@ -227,7 +233,7 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const isLoading = computed(() => loading.value.size > 0)
 
   return {
-    boards, errors, loading, isLoading, thresholds, doneStatuses, qaDoneStatuses, testers, doneRules,
-    refresh, issuesFor, oldestSavedAt, setDoneStatuses, statusOptionsFor, roleOf, setTesters, assigneesFor,
+    boards, errors, loading, isLoading, thresholds, stages, testers, doneRules,
+    refresh, issuesFor, oldestSavedAt, setStages, statusOptionsFor, roleOf, setTesters, assigneesFor,
   }
 })
