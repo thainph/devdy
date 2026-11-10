@@ -180,15 +180,27 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
     loading.value = next
   }
 
-  async function refreshOne(projectId: string, force: boolean) {
-    let state = boards.value[projectId] ?? readPersisted(projectId)
-    if (state && !boards.value[projectId]) boards.value = { ...boards.value, [projectId]: state }
-    if (state && !force && Date.now() - state.savedAt < REVALIDATE_MS) return
+  /** Paint every cached snapshot not shown yet, before any network call. */
+  function hydrate(projectIds: string[]) {
+    let next: Record<string, ProjectBoardState> | null = null
+    for (const id of projectIds) {
+      if (boards.value[id]) continue
+      const state = readPersisted(id)
+      if (state) (next ??= { ...boards.value })[id] = state
+    }
+    if (next) boards.value = next
+  }
 
+  function isFresh(projectId: string): boolean {
+    const state = boards.value[projectId]
+    return !!state && Date.now() - state.savedAt < REVALIDATE_MS
+  }
+
+  async function refreshOne(projectId: string) {
     setLoading(projectId, true)
     try {
       const board = await invoke<MilestoneBoard>('list_milestone_board', { projectId })
-      state = { board, savedAt: Date.now() }
+      const state = { board, savedAt: Date.now() }
       boards.value = { ...boards.value, [projectId]: state }
       writePersisted(projectId, state)
       if (projectId in errors.value) {
@@ -206,9 +218,12 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
 
   /** Load every project (cache first); `force` (Refresh button) always refetches. */
   async function refresh(projectIds: string[], opts: { force?: boolean } = {}) {
-    const queue = [...projectIds]
+    // Every cached project shows at once — not only when its turn in the
+    // (concurrency-capped) fetch queue comes.
+    hydrate(projectIds)
+    const queue = projectIds.filter((id) => opts.force || !isFresh(id))
     const worker = async () => {
-      for (let id = queue.shift(); id; id = queue.shift()) await refreshOne(id, !!opts.force)
+      for (let id = queue.shift(); id; id = queue.shift()) await refreshOne(id)
     }
     await Promise.all(Array.from({ length: Math.min(CONCURRENCY, queue.length) }, worker))
   }
