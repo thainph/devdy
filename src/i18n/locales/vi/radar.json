@@ -61,19 +61,25 @@
   "daysAgo": "{days} ngày trước",
   "doneStatuses": {
     "button": "Quy tắc xong",
-    "buttonHint": "Chọn các status trên board được coi là xong với dev (vd. Ready for QA) và với tester (vd. Ready for release), và ai là tester",
+    "buttonHint": "Ai là tester và status nào trên board nghĩa là đã chuyển QA / đã xong — cài một lần cho mọi dự án",
     "title": "Khi nào issue được coi là xong?",
-    "hint": "Issue rời khỏi danh sách của một người khi tới status được tick cho vai trò của họ: dev xong ở Ready for QA, tester chỉ xong ở Ready for release / Done.",
     "testersTitle": "Tester",
-    "testersHint": "Người được tick được tính theo cột QA; những người còn lại theo cột Dev.",
+    "testersHint": "Bấm để đánh dấu tester: tester còn việc tới khi issue Xong. Những người còn lại là dev, xong khi issue tới QA.",
     "noPeople": "Chưa thấy người được assign nào — hãy refresh radar trước.",
-    "colStatus": "Status",
-    "col": {
-      "dev": "Dev xong",
-      "tester": "QA xong"
+    "stagesTitle": "Giai đoạn của status",
+    "hint": "Áp dụng cho mọi dự án; các status cùng tên dùng chung giai đoạn. Đã tự đoán theo tên — chỉ cần sửa chỗ sai.",
+    "stage": {
+      "dev": "Dev",
+      "qa": "QA",
+      "done": "Xong"
     },
-    "usingDefault": "Mặc định",
-    "resetDefault": "Dùng mặc định",
+    "stageHint": {
+      "dev": "Dev vẫn đang làm",
+      "qa": "Dev đã xong, tester đang làm",
+      "done": "Mọi người đều đã xong"
+    },
+    "custom": "đã chỉnh",
+    "resetDefault": "Về mặc định",
     "noOptions": "Chưa thấy status nào — hãy refresh radar sau khi map field Status của board.",
     "issueCount": "{n} issue"
   },
