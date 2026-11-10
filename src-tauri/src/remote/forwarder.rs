@@ -17,6 +17,7 @@ use crate::remote::protocol::{
     ModelOption,
     OutputLine, ProjectInfo,
     RunInfo,
+    SavedPromptInfo,
     SlashCommandInfo,
     StreamPayload,
 };
@@ -564,6 +565,50 @@ pub async fn send_slash_command_list(
     }
 }
 
+/// Parse the `saved_prompts` setting (a JSON array of `{id, title, body}`).
+/// Lenient like the desktop's `parseSavedPrompts`: a malformed value is an empty
+/// library, rows without a string body are skipped, and blank rows dropped.
+pub fn parse_saved_prompts(raw: &str) -> Vec<SavedPromptInfo> {
+    let Ok(serde_json::Value::Array(items)) = serde_json::from_str(raw) else {
+        return Vec::new();
+    };
+    items
+        .iter()
+        .enumerate()
+        .filter_map(|(i, item)| {
+            let body = item.get("body")?.as_str()?.to_string();
+            let title = item.get("title").and_then(|v| v.as_str()).unwrap_or("").to_string();
+            if title.trim().is_empty() && body.trim().is_empty() {
+                return None;
+            }
+            let id = item
+                .get("id")
+                .and_then(|v| v.as_str())
+                .filter(|s| !s.is_empty())
+                .map(str::to_string)
+                .unwrap_or_else(|| format!("prompt-{i}"));
+            Some(SavedPromptInfo { id, title, body })
+        })
+        .collect()
+}
+
+/// Seal + send the saved prompt library to the Controller.
+pub async fn send_saved_prompt_list(
+    db: &Db,
+    session: &Session,
+    room_id: &str,
+    out: &OutboundTx,
+    seq: &SeqCounter,
+) {
+    let raw = crate::remote::get_setting(db, "saved_prompts").await.unwrap_or_default();
+    let payload = StreamPayload::SavedPromptList {
+        prompts: parse_saved_prompts(&raw),
+    };
+    if let Some(env) = seal_stream(session, room_id, &payload, seq.next()) {
+        let _ = out.send(env);
+    }
+}
+
 /// Static engine + model options mirroring the desktop's `MODEL_OPTIONS`.
 pub fn engine_model_options() -> Vec<EngineOption> {
     let claude = EngineOption {
@@ -1026,6 +1071,21 @@ mod tests {
         assert!(!super::settles_first("AskUserQuestion"));
         assert!(super::settles_first("Bash"));
         assert!(super::settles_first("mcp__devdy__notes_create"));
+    }
+
+    #[test]
+    fn saved_prompts_parse_leniently() {
+        assert!(super::parse_saved_prompts("").is_empty());
+        assert!(super::parse_saved_prompts("{\"a\":1}").is_empty());
+        let got = super::parse_saved_prompts(
+            r#"[{"id":"a","title":"Review","body":"Look at it"},
+                {"title":"no body"},
+                {"id":"","title":"","body":"untitled"},
+                {"id":"b","title":" ","body":"  "}]"#,
+        );
+        let ids: Vec<&str> = got.iter().map(|p| p.id.as_str()).collect();
+        assert_eq!(ids, ["a", "prompt-2"]);
+        assert_eq!(got[1].body, "untitled");
     }
 
     use super::*;

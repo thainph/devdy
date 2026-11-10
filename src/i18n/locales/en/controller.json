@@ -34,7 +34,10 @@
     "modelDefault": "Default (from settings)",
     "globalClaudeAccount": "Global (~/.claude)",
     "claudeAccountDefaultWith": "Default · {account}",
-    "settingsLockedRunning": "Settings are locked while the run is executing"
+    "settingsLockedRunning": "Settings are locked while the run is executing",
+    "savedPrompts": "Insert a saved prompt",
+    "savedPromptsSearch": "Search prompts…",
+    "savedPromptsEmpty": "No matching prompts"
   },
   "session": {
     "joining": "Joining…",

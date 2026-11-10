@@ -34,7 +34,10 @@
     "modelDefault": "Mặc định (theo cài đặt)",
     "globalClaudeAccount": "Chung (~/.claude)",
     "claudeAccountDefaultWith": "Mặc định · {account}",
-    "settingsLockedRunning": "Không đổi được thiết lập khi run đang chạy"
+    "settingsLockedRunning": "Không đổi được thiết lập khi run đang chạy",
+    "savedPrompts": "Chèn prompt đã lưu",
+    "savedPromptsSearch": "Tìm prompt…",
+    "savedPromptsEmpty": "Không có prompt phù hợp"
   },
   "session": {
     "joining": "Đang tham gia…",
