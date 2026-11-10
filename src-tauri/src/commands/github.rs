@@ -1500,25 +1500,17 @@ fn parse_board_url(url: &str) -> Result<(String, String, i64), String> {
     Ok((owner_type.to_string(), owner, number))
 }
 
-/// Warn early if the linked account clearly lacks Projects access. Classic PATs
+/// Warn early if the account clearly lacks Projects access. Classic PATs
 /// expose scopes via `x-oauth-scopes`; fine-grained tokens report none, so we
 /// only block when scopes are present AND lack a project/repo scope.
-async fn check_project_scope(db: &Db, project_id: &str) -> Result<(), String> {
+async fn check_project_scope(db: &Db, account_id: &str) -> Result<(), String> {
     use sqlx::Row;
-    let row = sqlx::query("SELECT github_account_id FROM projects WHERE id = ?")
-        .bind(project_id)
-        .fetch_one(db)
-        .await
-        .map_err(|e| e.to_string())?;
-    let account_id: Option<String> = row.get("github_account_id");
-    let Some(account_id) = account_id else {
-        return Err("This project has no linked GitHub account. Link one in Settings.".to_string());
-    };
     let acc = sqlx::query("SELECT scopes FROM github_accounts WHERE id = ?")
-        .bind(&account_id)
-        .fetch_one(db)
+        .bind(account_id)
+        .fetch_optional(db)
         .await
-        .map_err(|e| e.to_string())?;
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| "GitHub account not found.".to_string())?;
     let scopes: Option<String> = acc.get("scopes");
     if let Some(scopes) = scopes {
         let scopes = scopes.to_lowercase();
@@ -1534,18 +1526,17 @@ async fn check_project_scope(db: &Db, project_id: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// Resolve a board by URL and return its fields for the settings field-mapper.
+/// Resolve a board by URL with a GitHub account's PAT and return its fields for
+/// the settings field-mapper.
 #[tauri::command]
-pub async fn resolve_project_board(
+pub async fn resolve_github_board(
     db: State<'_, Db>,
-    project_id: String,
+    account_id: String,
     url: String,
 ) -> Result<BoardInfo, String> {
     let (owner_type, owner, number) = parse_board_url(&url)?;
-    check_project_scope(db.inner(), &project_id).await?;
-    let client = github::client_for_project(db.inner(), &project_id)
-        .await
-        .map_err(|e| e.to_string())?;
+    check_project_scope(db.inner(), &account_id).await?;
+    let client = github::client_for_account(&account_id).map_err(|e| e.to_string())?;
 
     let root = if owner_type == "org" { "organization" } else { "user" };
     let query = format!(
@@ -1937,15 +1928,8 @@ pub async fn list_milestone_board(
     .map_err(|e| e.to_string())?;
 
     // 2) Load board config (if any).
-    let proj = sqlx::query(
-        "SELECT github_project_field_mappings FROM projects WHERE id = ?",
-    )
-    .bind(&project_id)
-    .fetch_one(db.inner())
-    .await
-    .map_err(|e| e.to_string())?;
-    let mappings_json: Option<String> = proj.get("github_project_field_mappings");
-    let mappings = mappings_json.as_deref().map(parse_board_mappings);
+    let board = crate::commands::github_boards::project_board(db.inner(), &project_id).await?;
+    let mappings = board.as_ref().map(|b| parse_board_mappings(&b.field_mappings));
     let board_linked = mappings
         .as_ref()
         .map(|m| m.board_id.is_some())
@@ -1954,6 +1938,12 @@ pub async fn list_milestone_board(
     let client = github::client_for_project(db.inner(), &project_id)
         .await
         .map_err(|e| e.to_string())?;
+    // The board is read with the PAT of the account it was configured under,
+    // which need not be the project's default account.
+    let board_client = match &board {
+        Some(b) => github::client_for_account(&b.account_id).map_err(|e| e.to_string())?,
+        None => client.clone(),
+    };
 
     // 3) Collect GitHub repos (GitLab not supported here).
     let mut repos: Vec<(String, String)> = Vec::new();
@@ -1978,10 +1968,10 @@ pub async fn list_milestone_board(
     let board_fut = async {
         if let Some(m) = &mappings {
             let (status_colors, status_options) = match (&m.board_id, &m.status_field_id) {
-                (Some(bid), Some(sfid)) => fetch_status_options(&client, bid, sfid).await,
+                (Some(bid), Some(sfid)) => fetch_status_options(&board_client, bid, sfid).await,
                 _ => Default::default(),
             };
-            (fetch_board_item_map(&client, m, &status_colors).await, status_options)
+            (fetch_board_item_map(&board_client, m, &status_colors).await, status_options)
         } else {
             Default::default()
         }

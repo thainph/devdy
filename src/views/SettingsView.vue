@@ -20,10 +20,13 @@ import DevicesSettings from '@/components/DevicesSettings.vue'
 import SettingsBackup from '@/components/SettingsBackup.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
 import FocusSettings from '@/components/FocusSettings.vue'
+import GithubAccountBoards from '@/components/GithubAccountBoards.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
 import { useGithubAccountsStore, type PatValidation } from '@/stores/githubAccounts'
+import { useGithubBoardsStore } from '@/stores/githubBoards'
+import { useProjectsStore } from '@/stores/projects'
 import { useGitlabAccountsStore, type GitlabPatValidation } from '@/stores/gitlabAccounts'
 import { useAwsAccountsStore, isSsoLoginRequired, type AwsAccountPayload, type AwsProfileInfo, type AwsValidation } from '@/stores/awsAccounts'
 import AwsProfilePicker from '@/components/AwsProfilePicker.vue'
@@ -649,6 +652,8 @@ const azureCount = computed(() => azureStore.accounts.length)
 
 // --- GitHub accounts ---
 const ghStore = useGithubAccountsStore()
+const ghBoardsStore = useGithubBoardsStore()
+const projectsStore = useProjectsStore()
 const newLabel = ref('')
 const newPat = ref('')
 const adding = ref(false)
@@ -1166,6 +1171,9 @@ onMounted(async () => {
     savedPrompts.value = parseSavedPrompts(settings.value.saved_prompts)
     loadLaunchAtLogin()
     await ghStore.fetch()
+    // Boards list under each account; projects give the "used by N" counts.
+    void ghBoardsStore.fetch()
+    void projectsStore.fetchProjects()
     await glStore.fetch()
     await awsStore.fetch()
     loadAwsProfiles()
@@ -2026,6 +2034,7 @@ watch(() => settings.value.language, (v) => {
                       {{ t('settings.github.missingRepoScope') }}
                     </p>
                   </Banner>
+                  <GithubAccountBoards :account-id="acc.id" />
                 </template>
 
                 <!-- Edit mode -->
