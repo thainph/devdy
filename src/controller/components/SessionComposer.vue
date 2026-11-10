@@ -527,11 +527,17 @@ function submit(): void {
     ...pendingImages.value.map((img) => ({ name: `${img.id}`, mime: img.mime, data_base64: img.data })),
     ...pendingFiles.value.map((f) => pendingFileData.get(f.id)).filter((a): a is CmdAttachment => !!a),
   ]
+  // Drop the stored draft under the key it was typed in: a new session's first
+  // turn swaps the key (draft:<project> → run id) in the same tick, so the text
+  // watcher would clear the new key and leave the old draft behind.
+  const key = props.draftKey
   let accepted = false
   const accept = (): void => {
     if (accepted) return
     accepted = true
-    text.value = ''
+    writeDraft(key, '')
+    // Already on another run: its text is that run's own draft.
+    if (props.draftKey === key) text.value = ''
     pendingImages.value = []
     pendingFiles.value = []
     pendingFileData.clear()
