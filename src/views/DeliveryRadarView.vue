@@ -7,7 +7,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { CheckCheck, ChevronRight, ExternalLink, FolderOpen, ListPlus, Radar, RefreshCw, SearchX } from 'lucide-vue-next'
+import { CheckCheck, ChevronRight, CornerDownRight, ExternalLink, FolderOpen, ListPlus, Radar, RefreshCw, SearchX } from 'lucide-vue-next'
 import { useProjectsStore, type Project } from '@/stores/projects'
 import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
 import {
@@ -111,7 +111,7 @@ watch(scopeIds, (ids, prev) => {
 
 // ── Classification + grouping ────────────────────────────────────────────────
 const classified = computed(() =>
-  classifyAll(store.issuesFor(scopeProjects.value), now.value, store.thresholds, store.doneStatuses),
+  classifyAll(store.issuesFor(scopeProjects.value), now.value, store.thresholds, store.doneRules),
 )
 const counts = computed(() => countByStatus(classified.value))
 
@@ -185,6 +185,9 @@ watch(groupMode, () => { expanded.value = new Set() })
 
 function groupLabel(g: RadarGroup): string {
   return g.key === null ? t('radar.unassigned') : g.label
+}
+function isTesterGroup(g: RadarGroup): boolean {
+  return groupMode.value === 'person' && g.key !== null && store.roleOf(g.key) === 'tester'
 }
 
 // ── Issue rows ───────────────────────────────────────────────────────────────
@@ -434,6 +437,11 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
                 <span class="flex items-center gap-1.5 min-w-0">
                   <ChevronRight class="h-3 w-3 shrink-0 text-muted-foreground transition-transform" :class="{ 'rotate-90': expanded.has(groupId(g)) }" :stroke-width="2" />
                   <span class="truncate text-[13px] font-medium" :class="{ 'italic text-muted-foreground': g.key === null }">{{ groupLabel(g) }}</span>
+                  <span
+                    v-if="isTesterGroup(g)"
+                    class="shrink-0 rounded border border-info/30 bg-info/15 px-1 text-[10px] font-medium text-info"
+                    :title="t('radar.testerHint')"
+                  >{{ t('radar.tester') }}</span>
                 </span>
                 <span v-for="s in COLUMNS" :key="s" class="flex justify-center">
                   <span
@@ -453,23 +461,35 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
               <!-- Issues of the group -->
               <div v-if="expanded.has(groupId(g))" class="bg-muted/20 border-t border-border/30 py-1">
                 <div
-                  v-for="i in g.issues" :key="i.key"
-                  class="group flex items-center gap-2 pl-8 pr-3 h-8 hover:bg-accent/50 cursor-pointer"
-                  :title="i.title"
+                  v-for="{ issue: i, depth } in g.rows" :key="i.key"
+                  class="group flex items-center gap-2 pr-3 h-8 hover:bg-accent/50 cursor-pointer"
+                  :style="{ paddingLeft: `${2 + depth * 1.25}rem` }"
+                  :title="i.parent ? `${i.title}\n${t('radar.parentHint', { title: `#${i.parent.number} ${i.parent.title}` })}` : i.title"
                   @click="openIssue(i)"
                   @contextmenu.prevent="openRowMenu($event, i)"
                 >
+                  <CornerDownRight v-if="depth > 0" class="h-3 w-3 shrink-0 -ml-1 text-muted-foreground/60" :stroke-width="1.75" />
                   <span class="w-24 shrink-0 rounded border px-1.5 py-0.5 text-center text-[10px] font-medium truncate" :class="TONE_PILL[i.radar]">
                     {{ t(`radar.status.${i.radar}`) }}
                   </span>
                   <span class="font-mono text-[10px] text-muted-foreground/70 shrink-0">{{ i.repo }}#{{ i.number }}</span>
-                  <span class="truncate min-w-0 flex-1">{{ i.title }}</span>
+                  <span class="flex min-w-0 flex-1 items-baseline gap-1.5">
+                    <span class="truncate">{{ i.title }}</span>
+                    <!-- Parent not in this list (other assignee, done, …): say where the task belongs. -->
+                    <span v-if="depth === 0 && i.parent" class="hidden md:inline truncate shrink-[2] text-[10px] text-muted-foreground/70">
+                      ↑ #{{ i.parent.number }} {{ i.parent.title }}
+                    </span>
+                  </span>
                   <span class="hidden md:inline truncate max-w-48 text-[11px] text-muted-foreground">{{ issueContext(i, g) }}</span>
                   <span class="flex items-center gap-1 shrink-0 w-28 text-[11px] text-muted-foreground truncate">
                     <span class="h-2 w-2 rounded-full shrink-0" :class="statusDotClass(i.statusColor)" />
                     <span class="truncate">{{ i.status || t('radar.noStatus') }}</span>
                   </span>
-                  <span class="shrink-0 w-28 text-right text-[11px]" :class="i.daysLeft !== null && i.daysLeft < 0 ? 'text-destructive font-medium' : 'text-muted-foreground'">
+                  <span
+                    class="shrink-0 w-28 text-right text-[11px]"
+                    :class="[i.daysLeft !== null && i.daysLeft < 0 ? 'text-destructive font-medium' : 'text-muted-foreground', { italic: i.deadlineInherited }]"
+                    :title="i.deadlineInherited ? t('radar.inheritedDeadline') : undefined"
+                  >
                     {{ deadlineText(i) }}<span v-if="deadlineDate(i)" class="text-muted-foreground/60"> · {{ deadlineDate(i) }}</span>
                   </span>
                   <span class="hidden lg:inline shrink-0 w-28 text-right text-[10px] text-muted-foreground/70">

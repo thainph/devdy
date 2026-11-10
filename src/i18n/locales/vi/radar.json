@@ -60,15 +60,25 @@
   "hoursAgo": "{hours} giờ trước",
   "daysAgo": "{days} ngày trước",
   "doneStatuses": {
-    "button": "Status coi là xong",
-    "buttonHint": "Chọn các status trên board được coi là dev đã xong (vd. Ready for QA)",
-    "title": "Status coi là đã xong",
-    "hint": "Issue ở các cột được tick coi như dev đã làm xong và không còn bị tính là trễ.",
+    "button": "Quy tắc xong",
+    "buttonHint": "Chọn các status trên board được coi là xong với dev (vd. Ready for QA) và với tester (vd. Ready for release), và ai là tester",
+    "title": "Khi nào issue được coi là xong?",
+    "hint": "Issue rời khỏi danh sách của một người khi tới status được tick cho vai trò của họ: dev xong ở Ready for QA, tester chỉ xong ở Ready for release / Done.",
+    "testersTitle": "Tester",
+    "testersHint": "Người được tick được tính theo cột QA; những người còn lại theo cột Dev.",
+    "noPeople": "Chưa thấy người được assign nào — hãy refresh radar trước.",
+    "colStatus": "Status",
+    "col": {
+      "dev": "Dev xong",
+      "tester": "QA xong"
+    },
     "usingDefault": "Mặc định",
     "resetDefault": "Dùng mặc định",
     "noOptions": "Chưa thấy status nào — hãy refresh radar sau khi map field Status của board.",
-    "doneTag": "Xong",
-    "activeTag": "Đang làm",
     "issueCount": "{n} issue"
-  }
+  },
+  "tester": "QA",
+  "testerHint": "Tester — chỉ xong khi Ready for release / Done",
+  "parentHint": "Task con của {title}",
+  "inheritedDeadline": "Deadline lấy từ task cha"
 }

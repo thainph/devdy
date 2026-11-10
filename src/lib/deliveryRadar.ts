@@ -4,7 +4,10 @@
 // store flattens every project's `list_milestone_board` result into
 // `RadarIssue`s; this module classifies each issue against the deadline taken
 // from the project's linked GitHub Project board and rolls them up per
-// assignee (or per project).
+// assignee (or per project). Sub-issues are nested under their parent (epic /
+// user story) when both land in the same group, and "done" depends on the
+// assignee's role: a developer is done once the issue reaches QA, a tester
+// only once it is ready for release.
 
 /** The fields of the Rust `IssueRow` the radar reads. */
 export interface RadarIssueRow {
@@ -20,6 +23,18 @@ export interface RadarIssueRow {
   status: string | null
   statusColor: string | null
   state: string | null
+  /** Parent issue (GitHub sub-issues); missing in snapshots from older versions. */
+  parent?: RadarParentRef | null
+  /** `deadline` comes from an ancestor (the issue has none of its own). */
+  deadlineInherited?: boolean
+}
+
+export interface RadarParentRef {
+  owner: string
+  repo: string
+  number: number
+  title: string
+  htmlUrl: string
 }
 
 export interface RadarIssue extends RadarIssueRow {
@@ -66,6 +81,11 @@ const NOT_STARTED = new Set(['', 'todo', 'to do', 'backlog', 'triage', 'ready', 
 // Board columns that mean the developer's part is finished (handed to QA,
 // testing, staging, released, cancelled, …) when a project hasn't picked its own list.
 const DEV_DONE_PATTERN = /qa|test|uat|verif|staging|deploy|releas|done|closed|complet|shipped|resolved|merged|cancel|won.?t ?fix|hoàn thành|xong|hủy/
+// Board columns that mean the tester's part is finished too (Ready for release, Done, …).
+const QA_DONE_PATTERN = /releas|done|closed|complet|shipped|resolved|merged|cancel|won.?t ?fix|hoàn thành|xong|hủy/
+
+/** Whose definition of done applies to an assignee. */
+export type RadarRole = 'dev' | 'tester'
 
 /** Local midnight of a `YYYY-MM-DD` (or ISO) date; null when unparsable. */
 export function dayStart(date: string | null | undefined): number | null {
@@ -91,20 +111,23 @@ function normStatus(status: string | null | undefined): string {
   return (status ?? '').trim().toLowerCase()
 }
 
-/** Whether a board status means "dev done" by default (Ready for QA, Testing, Done, …). */
-export function isDefaultDoneStatus(status: string | null | undefined): boolean {
+/**
+ * Whether a board status means done for the role by default: Ready for QA,
+ * Testing, Done, … for a developer; Ready for release, Done, … for a tester.
+ */
+export function isDefaultDoneStatus(status: string | null | undefined, role: RadarRole = 'dev'): boolean {
   const s = normStatus(status)
-  return !!s && DEV_DONE_PATTERN.test(s)
+  return !!s && (role === 'tester' ? QA_DONE_PATTERN : DEV_DONE_PATTERN).test(s)
 }
 
 /**
- * Done from the developer's point of view: closed on GitHub, or in a board
- * column the project counts as done — its own list (`doneStatuses`, compared
- * case-insensitively) when set, otherwise `isDefaultDoneStatus`.
+ * Done from the role's point of view: closed on GitHub, or in a board column
+ * the project counts as done for that role — its own list (`doneStatuses`,
+ * compared case-insensitively) when set, otherwise `isDefaultDoneStatus`.
  */
-export function isDone(issue: RadarIssueRow, doneStatuses?: string[] | null): boolean {
+export function isDone(issue: RadarIssueRow, doneStatuses?: string[] | null, role: RadarRole = 'dev'): boolean {
   if (issue.state === 'CLOSED') return true
-  if (!doneStatuses) return isDefaultDoneStatus(issue.status)
+  if (!doneStatuses) return isDefaultDoneStatus(issue.status, role)
   const s = normStatus(issue.status)
   return !!s && doneStatuses.some((d) => normStatus(d) === s)
 }
@@ -136,25 +159,56 @@ export interface ClassifiedIssue extends RadarIssue {
   radar: RadarStatus
   /** Days to the deadline (negative = late); null without a deadline. */
   daysLeft: number | null
+  /** Assignees whose part is not done yet (a dev drops out at Ready for QA, a tester stays). */
+  activeAssignees: string[]
 }
 
 /** Per project id: the board statuses counted as done (absent = the default rule). */
 export type DoneStatusMap = Record<string, string[] | undefined>
 
+export interface DoneRules {
+  /** Statuses done for a developer, per project. */
+  dev?: DoneStatusMap
+  /** Statuses done for a tester, per project. */
+  qa?: DoneStatusMap
+  /** Logins of the testers (case-insensitive); everyone else is a developer. */
+  testers?: string[]
+}
+
+function issueKey(projectId: string, repo: string, number: number): string {
+  return `${projectId}::${repo.toLowerCase()}#${number}`
+}
+
+/**
+ * Classify the open work: an issue stays while at least one assignee still has
+ * something to do on it (judged by their role); an unassigned one while it is
+ * not done for a developer.
+ */
 export function classifyAll(
   issues: RadarIssue[],
   now: number,
   th: RadarThresholds,
-  doneStatuses: DoneStatusMap = {},
+  rules: DoneRules = {},
 ): ClassifiedIssue[] {
+  const testers = new Set((rules.testers ?? []).map((l) => l.toLowerCase()))
   const seen = new Set<string>()
   const out: ClassifiedIssue[] = []
   for (const issue of issues) {
-    if (isDone(issue, doneStatuses[issue.projectId])) continue
-    const key = `${issue.projectId}::${issue.repo.toLowerCase()}#${issue.number}`
+    const doneFor = (role: RadarRole) =>
+      isDone(issue, (role === 'tester' ? rules.qa : rules.dev)?.[issue.projectId], role)
+    let activeAssignees: string[] = []
+    if (issue.assignees.length) {
+      activeAssignees = issue.assignees.filter((a) => !doneFor(testers.has(a.toLowerCase()) ? 'tester' : 'dev'))
+      if (!activeAssignees.length) continue
+    } else if (doneFor('dev')) {
+      continue
+    }
+    const key = issueKey(issue.projectId, issue.repo, issue.number)
     if (seen.has(key)) continue
     seen.add(key)
-    out.push({ ...issue, key, radar: classifyIssue(issue, now, th), daysLeft: daysUntil(issue.deadline, now) })
+    out.push({
+      ...issue, key, radar: classifyIssue(issue, now, th), daysLeft: daysUntil(issue.deadline, now), activeAssignees,
+    })
   }
   return out
 }
@@ -194,6 +248,73 @@ export interface RadarGroup {
   /** Projects (person mode) or assignees (project mode) involved. */
   related: string[]
   issues: ClassifiedIssue[]
+  /** `issues` as a tree: sub-issues right under their parent when it is in the group too. */
+  rows: RadarRow[]
+}
+
+export interface RadarRow {
+  issue: ClassifiedIssue
+  /** 0 = top level; 1 = sub-issue of the row above it, … */
+  depth: number
+  hasChildren: boolean
+}
+
+/** Key of an issue's parent, in the same form as `ClassifiedIssue.key`. */
+export function parentKey(issue: ClassifiedIssue): string | null {
+  return issue.parent ? issueKey(issue.projectId, issue.parent.repo, issue.parent.number) : null
+}
+
+/**
+ * Lay issues out as a tree: each sub-issue goes right under its parent (when
+ * the parent is in the list), siblings and top-level rows ordered by the most
+ * urgent issue of their subtree — so an epic whose task is late floats up with it.
+ */
+export function nestIssues(issues: ClassifiedIssue[]): RadarRow[] {
+  const keys = new Set(issues.map((i) => i.key))
+  const children = new Map<string, ClassifiedIssue[]>()
+  const roots: ClassifiedIssue[] = []
+  for (const issue of issues) {
+    const pk = parentKey(issue)
+    if (pk && pk !== issue.key && keys.has(pk)) {
+      const list = children.get(pk)
+      if (list) list.push(issue)
+      else children.set(pk, [issue])
+    } else {
+      roots.push(issue)
+    }
+  }
+
+  const lead = new Map<string, ClassifiedIssue>()
+  const leadOf = (issue: ClassifiedIssue, path: Set<string>): ClassifiedIssue => {
+    const cached = lead.get(issue.key)
+    if (cached) return cached
+    path.add(issue.key)
+    let best = issue
+    for (const c of children.get(issue.key) ?? []) {
+      if (path.has(c.key)) continue
+      const l = leadOf(c, path)
+      if (compareIssues(l, best) < 0) best = l
+    }
+    path.delete(issue.key)
+    lead.set(issue.key, best)
+    return best
+  }
+  const bySubtree = (a: ClassifiedIssue, b: ClassifiedIssue) =>
+    compareIssues(leadOf(a, new Set()), leadOf(b, new Set())) || compareIssues(a, b)
+
+  const rows: RadarRow[] = []
+  const placed = new Set<string>()
+  const place = (issue: ClassifiedIssue, depth: number) => {
+    if (placed.has(issue.key)) return
+    placed.add(issue.key)
+    const kids = [...(children.get(issue.key) ?? [])].sort(bySubtree)
+    rows.push({ issue, depth, hasChildren: kids.length > 0 })
+    for (const c of kids) place(c, depth + 1)
+  }
+  for (const r of [...roots].sort(bySubtree)) place(r, 0)
+  // Issues caught in a parent cycle have no root: list them flat.
+  for (const issue of issues) place(issue, 0)
+  return rows
 }
 
 /**
@@ -209,12 +330,14 @@ export function buildGroups(issues: ClassifiedIssue[], mode: RadarGroupMode): Ra
       mode === 'project'
         ? [{ id: issue.projectId, key: issue.projectId, label: issue.projectName }]
         : issue.assignees.length
-          ? issue.assignees.map((a) => ({ id: a.toLowerCase(), key: a, label: a }))
+          ? issue.activeAssignees.map((a) => ({ id: a.toLowerCase(), key: a, label: a }))
           : [{ id: UNASSIGNED, key: null, label: '' }]
     for (const t of targets) {
       let g = groups.get(t.id)
       if (!g) {
-        g = { key: t.key, label: t.label, counts: emptyCounts(), total: 0, worstLateDays: null, related: [], issues: [] }
+        g = {
+          key: t.key, label: t.label, counts: emptyCounts(), total: 0, worstLateDays: null, related: [], issues: [], rows: [],
+        }
         groups.set(t.id, g)
       }
       g.issues.push(issue)
@@ -223,13 +346,14 @@ export function buildGroups(issues: ClassifiedIssue[], mode: RadarGroupMode): Ra
       if (issue.daysLeft !== null && issue.daysLeft < 0) {
         g.worstLateDays = Math.max(g.worstLateDays ?? 0, -issue.daysLeft)
       }
-      const related = mode === 'project' ? issue.assignees : [issue.projectName]
+      const related = mode === 'project' ? issue.activeAssignees : [issue.projectName]
       for (const r of related) if (!g.related.includes(r)) g.related.push(r)
     }
   }
   const list = [...groups.values()]
   for (const g of list) {
     g.issues.sort(compareIssues)
+    g.rows = nestIssues(g.issues)
     g.related.sort((a, b) => a.localeCompare(b))
   }
   return list.sort((a, b) =>
@@ -255,6 +379,7 @@ export function filterIssues(
     const num = q.replace(/^#/, '')
     return (
       i.title.toLowerCase().includes(q) ||
+      !!i.parent?.title.toLowerCase().includes(q) ||
       i.repo.toLowerCase().includes(q) ||
       String(i.number) === num ||
       i.assignees.some((a) => a.toLowerCase().includes(q))

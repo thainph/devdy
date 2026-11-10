@@ -1442,6 +1442,31 @@ pub struct IssueRow {
     pub state: Option<String>,
     /// Timestamp the issue was closed (ISO 8601). None while open.
     pub closed_at: Option<String>,
+    /// Parent issue (GitHub sub-issues), e.g. the epic / user story of a task.
+    pub parent: Option<ParentRef>,
+    /// `deadline` was copied from an ancestor because the issue has none of its own.
+    pub deadline_inherited: bool,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct ParentRef {
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+}
+
+impl ParentRef {
+    fn key(&self) -> String {
+        issue_key(&self.owner, &self.repo, self.number)
+    }
+}
+
+/// `owner/repo#number`, lowercased — the key of `fetch_board_item_map`.
+fn issue_key(owner: &str, repo: &str, number: u64) -> String {
+    format!("{}/{}#{}", owner.to_lowercase(), repo.to_lowercase(), number)
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -1748,7 +1773,7 @@ async fn fetch_board_item_map(
                     .and_then(|c| c.pointer("/repository/owner/login"))
                     .and_then(|s| s.as_str());
                 let (Some(number), Some(repo), Some(owner)) = (number, repo, owner) else { continue };
-                let key = format!("{}/{}#{}", owner.to_lowercase(), repo.to_lowercase(), number);
+                let key = issue_key(owner, repo, number);
                 let fields = board_item_fields(item, m, status_colors);
                 map.insert(key, fields);
             }
@@ -1816,6 +1841,52 @@ fn parse_issue_node(issue: &serde_json::Value, repo_name: &str) -> IssueRow {
         status_color: None,
         state: issue.get("state").and_then(|s| s.as_str()).map(|s| s.to_string()),
         closed_at: issue.get("closedAt").and_then(|s| s.as_str()).map(|s| s.to_string()),
+        parent: issue.get("parent").and_then(parse_parent_ref),
+        deadline_inherited: false,
+    }
+}
+
+fn parse_parent_ref(p: &serde_json::Value) -> Option<ParentRef> {
+    Some(ParentRef {
+        owner: p.pointer("/repository/owner/login")?.as_str()?.to_string(),
+        repo: p.pointer("/repository/name")?.as_str()?.to_string(),
+        number: p.get("number")?.as_u64()?,
+        title: p.get("title").and_then(|t| t.as_str()).unwrap_or("").to_string(),
+        html_url: p.get("url").and_then(|u| u.as_str()).unwrap_or("").to_string(),
+    })
+}
+
+/// Give every issue without a Deadline the one of its closest ancestor that has
+/// one (task → user story → epic). Ancestors are looked up among the fetched
+/// issues first (their parent links let the walk go further up), then on the
+/// board (covers closed parents and parents in repos outside the project).
+fn inherit_parent_deadlines(
+    issues: &mut [(String, IssueRow)],
+    board_map: &std::collections::HashMap<String, BoardItemFields>,
+) {
+    let by_key: std::collections::HashMap<String, (Option<String>, Option<String>)> = issues
+        .iter()
+        .map(|(k, i)| (k.clone(), (i.deadline.clone(), i.parent.as_ref().map(|p| p.key()))))
+        .collect();
+    for (_, issue) in issues.iter_mut() {
+        if issue.deadline.is_some() {
+            continue;
+        }
+        let mut next = issue.parent.as_ref().map(|p| p.key());
+        // Bounded: guards against a (malformed) parent cycle.
+        for _ in 0..8 {
+            let Some(key) = next.take() else { break };
+            let (deadline, parent) = match by_key.get(&key) {
+                Some((d, p)) => (d.clone(), p.clone()),
+                None => (board_map.get(&key).and_then(|b| b.deadline.clone()), None),
+            };
+            if deadline.is_some() {
+                issue.deadline = deadline;
+                issue.deadline_inherited = true;
+                break;
+            }
+            next = parent;
+        }
     }
 }
 
@@ -1843,7 +1914,7 @@ async fn fetch_repo_board(
     let mut first_page = true;
 
     for page in 0..10 {
-        let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:50, states:[OPEN,CLOSED]) @include(if:$withMs){ nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url state createdAt updatedAt closedAt comments{ totalCount } milestone{ title dueOn } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
+        let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:50, states:[OPEN,CLOSED]) @include(if:$withMs){ nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url state createdAt updatedAt closedAt comments{ totalCount } milestone{ title dueOn } parent{ number title url repository{ name owner{ login } } } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
         let payload = serde_json::json!({
             "query": query,
             "variables": { "owner": owner, "repo": name, "cursor": cursor, "withMs": first_page }
@@ -1989,7 +2060,8 @@ pub async fn list_milestone_board(
         due: Option<String>,
     }
     let mut ms_summary: std::collections::HashMap<String, MsAcc> = std::collections::HashMap::new();
-    let mut all_issues: Vec<IssueRow> = Vec::new();
+    // Keyed `owner/repo#n` so sub-issues can find their parents.
+    let mut all_issues: Vec<(String, IssueRow)> = Vec::new();
 
     for res in repo_results {
         let fetch = res?; // propagate the first repo error, as before
@@ -2023,15 +2095,16 @@ pub async fn list_milestone_board(
                 issue.status = bf.status.clone();
                 issue.status_color = bf.status_color.clone();
             }
-            all_issues.push(issue);
+            all_issues.push((key, issue));
         }
     }
+    inherit_parent_deadlines(&mut all_issues, &board_map);
 
     // 6) Group issues by milestone title.
     const NO_MS: &str = "__no_milestone__";
     let mut order: Vec<String> = Vec::new();
     let mut groups: std::collections::HashMap<String, MilestoneGroup> = std::collections::HashMap::new();
-    for issue in all_issues {
+    for (_, issue) in all_issues {
         let key = issue
             .milestone_title
             .as_ref()
@@ -2084,7 +2157,55 @@ pub async fn list_milestone_board(
 
 #[cfg(test)]
 mod tests {
-    use super::{is_bot_author, parse_review_requests_page, pr_map_key, SearchPrItem};
+    use super::{
+        inherit_parent_deadlines, is_bot_author, parse_issue_node, parse_review_requests_page, pr_map_key,
+        BoardItemFields, SearchPrItem,
+    };
+
+    fn sub_issue(number: u64, deadline: Option<&str>, parent: Option<u64>) -> (String, super::IssueRow) {
+        let mut node = serde_json::json!({ "number": number, "title": format!("Issue {number}") });
+        if let Some(p) = parent {
+            node["parent"] = serde_json::json!({
+                "number": p, "title": "Parent", "url": "u",
+                "repository": { "name": "Web", "owner": { "login": "Acme" } }
+            });
+        }
+        let mut row = parse_issue_node(&node, "Web");
+        row.deadline = deadline.map(|d| d.to_string());
+        (format!("acme/web#{number}"), row)
+    }
+
+    #[test]
+    fn sub_issues_inherit_the_closest_ancestor_deadline() {
+        let mut issues = vec![
+            sub_issue(1, Some("2026-12-01"), None), // epic
+            sub_issue(2, None, Some(1)),            // story, no deadline
+            sub_issue(3, None, Some(2)),            // task under the story
+            sub_issue(4, Some("2026-11-20"), Some(1)),
+            sub_issue(5, None, Some(9)),            // parent closed: only on the board
+            sub_issue(6, None, Some(42)),           // parent unknown
+        ];
+        let mut board = std::collections::HashMap::new();
+        board.insert(
+            "acme/web#9".to_string(),
+            BoardItemFields { deadline: Some("2026-11-15".into()), ..Default::default() },
+        );
+        inherit_parent_deadlines(&mut issues, &board);
+        let got: Vec<(Option<&str>, bool)> =
+            issues.iter().map(|(_, i)| (i.deadline.as_deref(), i.deadline_inherited)).collect();
+        assert_eq!(
+            got,
+            vec![
+                (Some("2026-12-01"), false),
+                (Some("2026-12-01"), true),
+                (Some("2026-12-01"), true),
+                (Some("2026-11-20"), false),
+                (Some("2026-11-15"), true),
+                (None, false),
+            ]
+        );
+        assert_eq!(issues[2].1.parent.as_ref().unwrap().repo, "Web");
+    }
 
     #[test]
     fn is_bot_author_detects_bot_type_and_login_suffix() {
