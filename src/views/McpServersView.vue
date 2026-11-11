@@ -15,6 +15,7 @@
 // Selection lives in the URL (`?id=` a server or a `builtin:` / `catalog:`
 // row, `?new=1` a blank draft) — never anything secret.
 import { computed, onMounted, ref, watch } from 'vue'
+import { byText, type ListSort } from '@/lib/listGroups'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
@@ -176,6 +177,10 @@ const groups = computed(() =>
     },
   ),
 )
+
+const sorts = computed<ListSort<McpRow>[]>(() => [
+  { value: 'name', label: t('common.sortByName'), compare: byText((r) => r.name) },
+])
 
 // The MCP list is global (not project-scoped). Codex supports stdio and
 // streamable HTTP; legacy SSE remains Claude-only.
@@ -446,6 +451,9 @@ function dotClass(row: McpRow): string {
       :groups="groups"
       :selected-id="isNew ? null : selectedId"
       collapse-key="mcp.collapsed"
+      :sorts="sorts"
+      default-sort="name"
+      :grouped-label="t('common.sortByType')"
       :search-placeholder="t('mcp.list.searchPlaceholder')"
       :loading="store.loading"
       :error="store.error"

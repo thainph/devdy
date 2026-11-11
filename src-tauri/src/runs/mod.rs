@@ -30,9 +30,11 @@ pub struct RunHandles {
     /// so the drain task can update it in place; `resume_run` reads from the DB.
     #[allow(dead_code)]
     pub session_id: Arc<Mutex<Option<String>>>,
-    /// Live log buffer shared with the stdout-drain task and `send_user_message`,
+    /// Pending log tail shared with the stdout-drain task and `send_user_message`,
     /// so user follow-up messages are persisted to the log file alongside the
-    /// stream from the subprocess.
+    /// stream from the subprocess. Append-only for writers; the drain task's
+    /// flusher empties it on every flush, so it is NOT the full log — read the
+    /// log file for that.
     pub log_buf: Arc<Mutex<String>>,
     /// GĐ7: registration of this run in the app-wide singleton broker (Claude
     /// runs only; None for codex). The broker outlives every run; this guard only

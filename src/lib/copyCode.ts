@@ -80,7 +80,15 @@ function decorateCopy(el: HTMLElement): void {
   })
 }
 
-export const vCopyCode: Directive<HTMLElement> = {
-  mounted: (el) => decorateCopy(el),
-  updated: (el) => decorateCopy(el),
+// `v-copy-code="false"` skips decorating — used while a message is streaming:
+// its innerHTML is replaced several times a second, so buttons would be built
+// only to be thrown away. The first update with a truthy (or absent) value
+// decorates the settled DOM.
+export const vCopyCode: Directive<HTMLElement, boolean | undefined> = {
+  mounted: (el, binding) => {
+    if (binding.value !== false) decorateCopy(el)
+  },
+  updated: (el, binding) => {
+    if (binding.value !== false) decorateCopy(el)
+  },
 }

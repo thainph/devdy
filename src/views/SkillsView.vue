@@ -3,6 +3,7 @@
 // lists the skills in their groups, the right pane edits the selected one.
 // The selection lives in the URL — `?id=<id>` or `?new=1` for a draft.
 import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
+import { byNewest, byText, type ListSort } from '@/lib/listGroups'
 import { useI18n } from 'vue-i18n'
 import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQuery } from 'vue-router'
@@ -55,6 +56,12 @@ const rowGroups = computed(() =>
     ungroupedLabel: t('groups.ungrouped'),
   }),
 )
+
+type SkillListRow = (typeof rowGroups.value)[number]['rows'][number]
+const sorts = computed<ListSort<SkillListRow>[]>(() => [
+  { value: 'name', label: t('common.sortByName'), compare: byText((r) => r.skill.name) },
+  { value: 'updated', label: t('common.sortByUpdated'), compare: byNewest((r) => r.skill.updated_at) },
+])
 
 const groupOptions = computed(() => [
   { value: '', label: t('groups.allGroups') },
@@ -326,6 +333,8 @@ async function handleExport(skill: Skill) {
       :groups="rowGroups"
       :selected-id="selectedId"
       collapse-key="devdy.skills.collapsed"
+      :sorts="sorts"
+      default-sort="name"
       :search-placeholder="t('skills.detail.searchPlaceholder')"
       :loading="store.loading"
       :error="store.error"

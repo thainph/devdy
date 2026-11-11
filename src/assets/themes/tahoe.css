@@ -190,6 +190,29 @@
   display: none;
 }
 
+/* --- List sidebars (Skills, Rules, MCP, Servers, Todos / Notes, Slack…) ----
+ * On a wallpaper (`.app-shell`) they float as a second glass pane, the nav's
+ * recipe: in the main window next to the nav, 8px off the window bottom; in a
+ * pop-out (`.app-window`, native titlebar, no nav) inset 8px on the left too.
+ * Pop-outs without `.app-shell` keep the plain --sidebar fill. */
+[data-theme='tahoe'] .app-shell .list-sidebar {
+  margin-bottom: 8px;
+  border-right: 0;
+  border-radius: 18px;
+  overflow: hidden;
+  background-color: var(--tahoe-pane);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 6px rgba(0, 0, 0, 0.06);
+}
+[data-theme='tahoe'] .app-window .list-sidebar {
+  margin: 8px 0 8px 8px;
+}
+
 /* --- Surfaces -------------------------------------------------------------- */
 [data-theme='tahoe'] .ui-card {
   border-radius: 16px;

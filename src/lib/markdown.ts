@@ -39,13 +39,19 @@ export function useMarkdown() {
     const key = md ?? ''
     if (skipCache) return _md.render(key)
     const cached = _mdCache.get(key)
-    if (cached !== undefined) return cached
+    if (cached !== undefined) {
+      // Re-insert on a hit so Map order tracks recency: entries still being
+      // re-read (on screen, re-rendered by a toggle) stay, and the ones nobody
+      // has looked at for longest are evicted first.
+      _mdCache.delete(key)
+      _mdCache.set(key, cached)
+      return cached
+    }
     const html = _md.render(key)
-    // Evict ONE oldest entry, not the whole map. Clearing wholesale meant the
-    // next render had to re-parse the entire conversation from scratch — the
-    // periodic freeze during long runs. Map preserves insertion order, so the
-    // first key is the oldest; FIFO is enough here because a stream is
-    // append-only and older entries are only re-read when scrolling back.
+    // Evict ONE least-recently-used entry, not the whole map. Clearing
+    // wholesale meant the next render had to re-parse the entire conversation
+    // from scratch — the periodic freeze during long runs. Map preserves
+    // insertion order, so the first key is the least recently used.
     if (_mdCache.size >= MD_CACHE_MAX) {
       const oldest = _mdCache.keys().next().value
       if (oldest !== undefined) _mdCache.delete(oldest)

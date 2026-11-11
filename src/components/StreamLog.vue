@@ -1,15 +1,15 @@
 <script setup lang="ts">
-import { ref, computed, watch, onMounted, onBeforeUnmount, type Component } from 'vue'
+import { ref, computed, watch, onMounted, onBeforeUnmount, toRaw, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ChevronRight, Wrench, Sparkles, CheckCircle2, XCircle, Cpu, Brain, AlertTriangle, Info,
   Terminal, FilePen, FilePlus2, FileText, Search, Globe, ListTodo, User, Archive, Copy, Check,
   Bot, MessageCircleQuestion, Circle, CircleDot, ClipboardList, Server, BookOpen, BellRing,
 } from 'lucide-vue-next'
-import type { StreamEntry } from '@/lib/streamEvents'
+import { entryKey, type StreamEntry } from '@/lib/streamEvents'
 import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
-import { computeDiff } from '@/lib/diff'
+import { diffStats } from '@/lib/diff'
 import { toolFileTarget, toolFileTargets, codexEditParts, type DiffPart } from '@/lib/toolFiles'
 import IdeContextChip from './IdeContextChip.vue'
 import DiffView from './DiffView.vue'
@@ -31,11 +31,21 @@ const emit = defineEmits<{
   (e: 'open-url', url: string): void
 }>()
 
+// Every per-entry UI state below (expanded cards, copy flashes, the v-for key)
+// is keyed by the entry's stable id, never its index: loading older history
+// prepends entries and would otherwise shift the state onto the wrong ones.
+// toRaw: the id is written on first use, during render, and must not trigger.
+function keyOf(entry: StreamEntry): number {
+  return entryKey(toRaw(entry))
+}
+
 // Per-entry expand state for compaction-summary dividers (collapsed by default).
 const expandedCompacts = ref(new Set<number>())
-function toggleCompact(i: number) {
+function toggleCompact(entry: StreamEntry) {
+  const k = keyOf(entry)
   const next = new Set(expandedCompacts.value)
-  next.has(i) ? next.delete(i) : next.add(i)
+  if (next.has(k)) next.delete(k)
+  else next.add(k)
   expandedCompacts.value = next
 }
 
@@ -212,11 +222,12 @@ function bashHeadline(name: string, input: unknown): string {
 
 // Per-entry "copied" flash for the command copy button.
 const copiedCmd = ref<Record<number, boolean>>({})
-async function copyCommand(i: number, input: unknown) {
+async function copyCommand(entry: StreamEntry, input: unknown) {
+  const k = keyOf(entry)
   try {
     await navigator.clipboard.writeText(bashInfo(input).command)
-    copiedCmd.value[i] = true
-    setTimeout(() => { copiedCmd.value[i] = false }, 1500)
+    copiedCmd.value[k] = true
+    setTimeout(() => { copiedCmd.value[k] = false }, 1500)
   } catch {
     // Clipboard denied — ignore silently.
   }
@@ -270,8 +281,9 @@ function computeEditParts(name: string, input: unknown): DiffPart[] {
 
 // Aggregate +added / −removed across all diff parts for the header badge.
 // Memoized per input object: the template reads editStats up to four times per
-// entry and each call runs an O(n·m) LCS — computing it once per entry matters
-// for MultiEdit calls with many parts.
+// entry. Every Edit header renders it (collapsed or not), so it uses the
+// count-only `diffStats` — no row objects, shared head/tail trimmed, O(m)
+// memory — rather than building a full diff nobody is looking at yet.
 const editStatsCache = new WeakMap<object, { added: number; removed: number }>()
 function editStats(name: string, input: unknown): { added: number; removed: number } {
   if (!input || typeof input !== 'object') return { added: 0, removed: 0 }
@@ -279,7 +291,7 @@ function editStats(name: string, input: unknown): { added: number; removed: numb
   if (hit) return hit
   const stats = editParts(name, input).reduce(
     (acc, p) => {
-      const d = computeDiff(p.before, p.after, { fold: false })
+      const d = diffStats(p.before, p.after)
       return { added: acc.added + d.added, removed: acc.removed + d.removed }
     },
     { added: 0, removed: 0 },
@@ -406,15 +418,11 @@ function planContent(input: unknown): string {
 // Only overly long user messages get collapsed; assistant replies always render
 // in full. The most recent user turn is what the user is actively working with,
 // so it stays expanded — older user turns collapse if they overflow.
-const expandedMessageIndices = computed(() => {
-  const indices = new Set<number>()
+const lastUserKey = computed(() => {
   for (let i = props.entries.length - 1; i >= 0; i--) {
-    if (props.entries[i].kind === 'user') {
-      indices.add(i)
-      break
-    }
+    if (props.entries[i].kind === 'user') return keyOf(props.entries[i])
   }
-  return indices
+  return -1
 })
 
 const expanded = ref<Record<number, boolean>>({})
@@ -422,20 +430,46 @@ const expanded = ref<Record<number, boolean>>({})
 watch(
   () => props.entries.length,
   () => {
-    for (let i = 0; i < props.entries.length; i++) {
-      const e = props.entries[i]
-      if (e.kind === 'tool' && expanded.value[i] === undefined) {
+    for (const e of props.entries) {
+      if (e.kind !== 'tool') continue
+      const k = keyOf(e)
+      if (expanded.value[k] === undefined) {
         // Plans are meant to be read — show them open; other tools start collapsed
         // unless they errored.
-        expanded.value[i] = isPlanTool(e.name) || !!e.result?.is_error
+        expanded.value[k] = isPlanTool(e.name) || !!e.result?.is_error
       }
     }
   },
   { immediate: true }
 )
 
-function toggle(i: number) {
-  expanded.value[i] = !expanded.value[i]
+function toggle(entry: StreamEntry) {
+  const k = keyOf(entry)
+  expanded.value[k] = !expanded.value[k]
+}
+
+// ── Large tool output ───────────────────────────────────────────────────────
+// A tool can return megabytes (a big file Read, a verbose command), and a
+// whitespace-pre-wrap <pre> makes the browser lay out every line of it. Show
+// the head and let the reader ask for the rest; the copy action (if any) still
+// works on the full text.
+const OUTPUT_PREVIEW_CHARS = 50_000
+const fullOutput = ref(new Set<number>())
+function outputClipped(entry: StreamEntry, text: string): boolean {
+  return text.length > OUTPUT_PREVIEW_CHARS && !fullOutput.value.has(keyOf(entry))
+}
+function outputText(entry: StreamEntry, text: string): string {
+  return outputClipped(entry, text) ? text.slice(0, OUTPUT_PREVIEW_CHARS) + '\n…' : text
+}
+// One "show all" per entry: it reveals the entry's input and output alike.
+function showFullOutput(entry: StreamEntry) {
+  const next = new Set(fullOutput.value)
+  next.add(keyOf(entry))
+  fullOutput.value = next
+}
+function formatSize(chars: number): string {
+  if (chars < 1_000_000) return `${Math.round(chars / 1000)} KB`
+  return `${(chars / 1_000_000).toFixed(1)} MB`
 }
 
 // A run of user text: either plain prose or an `@file` mention that resolves to
@@ -503,14 +537,24 @@ function previewInput(input: unknown): string {
   return String(input)
 }
 
+// Memoized per input object: the template reads it up to four times per
+// expanded card (text, clip check, size), and a large input stringifies slowly.
+const prettyInputCache = new WeakMap<object, string>()
 function prettyInput(input: unknown): string {
   if (input == null) return ''
   if (typeof input === 'string') return input
-  try {
-    return JSON.stringify(input, null, 2)
-  } catch {
-    return String(input)
+  if (typeof input === 'object') {
+    const hit = prettyInputCache.get(input)
+    if (hit !== undefined) return hit
   }
+  let out: string
+  try {
+    out = JSON.stringify(input, null, 2)
+  } catch {
+    out = String(input)
+  }
+  if (typeof input === 'object') prettyInputCache.set(input, out)
+  return out
 }
 
 // Muted badge colors per diagnostic level — calm, not alarming.
@@ -662,8 +706,20 @@ onMounted(() => {
 // ── Typewriter smoothing ────────────────────────────────────────────────────
 // Partial deltas land in bursts (a frame's flush can carry several), so the text
 // entry being streamed reveals its text at an adaptive pace instead of in
-// chunks: each frame shows a share of what is still hidden, so it never trails
+// chunks: each tick shows a share of what is still hidden, so it never trails
 // far behind. Settled entries always render in full.
+//
+// Each reveal re-parses the WHOLE growing message with markdown-it and swaps
+// its innerHTML, so ticks are throttled (~12 Hz, slower still for very long
+// messages) rather than run every frame — at 60 Hz a long reply spent most of
+// each frame re-parsing itself. The entry's own deltas don't re-render it
+// either (see the v-memo deps): only a reveal tick, or settling, does.
+const REVEAL_MS = 80
+const REVEAL_MAX_MS = 250
+function revealInterval(len: number): number {
+  // +1ms per 200 chars: a 20k-char message re-renders ~5×/s instead of 12×.
+  return Math.min(REVEAL_MAX_MS, REVEAL_MS + Math.floor(len / 200))
+}
 const streamingTextIndex = computed(() => {
   const list = props.entries
   for (let i = list.length - 1; i >= Math.max(0, list.length - 50); i--) {
@@ -679,28 +735,35 @@ const streamingTextLength = computed(() => {
 const shownLength = ref(0)
 const reduceMotion = typeof window !== 'undefined'
   && window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-let smoothFrame = 0
+let revealTimer: ReturnType<typeof setTimeout> | undefined
 
 function revealTick() {
-  smoothFrame = 0
-  const hidden = streamingTextLength.value - shownLength.value
+  revealTimer = undefined
+  const len = streamingTextLength.value
+  const hidden = len - shownLength.value
   if (hidden <= 0) return
-  shownLength.value += Math.max(2, Math.ceil(hidden / 8))
-  if (shownLength.value < streamingTextLength.value) smoothFrame = requestAnimationFrame(revealTick)
+  // Half of what's hidden per tick ≈ the old 1/8-per-frame pace at 60 Hz.
+  // Reduced motion reveals everything at once, but on the same throttle.
+  shownLength.value += reduceMotion ? hidden : Math.max(8, Math.ceil(hidden / 2))
+  if (shownLength.value < len) revealTimer = setTimeout(revealTick, revealInterval(len))
 }
 
 watch(streamingTextIndex, () => { shownLength.value = 0 })
 watch(streamingTextLength, (len) => {
-  if (reduceMotion || len < shownLength.value) shownLength.value = len
-  else if (!smoothFrame) smoothFrame = requestAnimationFrame(revealTick)
+  if (len < shownLength.value) shownLength.value = len
+  else if (revealTimer === undefined) revealTimer = setTimeout(revealTick, revealInterval(len))
 })
 
 function displayText(e: { text: string }, i: number): string {
   return i === streamingTextIndex.value ? e.text.slice(0, shownLength.value) : e.text
 }
 
+function isStreamingText(e: { streaming?: boolean }, i: number): boolean {
+  return i === streamingTextIndex.value || !!e.streaming
+}
+
 onBeforeUnmount(() => {
-  cancelAnimationFrame(smoothFrame)
+  clearTimeout(revealTimer)
   widthObserver?.disconnect()
   widthObserver = null
   clearTimeout(invalidateTimer)
@@ -719,12 +782,16 @@ function toolResult(e: StreamEntry): unknown {
 
 <template>
   <div ref="rootEl" class="space-y-3">
-    <template v-for="(entry, i) in entries" :key="i">
+    <template v-for="(entry, i) in entries" :key="keyOf(entry)">
       <!-- v-memo: freeze a finalized entry so a streamed update to the LAST
            entry (or a tool result attaching, a toggle, a copy flash) never
            re-renders the whole history. Deps list every reactive value this
            entry's markup reads: the entry itself, its late-attached result,
-           and the per-index toggle/flash/collapse state. -->
+           and the per-entry toggle/flash/collapse state. The text entry being
+           revealed swaps `entry` for `shownLength`: its deltas replace the
+           object every flush, but only a reveal tick should re-render it.
+           A user turn also depends on its index — `data-user-turn` carries
+           it, and a history prepend shifts it without touching the entry. -->
       <!-- `stream-entry` opts the entry into `content-visibility: auto` so WebKit
            skips layout+paint while it is off-screen, keeping the reflow cost of
            each streamed chunk proportional to what's on screen. It takes effect
@@ -743,7 +810,7 @@ function toolResult(e: StreamEntry): unknown {
         v-entry-size
         :data-user-turn="entry.kind === 'user' ? i : undefined"
         :class="{ 'stream-entry': running && i !== entries.length - 1 }"
-        v-memo="[entry, toolResult(entry), expanded[i], expandedCompacts.has(i), copiedCmd[i], expandedMessageIndices.has(i), running && i === entries.length - 1, i === streamingTextIndex ? shownLength : -1]"
+        v-memo="[i === streamingTextIndex ? -1 : entry, toolResult(entry), expanded[keyOf(entry)], expandedCompacts.has(keyOf(entry)), copiedCmd[keyOf(entry)], fullOutput.has(keyOf(entry)), entry.kind === 'user' ? i : -1, entry.kind === 'user' && keyOf(entry) === lastUserKey, running && i === entries.length - 1, i === streamingTextIndex ? shownLength : -1]"
       >
       <!-- System init banner -->
       <div
@@ -780,7 +847,7 @@ function toolResult(e: StreamEntry): unknown {
               alt="attachment"
             />
           </div>
-          <CollapsibleMessage v-if="entry.text" :max-height="256" fade="hsl(var(--muted))" :disabled="expandedMessageIndices.has(i)">
+          <CollapsibleMessage v-if="entry.text" :max-height="256" fade="hsl(var(--muted))" :disabled="keyOf(entry) === lastUserKey">
             <div class="whitespace-pre-wrap"><template
                 v-for="(seg, si) in userSegments(entry.text)"
                 :key="si"
@@ -814,17 +881,17 @@ function toolResult(e: StreamEntry): unknown {
           <span class="h-px flex-1 bg-border" />
           <button
             class="inline-flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wide hover:text-foreground/70 transition-colors"
-            :title="expandedCompacts.has(i) ? t('streamLog.hideSummary') : t('streamLog.showSummary')"
-            @click="toggleCompact(i)"
+            :title="expandedCompacts.has(keyOf(entry)) ? t('streamLog.hideSummary') : t('streamLog.showSummary')"
+            @click="toggleCompact(entry)"
           >
             <Archive class="h-3 w-3" :stroke-width="1.75" />
             {{ t('streamLog.contextCompacted') }}
-            <ChevronRight class="h-3 w-3 transition-transform" :class="expandedCompacts.has(i) ? 'rotate-90' : ''" :stroke-width="2" />
+            <ChevronRight class="h-3 w-3 transition-transform" :class="expandedCompacts.has(keyOf(entry)) ? 'rotate-90' : ''" :stroke-width="2" />
           </button>
           <span class="h-px flex-1 bg-border" />
         </div>
         <div
-          v-if="expandedCompacts.has(i)"
+          v-if="expandedCompacts.has(keyOf(entry))"
           v-file-links
           v-mermaid
           v-copy-code
@@ -852,18 +919,18 @@ function toolResult(e: StreamEntry): unknown {
       <div v-else-if="entry.kind === 'injected'" class="my-1.5 flex flex-col items-start gap-1">
         <button
           class="inline-flex items-center gap-1.5 rounded-full bg-muted/60 border border-border px-2.5 py-1 text-[11px] text-foreground/60 hover:text-foreground/80 transition-colors"
-          :title="expandedCompacts.has(i) ? t('streamLog.hideInjected') : t('streamLog.showInjected')"
-          @click="toggleCompact(i)"
+          :title="expandedCompacts.has(keyOf(entry)) ? t('streamLog.hideInjected') : t('streamLog.showInjected')"
+          @click="toggleCompact(entry)"
         >
           <BookOpen v-if="entry.source === 'skill'" class="h-3 w-3" :stroke-width="1.75" />
           <BellRing v-else-if="entry.source === 'session'" class="h-3 w-3" :stroke-width="1.75" />
           <Info v-else class="h-3 w-3" :stroke-width="1.75" />
           <span>{{ t(`streamLog.injected.${entry.source}`) }}</span>
           <span v-if="entry.label" class="font-mono font-medium text-foreground/75">{{ entry.label }}</span>
-          <ChevronRight class="h-3 w-3 transition-transform" :class="expandedCompacts.has(i) ? 'rotate-90' : ''" :stroke-width="2" />
+          <ChevronRight class="h-3 w-3 transition-transform" :class="expandedCompacts.has(keyOf(entry)) ? 'rotate-90' : ''" :stroke-width="2" />
         </button>
         <div
-          v-if="expandedCompacts.has(i)"
+          v-if="expandedCompacts.has(keyOf(entry))"
           v-file-links
           v-mermaid
           v-copy-code
@@ -877,12 +944,14 @@ function toolResult(e: StreamEntry): unknown {
            renderText's 2nd arg skips the markdown memo while this entry is the
            one being streamed: its text grows every chunk, so each render is a
            new cache key that will never be read again and only serves to evict
-           the finalized entries that DO get re-read on scroll. -->
+           the finalized entries that DO get re-read on scroll.
+           Diagrams and copy buttons wait until the entry settles: its source
+           is incomplete and its innerHTML is replaced on every reveal tick. -->
       <div v-else-if="entry.kind === 'text'">
         <div
           v-file-links
-          v-mermaid
-          v-copy-code
+          v-mermaid="!isStreamingText(entry, i)"
+          v-copy-code="!isStreamingText(entry, i)"
           v-html="renderText(displayText(entry, i), (running && i === entries.length - 1) || !!entry.streaming)"
           class="markdown-output text-sm leading-relaxed text-foreground"
           @click="onProseClick"
@@ -912,12 +981,12 @@ function toolResult(e: StreamEntry): unknown {
       >
         <button
           class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer"
-          @click="toggle(i)"
+          @click="toggle(entry)"
         >
           <ChevronRight
             class="h-3 w-3 text-foreground/40 transition-transform shrink-0"
             :stroke-width="1.75"
-            :class="{ 'rotate-90': expanded[i] }"
+            :class="{ 'rotate-90': expanded[keyOf(entry)] }"
           />
           <Terminal class="h-3.5 w-3.5 shrink-0 text-emerald-400" :stroke-width="1.75" />
           <!-- Primary line: the command's purpose (description), or the command
@@ -935,7 +1004,7 @@ function toolResult(e: StreamEntry): unknown {
           </span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border">
           <!-- Real command executed on the machine — terminal look + copy.
                Shell-management tools (BashOutput/KillShell) carry no command,
                so skip the block entirely rather than render an empty `$`. -->
@@ -944,14 +1013,19 @@ function toolResult(e: StreamEntry): unknown {
               <span>{{ t('streamLog.command') }}</span>
               <button
                 class="inline-flex items-center gap-1 text-white/60 hover:text-white cursor-pointer"
-                :title="copiedCmd[i] ? t('streamLog.copied') : t('streamLog.copyCommand')"
-                @click.stop="copyCommand(i, entry.input)"
+                :title="copiedCmd[keyOf(entry)] ? t('streamLog.copied') : t('streamLog.copyCommand')"
+                @click.stop="copyCommand(entry, entry.input)"
               >
-                <component :is="copiedCmd[i] ? Check : Copy" class="h-3 w-3" :stroke-width="1.75" />
-                <span class="text-[9px]">{{ copiedCmd[i] ? t('streamLog.copiedShort') : t('streamLog.copyShort') }}</span>
+                <component :is="copiedCmd[keyOf(entry)] ? Check : Copy" class="h-3 w-3" :stroke-width="1.75" />
+                <span class="text-[9px]">{{ copiedCmd[keyOf(entry)] ? t('streamLog.copiedShort') : t('streamLog.copyShort') }}</span>
               </button>
             </div>
-            <pre class="text-[11px] font-mono text-emerald-300/90 whitespace-pre-wrap break-words leading-relaxed"><span class="select-none text-emerald-500/60">$ </span>{{ bashInfo(entry.input).command }}</pre>
+            <pre class="text-[11px] font-mono text-emerald-300/90 whitespace-pre-wrap break-words leading-relaxed max-h-60 overflow-auto"><span class="select-none text-emerald-500/60">$ </span>{{ outputText(entry, bashInfo(entry.input).command) }}</pre>
+            <button
+              v-if="outputClipped(entry, bashInfo(entry.input).command)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(bashInfo(entry.input).command.length) }) }}</button>
           </div>
           <!-- Command output (stdout/stderr). -->
           <div v-if="entry.result" class="px-3 py-2 border-t border-border">
@@ -962,8 +1036,13 @@ function toolResult(e: StreamEntry): unknown {
               v-if="entry.result.content"
               class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto"
               :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'"
-            >{{ entry.result.content }}</pre>
+            >{{ outputText(entry, entry.result.content) }}</pre>
             <div v-else class="text-[11px] font-mono text-foreground/30 italic">{{ t('streamLog.noOutput') }}</div>
+            <button
+              v-if="outputClipped(entry, entry.result.content)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
           </div>
         </div>
       </div>
@@ -978,12 +1057,12 @@ function toolResult(e: StreamEntry): unknown {
       >
         <button
           class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer"
-          @click="toggle(i)"
+          @click="toggle(entry)"
         >
           <ChevronRight
             class="h-3 w-3 text-foreground/40 transition-transform shrink-0"
             :stroke-width="1.75"
-            :class="{ 'rotate-90': expanded[i] }"
+            :class="{ 'rotate-90': expanded[keyOf(entry)] }"
           />
           <component
             :is="toolStyle(entry.name).icon"
@@ -1021,7 +1100,7 @@ function toolResult(e: StreamEntry): unknown {
           </span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border p-2 space-y-2">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border p-2 space-y-2">
           <template v-for="(part, pi) in editParts(entry.name, entry.input)" :key="pi">
             <!-- Per-file heading, shown once per file when a call spans several.
                  A single-file call already names it in the header. -->
@@ -1036,7 +1115,12 @@ function toolResult(e: StreamEntry): unknown {
           </template>
           <div v-if="entry.result?.is_error" class="px-1">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ t('streamLog.error') }}</div>
-            <pre class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ entry.result.content }}</pre>
+            <pre class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ outputText(entry, entry.result.content) }}</pre>
+            <button
+              v-if="outputClipped(entry, entry.result.content)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
           </div>
         </div>
       </div>
@@ -1047,8 +1131,8 @@ function toolResult(e: StreamEntry): unknown {
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
-          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(entry)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[keyOf(entry)] }" />
           <Bot class="h-3.5 w-3.5 shrink-0 text-fuchsia-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-fuchsia-600 dark:text-fuchsia-300">{{ agentInfo(entry.input).subagent || t('streamLog.agent') }}</span>
           <span class="text-[11px] text-foreground/60 truncate">{{ agentInfo(entry.input).description }}</span>
@@ -1056,7 +1140,7 @@ function toolResult(e: StreamEntry): unknown {
           <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.running') }}</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border">
           <div v-if="agentInfo(entry.input).prompt" class="px-3 py-2 bg-black/20 dark:bg-black/25">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ t('streamLog.task') }}</div>
             <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ agentInfo(entry.input).prompt }}</pre>
@@ -1070,7 +1154,12 @@ function toolResult(e: StreamEntry): unknown {
               class="markdown-output text-sm leading-relaxed text-foreground"
               @click="onProseClick"
             />
-            <pre v-else class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ entry.result.content }}</pre>
+            <pre v-else class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ outputText(entry, entry.result.content) }}</pre>
+            <button
+              v-if="outputClipped(entry, entry.result.content)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
           </div>
         </div>
       </div>
@@ -1081,15 +1170,15 @@ function toolResult(e: StreamEntry): unknown {
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
-          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(entry)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[keyOf(entry)] }" />
           <MessageCircleQuestion class="h-3.5 w-3.5 shrink-0 text-blue-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-blue-600 dark:text-blue-300">{{ t('streamLog.question') }}</span>
           <span class="text-[11px] text-foreground/60 truncate">{{ askQuestions(entry.input)[0]?.question }}</span>
           <span v-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.waiting') }}</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border px-3 py-2 space-y-3">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border px-3 py-2 space-y-3">
           <div v-for="(q, qi) in askQuestions(entry.input)" :key="qi" class="space-y-1.5">
             <div class="text-xs font-medium text-foreground/85">{{ q.question }}</div>
             <div v-for="(opt, oi) in q.options" :key="oi" class="flex gap-2 text-[11px] pl-2">
@@ -1099,7 +1188,12 @@ function toolResult(e: StreamEntry): unknown {
           </div>
           <div v-if="entry.result" class="pt-1 border-t border-border">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1 mt-2">{{ t('streamLog.answer') }}</div>
-            <pre class="text-[11px] font-mono text-success whitespace-pre-wrap break-words">{{ entry.result.content }}</pre>
+            <pre class="text-[11px] font-mono text-success whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ outputText(entry, entry.result.content) }}</pre>
+            <button
+              v-if="outputClipped(entry, entry.result.content)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
           </div>
         </div>
       </div>
@@ -1110,14 +1204,14 @@ function toolResult(e: StreamEntry): unknown {
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
-          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(entry)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[keyOf(entry)] }" />
           <ListTodo class="h-3.5 w-3.5 shrink-0 text-blue-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-blue-600 dark:text-blue-300">{{ t('streamLog.todos') }}</span>
           <span class="text-[11px] text-foreground/50 tabular-nums shrink-0">{{ todoStats(entry.input).done }}/{{ todoStats(entry.input).total }}</span>
           <span class="text-[11px] text-foreground/45 truncate">{{ todoItems(entry.input).find((t) => t.status === 'in_progress')?.content }}</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border px-3 py-2 space-y-1">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border px-3 py-2 space-y-1">
           <div v-for="(t, ti) in todoItems(entry.input)" :key="ti" class="flex items-start gap-2 text-xs">
             <CheckCircle2 v-if="t.status === 'completed'" class="h-3.5 w-3.5 mt-0.5 shrink-0 text-success" :stroke-width="1.75" />
             <CircleDot v-else-if="t.status === 'in_progress'" class="h-3.5 w-3.5 mt-0.5 shrink-0 text-warning animate-pulse" :stroke-width="1.75" />
@@ -1137,8 +1231,8 @@ function toolResult(e: StreamEntry): unknown {
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
-          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(entry)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[keyOf(entry)] }" />
           <Search class="h-3.5 w-3.5 shrink-0 text-teal-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-teal-600 dark:text-teal-300">{{ t('streamLog.toolSearch') }}</span>
           <span class="text-[11px] font-mono text-foreground/50 truncate">{{ toolSearchQuery(entry.input) }}</span>
@@ -1146,10 +1240,15 @@ function toolResult(e: StreamEntry): unknown {
           <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.searching') }}</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border">
           <div v-if="entry.result" class="px-3 py-2">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ entry.result.is_error ? t('streamLog.error') : t('streamLog.matches') }}</div>
-            <pre class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto" :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'">{{ entry.result.content }}</pre>
+            <pre class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto" :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'">{{ outputText(entry, entry.result.content) }}</pre>
+            <button
+              v-if="outputClipped(entry, entry.result.content)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
           </div>
         </div>
       </div>
@@ -1160,8 +1259,8 @@ function toolResult(e: StreamEntry): unknown {
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
-          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(entry)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[keyOf(entry)] }" />
           <Globe class="h-3.5 w-3.5 shrink-0 text-cyan-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-cyan-600 dark:text-cyan-300">{{ entry.name.toLowerCase() === 'websearch' ? t('streamLog.webSearch') : t('streamLog.webFetch') }}</span>
           <span class="text-[11px] font-mono text-foreground/50 truncate">{{ previewInput(entry.input) }}</span>
@@ -1169,7 +1268,7 @@ function toolResult(e: StreamEntry): unknown {
           <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">{{ t('streamLog.loading') }}</span>
         </button>
-        <div v-if="expanded[i] && entry.result" class="border-t border-border px-3 py-2">
+        <div v-if="expanded[keyOf(entry)] && entry.result" class="border-t border-border px-3 py-2">
           <div
             v-if="!entry.result.is_error"
             v-file-links v-mermaid v-copy-code
@@ -1177,7 +1276,12 @@ function toolResult(e: StreamEntry): unknown {
             class="markdown-output text-sm leading-relaxed text-foreground max-h-[32rem] overflow-auto"
             @click="onProseClick"
           />
-          <pre v-else class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ entry.result.content }}</pre>
+          <pre v-else class="text-[11px] font-mono text-destructive whitespace-pre-wrap break-words max-h-96 overflow-auto">{{ outputText(entry, entry.result.content) }}</pre>
+          <button
+            v-if="outputClipped(entry, entry.result.content)"
+            class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+            @click.stop="showFullOutput(entry)"
+          >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
         </div>
       </div>
 
@@ -1187,13 +1291,13 @@ function toolResult(e: StreamEntry): unknown {
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
-          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(entry)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[keyOf(entry)] }" />
           <ClipboardList class="h-3.5 w-3.5 shrink-0 text-indigo-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-indigo-600 dark:text-indigo-300">{{ t('streamLog.plan') }}</span>
           <span class="text-[11px] text-foreground/45 truncate">{{ t('streamLog.proposedPlan') }}</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border px-3 py-2">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border px-3 py-2">
           <div
             v-file-links v-mermaid v-copy-code
             v-html="renderText(planContent(entry.input))"
@@ -1209,8 +1313,8 @@ function toolResult(e: StreamEntry): unknown {
         class="rounded-lg border border-l-[3px] bg-card/80 shadow-sm shadow-black/20 overflow-hidden"
         :class="entry.result?.is_error ? 'border-border border-l-destructive/70' : ['border-border', toolStyle(entry.name).barClass]"
       >
-        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(i)">
-          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[i] }" />
+        <button class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer" @click="toggle(entry)">
+          <ChevronRight class="h-3 w-3 text-foreground/40 transition-transform shrink-0" :stroke-width="1.75" :class="{ 'rotate-90': expanded[keyOf(entry)] }" />
           <Server class="h-3.5 w-3.5 shrink-0 text-teal-400" :stroke-width="1.75" />
           <span class="text-xs font-mono font-semibold shrink-0 text-teal-600 dark:text-teal-300">{{ t('streamLog.mcp') }}</span>
           <span class="text-[10px] font-mono shrink-0 rounded border border-border bg-foreground/4 px-1.5 py-0.5 text-foreground/55 truncate max-w-[10rem]" :title="mcpServerLabel(entry)">
@@ -1222,7 +1326,7 @@ function toolResult(e: StreamEntry): unknown {
           <span v-else-if="entry.result" class="ml-auto text-[10px] text-success/80 shrink-0 flex items-center gap-0.5"><CheckCircle2 class="h-3 w-3" :stroke-width="1.75" /></span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">waiting…</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border">
           <div class="grid grid-cols-[6rem_minmax(0,1fr)] gap-x-3 gap-y-1 px-3 py-2 bg-black/20 dark:bg-black/25 text-[11px]">
             <div class="uppercase tracking-wider text-foreground/35">server</div>
             <div class="font-mono text-foreground/75 truncate">{{ mcpServerLabel(entry) }}</div>
@@ -1235,14 +1339,24 @@ function toolResult(e: StreamEntry): unknown {
           </div>
           <div class="px-3 py-2 border-t border-border">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">input</div>
-            <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ prettyInput(entry.input) }}</pre>
+            <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ outputText(entry, prettyInput(entry.input)) }}</pre>
+            <button
+              v-if="outputClipped(entry, prettyInput(entry.input))"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(prettyInput(entry.input).length) }) }}</button>
           </div>
           <div v-if="entry.result" class="px-3 py-2 border-t border-border">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">{{ entry.result.is_error ? 'status' : 'output' }}</div>
             <pre
               class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto"
               :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'"
-            >{{ entry.result.content }}</pre>
+            >{{ outputText(entry, entry.result.content) }}</pre>
+            <button
+              v-if="outputClipped(entry, entry.result.content)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
           </div>
         </div>
       </div>
@@ -1257,12 +1371,12 @@ function toolResult(e: StreamEntry): unknown {
       >
         <button
           class="w-full flex items-center gap-2 px-3 py-1.5 text-left hover:bg-foreground/[0.07] transition-colors cursor-pointer"
-          @click="toggle(i)"
+          @click="toggle(entry)"
         >
           <ChevronRight
             class="h-3 w-3 text-foreground/40 transition-transform shrink-0"
             :stroke-width="1.75"
-            :class="{ 'rotate-90': expanded[i] }"
+            :class="{ 'rotate-90': expanded[keyOf(entry)] }"
           />
           <component
             :is="toolStyle(entry.name).icon"
@@ -1288,10 +1402,15 @@ function toolResult(e: StreamEntry): unknown {
           </span>
           <span v-else class="ml-auto text-[10px] text-warning/80 animate-pulse shrink-0">running…</span>
         </button>
-        <div v-if="expanded[i]" class="border-t border-border">
+        <div v-if="expanded[keyOf(entry)]" class="border-t border-border">
           <div class="px-3 py-2 bg-black/20 dark:bg-black/25">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">input</div>
-            <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words">{{ prettyInput(entry.input) }}</pre>
+            <pre class="text-[11px] font-mono text-foreground/70 whitespace-pre-wrap break-words max-h-60 overflow-auto">{{ outputText(entry, prettyInput(entry.input)) }}</pre>
+            <button
+              v-if="outputClipped(entry, prettyInput(entry.input))"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(prettyInput(entry.input).length) }) }}</button>
           </div>
           <div v-if="entry.result" class="px-3 py-2 border-t border-border">
             <div class="text-[10px] uppercase tracking-wider text-foreground/40 mb-1">
@@ -1300,7 +1419,12 @@ function toolResult(e: StreamEntry): unknown {
             <pre
               class="text-[11px] font-mono whitespace-pre-wrap break-words max-h-96 overflow-auto"
               :class="entry.result.is_error ? 'text-destructive' : 'text-foreground/70'"
-            >{{ entry.result.content }}</pre>
+            >{{ outputText(entry, entry.result.content) }}</pre>
+            <button
+              v-if="outputClipped(entry, entry.result.content)"
+              class="mt-1 text-[10px] text-primary/80 hover:text-primary cursor-pointer"
+              @click.stop="showFullOutput(entry)"
+            >{{ t('streamLog.showAllOutput', { size: formatSize(entry.result.content.length) }) }}</button>
           </div>
         </div>
       </div>

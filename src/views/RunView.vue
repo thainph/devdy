@@ -79,6 +79,7 @@ import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
 import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
+import { topKByScore } from '@/lib/topK'
 import { openFileWindow } from '@/lib/fileWindow'
 import { openSessionWindow } from '@/lib/sessionWindow'
 import { IS_SESSION_WINDOW } from '@/lib/windowMode'
@@ -328,6 +329,8 @@ async function openSession(runId: string) {
 // focuses the window already showing it.
 async function popoutSession(runId: string) {
   if (!runId) return
+  // The new window restores the draft from localStorage; write any pending one.
+  draftsStore.flush()
   await openSessionWindow(projectId.value, runId)
 }
 const fetchError = ref<string | null>(null)
@@ -2308,10 +2311,14 @@ function restoreDraftFor(runId: string | null) {
 
 // Load the focused session's draft whenever it changes (initial open, session
 // switch, new session). The persist watcher below then tracks edits for it.
-watch(currentRunId, (id) => restoreDraftFor(id), { immediate: true })
+// The previous session's draft is already in memory; flush its debounced disk
+// write now so a reload right after switching can't lose it.
+watch(currentRunId, (id) => { draftsStore.flush(); restoreDraftFor(id) }, { immediate: true })
 
+// Shallow sources: the spread getters track the arrays' membership (push /
+// splice / replace) without deep-walking every pending image object.
 watch(
-  [followUpInput, pendingImages, pendingFiles],
+  [followUpInput, () => [...pendingImages.value], () => [...pendingFiles.value]],
   () => {
     if (restoringDraft || !currentRunId.value) return
     draftsStore.set(currentRunId.value, {
@@ -2320,8 +2327,8 @@ watch(
       files: pendingFiles.value.map(({ name, path }) => ({ name, path })),
     })
   },
-  { deep: true },
 )
+onBeforeUnmount(() => draftsStore.flush())
 
 // Extensions we treat as inline images (base64 + thumbnail). Everything else is
 // attached by path.
@@ -2564,7 +2571,9 @@ watch(followUpInput, () => autoResizeComposer(), { flush: 'post' })
 
 // ── @-mention file/folder autocomplete ───────────────────────────────────
 const composerEl = ref<HTMLTextAreaElement | null>(null)
-const projectFiles = ref<ProjectEntry[]>([])
+// shallowRef: up to ~50k entries that are only ever replaced wholesale, never
+// mutated — deep-proxying them made every scan in the mention picker slow.
+const projectFiles = shallowRef<ProjectEntry[]>([])
 const projectFilesPath = ref<string | null>(null)
 const mentionOpen = ref(false)
 const mentionQuery = ref('')
@@ -2622,19 +2631,37 @@ function onComposerInput() {
   detectSlash()
 }
 
+// A forced refresh (each new @-mention session) still reuses a list walked
+// within this window: re-walking a big repo on every `@` was a visible stall.
+const PROJECT_FILES_TTL_MS = 30_000
+let projectFilesFetchedAt = 0
+let projectFilesInflight: { path: string; promise: Promise<void> } | null = null
+
 async function ensureProjectFiles(force = false) {
   const path = project.value?.path
   if (!path) return
   // Skip the walk only when the cache is warm AND no refresh was requested.
   // `force` is passed when a new @-mention session starts so newly-added files
-  // (e.g. a file just copied into the folder) show up without a reload.
-  if (!force && projectFilesPath.value === path && projectFiles.value.length) return
-  try {
-    projectFiles.value = await runsStore.listProjectFiles(path)
-    projectFilesPath.value = path
-  } catch {
-    projectFiles.value = []
-  }
+  // (e.g. a file just copied into the folder) show up without a reload — unless
+  // the list is younger than PROJECT_FILES_TTL_MS.
+  const warm = projectFilesPath.value === path && projectFiles.value.length > 0
+  if (warm && (!force || Date.now() - projectFilesFetchedAt < PROJECT_FILES_TTL_MS)) return
+  if (projectFilesInflight?.path === path) return projectFilesInflight.promise
+  const promise = (async () => {
+    try {
+      const list = await runsStore.listProjectFiles(path)
+      if (project.value?.path !== path) return // switched project meanwhile
+      projectFiles.value = list
+      projectFilesPath.value = path
+      projectFilesFetchedAt = Date.now()
+    } catch {
+      if (project.value?.path === path) projectFiles.value = []
+    } finally {
+      if (projectFilesInflight?.path === path) projectFilesInflight = null
+    }
+  })()
+  projectFilesInflight = { path, promise }
+  return promise
 }
 
 // ── Opening a file ────────────────────────────────────────────────────────
@@ -2713,18 +2740,36 @@ function scoreMention(path: string, q: string): number {
   return -1
 }
 
+// Scoring scans the whole project list, so it runs on a debounced copy of the
+// query instead of every keystroke. Opening the picker / clearing the query
+// applies at once so the first list never lags.
+const MENTION_DEBOUNCE_MS = 80
+const mentionQueryDebounced = ref('')
+let mentionQueryTimer: ReturnType<typeof setTimeout> | null = null
+watch([mentionQuery, mentionOpen], ([q, open], [, wasOpen]) => {
+  if (mentionQueryTimer) { clearTimeout(mentionQueryTimer); mentionQueryTimer = null }
+  if (!q || (open && !wasOpen)) { mentionQueryDebounced.value = q; return }
+  mentionQueryTimer = setTimeout(() => {
+    mentionQueryTimer = null
+    mentionQueryDebounced.value = mentionQuery.value
+  }, MENTION_DEBOUNCE_MS)
+})
+onBeforeUnmount(() => { if (mentionQueryTimer) clearTimeout(mentionQueryTimer) })
+// Apply a pending query now, so a key that acts on the list (Enter/Tab/arrows)
+// never targets the list of a query the user already typed past.
+function flushMentionQuery() {
+  if (!mentionQueryTimer) return
+  clearTimeout(mentionQueryTimer)
+  mentionQueryTimer = null
+  mentionQueryDebounced.value = mentionQuery.value
+}
+
 const mentionItems = computed<ProjectEntry[]>(() => {
-  const q = mentionQuery.value.toLowerCase()
+  const q = mentionQueryDebounced.value.toLowerCase()
   const src = projectFiles.value
   if (!q) return src.slice(0, MENTION_LIMIT)
-  const scored: Array<{ e: ProjectEntry; s: number }> = []
-  for (const e of src) {
-    const s = scoreMention(e.path, q)
-    if (s >= 0) scored.push({ e, s })
-  }
   // Highest score first; ties keep the (alphabetical) source order.
-  scored.sort((a, b) => b.s - a.s)
-  return scored.slice(0, MENTION_LIMIT).map((x) => x.e)
+  return topKByScore(src, (e) => scoreMention(e.path, q), MENTION_LIMIT)
 })
 
 // Detect an active `@token` immediately before the caret (no whitespace inside).
@@ -2856,7 +2901,9 @@ function onComposerKeydown(e: KeyboardEvent) {
       return
     }
   }
+  if (mentionOpen.value && ['ArrowDown', 'ArrowUp', 'Enter', 'Tab'].includes(e.key)) flushMentionQuery()
   if (mentionOpen.value && mentionItems.value.length) {
+    if (mentionIndex.value >= mentionItems.value.length) mentionIndex.value = 0
     if (e.key === 'ArrowDown') {
       e.preventDefault()
       mentionIndex.value = (mentionIndex.value + 1) % mentionItems.value.length

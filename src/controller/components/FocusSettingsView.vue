@@ -1,10 +1,10 @@
 <script setup lang="ts">
 /**
- * Setting → Focus on the phone (mirrors the desktop's Settings → Focus):
- * working hours and days, the morning summary time, reminders on / off and
- * per kind, and the estimate calibration switch. The AI engine and the Google
- * Calendar choice stay desktop-only: they are kept as loaded and saved back
- * untouched. The Host validates and answers with the stored settings.
+ * Setting → Working hours & reminders on the phone (mirrors the desktop's
+ * Settings section): working hours and days, the morning summary time and
+ * reminders on / off and per kind. The other settings (AI engine, Google
+ * Calendar, calibration) are no longer shown: they are kept as loaded and saved
+ * back untouched. The Host validates and answers with the stored settings.
  */
 import { computed, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -194,21 +194,6 @@ const row = 'flex items-center gap-2.5 px-3 py-2.5 border-b border-border/60 las
         <p class="mt-1.5 px-0.5 text-[11px] leading-snug text-muted-foreground">
           {{ t('controller.focus.settings.notifyHint') }}
         </p>
-
-        <h2 :class="heading">{{ t('focus.settings.calibration.title') }}</h2>
-        <div :class="card">
-          <div :class="row">
-            <p class="min-w-0 flex-1 text-[11px] leading-snug text-muted-foreground">{{ t('focus.settings.calibration.hint') }}</p>
-            <ToggleSwitch
-              size="md"
-              :checked="form.calibration_enabled"
-              :label="t('focus.settings.calibration.title')"
-              @toggle="form.calibration_enabled = !form.calibration_enabled"
-            />
-          </div>
-        </div>
-
-        <p class="mt-4 px-0.5 text-[11px] leading-snug text-muted-foreground">{{ t('controller.focus.settings.desktopOnly') }}</p>
 
         <p v-if="invalid" class="mt-3 px-0.5 text-xs text-destructive">{{ invalid }}</p>
         <div class="mt-3 pb-[env(safe-area-inset-bottom)]">

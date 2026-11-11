@@ -27,7 +27,7 @@ import type { RateLimitWindows } from '@/stores/liveRuns'
 import type { ConnStatus } from '../connection'
 import type {
   ClaudeAccountChoice, ClaudeAccountUsage, FetchedModel, PlanBudget, QuestionAnswers,
-  RemoteDecision, SlashCommand,
+  RemoteDecision, SavedPromptInfo, SlashCommand,
 } from '../protocol'
 
 const props = defineProps<{
@@ -47,6 +47,8 @@ const props = defineProps<{
   pending: PermissionRequest | null
   renderText: (md: string) => string
   slashCommands: SlashCommand[]
+  /** The Host's saved prompt library (composer picker). */
+  savedPrompts: SavedPromptInfo[]
   projectFiles: string[]
   /** Models the Host discovered from the account (composer model selector). */
   discoveredModels: { codex: FetchedModel[] }
@@ -92,6 +94,7 @@ const emit = defineEmits<{
   'update:permissionMode': [value: string]
   'update:claudeAccountId': [value: string]
   requestFiles: []
+  requestSavedPrompts: []
 }>()
 
 const { t } = useI18n()
@@ -338,6 +341,7 @@ onUnmounted(() => {
     <SessionComposer
       v-else
       :slash-commands="slashCommands"
+      :saved-prompts="savedPrompts"
       :project-files="projectFiles"
       :discovered-models="discoveredModels"
       :claude-accounts="claudeAccountChoices"
@@ -356,6 +360,7 @@ onUnmounted(() => {
       @update:permission-mode="emit('update:permissionMode', $event)"
       @update:claude-account-id="emit('update:claudeAccountId', $event)"
       @request-files="emit('requestFiles')"
+      @request-saved-prompts="emit('requestSavedPrompts')"
     />
   </div>
 </template>

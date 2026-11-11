@@ -418,6 +418,10 @@ function startQuery(firstText, opts = {}, firstImages) {
       if (parsed && typeof parsed === 'object') options.mcpServers = parsed
     } catch { /* ignore malformed env; run without MCP rather than crash */ }
   }
+  // "Only use Devdy-managed MCP servers" (env from the broker on start AND resume):
+  // skip the CLI's own MCP sources — project .mcp.json, user settings, plugins,
+  // agent frontmatter — and load only `mcpServers` above. applyNoTools still forces it.
+  if (process.env.DEVDY_STRICT_MCP === '1') options.strictMcpConfig = true
   const resume = opts.resume || process.env.DEVDY_RESUME_SESSION
   if (resume) options.resume = resume
   // Bare names are handled by canUseTool (see isAutoAllowed); only scoped rules

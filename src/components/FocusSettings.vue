@@ -1,18 +1,16 @@
 <script setup lang="ts">
-// Settings → "Focus" (docs/focus-board-spec.md §5.2): working hours the board
-// counts time in (deadlines without a time fall due at the end of the working
-// day, BR-03), reminders (§3.4: master switch, per-kind switches, morning
-// summary time), the Google Calendar used for today's free time (§3.5) and the
-// estimate calibration (BR-10). The AI settings are kept as loaded and saved
-// back untouched.
-import { computed, onMounted, ref, watch } from 'vue'
+// Settings → "Working hours & reminders" (docs/focus-board-spec.md §5.2):
+// working hours (deadlines without a time fall due at the end of the working
+// day, BR-03) and reminders (§3.4: master switch, per-kind switches, morning
+// summary time). The other settings (Calendar, calibration, AI) are no longer
+// shown since the board became the lateness view; they are kept as loaded and
+// saved back untouched.
+import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Bell, CalendarClock, Gauge, Target } from 'lucide-vue-next'
-import { AppSelect, Button, Card, Input, ToggleSwitch } from '@/components/ui'
+import { Bell, Target } from 'lucide-vue-next'
+import { Button, Card, Input, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
-import { invoke } from '@/lib/tauri'
 import { useFocusStore } from '@/stores/focus'
-import type { CalendarMeta, GoogleAccount } from '@/stores/googleCalendar'
 import { DEFAULT_FOCUS_SETTINGS, NOTIFY_KINDS, notifyKindsOf, type FocusSettings } from '@/lib/focus'
 
 const { t } = useI18n()
@@ -35,78 +33,10 @@ function normalised(s: FocusSettings): FocusSettings {
   }
 }
 
-// ── Google accounts / calendars ──
-const accounts = ref<GoogleAccount[]>([])
-const calendars = ref<CalendarMeta[]>([])
-const calendarsLoading = ref(false)
-const calendarsError = ref<string | null>(null)
-
-/** "" = the default Google account. */
-const accountValue = computed({
-  get: () => form.value.calendar_account_id ?? '',
-  set: (v: string) => {
-    if ((form.value.calendar_account_id ?? '') === v) return
-    form.value.calendar_account_id = v || null
-    form.value.calendar_ids = []
-  },
-})
-const effectiveAccountId = computed(
-  () => form.value.calendar_account_id ?? accounts.value.find((a) => a.is_default)?.id ?? accounts.value[0]?.id ?? null,
-)
-const accountOptions = computed(() => [
-  { value: '', label: t('focus.settings.calendar.defaultAccount') },
-  ...accounts.value.map((a) => ({ value: a.id, label: a.email ? `${a.label} · ${a.email}` : a.label })),
-])
-
-async function loadAccounts() {
-  try {
-    accounts.value = await invoke<GoogleAccount[]>('list_google_accounts')
-  } catch {
-    accounts.value = []
-  }
-}
-
-async function loadCalendars() {
-  const id = effectiveAccountId.value
-  calendars.value = []
-  calendarsError.value = null
-  if (!id) return
-  calendarsLoading.value = true
-  try {
-    const res = await invoke<{ calendars: CalendarMeta[]; errors: { message: string }[] }>('list_google_calendars', {
-      accountIds: [id],
-    })
-    calendars.value = res.calendars
-    calendarsError.value = res.errors[0]?.message ?? null
-  } catch (e) {
-    calendarsError.value = String(e)
-  } finally {
-    calendarsLoading.value = false
-  }
-}
-watch(effectiveAccountId, () => void loadCalendars())
-
-/** No calendar ticked = the primary one (backend default). */
-function calendarChecked(c: CalendarMeta): boolean {
-  const ids = form.value.calendar_ids
-  return ids.length ? ids.includes(c.calendar_id) : c.primary
-}
-function toggleCalendar(c: CalendarMeta) {
-  const current = new Set(
-    form.value.calendar_ids.length
-      ? form.value.calendar_ids
-      : calendars.value.filter((x) => x.primary).map((x) => x.calendar_id),
-  )
-  if (current.has(c.calendar_id)) current.delete(c.calendar_id)
-  else current.add(c.calendar_id)
-  form.value.calendar_ids = [...current]
-}
-
 onMounted(async () => {
-  await Promise.all([store.loadSettings(), loadAccounts()])
+  await store.loadSettings()
   form.value = normalised(store.settings)
   loading.value = false
-  void loadCalendars()
 })
 
 function toggleDay(d: number) {
@@ -134,8 +64,6 @@ async function save() {
     const saved = await store.saveSettings(normalised(form.value))
     form.value = normalised(saved)
     toast.success(t('focus.settings.saved'))
-    // The Calendar choice may have changed: drop the cached events.
-    void store.refreshCalendar()
   } catch (e) {
     toast.error(String(e))
   } finally {
@@ -223,46 +151,6 @@ async function save() {
         </div>
         <p class="text-[10px] leading-relaxed text-muted-foreground">{{ t('focus.settings.reminders.workHoursOnly') }}</p>
       </div>
-    </div>
-
-    <!-- Google Calendar -->
-    <div class="space-y-2 border-t border-border/60 pt-4">
-      <p class="flex items-center gap-1.5 text-xs font-medium">
-        <CalendarClock class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-        {{ t('focus.settings.calendar.title') }}
-      </p>
-      <p class="text-[11px] leading-relaxed text-muted-foreground">{{ t('focus.settings.calendar.hint') }}</p>
-      <p v-if="!loading && !accounts.length" class="text-[11px] text-muted-foreground">{{ t('focus.settings.calendar.noAccount') }}</p>
-      <template v-else>
-        <div class="w-80 max-w-full">
-          <AppSelect v-model="accountValue" :options="accountOptions" size="sm" :disabled="loading" />
-        </div>
-        <p v-if="calendarsLoading" class="text-[11px] text-muted-foreground">{{ t('focus.settings.calendar.loading') }}</p>
-        <p v-else-if="calendarsError" class="text-[11px] text-destructive">{{ calendarsError }}</p>
-        <div v-else-if="calendars.length" class="space-y-1">
-          <label class="block text-[11px] font-medium text-muted-foreground">{{ t('focus.settings.calendar.busyCalendars') }}</label>
-          <label v-for="c in calendars" :key="c.calendar_id" class="flex cursor-pointer items-center gap-2 text-xs">
-            <input type="checkbox" class="accent-primary" :checked="calendarChecked(c)" :disabled="loading" @change="toggleCalendar(c)" />
-            <span class="h-2.5 w-2.5 shrink-0 rounded-full" :style="{ backgroundColor: c.bg_color ?? 'var(--muted-foreground)' }" />
-            <span class="truncate">{{ c.summary || c.calendar_id }}</span>
-            <span v-if="c.primary" class="shrink-0 text-[10px] text-muted-foreground">{{ t('focus.settings.calendar.primary') }}</span>
-          </label>
-        </div>
-      </template>
-    </div>
-
-    <!-- Calibration -->
-    <div class="space-y-1 border-t border-border/60 pt-4">
-      <label class="flex cursor-pointer items-start gap-2 text-xs">
-        <input v-model="form.calibration_enabled" type="checkbox" class="mt-0.5 accent-primary" :disabled="loading" />
-        <span class="min-w-0">
-          <span class="flex items-center gap-1.5 font-medium">
-            <Gauge class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-            {{ t('focus.settings.calibration.title') }}
-          </span>
-          <span class="mt-0.5 block text-[11px] leading-relaxed text-muted-foreground">{{ t('focus.settings.calibration.hint') }}</span>
-        </span>
-      </label>
     </div>
 
     <p v-if="error" class="text-[11px] text-destructive">{{ error }}</p>

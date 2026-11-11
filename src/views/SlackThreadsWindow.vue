@@ -106,6 +106,15 @@ const visibleThreads = computed(() =>
   }),
 )
 
+/** Link tab counts: the project in scope, before the link filter. */
+const linkCounts = computed(() => {
+  const inScope = store.threads.filter((th) =>
+    projectFilter.value === NO_PROJECT ? !th.projectId : !projectFilter.value || th.projectId === projectFilter.value,
+  )
+  const linked = inScope.filter((th) => th.linkedRunCount > 0).length
+  return { all: inScope.length, linked, unlinked: inScope.length - linked }
+})
+
 const projectOptions = computed(() => {
   const ids = new Set<string>()
   for (const th of store.threads) if (th.projectId) ids.add(th.projectId)
@@ -446,7 +455,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+  <div class="app-shell app-window flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
     <!-- Reloading the open thread failed: its last good copy stays on screen. -->
     <Banner
       v-if="view && store.viewError"
@@ -468,6 +477,7 @@ onBeforeUnmount(() => {
         v-model:project="projectFilter"
         v-model:link="linkFilter"
         :threads="visibleThreads"
+        :link-counts="linkCounts"
         :empty-store="emptyStore"
         :selected-id="store.selectedId"
         :progress="store.progress"

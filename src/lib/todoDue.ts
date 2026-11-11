@@ -35,3 +35,27 @@ export function dueStatus(due: string | null | undefined, today: string): DueSta
   if (days <= SOON_DAYS) return 'soon'
   return 'later'
 }
+
+/** What `compareByDue` reads off a todo (an `ItemRow` fits). */
+export interface DueSortable {
+  dueDate: string | null
+  done: boolean
+  /** ISO creation time: the tie-breaker, oldest first. */
+  at: string
+}
+
+/**
+ * "What do I do first": open before done, then the earliest deadline (overdue
+ * on top), todos without one last; equal deadlines keep the oldest first.
+ */
+export function compareByDue(a: DueSortable, b: DueSortable): number {
+  if (a.done !== b.done) return a.done ? 1 : -1
+  const da = a.dueDate && ymdDayNumber(a.dueDate) != null ? a.dueDate : null
+  const db = b.dueDate && ymdDayNumber(b.dueDate) != null ? b.dueDate : null
+  if (da !== db) {
+    if (!da) return 1
+    if (!db) return -1
+    return da < db ? -1 : 1
+  }
+  return a.at < b.at ? -1 : a.at > b.at ? 1 : 0
+}

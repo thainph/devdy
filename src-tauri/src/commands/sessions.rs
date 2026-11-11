@@ -249,17 +249,50 @@ pub(crate) fn truncate(s: &str, max: usize) -> String {
     format!("{}…", cut.trim_end())
 }
 
-fn file_modified_rfc3339(path: &Path) -> String {
-    fs::metadata(path)
-        .and_then(|m| m.modified())
+fn file_mtime(path: &Path) -> Option<std::time::SystemTime> {
+    fs::metadata(path).and_then(|m| m.modified()).ok()
+}
+
+/// A transcript mtime as RFC3339, falling back to now when it is unknown.
+fn rfc3339_or_now(mtime: Option<std::time::SystemTime>) -> String {
+    mtime
         .map(|t| chrono::DateTime::<chrono::Utc>::from(t).to_rfc3339())
-        .unwrap_or_default()
+        .unwrap_or_else(|| chrono::Utc::now().to_rfc3339())
 }
 
 /// Byte length of a file, used as the "how far have we mirrored this transcript"
 /// marker. Transcripts are append-only, so a changed size means new content.
 fn file_size(path: &Path) -> Option<i64> {
     fs::metadata(path).ok().map(|m| m.len() as i64)
+}
+
+/// Run blocking file work (whole-transcript reads, log rewrites) on the blocking
+/// pool instead of an async worker thread. With many live runs the watcher fires
+/// constantly, and a multi-MB parse on a worker stalls every other task on it.
+pub(crate) async fn blocking<T: Send + 'static>(
+    f: impl FnOnce() -> T + Send + 'static,
+) -> Result<T, String> {
+    tauri::async_runtime::spawn_blocking(f)
+        .await
+        .map_err(|e| e.to_string())
+}
+
+/// A transcript parsed off the async runtime, with the size/mtime read just
+/// before the parse (so the synced-size marker never runs ahead of the content).
+struct TranscriptSnapshot {
+    parsed: ParsedTranscript,
+    size: Option<i64>,
+    mtime: Option<std::time::SystemTime>,
+}
+
+/// Write a run's rendered log on the blocking pool.
+async fn write_log(runs_dir: &Path, log_path: &Path, log: String) -> Result<(), String> {
+    let (runs_dir, log_path) = (runs_dir.to_path_buf(), log_path.to_path_buf());
+    blocking(move || {
+        fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
+        fs::write(&log_path, log).map_err(|e| e.to_string())
+    })
+    .await?
 }
 
 /// Result of mirroring one transcript into Devdy's run/log/usage model.
@@ -352,7 +385,8 @@ pub(crate) async fn upsert_session_run_core(
     session_id: &str,
     engine: &str,
     file: &Path,
-    parse: impl Fn(&Path, &str) -> Option<ParsedTranscript>,
+    // A plain fn so it can run on the blocking pool (see [`blocking`]).
+    parse: fn(&Path, &str) -> Option<ParsedTranscript>,
     // When true (the automatic watcher/reconcile paths), defer importing a
     // brand-new session while any run in the project is still `running`, since
     // that run may simply not have captured its `session_id` yet. `get_run_log`
@@ -397,42 +431,62 @@ pub(crate) async fn upsert_session_run_core(
             return Ok(SyncOutcome::Skipped);
         }
         let conv_path = runs_dir.join(format!("{}.log", id));
-        let cur_size = file_size(file);
-        let newer = match synced_size {
-            // We know exactly how many bytes we last mirrored. Since transcripts
-            // are append-only, rebuild iff the size changed — exact, so a short
-            // final tail written just after a previous sync is never missed.
-            Some(s) => cur_size.is_some_and(|c| c != s),
-            // Never mirrored from a transcript before — e.g. a Devdy-native run
-            // whose richer log (result/cost summary, stderr) the drain wrote
-            // directly. Keep the original guard so the engine's own finishing
-            // write doesn't clobber it; a real external edit advances the
-            // transcript past the margin, and from then on we track size exactly.
-            None => {
-                let mtime = |p: &Path| fs::metadata(p).and_then(|m| m.modified()).ok();
-                match (mtime(file), mtime(&conv_path)) {
-                    (Some(n), Some(c)) => n > c + std::time::Duration::from_secs(5),
-                    (Some(_), None) => true,
-                    _ => false,
+        // Size check, parse and log rewrite all touch the filesystem (the parse
+        // reads the whole transcript), so do them together off the runtime.
+        let snapshot = {
+            let (file, conv_path, runs_dir, project_path) = (
+                file.to_path_buf(),
+                conv_path.clone(),
+                runs_dir.clone(),
+                project_path.to_string(),
+            );
+            blocking(move || -> Result<Option<TranscriptSnapshot>, String> {
+                let cur_size = file_size(&file);
+                let newer = match synced_size {
+                    // We know exactly how many bytes we last mirrored. Since
+                    // transcripts are append-only, rebuild iff the size changed —
+                    // exact, so a short final tail written just after a previous
+                    // sync is never missed.
+                    Some(s) => cur_size.is_some_and(|c| c != s),
+                    // Never mirrored from a transcript before — e.g. a Devdy-native
+                    // run whose richer log (result/cost summary, stderr) the drain
+                    // wrote directly. Keep the original guard so the engine's own
+                    // finishing write doesn't clobber it; a real external edit
+                    // advances the transcript past the margin, and from then on we
+                    // track size exactly.
+                    None => match (file_mtime(&file), file_mtime(&conv_path)) {
+                        (Some(n), Some(c)) => n > c + std::time::Duration::from_secs(5),
+                        (Some(_), None) => true,
+                        _ => false,
+                    },
+                };
+                if !newer {
+                    return Ok(None);
                 }
-            }
+                let Some(parsed) = parse(&file, &project_path) else {
+                    return Ok(None);
+                };
+                fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
+                fs::write(&conv_path, &parsed.log).map_err(|e| e.to_string())?;
+                Ok(Some(TranscriptSnapshot {
+                    parsed,
+                    size: cur_size,
+                    mtime: file_mtime(&file),
+                }))
+            })
+            .await??
         };
-        if !newer {
-            return Ok(SyncOutcome::Skipped);
-        }
-        let Some(parsed) = parse(file, project_path) else {
+        let Some(TranscriptSnapshot {
+            parsed,
+            size: cur_size,
+            mtime,
+        }) = snapshot
+        else {
             return Ok(SyncOutcome::Skipped);
         };
-        fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
-        fs::write(&conv_path, &parsed.log).map_err(|e| e.to_string())?;
         // Re-tally usage from the now-larger transcript so stats track the turns
         // added outside Devdy. created_at = transcript mtime.
-        let created_at = file_modified_rfc3339(file);
-        let created_at = if created_at.is_empty() {
-            chrono::Utc::now().to_rfc3339()
-        } else {
-            created_at
-        };
+        let created_at = rfc3339_or_now(mtime);
         sync_run_usage(db, &id, project_id, project_name, engine, &parsed, &created_at).await;
         // Remember where the transcript lives and how far we've mirrored it.
         // The transcript grew, so the session WAS worked on — outside Devdy, in
@@ -445,7 +499,7 @@ pub(crate) async fn upsert_session_run_core(
         let external_work = finished_at
             .as_deref()
             .and_then(|f| chrono::DateTime::parse_from_rfc3339(f).ok())
-            .zip(fs::metadata(file).and_then(|m| m.modified()).ok())
+            .zip(mtime)
             .is_none_or(|(fin, mtime)| {
                 mtime > std::time::SystemTime::from(fin) + std::time::Duration::from_secs(5)
             });
@@ -479,25 +533,35 @@ pub(crate) async fn upsert_session_run_core(
         }
     }
 
-    let Some(parsed) = parse(file, project_path) else {
+    let snapshot = {
+        let (file, project_path) = (file.to_path_buf(), project_path.to_string());
+        blocking(move || {
+            let size = file_size(&file);
+            let mtime = file_mtime(&file);
+            parse(&file, &project_path).map(|parsed| TranscriptSnapshot {
+                parsed,
+                size,
+                mtime,
+            })
+        })
+        .await?
+    };
+    let Some(TranscriptSnapshot {
+        mut parsed,
+        size: synced_size,
+        mtime,
+    }) = snapshot
+    else {
         return Ok(SyncOutcome::Skipped);
     };
 
     let new_id = Uuid::new_v4().to_string();
     let log_path = runs_dir.join(format!("{}.log", new_id));
     let output_path = log_path.to_string_lossy().to_string();
-    let synced_size = file_size(file);
 
     // created_at = session mtime so it sorts naturally among runs; mark done so
     // the UI offers resume right away.
-    let created_at = {
-        let m = file_modified_rfc3339(file);
-        if m.is_empty() {
-            chrono::Utc::now().to_rfc3339()
-        } else {
-            m
-        }
-    };
+    let created_at = rfc3339_or_now(mtime);
     let finished_at = chrono::Utc::now().to_rfc3339();
 
     // `OR IGNORE` makes this idempotent against the unique session index: if the
@@ -531,8 +595,7 @@ pub(crate) async fn upsert_session_run_core(
     }
 
     // Persist the converted history where get_run_log / resume_run expect it.
-    fs::create_dir_all(&runs_dir).map_err(|e| e.to_string())?;
-    fs::write(&log_path, &parsed.log).map_err(|e| e.to_string())?;
+    write_log(&runs_dir, &log_path, std::mem::take(&mut parsed.log)).await?;
 
     // Record the session's accumulated token usage so the imported history shows
     // in stats. Cost is estimated (the transcript has no SDK total_cost_usd).
@@ -565,6 +628,20 @@ pub(crate) async fn upsert_claude_session(
             None => return Ok(SyncOutcome::Skipped),
         }
     };
+    upsert_claude_session_file(db, project_id, project_name, project_path, session_id, &file, defer_when_busy).await
+}
+
+/// Claude upsert when the transcript path is already known (the watcher has it)
+/// — skips resolving the account config dirs to locate the file.
+pub(crate) async fn upsert_claude_session_file(
+    db: &sqlx::SqlitePool,
+    project_id: &str,
+    project_name: &str,
+    project_path: &str,
+    session_id: &str,
+    file: &Path,
+    defer_when_busy: bool,
+) -> Result<SyncOutcome, String> {
     upsert_session_run_core(
         db,
         project_id,
@@ -572,7 +649,7 @@ pub(crate) async fn upsert_claude_session(
         project_path,
         session_id,
         "claude",
-        &file,
+        file,
         parse_transcript,
         defer_when_busy,
     )
@@ -611,8 +688,13 @@ pub async fn reconcile_claude_sessions(
             Err(_) => continue,
         };
         for entry in entries {
-            let path = entry.map_err(|e| e.to_string())?.path();
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            // Regular files only (following symlinks), like `upsert_claude_session`.
+            if !path.is_file() {
                 continue;
             }
             let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -623,12 +705,16 @@ pub async fn reconcile_claude_sessions(
             if !seen.insert(session_id.to_string()) {
                 continue;
             }
-            match upsert_claude_session(
+            // `dirs` is walked in the same order `upsert_claude_session` would
+            // search it, and `seen` keeps the first hit, so this is the file it
+            // would resolve — without re-querying the dirs for every session.
+            match upsert_claude_session_file(
                 db.inner(),
                 &project_id,
                 &project_name,
                 &project_path,
                 session_id,
+                &path,
                 true,
             )
             .await

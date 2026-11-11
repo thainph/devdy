@@ -5,7 +5,8 @@
 //! and bridges to us over NDJSON on stdin/stdout:
 //!
 //! - Raw stream-json SDK messages are emitted verbatim → parsed exactly like the
-//!   old CLI output and forwarded on `run:event:<run_id>`.
+//!   old CLI output and forwarded, coalesced per ~40ms, as arrays on
+//!   `run:events:<run_id>` (see `EventBatch`).
 //! - Control messages are namespaced `_devdy_*`:
 //!     `_devdy_permission_request` → emitted on `run:permission_request:<run_id>`;
 //!         the frontend answers via `respond_permission`, which writes a
@@ -337,17 +338,20 @@ pub fn kill_process_group(pid: u32) -> bool {
 /// Drain the sidecar's stdout/stderr until EOF, bridging events to the frontend
 /// and persisting the stream-json log. On EOF, updates the run row and emits
 /// `run:done:<run_id>`. Shared by both `start_run` and `resume_run`.
-/// Writes a run's log buffer (append-only: lines are only ever pushed) to
-/// disk: only the bytes it gained since the last flush are appended, nothing
-/// is written while it is unchanged. A fresh log (not a resume) replaces
-/// whatever file was there atomically (temp + rename) on the first flush; a
-/// failed append is cut back and redone on the next one.
+/// Persists a run's log to disk. The shared `log_buf` is only a pending tail:
+/// each flush drains it and hands the new bytes here, so the run never holds
+/// its whole log in memory. Only those bytes are appended; nothing is written
+/// while there is nothing new. A fresh log (not a resume) replaces whatever
+/// file was there atomically (temp + rename) on the first flush; a failed
+/// append keeps its bytes in `pending`, is cut back and redone on the next one.
 struct LogFlusher {
     path: PathBuf,
-    /// Bytes of the file before the buffer (the log of a resumed run).
+    /// Bytes of the file before this run's output (the log of a resumed run).
     base: u64,
-    /// Bytes of the buffer on disk.
-    written: usize,
+    /// Bytes of this run's output on disk.
+    written: u64,
+    /// Drained from `log_buf` but not yet (successfully) on disk.
+    pending: Vec<u8>,
     /// The file must be replaced first (fresh log).
     fresh: bool,
     /// An append may have left a partial write behind.
@@ -363,7 +367,7 @@ impl LogFlusher {
         if base > 0 && !ends_with_newline(&path) && Self::append_newline(&path).is_ok() {
             base += 1;
         }
-        LogFlusher { path, base, written: 0, fresh: !merge_existing, torn: false }
+        LogFlusher { path, base, written: 0, pending: Vec::new(), fresh: !merge_existing, torn: false }
     }
 
     fn append_newline(path: &Path) -> std::io::Result<()> {
@@ -371,23 +375,27 @@ impl LogFlusher {
         std::io::Write::write_all(&mut f, b"\n")
     }
 
-    fn flush(&mut self, buf: &str) {
-        let buf = buf.as_bytes();
+    /// Persist `new` (the bytes drained from `log_buf` since the last flush)
+    /// plus anything a failed earlier flush left pending. Blocking I/O — call
+    /// through `flush_log_off_thread` from async code.
+    fn flush(&mut self, new: &str) {
+        self.pending.extend_from_slice(new.as_bytes());
         if self.fresh {
-            if self.replace(buf).is_ok() {
-                (self.fresh, self.written) = (false, buf.len());
+            if self.replace(&self.pending).is_ok() {
+                self.fresh = false;
+                self.written = self.pending.len() as u64;
+                self.pending.clear();
             }
             return;
         }
-        // Nothing new (the buffer only ever grows).
-        if buf.len() <= self.written && !self.torn {
+        if self.pending.is_empty() && !self.torn {
             return;
         }
         if self.torn {
             let cut = std::fs::OpenOptions::new()
                 .write(true)
                 .open(&self.path)
-                .and_then(|f| f.set_len(self.base + self.written as u64));
+                .and_then(|f| f.set_len(self.base + self.written));
             if cut.is_err() {
                 return;
             }
@@ -397,9 +405,12 @@ impl LogFlusher {
             .create(true)
             .append(true)
             .open(&self.path)
-            .and_then(|mut f| std::io::Write::write_all(&mut f, buf.get(self.written..).unwrap_or_default()));
+            .and_then(|mut f| std::io::Write::write_all(&mut f, &self.pending));
         match appended {
-            Ok(()) => self.written = self.written.max(buf.len()),
+            Ok(()) => {
+                self.written += self.pending.len() as u64;
+                self.pending.clear();
+            }
             Err(_) => self.torn = true,
         }
     }
@@ -414,6 +425,30 @@ impl LogFlusher {
     }
 }
 
+/// Drain `log_buf` (only the lock is held, never across I/O) and write the
+/// bytes on the blocking pool. Awaited inline by the drain loop, so one run
+/// never has two flushes in flight and lines land in order. The flusher is
+/// moved into the blocking task and back; if that task panics, that chunk is
+/// lost and a fresh flusher appends the rest, rather than taking the drain
+/// loop down or silently letting `log_buf` grow for the rest of the run.
+async fn flush_log_off_thread(slot: &mut Option<LogFlusher>, log_buf: &Arc<TokioMutex<String>>) {
+    let Some(mut flusher) = slot.take() else { return };
+    let chunk = std::mem::take(&mut *log_buf.lock().await);
+    if chunk.is_empty() && flusher.pending.is_empty() && !flusher.fresh && !flusher.torn {
+        *slot = Some(flusher);
+        return;
+    }
+    let path = flusher.path.clone();
+    *slot = Some(
+        tokio::task::spawn_blocking(move || {
+            flusher.flush(&chunk);
+            flusher
+        })
+        .await
+        .unwrap_or_else(|_| LogFlusher::new(path, true)),
+    );
+}
+
 /// Whether the file's last byte is a newline (false when unreadable).
 fn ends_with_newline(path: &Path) -> bool {
     use std::io::{Read, Seek, SeekFrom};
@@ -424,6 +459,51 @@ fn ends_with_newline(path: &Path) -> bool {
             f.read_exact(&mut last)
         })
         .is_ok_and(|()| last[0] == b'\n')
+}
+
+/// How long a run's stream events may wait before they are emitted as one batch.
+/// Partial messages put a `stream_event` on stdout per token; one webview IPC
+/// message per token, times several streaming runs, swamps the UI thread.
+const EVENT_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(40);
+/// Emit early once this many events are buffered (bounds the payload size).
+const EVENT_BATCH_MAX: usize = 256;
+
+/// Coalesces a run's stream-json events into `run:events:<run_id>` arrays.
+///
+/// Every other per-run emit that the webview orders against the transcript
+/// (`run:output`, permission prompts, attention, budget, `run:done`) must call
+/// `flush` first, so the frontend still sees events in stdout order.
+struct EventBatch {
+    pending: Vec<Value>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl EventBatch {
+    fn new() -> Self {
+        Self { pending: Vec::new(), deadline: None }
+    }
+
+    /// Queue an event; arms the batch window on the first one.
+    fn push(&mut self, v: Value) {
+        if self.pending.is_empty() {
+            self.deadline = Some(tokio::time::Instant::now() + EVENT_BATCH_WINDOW);
+        }
+        self.pending.push(v);
+    }
+
+    fn is_full(&self) -> bool {
+        self.pending.len() >= EVENT_BATCH_MAX
+    }
+
+    /// Emit whatever is buffered (no-op when empty) and disarm the window.
+    fn flush(&mut self, app: &AppHandle, run_id: &str) {
+        self.deadline = None;
+        if self.pending.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut self.pending);
+        let _ = app.emit(&format!("run:events:{}", run_id), batch);
+    }
 }
 
 /// Show a permission request to the user: desktop drawer and paired phones.
@@ -666,15 +746,27 @@ pub async fn drain_sidecar(
     // log while the run streams (after the existing log of a resumed run).
     // This lets the frontend recover partial output after an app restart
     // mid-run, instead of only seeing the log once the run finishes.
-    let mut log_file = LogFlusher::new(log_path.clone(), merge_existing_log);
+    let mut log_file = Some(LogFlusher::new(log_path.clone(), merge_existing_log));
     let mut flush_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Stream events headed for the webview, coalesced per ~40ms (see EventBatch).
+    let mut events = EventBatch::new();
+
     loop {
         tokio::select! {
+            // The batch window elapsed: hand the buffered events to the webview.
+            // Pends forever while nothing is buffered.
+            _ = async {
+                match events.deadline {
+                    Some(dl) => tokio::time::sleep_until(dl).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                events.flush(&app, &run_id);
+            }
             _ = flush_tick.tick() => {
-                let buf = log_buf.lock().await;
-                log_file.flush(&buf);
+                flush_log_off_thread(&mut log_file, &log_buf).await;
             }
             // Watchdog: surface long waits (notices only), and detect the one
             // definitive hang the drain can see itself — the sidecar process has
@@ -692,6 +784,9 @@ pub async fn drain_sidecar(
                     &pending,
                     engine == "claude",
                 );
+                if !actions.is_empty() {
+                    events.flush(&app, &run_id);
+                }
                 apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
 
                 if exit_deadline.is_none() {
@@ -736,6 +831,7 @@ pub async fn drain_sidecar(
                 }
             } => {
                 let pgid = registry.lock().await.get(&run_id).and_then(|h| h.pgid);
+                events.flush(&app, &run_id);
                 watchdog_line(&app, &log_buf, &remote_bus, &run_id, "warn", &detach_notice(pgid)).await;
                 detached = true;
                 break;
@@ -749,6 +845,15 @@ pub async fn drain_sidecar(
                             .and_then(|v| v.get("type"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
+                        // Engine events join the batch; control lines and non-JSON
+                        // output emit on their own channels, so release the batch
+                        // first to keep the webview's view in stdout order.
+                        let is_engine_event = parsed.is_some() && !kind.starts_with("_devdy_");
+                        if !is_engine_event {
+                            events.flush(&app, &run_id);
+                        }
+                        let is_result = kind == "result";
+                        let mut queue_event = false;
 
                         // Liveness bookkeeping: `_devdy_*` lines prove the sidecar
                         // alive; anything else is the engine making progress.
@@ -770,6 +875,9 @@ pub async fn drain_sidecar(
                             (Some(v), _) => liveness.on_engine_event(now, v),
                             (None, _) => liveness.on_output(now),
                         };
+                        if !actions.is_empty() {
+                            events.flush(&app, &run_id);
+                        }
                         apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
                         match (parsed.as_ref(), kind) {
                             (Some(_), "_devdy_error") => unresolved_error = true,
@@ -1097,6 +1205,7 @@ pub async fn drain_sidecar(
                                         crate::commands::stats::budget_status_for(&db_pool, &engine, claude_account_id.as_deref()).await
                                     {
                                         if status.is_over {
+                                            events.flush(&app, &run_id);
                                             let _ = app.emit(
                                                 &format!("run:budget_exceeded:{}", run_id),
                                                 serde_json::json!({
@@ -1114,7 +1223,9 @@ pub async fn drain_sidecar(
                                         event: v.clone(),
                                     });
                                 }
-                                let _ = app.emit(&format!("run:event:{}", run_id), v.clone());
+                                // Queued below, once `parsed` is no longer borrowed
+                                // (moved into the batch rather than cloned).
+                                queue_event = true;
                             }
                             // ---- non-JSON line (rare) ---------------------------
                             (None, _) => {
@@ -1132,12 +1243,23 @@ pub async fn drain_sidecar(
                                 );
                             }
                         }
+                        if queue_event {
+                            if let Some(v) = parsed {
+                                events.push(v);
+                                // A turn's end goes out at once: `run:done` and the
+                                // finished state shouldn't wait on the window.
+                                if is_result || events.is_full() {
+                                    events.flush(&app, &run_id);
+                                }
+                            }
+                        }
                     }
                     _ => break,
                 }
             }
             line = stderr_reader.next_line() => {
                 if let Ok(Some(l)) = line {
+                    events.flush(&app, &run_id);
                     let actions = liveness.on_output(tokio::time::Instant::now());
                     apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
                     append_log(&log_buf, &format!("[stderr] {}\n", l)).await;
@@ -1156,6 +1278,9 @@ pub async fn drain_sidecar(
             }
         }
     }
+
+    // Whatever is still batched precedes everything below, `run:done` included.
+    events.flush(&app, &run_id);
 
     // Drain any trailing stderr after stdout closed — bounded: a descendant may
     // hold stderr open long after the session ended. (Skipped when we already
@@ -1197,10 +1322,7 @@ pub async fn drain_sidecar(
     }
 
     // Final persist (anything appended since the last periodic flush).
-    {
-        let buf = log_buf.lock().await;
-        log_file.flush(&buf);
-    }
+    flush_log_off_thread(&mut log_file, &log_buf).await;
 
     // The sidecar is gone, so any request it was blocked on can never be answered.
     crate::runs::permission::clear_pending(&run_id);
@@ -1931,21 +2053,19 @@ mod log_flusher_tests {
         let p = tmp("r1.log");
         std::fs::write(&p, "stale from an earlier run\n").unwrap();
         let mut f = LogFlusher::new(p.clone(), false);
-        let mut buf = String::from("line 1\n");
-        f.flush(&buf);
+        f.flush("line 1\n");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "line 1\n");
         // Unchanged buffer: the file is not touched (mtime/size stay).
         let old = std::time::SystemTime::now() - std::time::Duration::from_secs(60);
         std::fs::File::options().append(true).open(&p).unwrap().set_modified(old).unwrap();
         let before = stamp(&p);
-        f.flush(&buf);
-        f.flush(&buf);
+        f.flush("");
+        f.flush("");
         assert_eq!(stamp(&p), before);
         // Grown: only the new bytes are appended (same inode, never shorter).
         #[cfg(unix)]
         let ino = std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&p).unwrap());
-        buf.push_str("line 2\n");
-        f.flush(&buf);
+        f.flush("line 2\n");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "line 1\nline 2\n");
         #[cfg(unix)]
         assert_eq!(std::os::unix::fs::MetadataExt::ino(&std::fs::metadata(&p).unwrap()), ino);
@@ -1957,18 +2077,33 @@ mod log_flusher_tests {
         let p = tmp("r2.log");
         std::fs::write(&p, "turn 1\n").unwrap();
         let mut f = LogFlusher::new(p.clone(), true);
-        let mut buf = String::new();
-        f.flush(&buf);
+        f.flush("");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n");
-        buf.push_str("--- resumed ---\nturn 2\n");
-        f.flush(&buf);
+        f.flush("--- resumed ---\nturn 2\n");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n--- resumed ---\nturn 2\n");
         // A torn append is cut back to what was flushed, then redone.
         f.torn = true;
         std::fs::write(&p, "turn 1\n--- resumed ---\nturn 2\ngarbage").unwrap();
-        buf.push_str("turn 3\n");
-        f.flush(&buf);
+        f.flush("turn 3\n");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n--- resumed ---\nturn 2\nturn 3\n");
+    }
+
+    /// A failed write keeps its bytes: they are written on the next flush,
+    /// ahead of whatever was drained after them.
+    #[test]
+    fn failed_append_keeps_pending_bytes_in_order() {
+        let p = tmp("r6.log");
+        std::fs::write(&p, "turn 1\n").unwrap();
+        let mut f = LogFlusher::new(p.clone(), true);
+        // Unwritable path: the append fails and the chunk stays pending.
+        let real = std::mem::replace(&mut f.path, p.with_file_name("no-such-dir/x.log"));
+        f.flush("a\n");
+        assert!(f.torn);
+        assert_eq!(f.pending, b"a\n");
+        f.path = real;
+        f.flush("b\n");
+        assert!(f.pending.is_empty());
+        assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\na\nb\n");
     }
 
     /// Review-3 L2: resuming onto a log that ends mid-line starts on a new
@@ -1978,13 +2113,11 @@ mod log_flusher_tests {
         let p = tmp("r3.log");
         std::fs::write(&p, "turn 1\n{\"type\":\"assi").unwrap();
         let mut f = LogFlusher::new(p.clone(), true);
-        let mut buf = String::from("--- resumed ---\n");
-        f.flush(&buf);
+        f.flush("--- resumed ---\n");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n{\"type\":\"assi\n--- resumed ---\n");
         // The cut-back of a torn append keeps that newline.
         f.torn = true;
-        buf.push_str("turn 2\n");
-        f.flush(&buf);
+        f.flush("turn 2\n");
         assert_eq!(std::fs::read_to_string(&p).unwrap(), "turn 1\n{\"type\":\"assi\n--- resumed ---\nturn 2\n");
         // A complete log or an empty / missing one gets nothing added.
         let q = tmp("r4.log");

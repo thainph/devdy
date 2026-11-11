@@ -26,5 +26,13 @@
     "cancelled": "Cancelled",
     "fetched": "Fetched",
     "draft": "Draft"
-  }
+  },
+  "sort": "Sort",
+  "sortByGroup": "By group",
+  "itemCount": "{n} item | {n} items",
+  "sortByName": "Name (A–Z)",
+  "sortByUpdated": "Recently edited",
+  "sortByAdded": "Recently added",
+  "sortByType": "By type",
+  "sortByTag": "By tag"
 }

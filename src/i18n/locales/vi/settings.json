@@ -17,7 +17,7 @@
     "prompts": "Mẫu Prompt",
     "inbox": "Inbox API",
     "azure": "Tài khoản Azure",
-    "focus": "Focus"
+    "focus": "Giờ làm việc & nhắc việc"
   },
   "general": {
     "theme": "Giao diện",
@@ -323,6 +323,8 @@
     "permAuto": "Tự động (bộ phân loại)",
     "permBypass": "Bỏ qua mọi quyền",
     "permissionHint": "Cách các lệnh gọi tool được kiểm soát (Claude & Codex). \"Hỏi qua UI\" hiển thị mỗi yêu cầu trong một modal; \"Bỏ qua tất cả\" bỏ modal — nhanh, nhưng không an toàn ngoài thư mục tin cậy. Bạn vẫn có thể ghi đè engine, model và chế độ quyền cho từng lần chạy ở màn Run.",
+    "strictMcp": "Chỉ dùng MCP server do Devdy quản lý",
+    "strictMcpHint": "Phiên Claude chỉ nạp các MCP server do Devdy đưa vào (server bạn đã bật và các server có sẵn). Server từ .mcp.json của repo, plugin (ví dụ đồng bộ từ claude.ai) và cấu hình người dùng của Claude sẽ bị bỏ qua — ít tiến trình và tốn ít RAM hơn cho mỗi phiên, nhưng các tool đó sẽ không dùng được. Chỉ áp dụng cho Claude (Codex không bị ảnh hưởng); có hiệu lực với phiên mới và phiên được tiếp tục.",
     "translation": "Dịch thuật",
     "translationHint": "Dùng cho tính năng dịch đoạn văn bản bôi đen trong màn Run AI.",
     "translateEngine": "Engine dịch",

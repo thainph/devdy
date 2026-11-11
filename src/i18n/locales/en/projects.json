@@ -29,5 +29,8 @@
   "alreadyAdded": "Already added",
   "removeRepo": "Remove repository",
   "noReposHint": "No repositories — paste a repo link above to add one",
-  "azureChipTitle": "Azure: {label} · subscription {subscription}"
+  "azureChipTitle": "Azure: {label} · subscription {subscription}",
+  "searchPlaceholder": "Search projects by name or path…",
+  "clearSearch": "Clear search",
+  "noMatch": "No projects match your search"
 }

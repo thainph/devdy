@@ -264,14 +264,45 @@ let timer: ReturnType<typeof setInterval> | null = null
 let clockTimer: ReturnType<typeof setInterval> | null = null
 let unlistenPlanUsage: UnlistenFn | null = null
 let unlistenBudgetStatus: UnlistenFn | null = null
+// onMounted awaits several IPC calls before wiring timers/listeners. RunView
+// remounts this badge on every project switch, so it can be unmounted mid-setup;
+// every step after an await re-checks this and tears down what it just made.
+let disposed = false
+
+// Event bursts (several runs capturing usage at once, a probe writing both
+// providers) would otherwise each fan out into a refresh + per-account DB reads.
+// Coalesce into one trailing refresh per second, remembering what was asked.
+const EVENT_COALESCE_MS = 1_000
+let pendingClaude = false
+let pendingCodex = false
+let pendingAccounts = false
+let coalesceTimer: ReturnType<typeof setTimeout> | null = null
+
+function flushPendingRefresh() {
+  coalesceTimer = null
+  if (disposed) return
+  if (pendingClaude && !budget.refreshingPlan) budget.refresh()
+  if (pendingCodex && !budget.refreshingCodexPlan) budget.refreshCodex()
+  if (pendingAccounts) void refreshAccountBudgets()
+  pendingClaude = pendingCodex = pendingAccounts = false
+}
+
+function queueRefresh(opts: { claude?: boolean; codex?: boolean; accounts?: boolean }) {
+  if (opts.claude) pendingClaude = true
+  if (opts.codex) pendingCodex = true
+  if (opts.accounts) pendingAccounts = true
+  if (!coalesceTimer) coalesceTimer = setTimeout(flushPendingRefresh, EVENT_COALESCE_MS)
+}
 
 onMounted(async () => {
   await app.ensureLoaded()
+  if (disposed) return
   now.value = Date.now()
   // Load managed Claude accounts + each account's cached usage snapshot so the
   // badge can render one row per account. Live per-account probes happen on
   // demand via each row's refresh button (no auto fan-out on startup).
   await Promise.all([budget.refresh(), budget.refreshCodex(), claudeAccounts.fetch()])
+  if (disposed) return
   // The only automatic probes: one per provider on startup. Afterwards the % is
   // kept fresh by the piggybacked capture on every run (Claude /usage, Codex
   // rate-limits) or by the manual refresh button — no background polling.
@@ -296,19 +327,17 @@ onMounted(async () => {
   }, 60_000)
   clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
   // Immediately when a sidecar / watcher persists a fresh snapshot during a run.
-  unlistenPlanUsage = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
-    if (e.payload?.provider === 'codex') {
-      if (!budget.refreshingCodexPlan) budget.refreshCodex()
-    } else {
-      if (!budget.refreshingPlan) budget.refresh()
-      void refreshAccountBudgets()
-    }
+  const offPlan = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
+    if (e.payload?.provider === 'codex') queueRefresh({ codex: true })
+    else queueRefresh({ claude: true, accounts: true })
   })
-  unlistenBudgetStatus = await listen('budget_status_updated', () => {
-    budget.refresh()
-    budget.refreshCodex()
-    void refreshAccountBudgets()
+  if (disposed) { offPlan(); return }
+  unlistenPlanUsage = offPlan
+  const offBudget = await listen('budget_status_updated', () => {
+    queueRefresh({ claude: true, codex: true, accounts: true })
   })
+  if (disposed) { offBudget(); return }
+  unlistenBudgetStatus = offBudget
 })
 
 /** Re-read every managed account's cached usage snapshot (skips rows mid-probe). */
@@ -321,10 +350,14 @@ async function refreshAccountBudgets() {
 }
 
 onUnmounted(() => {
+  disposed = true
   if (timer) clearInterval(timer)
   if (clockTimer) clearInterval(clockTimer)
+  if (coalesceTimer) clearTimeout(coalesceTimer)
   if (unlistenPlanUsage) unlistenPlanUsage()
   if (unlistenBudgetStatus) unlistenBudgetStatus()
+  timer = clockTimer = coalesceTimer = null
+  unlistenPlanUsage = unlistenBudgetStatus = null
 })
 // The badge shows real plan usage only, so it no longer reacts to the Usage
 // budget settings — those only gate run-blocking. Fresh % arrives via the

@@ -363,7 +363,10 @@ async fn session_read(
         .join(".devdy")
         .join("runs")
         .join(format!("{}.log", worker_id));
-    let reply = extract_latest_reply(&log_path);
+    // Blocking file read (worker logs reach tens of MB) — off the async workers.
+    let reply = tokio::task::spawn_blocking(move || extract_latest_reply(&log_path))
+        .await
+        .unwrap_or_default();
 
     let entry = json!({
         "worker_id": worker_id,
@@ -524,13 +527,54 @@ fn normalize_status(status: &str) -> &'static str {
     }
 }
 
+/// First tail window `extract_latest_reply` reads; grown 4x until it holds a
+/// user record (or the whole file).
+const REPLY_TAIL_BYTES: u64 = 256 * 1024;
+
 /// Parse the worker's stream-json log and return the assistant text produced
 /// since its last user turn. Empty string when nothing is readable yet.
+///
+/// Only the reply after the LAST user record matters, and user records (tool
+/// result echoes included) are frequent, so this reads a tail window and only
+/// widens it when no user record is in it — never the whole multi-MB log in the
+/// common case. Blocking I/O.
 fn extract_latest_reply(log_path: &Path) -> String {
-    let content = match std::fs::read_to_string(log_path) {
-        Ok(c) => c,
-        Err(_) => return String::new(),
+    use std::io::{Read, Seek, SeekFrom};
+
+    let Ok(mut file) = std::fs::File::open(log_path) else {
+        return String::new();
     };
+    let Ok(len) = file.metadata().map(|m| m.len()) else {
+        return String::new();
+    };
+    let mut window = REPLY_TAIL_BYTES;
+    loop {
+        let start = len.saturating_sub(window);
+        let mut bytes = Vec::with_capacity((len - start) as usize);
+        if file.seek(SeekFrom::Start(start)).is_err()
+            || file.by_ref().take(len - start).read_to_end(&mut bytes).is_err()
+        {
+            return String::new();
+        }
+        let text = String::from_utf8_lossy(&bytes);
+        // A window starting mid-file begins mid-line: drop that fragment.
+        let body = if start == 0 {
+            &text[..]
+        } else {
+            text.split_once('\n').map(|(_, rest)| rest).unwrap_or("")
+        };
+        let (reply, saw_user) = reply_since_last_user(body);
+        if saw_user || start == 0 {
+            return reply;
+        }
+        window = window.saturating_mul(4);
+    }
+}
+
+/// Assistant text after the last `user` record in `content`, and whether a
+/// user record was seen at all.
+fn reply_since_last_user(content: &str) -> (String, bool) {
+    let mut saw_user = false;
     let mut reply = String::new();
     for line in content.lines() {
         let v: Value = match serde_json::from_str(line) {
@@ -538,7 +582,10 @@ fn extract_latest_reply(log_path: &Path) -> String {
             Err(_) => continue,
         };
         match v.get("type").and_then(|t| t.as_str()) {
-            Some("user") => reply.clear(),
+            Some("user") => {
+                saw_user = true;
+                reply.clear();
+            }
             Some("assistant") => {
                 if let Some(blocks) = v
                     .get("message")
@@ -560,7 +607,7 @@ fn extract_latest_reply(log_path: &Path) -> String {
             _ => {}
         }
     }
-    reply.trim().to_string()
+    (reply.trim().to_string(), saw_user)
 }
 
 /// Append a control-plane event AND notify the UI. The emit is the push signal
@@ -735,5 +782,49 @@ fn truncate(s: &str, max: usize) -> String {
         format!("{}…", t)
     } else {
         t
+    }
+}
+
+#[cfg(test)]
+mod reply_tests {
+    use super::extract_latest_reply;
+
+    fn write_log(lines: &[String]) -> std::path::PathBuf {
+        let p = std::env::temp_dir().join(format!("devdy-reply-{}.log", uuid::Uuid::new_v4().simple()));
+        std::fs::write(&p, lines.join("\n") + "\n").unwrap();
+        p
+    }
+
+    fn assistant(text: &str) -> String {
+        serde_json::json!({ "type": "assistant", "message": { "content": [{ "type": "text", "text": text }] } })
+            .to_string()
+    }
+
+    fn user() -> String {
+        serde_json::json!({ "type": "user", "message": { "content": "hi" } }).to_string()
+    }
+
+    #[test]
+    fn returns_text_after_the_last_user_record() {
+        let p = write_log(&[assistant("old"), user(), assistant("a"), assistant("b")]);
+        assert_eq!(extract_latest_reply(&p), "a\nb");
+    }
+
+    #[test]
+    fn widens_the_tail_window_until_it_finds_the_user_record() {
+        let mut lines = vec![assistant("stale"), user(), assistant("first")];
+        // > 256KB of non-reply records pushes the user record out of the first window.
+        let pad = serde_json::json!({ "type": "system", "note": "x".repeat(1000) }).to_string();
+        lines.extend(std::iter::repeat_n(pad, 400));
+        lines.push(assistant("last"));
+        let p = write_log(&lines);
+        assert_eq!(extract_latest_reply(&p), "first\nlast");
+    }
+
+    #[test]
+    fn no_user_record_reads_the_whole_file_and_missing_file_is_empty() {
+        let p = write_log(&[assistant("only")]);
+        assert_eq!(extract_latest_reply(&p), "only");
+        assert_eq!(extract_latest_reply(std::path::Path::new("/nonexistent/devdy.log")), "");
     }
 }

@@ -5,6 +5,7 @@
 // in the URL query — `?id=<id>` a server, `?new=1` a blank draft — so a
 // reload reopens it.
 import { computed, onMounted, reactive, ref, watch } from 'vue'
+import { byNewest, byText, type ListSort } from '@/lib/listGroups'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { HardDrive, RotateCw } from 'lucide-vue-next'
@@ -55,6 +56,11 @@ const groups = computed(() =>
     t('servers.list.untagged'),
   ),
 )
+
+const sorts = computed<ListSort<VpsServer>[]>(() => [
+  { value: 'name', label: t('common.sortByName'), compare: byText((s) => s.label) },
+  { value: 'added', label: t('common.sortByAdded'), compare: byNewest((s) => s.created_at) },
+])
 
 // ── Selection (URL query) ───────────────────────────────────────────────────
 
@@ -257,6 +263,9 @@ async function handleDelete(server: VpsServer) {
       :groups="groups"
       :selected-id="selectedId"
       collapse-key="devdy.servers.collapsedGroups"
+      :sorts="sorts"
+      default-sort="name"
+      :grouped-label="t('common.sortByTag')"
       :search-placeholder="t('servers.list.searchPlaceholder')"
       :loading="store.loading && !loaded"
       :error="store.error"

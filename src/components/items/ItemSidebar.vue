@@ -1,22 +1,30 @@
 <script setup lang="ts">
 // Left pane of the Notes / Todos window — the sibling of SlackSidebar, same
 // layout: search + the window's pin / reload (no custom titlebar), project
-// filter + "+ New", a segmented filter (notes: All | Linked to a session;
-// todos: Open | Done | All), then the items grouped by project (each header
-// collapsible, remembered in localStorage per kind; its 🗑 deletes the whole
-// folder's shown items — those passing the filters — after the host confirms).
+// filter + "+ New" (as wide as pin + reload, so the select lines up with the
+// search box), a tab row (notes: All | Linked to a session; todos: the
+// lateness tabs) ending in one ⇅ menu (the sort, todos also "Show done"), then
+// the items grouped by project (each header collapsible, remembered in
+// localStorage per kind; its 🗑 deletes the whole folder's shown items — those
+// passing the filters — after the host confirms).
 //
 // A note row: title, a one-line preview, its age and a link mark with the
 // linked-session count. A todo row: a clickable checkbox, its first line, its
 // deadline (red + "Nd late" when overdue, amber when due today), age and the
 // link mark.
 //
-// Todos with `lateness` (lib/focusRadar) also get count chips that filter by
-// lateness (overdue / today / due soon / waiting), and are ordered by it: the
-// projects with the most late work first, the most late todo first inside.
-import { computed, ref } from 'vue'
+// Todos with `lateness` (lib/focusRadar) also get count tabs that filter by
+// lateness (All / overdue / today / due soon / waiting; empty ones hidden), and
+// are ordered by it: the projects with the most late work first, the most late
+// todo first inside.
+// Any other sort in the ⇅ menu is one flat list, each row naming its project:
+// todos by deadline (lib/todoDue compareByDue), notes by last edit or title.
+// That flat list is the default (todos by deadline, notes by last edit); the
+// choice is remembered in localStorage per kind.
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  ArrowDownWideNarrow,
   CalendarDays,
   Check,
   ChevronDown,
@@ -31,10 +39,10 @@ import {
   Trash2,
   X,
 } from 'lucide-vue-next'
-import { AppSelect, Banner, Button, Input, SegmentedControl } from '@/components/ui'
+import { AppSelect, Banner, Button, DropdownItem, DropdownMenu, DropdownSeparator, Input, SegmentedControl } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
 import { formatDate, ymdToDate } from '@/lib/dateValue'
-import { dueStatus, localYmd } from '@/lib/todoDue'
+import { compareByDue, dueStatus, localYmd } from '@/lib/todoDue'
 import {
   compareGroupLateness,
   compareLateness,
@@ -62,8 +70,10 @@ const props = defineProps<{
   reloading: boolean
   /** Todos: lateness of each open todo by id (done / unknown ones absent). */
   lateness?: Record<string, FocusRadarItem> | null
-  /** Todos: counts behind the lateness chips. */
+  /** Todos: counts behind the lateness tabs. */
   latenessCounts?: FocusRadarCounts | null
+  /** Notes: counts behind the All / Linked tabs. */
+  noteCounts?: { all: number; linked: number } | null
 }>()
 
 const search = defineModel<string>('search', { required: true })
@@ -73,15 +83,26 @@ const filter = defineModel<string>('filter', { required: true })
 /** Todos: show only one lateness status (null = all). */
 const latenessFilter = defineModel<FocusRadarStatus | null>('latenessFilter', { default: null })
 
-const CHIPS: { status: FocusRadarStatus, tone: string }[] = [
-  { status: 'overdue', tone: 'border-destructive/30 bg-destructive/10 text-destructive' },
-  { status: 'today', tone: 'border-warning/30 bg-warning/10 text-warning' },
-  { status: 'due-soon', tone: 'border-info/30 bg-info/10 text-info' },
-  { status: 'waiting', tone: 'border-border bg-muted text-foreground' },
-]
-function toggleLateness(s: FocusRadarStatus) {
-  latenessFilter.value = latenessFilter.value === s ? null : s
-}
+const LATENESS: FocusRadarStatus[] = ['overdue', 'today', 'due-soon', 'waiting']
+/** The lateness tabs ('' = All); a tab is shown when it has todos or is picked. */
+const LATENESS_TABS = computed(() => {
+  const counts = props.latenessCounts
+  const all = Object.values(counts ?? {}).reduce((sum, n) => sum + n, 0)
+  return [
+    { value: '', label: `${t('item.statusAll')} ${all}` },
+    ...LATENESS.filter((s) => (counts?.[s] ?? 0) > 0 || latenessFilter.value === s).map((s) => ({
+      value: s as string,
+      label: `${t(`item.lateness.${s}`)} ${counts?.[s] ?? 0}`,
+      title: t(`focus.radar.hint.${s}`, { days: 7 }),
+    })),
+  ]
+})
+const latenessTab = computed({
+  get: () => latenessFilter.value ?? '',
+  set: (v: string) => (latenessFilter.value = (v || null) as FocusRadarStatus | null),
+})
+/** Todos: done ones are behind the ⇅ menu ('all'); 'done' alone is legacy. */
+const showDone = computed(() => filter.value !== 'active')
 
 const emit = defineEmits<{
   select: [id: string]
@@ -128,18 +149,11 @@ const dueBadges = computed(() => {
   return out
 })
 
-const FILTERS = computed(() =>
-  props.kind === 'note'
-    ? [
-        { value: '', label: t('item.filterAll') },
-        { value: 'linked', label: t('item.filterLinked') },
-      ]
-    : [
-        { value: 'active', label: t('item.statusActive') },
-        { value: 'done', label: t('item.statusDone') },
-        { value: 'all', label: t('item.statusAll') },
-      ],
-)
+/** Notes: the All / Linked tabs (todos filter by lateness and "Show done"). */
+const NOTE_TABS = computed(() => [
+  { value: '', label: `${t('item.filterAll')} ${props.noteCounts?.all ?? 0}` },
+  { value: 'linked', label: `${t('item.filterLinked')} ${props.noteCounts?.linked ?? 0}` },
+])
 
 const COLLAPSED_KEY = `items.${props.kind}.collapsed`
 
@@ -168,11 +182,48 @@ function toggle(key: string) {
 
 const NONE = '__none__'
 
+// ── Grouped by project, or one flat list by another sort ───────────────────
+type SortMode = 'project' | 'due' | 'updated' | 'title'
+const SORTS = computed<{ value: SortMode; label: string }[]>(() => [
+  { value: 'project', label: t('item.sortByProject') },
+  ...(props.kind === 'todo'
+    ? [{ value: 'due' as const, label: t('item.sortByDue') }]
+    : [
+        { value: 'updated' as const, label: t('item.sortByUpdated') },
+        { value: 'title' as const, label: t('item.sortByTitle') },
+      ]),
+])
+const SORT_KEY = `items.${props.kind}.order`
+const saved = localStorage.getItem(SORT_KEY)
+/** Flat by default: todos by deadline, notes by last edit. */
+const DEFAULT_SORT: SortMode = props.kind === 'todo' ? 'due' : 'updated'
+const sortMode = ref<SortMode>(SORTS.value.find((o) => o.value === saved)?.value ?? DEFAULT_SORT)
+watch(sortMode, (m) => {
+  try {
+    localStorage.setItem(SORT_KEY, m)
+  } catch {
+    /* storage unavailable */
+  }
+})
+const flat = computed(() => sortMode.value !== 'project')
+/** The ⇅ button is tinted when the list is not on its defaults. */
+const customView = computed(() => sortMode.value !== DEFAULT_SORT || (props.kind === 'todo' && showDone.value))
+
+function compareFlat(a: ItemRow, b: ItemRow): number {
+  if (sortMode.value === 'due') return compareByDue(a, b)
+  if (sortMode.value === 'updated') return a.at < b.at ? 1 : a.at > b.at ? -1 : 0
+  // By title: untitled last.
+  return (!a.title ? 1 : 0) - (!b.title ? 1 : 0) || a.title.localeCompare(b.title)
+}
+const flatRows = computed(() => [...props.rows].sort(compareFlat))
+
 /**
  * Rows by project, "No project" last. Projects A–Z and list order inside a
  * group — or, for todos with lateness, the most late project / todo first.
  */
 const groups = computed(() => {
+  // Any other sort: a single header-less group.
+  if (flat.value) return [{ key: '__flat__', label: '', rows: flatRows.value, late: groupLateness([]) }]
   const late = props.lateness
   const map = new Map<string, ItemRow[]>()
   for (const row of props.rows) {
@@ -197,7 +248,7 @@ const groups = computed(() => {
 </script>
 
 <template>
-  <aside class="flex w-[280px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
+  <aside class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
     <!-- Search + pin / reload, filter + new -->
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
       <div class="flex items-center gap-1.5">
@@ -249,33 +300,55 @@ const groups = computed(() => {
             </template>
           </AppSelect>
         </div>
-        <Button size="sm" class="shrink-0" @click="emit('add')">
+        <!-- As wide as pin + reload above: the select lines up with the search box. -->
+        <Button size="sm" class="w-[70px] shrink-0 px-0" @click="emit('add')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ t('common.new') }}
         </Button>
       </div>
-      <SegmentedControl
-        v-model="filter"
-        :options="FILTERS"
-        :aria-label="kind === 'note' ? t('item.filterLinkedTitle') : t('item.filterStatusTitle')"
-      />
-      <div v-if="latenessCounts" class="flex flex-wrap items-center gap-1">
-        <button
-          v-for="c in CHIPS"
-          :key="c.status"
-          type="button"
-          class="flex cursor-pointer items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] transition-colors"
-          :class="[
-            latenessCounts[c.status] > 0 ? c.tone : 'border-border/60 text-muted-foreground',
-            latenessFilter === c.status ? 'ring-1 ring-primary/60' : 'hover:bg-accent/50',
-          ]"
-          :aria-pressed="latenessFilter === c.status"
-          :title="t(`focus.radar.hint.${c.status}`, { days: 7 })"
-          @click="toggleLateness(c.status)"
-        >
-          {{ t(`item.lateness.${c.status}`) }}
-          <span class="font-semibold tabular-nums">{{ latenessCounts[c.status] }}</span>
-        </button>
+      <div class="flex items-center gap-1.5">
+        <SegmentedControl
+          v-if="kind === 'note'"
+          v-model="filter"
+          :options="NOTE_TABS"
+          class="min-w-0 flex-1"
+          :aria-label="t('item.filterLinkedTitle')"
+        />
+        <SegmentedControl
+          v-else-if="latenessCounts"
+          v-model="latenessTab"
+          :options="LATENESS_TABS"
+          class="min-w-0 flex-1"
+          :aria-label="t('item.filterStatusTitle')"
+        />
+        <div v-else class="flex-1" />
+        <!-- Sort + view options; tinted when not on the defaults. -->
+        <DropdownMenu align="right" class="shrink-0">
+          <template #trigger>
+            <Button
+              variant="outline"
+              size="icon-xs"
+              class="shrink-0"
+              :class="customView && 'border-primary/50 text-primary'"
+              :title="t('item.viewOptions')"
+              :aria-label="t('item.viewOptions')"
+            >
+              <ArrowDownWideNarrow class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </Button>
+          </template>
+          <div class="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
+            {{ t('item.sortTitle') }}
+          </div>
+          <DropdownItem v-for="o in SORTS" :key="o.value" @click="sortMode = o.value">
+            <Check class="h-3.5 w-3.5" :class="sortMode === o.value ? '' : 'invisible'" :stroke-width="2" />
+            {{ o.label }}
+          </DropdownItem>
+          <DropdownSeparator v-if="kind === 'todo'" />
+          <DropdownItem v-if="kind === 'todo'" @click="filter = showDone ? 'active' : 'all'">
+            <Check class="h-3.5 w-3.5" :class="showDone ? '' : 'invisible'" :stroke-width="2" />
+            {{ t('item.showDone') }}
+          </DropdownItem>
+        </DropdownMenu>
       </div>
     </div>
 
@@ -308,7 +381,7 @@ const groups = computed(() => {
       </p>
 
       <div v-for="g in groups" v-else :key="g.key" :class="groupClass">
-        <div :class="groupHeaderClass">
+        <div v-if="!flat" :class="groupHeaderClass">
           <button
             type="button"
             class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 px-1.5 py-1 text-left text-xs font-semibold text-foreground"
@@ -345,11 +418,11 @@ const groups = computed(() => {
           </Button>
         </div>
 
-        <ul v-if="!collapsed.has(g.key)" :class="rowListClass">
+        <ul v-if="flat || !collapsed.has(g.key)" :class="rowListClass">
           <li v-for="row in g.rows" :key="row.id">
             <div
-              class="gap-2 pl-6 pr-2"
-              :class="rowClass(row.id === selectedId)"
+              class="gap-2 pr-2"
+              :class="[flat ? 'pl-2' : 'pl-6', rowClass(row.id === selectedId)]"
             >
               <button
                 v-if="kind === 'todo'"
@@ -399,7 +472,18 @@ const groups = computed(() => {
                     {{ relativeAge(row.at) }}
                   </span>
                 </span>
-                <span v-if="row.preview" class="block w-full" :class="rowSubClass">
+                <!-- Flat list: the project leads the sub line, then a note's preview. -->
+                <span v-if="flat" class="flex w-full min-w-0 items-center gap-1" :class="rowSubClass">
+                  <Folder class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                  <span class="max-w-[45%] shrink-0 truncate">
+                    {{ row.projectId ? projectNames[row.projectId] ?? row.projectId : t('item.noProject') }}
+                  </span>
+                  <template v-if="row.preview">
+                    <span class="shrink-0">·</span>
+                    <span class="min-w-0 truncate">{{ row.preview }}</span>
+                  </template>
+                </span>
+                <span v-else-if="row.preview" class="block w-full" :class="rowSubClass">
                   {{ row.preview }}
                 </span>
               </button>

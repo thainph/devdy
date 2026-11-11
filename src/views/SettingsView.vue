@@ -87,6 +87,7 @@ interface AppSettings {
   translate_model: string
   translate_target_lang: string
   translate_style: string
+  mcp_strict_config: string
   cyber_fox_enabled: string
   cyber_fox_size: string
   cyber_fox_mode: string
@@ -127,6 +128,7 @@ const settings = ref<AppSettings>({
   translate_model: '',
   translate_target_lang: 'vi',
   translate_style: 'natural',
+  mcp_strict_config: 'false',
   cyber_fox_enabled: 'false',
   cyber_fox_size: 'md',
   cyber_fox_mode: 'in-app',
@@ -2780,6 +2782,18 @@ watch(() => settings.value.language, (v) => {
                 <p class="text-[11px] text-muted-foreground leading-relaxed">
                   {{ t('settings.ai.permissionHint') }}
                 </p>
+              </div>
+              <div class="flex items-start justify-between gap-3">
+                <div class="min-w-0">
+                  <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('settings.ai.strictMcp') }}</div>
+                  <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">{{ t('settings.ai.strictMcpHint') }}</p>
+                </div>
+                <ToggleSwitch
+                  size="md"
+                  :checked="settings.mcp_strict_config === 'true'"
+                  :label="t('settings.ai.strictMcp')"
+                  @toggle="settings.mcp_strict_config = settings.mcp_strict_config === 'true' ? 'false' : 'true'"
+                />
               </div>
             </div>
 

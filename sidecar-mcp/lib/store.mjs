@@ -64,7 +64,10 @@ function nowRfc3339() {
 /** Run `fn` inside a transaction so a failure mid-batch rolls the whole thing back. */
 function tx(fn) {
   const d = db();
-  d.exec('BEGIN');
+  // IMMEDIATE takes the write lock up front, so a busy DB waits out
+  // busy_timeout here instead of failing with SQLITE_BUSY when a deferred
+  // read transaction tries to upgrade to a write.
+  d.exec('BEGIN IMMEDIATE');
   try {
     const out = fn(d);
     d.exec('COMMIT');

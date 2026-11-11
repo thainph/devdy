@@ -111,7 +111,7 @@ function matchesFilters(row: ItemRow): boolean {
   return true
 }
 
-/** Lateness chip counts: open todos of the project in scope, before the chip filter. */
+/** Lateness tab counts: open todos of the project in scope, before the tab filter. */
 const latenessCounts = computed(() => {
   const late = lateness.value
   if (!late) return null
@@ -122,7 +122,16 @@ const latenessCounts = computed(() => {
   return countFocus(inScope.map((row) => late[row.id]).filter((x) => !!x))
 })
 
-// Picking a lateness chip means open todos.
+/** Note tab counts: the project in scope, before the All / Linked filter. */
+const noteCounts = computed(() => {
+  if (kind !== 'note') return null
+  const inScope = allRows.value.filter((row) =>
+    projectFilter.value === NO_PROJECT ? !row.projectId : !projectFilter.value || row.projectId === projectFilter.value,
+  )
+  return { all: inScope.length, linked: inScope.filter((row) => row.linkedRunCount > 0).length }
+})
+
+// Picking a lateness tab means open todos.
 watch(latenessFilter, (s) => {
   if (s && filter.value === 'done') filter.value = 'active'
 })
@@ -585,7 +594,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+  <div class="app-shell app-window flex h-screen w-screen overflow-hidden bg-background text-foreground">
     <ItemSidebar
       v-model:search="search"
       v-model:project="projectFilter"
@@ -602,6 +611,7 @@ onBeforeUnmount(() => {
       :reloading="reloading"
       :lateness="lateness"
       :lateness-counts="latenessCounts"
+      :note-counts="noteCounts"
       @select="select"
       @add="openCreate"
       @toggle-done="toggleDone"

@@ -7,6 +7,7 @@
 // The selection lives in the URL query (`?id=<rule>`, `?new=1` for a blank
 // draft) so a reload or a link reopens it.
 import { computed, onMounted, ref, watch } from 'vue'
+import { byNewest, byText, type ListSort } from '@/lib/listGroups'
 import { useI18n } from 'vue-i18n'
 import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { useRoute, useRouter } from 'vue-router'
@@ -83,6 +84,12 @@ const sidebarGroups = computed(() =>
     noneLabel: t('groups.ungrouped'),
   }),
 )
+
+type RuleListRow = (typeof sidebarGroups.value)[number]['rows'][number]
+const sorts = computed<ListSort<RuleListRow>[]>(() => [
+  { value: 'name', label: t('common.sortByName'), compare: byText((r) => r.rule.name) },
+  { value: 'updated', label: t('common.sortByUpdated'), compare: byNewest((r) => r.rule.updated_at) },
+])
 
 const groupOptions = computed(() => [
   { value: '', label: t('rules.detail.allGroups') },
@@ -335,6 +342,8 @@ async function handleExport(rule: Rule) {
       :groups="sidebarGroups"
       :selected-id="isNew ? null : selectedId"
       collapse-key="devdy.rules.collapsedGroups"
+      :sorts="sorts"
+      default-sort="name"
       :search-placeholder="t('rules.detail.searchPlaceholder')"
       :loading="store.loading"
       :error="store.error"

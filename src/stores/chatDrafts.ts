@@ -1,5 +1,4 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
 
 /**
  * Unsent chatbox drafts, keyed by SESSION (run id). Switching between sessions,
@@ -77,15 +76,54 @@ function load(): Record<string, ChatDraft> {
   }
 }
 
-export const useChatDraftsStore = defineStore('chatDrafts', () => {
-  const drafts = reactive<Record<string, ChatDraft>>(load())
+// Writing localStorage is synchronous and serializes EVERY session's draft
+// (pasted images included, as base64), so it must not run per keystroke. The
+// in-memory map updates immediately; the disk mirror is debounced and flushed on
+// window teardown and on session switch (RunView calls `flush`).
+const PERSIST_DEBOUNCE_MS = 400
 
-  function persist() {
+export const useChatDraftsStore = defineStore('chatDrafts', () => {
+  // Plain, non-reactive map: drafts are only ever read through `get()` (a copy),
+  // so making them reactive would just deep-proxy large base64 payloads.
+  const drafts: Record<string, ChatDraft> = load()
+  let persistTimer: ReturnType<typeof setTimeout> | null = null
+
+  function write(value: Record<string, ChatDraft>): boolean {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify({ ...drafts }))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify(value))
+      return true
     } catch {
-      /* storage unavailable or quota exceeded — in-memory drafts still work */
+      return false
     }
+  }
+
+  function persistNow() {
+    if (persistTimer) { clearTimeout(persistTimer); persistTimer = null }
+    if (write(drafts)) return
+    // Most likely the quota: pasted images are the bulk of the payload, so keep
+    // at least text + file paths across a reload. In-memory drafts (and thus
+    // session switches) still keep the images.
+    const lite: Record<string, ChatDraft> = {}
+    for (const [k, d] of Object.entries(drafts)) {
+      const slim = { text: d.text, images: [], files: d.files }
+      if (!isEmpty(slim)) lite[k] = slim
+    }
+    write(lite)
+  }
+
+  function schedulePersist() {
+    if (persistTimer) clearTimeout(persistTimer)
+    persistTimer = setTimeout(persistNow, PERSIST_DEBOUNCE_MS)
+  }
+
+  /** Write any pending change to localStorage right away. */
+  function flush() {
+    if (persistTimer) persistNow()
+  }
+
+  if (typeof window !== 'undefined') {
+    window.addEventListener('beforeunload', flush)
+    window.addEventListener('pagehide', flush)
   }
 
   function get(key: string): ChatDraft {
@@ -102,12 +140,12 @@ export const useChatDraftsStore = defineStore('chatDrafts', () => {
     } else {
       drafts[key] = { text: draft.text, images: [...draft.images], files: [...draft.files] }
     }
-    persist()
+    schedulePersist()
   }
 
   function clear(key: string) {
     set(key, emptyDraft())
   }
 
-  return { drafts, get, set, clear }
+  return { get, set, clear, flush }
 })

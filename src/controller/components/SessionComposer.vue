@@ -13,7 +13,7 @@
 import { computed, nextTick, onMounted, onUnmounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
-  ChevronDown, Cpu, FileText, Maximize2, Minimize2, Paperclip, Play, Send, Square, X,
+  BookMarked, ChevronDown, Cpu, FileText, Maximize2, Minimize2, Paperclip, Play, Search, Send, Square, X,
 } from 'lucide-vue-next'
 import { Button, AppSelect } from '@/components/ui'
 import HeaderButton from './HeaderButton.vue'
@@ -28,7 +28,8 @@ import {
   type SelectOption,
 } from '@/lib/engineOptions'
 import type { ClaudeAccountChoice } from '../protocol'
-import type { CmdAttachment, SlashCommand } from '../protocol'
+import type { CmdAttachment, SavedPromptInfo, SlashCommand } from '../protocol'
+import { promptLabel } from '@/lib/savedPrompts'
 
 /** One outbound turn assembled by the composer. */
 export interface ComposerTurn {
@@ -43,6 +44,8 @@ const props = withDefaults(
   defineProps<{
     /** Slash commands to offer in the palette. */
     slashCommands?: SlashCommand[]
+    /** The Host's saved prompt library (Settings → Prompt Templates). */
+    savedPrompts?: SavedPromptInfo[]
     /** Project file paths for `@`-mention autocomplete. */
     projectFiles?: string[]
     /** Models the Host discovered from the account (merged into the curated
@@ -68,6 +71,7 @@ const props = withDefaults(
   }>(),
   {
     slashCommands: () => [],
+    savedPrompts: () => [],
     projectFiles: () => [],
     discoveredModels: () => ({ codex: [] }),
     claudeAccounts: () => [],
@@ -91,12 +95,17 @@ const emit = defineEmits<{
   'update:claudeAccountId': [value: string]
   /** Ask the parent to (re)fetch the project file list (opened a mention). */
   requestFiles: []
+  /** Ask the parent to (re)fetch the saved prompt library. */
+  requestSavedPrompts: []
 }>()
 
 const MENTION_LIMIT = 50
 const MAX_IMAGE_BYTES = 10 * 1024 * 1024
 
 const text = ref('')
+// Where the caret was when the textarea lost focus (tapping the saved prompt
+// picker blurs it), so an inserted prompt lands there.
+let lastCaret: number | null = null
 
 // The unsent text survives a reload (the browser may reload a backgrounded or
 // memory-starved page) and switching runs: one entry per run, dropped once
@@ -123,7 +132,10 @@ watch(
   () => props.draftKey,
   (key) => {
     text.value = readDraft(key)
+    lastCaret = null
     nextTick(autoResize)
+    // Prompts are edited on the desktop: refresh whenever a session opens.
+    emit('requestSavedPrompts')
   },
   { immediate: true },
 )
@@ -168,6 +180,99 @@ function onSettingsPointerDown(e: MouseEvent): void {
 }
 onMounted(() => document.addEventListener('mousedown', onSettingsPointerDown))
 onUnmounted(() => document.removeEventListener('mousedown', onSettingsPointerDown))
+
+// ── saved prompt picker ───────────────────────────────────────────────────
+// Desktop parity (SavedPromptPicker): search title + body, ↑ ↓ move, Enter
+// inserts. The prompt goes in at the caret on its own line and is never sent,
+// so the user can review it first.
+const promptsOpen = ref(false)
+const promptsRoot = ref<HTMLElement | null>(null)
+const promptQuery = ref('')
+const promptIndex = ref(0)
+const promptSearchEl = ref<HTMLInputElement | null>(null)
+
+const promptItems = computed(() => {
+  const q = promptQuery.value.trim().toLowerCase()
+  if (!q) return props.savedPrompts
+  return props.savedPrompts.filter((p) => `${p.title}\n${p.body}`.toLowerCase().includes(q))
+})
+
+/** One-line body preview; an untitled prompt's label already is its first line. */
+function promptPreview(p: SavedPromptInfo): string {
+  const lines = p.body.split('\n').map((l) => l.trim()).filter(Boolean)
+  return (p.title.trim() ? lines[0] : lines[1]) ?? ''
+}
+
+function togglePrompts(): void {
+  promptsOpen.value = !promptsOpen.value
+  if (!promptsOpen.value) return
+  settingsOpen.value = false
+  promptQuery.value = ''
+  promptIndex.value = 0
+  emit('requestSavedPrompts')
+  // Only autofocus with a real pointer: on a phone it would pop the keyboard
+  // over the list.
+  if (window.matchMedia?.('(pointer: fine)').matches) {
+    nextTick(() => promptSearchEl.value?.focus())
+  }
+}
+
+function insertPrompt(p: SavedPromptInfo): void {
+  promptsOpen.value = false
+  const cur = text.value
+  const caret = Math.min(lastCaret ?? cur.length, cur.length)
+  const before = cur.slice(0, caret)
+  const after = cur.slice(caret)
+  // Keep an existing draft readable by dropping the prompt onto its own line.
+  const sep = before.length && !/\n$/.test(before) ? '\n' : ''
+  const insert = `${sep}${p.body}`
+  text.value = before + insert + after
+  const pos = (before + insert).length
+  lastCaret = pos
+  nextTick(() => {
+    const el = composerEl.value
+    if (el) {
+      el.focus()
+      el.setSelectionRange(pos, pos)
+    }
+  })
+}
+
+function onPromptSearchKeydown(e: KeyboardEvent): void {
+  if (e.isComposing || e.keyCode === 229) return
+  const n = promptItems.value.length
+  if (e.key === 'ArrowDown' && n) {
+    e.preventDefault()
+    promptIndex.value = (promptIndex.value + 1) % n
+  } else if (e.key === 'ArrowUp' && n) {
+    e.preventDefault()
+    promptIndex.value = (promptIndex.value - 1 + n) % n
+  } else if (e.key === 'Enter' && n) {
+    e.preventDefault()
+    insertPrompt(promptItems.value[promptIndex.value])
+  } else if (e.key === 'Escape') {
+    e.preventDefault()
+    promptsOpen.value = false
+  }
+}
+watch(promptQuery, () => {
+  promptIndex.value = 0
+})
+
+function onPromptsPointerDown(e: MouseEvent): void {
+  if (!promptsOpen.value) return
+  const target = e.target as HTMLElement | null
+  if (target && promptsRoot.value?.contains(target)) return
+  promptsOpen.value = false
+}
+onMounted(() => document.addEventListener('mousedown', onPromptsPointerDown))
+onUnmounted(() => document.removeEventListener('mousedown', onPromptsPointerDown))
+
+function onComposerBlur(): void {
+  mentionOpen.value = false
+  slashOpen.value = false
+  lastCaret = composerEl.value?.selectionStart ?? null
+}
 
 /** Accounts are a Claude-only concept, and only worth showing when the Host
  * actually manages some (or the run already points at one). */
@@ -527,11 +632,17 @@ function submit(): void {
     ...pendingImages.value.map((img) => ({ name: `${img.id}`, mime: img.mime, data_base64: img.data })),
     ...pendingFiles.value.map((f) => pendingFileData.get(f.id)).filter((a): a is CmdAttachment => !!a),
   ]
+  // Drop the stored draft under the key it was typed in: a new session's first
+  // turn swaps the key (draft:<project> → run id) in the same tick, so the text
+  // watcher would clear the new key and leave the old draft behind.
+  const key = props.draftKey
   let accepted = false
   const accept = (): void => {
     if (accepted) return
     accepted = true
-    text.value = ''
+    writeDraft(key, '')
+    // Already on another run: its text is that run's own draft.
+    if (props.draftKey === key) text.value = ''
     pendingImages.value = []
     pendingFiles.value = []
     pendingFileData.clear()
@@ -694,7 +805,7 @@ function onKeydown(e: KeyboardEvent): void {
           @click="onInput"
           @compositionend="onInput"
           @paste="onComposerPaste"
-          @blur="mentionOpen = false; slashOpen = false"
+          @blur="onComposerBlur"
         />
 
         <!-- Footer toolbar — two rows so nothing overflows on a phone: the
@@ -709,6 +820,68 @@ function onKeydown(e: KeyboardEvent): void {
             >
               <Paperclip class="h-4 w-4" :stroke-width="2" />
             </HeaderButton>
+            <div
+              v-if="savedPrompts.length"
+              ref="promptsRoot"
+              class="relative shrink-0"
+            >
+              <HeaderButton
+                :disabled="disabled || sending"
+                :label="t('controller.composer.savedPrompts')"
+                :active="promptsOpen"
+                @click="togglePrompts"
+              >
+                <BookMarked class="h-4 w-4" :stroke-width="2" />
+              </HeaderButton>
+              <div
+                v-if="promptsOpen"
+                role="dialog"
+                class="absolute bottom-full left-0 z-30 mb-2 w-80 max-w-[calc(100vw-2rem)] rounded-md border border-border bg-popover p-1.5 shadow-lg shadow-black/20"
+                :aria-label="t('controller.composer.savedPrompts')"
+              >
+                <div class="relative mb-1">
+                  <Search
+                    class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+                    :stroke-width="1.75"
+                  />
+                  <input
+                    ref="promptSearchEl"
+                    v-model="promptQuery"
+                    type="text"
+                    class="h-8 w-full rounded border border-border bg-background pl-7 pr-2 text-xs text-foreground outline-none focus:ring-1 focus:ring-ring"
+                    :placeholder="t('controller.composer.savedPromptsSearch')"
+                    @keydown="onPromptSearchKeydown"
+                  >
+                </div>
+                <div class="max-h-72 overflow-y-auto">
+                  <p
+                    v-if="promptItems.length === 0"
+                    class="px-2.5 py-4 text-center text-[11px] text-muted-foreground"
+                  >
+                    {{ t('controller.composer.savedPromptsEmpty') }}
+                  </p>
+                  <button
+                    v-for="(p, i) in promptItems"
+                    v-else
+                    :key="p.id"
+                    type="button"
+                    class="flex w-full cursor-pointer items-start gap-2 rounded px-2.5 py-1.5 text-left transition-colors"
+                    :class="promptIndex === i ? 'bg-accent' : 'hover:bg-accent'"
+                    @mouseenter="promptIndex = i"
+                    @click="insertPrompt(p)"
+                  >
+                    <BookMarked class="mt-0.5 h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                    <span class="block min-w-0 flex-1">
+                      <span class="block w-full truncate text-[13px] text-popover-foreground">{{ promptLabel(p) }}</span>
+                      <span
+                        v-if="promptPreview(p)"
+                        class="block w-full truncate text-[11px] text-muted-foreground"
+                      >{{ promptPreview(p) }}</span>
+                    </span>
+                  </button>
+                </div>
+              </div>
+            </div>
             <HeaderButton
               :label="composerExpanded ? t('controller.composer.collapseComposer') : t('controller.composer.expandComposer')"
               @click="toggleExpand"
