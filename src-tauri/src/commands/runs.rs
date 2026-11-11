@@ -410,6 +410,10 @@ pub(crate) async fn start_run_inner(
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         // Stream text/thinking deltas so the chat renders as the model writes.
         cmd.env("DEVDY_PARTIAL_MESSAGES", "1");
+        // "Only use Devdy-managed MCP servers": the sidecar sets strictMcpConfig.
+        if crate::commands::mcp::strict_mcp_config_enabled(db).await {
+            cmd.env("DEVDY_STRICT_MCP", "1");
+        }
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
         }
@@ -1560,16 +1564,20 @@ pub async fn get_run_log(db: State<'_, Db>, run_id: String) -> Result<RunLog, St
         _ => {}
     }
 
-    if let Ok(content) = fs::read_to_string(&conv_path) {
-        if !content.trim().is_empty() {
-            return Ok(RunLog { content });
+    // Whole-file reads (logs reach tens of MB) — keep them off the async workers.
+    tokio::task::spawn_blocking(move || {
+        if let Ok(content) = fs::read_to_string(&conv_path) {
+            if !content.trim().is_empty() {
+                return RunLog { content };
+            }
         }
-    }
-
-    let content = output_path
-        .and_then(|p| fs::read_to_string(&p).ok())
-        .unwrap_or_default();
-    Ok(RunLog { content })
+        let content = output_path
+            .and_then(|p| fs::read_to_string(&p).ok())
+            .unwrap_or_default();
+        RunLog { content }
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 #[derive(Debug, Serialize)]
@@ -2112,19 +2120,122 @@ pub async fn get_run_tool_records(
     db: State<'_, Db>,
     run_id: String,
 ) -> Result<RunToolRecords, String> {
-    use serde_json::{json, Value};
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    // Same reasoning as `get_run_user_records`: blocking scan off the async
+    // workers, unchanged logs served from cache.
+    tokio::task::spawn_blocking(move || {
+        let revision = build_revision(&row, &run_id);
+        let Some(key) = ScanKey::of(&revision) else {
+            return Ok(RunToolRecords {
+                records: Vec::new(),
+                revision,
+            });
+        };
+        let records = cached_scan(&TOOL_SCAN_CACHE, key, scan_tool_records)?;
+        Ok(RunToolRecords {
+            records: (*records).clone(),
+            revision,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+// ── Whole-log scan cache ─────────────────────────────────────────────────────
+//
+// `get_run_tool_records` / `get_run_user_records` each scan the entire log
+// (8–29MB in practice) and RunView calls both on every run switch. Results are
+// cached per file, valid only while the file's `(size, mtime_ns)` — the same
+// fingerprint `build_revision` reports — is unchanged, so a growing or rewritten
+// log always misses. Bounded LRU so switching through many runs can't grow it.
+
+/// How many runs' scan results each cache keeps.
+const SCAN_CACHE_CAP: usize = 16;
+
+/// The file a scan was computed from, plus the stat it is valid for.
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct ScanKey {
+    path: String,
+    size: u64,
+    mtime_ns: i64,
+}
+
+impl ScanKey {
+    fn of(rev: &RunLogRevision) -> Option<Self> {
+        rev.path.as_ref().map(|p| ScanKey {
+            path: p.clone(),
+            size: rev.size,
+            mtime_ns: rev.mtime_ns,
+        })
+    }
+}
+
+/// Tiny LRU: front = least recently used. At 16 entries a linear scan beats any
+/// map, and one entry per path means a stale result is replaced, not duplicated.
+struct ScanCache<T> {
+    cap: usize,
+    entries: std::collections::VecDeque<(ScanKey, Arc<T>)>,
+}
+
+impl<T> ScanCache<T> {
+    const fn new(cap: usize) -> Self {
+        Self {
+            cap,
+            entries: std::collections::VecDeque::new(),
+        }
+    }
+
+    /// Hit only when path AND stat match. A same-path entry with a stale stat is
+    /// dropped on the spot.
+    fn get(&mut self, key: &ScanKey) -> Option<Arc<T>> {
+        let idx = self.entries.iter().position(|(k, _)| k.path == key.path)?;
+        let (k, v) = self.entries.remove(idx)?;
+        if k != *key {
+            return None;
+        }
+        let hit = v.clone();
+        self.entries.push_back((k, v));
+        Some(hit)
+    }
+
+    fn insert(&mut self, key: ScanKey, value: Arc<T>) {
+        self.entries.retain(|(k, _)| k.path != key.path);
+        self.entries.push_back((key, value));
+        while self.entries.len() > self.cap {
+            self.entries.pop_front();
+        }
+    }
+}
+
+static TOOL_SCAN_CACHE: std::sync::Mutex<ScanCache<Vec<String>>> =
+    std::sync::Mutex::new(ScanCache::new(SCAN_CACHE_CAP));
+static USER_SCAN_CACHE: std::sync::Mutex<ScanCache<Vec<UserRecord>>> =
+    std::sync::Mutex::new(ScanCache::new(SCAN_CACHE_CAP));
+
+/// Serve `key` from `cache`, or run `scan` and remember the result. The lock is
+/// NOT held across the scan, so two runs can be scanned concurrently (a
+/// duplicate scan of the same file is harmless — last insert wins).
+fn cached_scan<T>(
+    cache: &std::sync::Mutex<ScanCache<T>>,
+    key: ScanKey,
+    scan: impl FnOnce(&Path) -> Result<T, String>,
+) -> Result<Arc<T>, String> {
+    if let Some(hit) = cache.lock().unwrap_or_else(|e| e.into_inner()).get(&key) {
+        return Ok(hit);
+    }
+    let value = Arc::new(scan(Path::new(&key.path))?);
+    cache
+        .lock()
+        .unwrap_or_else(|e| e.into_inner())
+        .insert(key, value.clone());
+    Ok(value)
+}
+
+/// The whole-file half of `get_run_tool_records`.
+fn scan_tool_records(path: &Path) -> Result<Vec<String>, String> {
     use std::io::{BufRead, BufReader};
 
-    let row = fetch_run_log_row(db.inner(), &run_id).await?;
-    let revision = build_revision(&row, &run_id);
-    let Some(path) = revision.path.as_ref().map(PathBuf::from) else {
-        return Ok(RunToolRecords {
-            records: Vec::new(),
-            revision,
-        });
-    };
-
-    let file = fs::File::open(&path).map_err(|e| format!("open log: {}", e))?;
+    let file = fs::File::open(path).map_err(|e| format!("open log: {}", e))?;
     // Large enough that a multi-MB record (a pasted image) doesn't thrash, but
     // the reader still streams — the file is never held in memory as a whole.
     let reader = BufReader::with_capacity(256 * 1024, file);
@@ -2132,69 +2243,72 @@ pub async fn get_run_tool_records(
 
     for line in reader.lines() {
         let Ok(line) = line else { continue };
-        // Cheap substring reject before paying for a JSON parse. The vast
-        // majority of records are assistant text and never match.
-        if !line.contains("tool_use") && !line.contains("tool_result") {
-            continue;
+        if let Some(reduced) = reduce_tool_record(&line) {
+            records.push(reduced);
         }
-        let Ok(v) = serde_json::from_str::<Value>(&line) else {
-            continue;
-        };
-        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        let Some(content) = v
-            .get("message")
-            .and_then(|m| m.get("content"))
-            .and_then(|c| c.as_array())
-        else {
-            continue;
-        };
+    }
+    Ok(records)
+}
 
-        let mut kept: Vec<Value> = Vec::new();
-        for block in content {
-            let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match (ty, btype) {
-                ("assistant", "tool_use") => {
-                    let mut input = serde_json::Map::new();
-                    if let Some(obj) = block.get("input").and_then(|i| i.as_object()) {
-                        for k in TOOL_INPUT_KEEP_KEYS {
-                            if let Some(v) = obj.get(k) {
-                                input.insert(k.to_string(), v.clone());
-                            }
+/// Prune one log line to the tool_use / tool_result fields the "files changed"
+/// view reads, or `None` when it carries no tool blocks.
+fn reduce_tool_record(line: &str) -> Option<String> {
+    use serde_json::{json, Value};
+
+    // Cheap substring reject before paying for a JSON parse. The vast
+    // majority of records are assistant text and never match.
+    if !line.contains("tool_use") && !line.contains("tool_result") {
+        return None;
+    }
+    let v: Value = serde_json::from_str(line).ok()?;
+    let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
+    let content = v
+        .get("message")
+        .and_then(|m| m.get("content"))
+        .and_then(|c| c.as_array())?;
+
+    let mut kept: Vec<Value> = Vec::new();
+    for block in content {
+        let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
+        match (ty, btype) {
+            ("assistant", "tool_use") => {
+                let mut input = serde_json::Map::new();
+                if let Some(obj) = block.get("input").and_then(|i| i.as_object()) {
+                    for k in TOOL_INPUT_KEEP_KEYS {
+                        if let Some(v) = obj.get(k) {
+                            input.insert(k.to_string(), v.clone());
                         }
                     }
-                    kept.push(json!({
-                        "type": "tool_use",
-                        "id": block.get("id").cloned().unwrap_or(Value::Null),
-                        "name": block.get("name").cloned().unwrap_or(Value::Null),
-                        "input": Value::Object(input),
-                    }));
                 }
-                ("user", "tool_result") => {
-                    kept.push(json!({
-                        "type": "tool_result",
-                        "tool_use_id": block.get("tool_use_id").cloned().unwrap_or(Value::Null),
-                        "is_error": block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false),
-                        // Deliberately empty: only `is_error` is read, and real
-                        // contents are whole file reads.
-                        "content": "",
-                    }));
-                }
-                _ => {}
+                kept.push(json!({
+                    "type": "tool_use",
+                    "id": block.get("id").cloned().unwrap_or(Value::Null),
+                    "name": block.get("name").cloned().unwrap_or(Value::Null),
+                    "input": Value::Object(input),
+                }));
             }
+            ("user", "tool_result") => {
+                kept.push(json!({
+                    "type": "tool_result",
+                    "tool_use_id": block.get("tool_use_id").cloned().unwrap_or(Value::Null),
+                    "is_error": block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false),
+                    // Deliberately empty: only `is_error` is read, and real
+                    // contents are whole file reads.
+                    "content": "",
+                }));
+            }
+            _ => {}
         }
-        if kept.is_empty() {
-            continue;
-        }
-        let reduced = json!({ "type": ty, "message": { "content": kept } });
-        records.push(reduced.to_string());
     }
-
-    Ok(RunToolRecords { records, revision })
+    if kept.is_empty() {
+        return None;
+    }
+    Some(json!({ "type": ty, "message": { "content": kept } }).to_string())
 }
 
 /// One pruned `type: "user"` record plus the byte offset it starts at, so the
 /// viewer can jump straight to it with a forward read instead of paging back.
-#[derive(Debug, Serialize)]
+#[derive(Debug, Clone, Serialize)]
 pub struct UserRecord {
     pub offset: u64,
     pub json: String,
@@ -2285,19 +2399,34 @@ pub async fn get_run_user_records(
     db: State<'_, Db>,
     run_id: String,
 ) -> Result<RunUserRecords, String> {
+    let row = fetch_run_log_row(db.inner(), &run_id).await?;
+    // Stat + whole-file scan are blocking and the log can be tens of MB — keep
+    // them off the async workers. RunView fires this on every run switch, so an
+    // unchanged log is served from `USER_SCAN_CACHE` instead of re-parsed.
+    tokio::task::spawn_blocking(move || {
+        let revision = build_revision(&row, &run_id);
+        let Some(key) = ScanKey::of(&revision) else {
+            return Ok(RunUserRecords {
+                records: Vec::new(),
+                revision,
+            });
+        };
+        let records = cached_scan(&USER_SCAN_CACHE, key, scan_user_records)?;
+        Ok(RunUserRecords {
+            records: (*records).clone(),
+            revision,
+        })
+    })
+    .await
+    .map_err(|e| e.to_string())?
+}
+
+/// The whole-file half of `get_run_user_records`.
+fn scan_user_records(path: &Path) -> Result<Vec<UserRecord>, String> {
     use serde_json::Value;
     use std::io::{BufRead, BufReader};
 
-    let row = fetch_run_log_row(db.inner(), &run_id).await?;
-    let revision = build_revision(&row, &run_id);
-    let Some(path) = revision.path.as_ref().map(PathBuf::from) else {
-        return Ok(RunUserRecords {
-            records: Vec::new(),
-            revision,
-        });
-    };
-
-    let file = fs::File::open(&path).map_err(|e| format!("open log: {}", e))?;
+    let file = fs::File::open(path).map_err(|e| format!("open log: {}", e))?;
     let mut reader = BufReader::with_capacity(256 * 1024, file);
     let mut records: Vec<UserRecord> = Vec::new();
 
@@ -2335,7 +2464,7 @@ pub async fn get_run_user_records(
         });
     }
 
-    Ok(RunUserRecords { records, revision })
+    Ok(records)
 }
 
 /// Source-run fields needed to clone a run into a new `fetched` record.
@@ -3702,6 +3831,9 @@ pub(crate) async fn resume_run_with(
         );
         cmd.env("DEVDY_USAGE_POLL_MS", "60000");
         cmd.env("DEVDY_PARTIAL_MESSAGES", "1");
+        if crate::commands::mcp::strict_mcp_config_enabled(db.inner()).await {
+            cmd.env("DEVDY_STRICT_MCP", "1");
+        }
         if let Some(m) = &model {
             cmd.env("DEVDY_MODEL", m);
         }
@@ -4081,52 +4213,70 @@ mod log_page_tests {
 #[cfg(test)]
 mod tool_record_tests {
     use super::*;
-    use serde_json::{json, Value};
+    use serde_json::json;
 
-    /// The pruning half of `get_run_tool_records`, lifted out so it can be
-    /// exercised without a database. Mirrors the loop body exactly.
+    /// The real reducer `get_run_tool_records` runs per line.
     fn reduce(line: &str) -> Option<String> {
-        if !line.contains("tool_use") && !line.contains("tool_result") {
-            return None;
+        reduce_tool_record(line)
+    }
+
+    fn key(path: &str, size: u64, mtime_ns: i64) -> ScanKey {
+        ScanKey {
+            path: path.to_string(),
+            size,
+            mtime_ns,
         }
-        let v: Value = serde_json::from_str(line).ok()?;
-        let ty = v.get("type").and_then(|t| t.as_str()).unwrap_or("");
-        let content = v.get("message")?.get("content")?.as_array()?;
-        let mut kept: Vec<Value> = Vec::new();
-        for block in content {
-            let btype = block.get("type").and_then(|t| t.as_str()).unwrap_or("");
-            match (ty, btype) {
-                ("assistant", "tool_use") => {
-                    let mut input = serde_json::Map::new();
-                    if let Some(obj) = block.get("input").and_then(|i| i.as_object()) {
-                        for k in TOOL_INPUT_KEEP_KEYS {
-                            if let Some(v) = obj.get(k) {
-                                input.insert(k.to_string(), v.clone());
-                            }
-                        }
-                    }
-                    kept.push(json!({
-                        "type": "tool_use",
-                        "id": block.get("id").cloned().unwrap_or(Value::Null),
-                        "name": block.get("name").cloned().unwrap_or(Value::Null),
-                        "input": Value::Object(input),
-                    }));
-                }
-                ("user", "tool_result") => {
-                    kept.push(json!({
-                        "type": "tool_result",
-                        "tool_use_id": block.get("tool_use_id").cloned().unwrap_or(Value::Null),
-                        "is_error": block.get("is_error").and_then(|e| e.as_bool()).unwrap_or(false),
-                        "content": "",
-                    }));
-                }
-                _ => {}
-            }
-        }
-        if kept.is_empty() {
-            return None;
-        }
-        Some(json!({ "type": ty, "message": { "content": kept } }).to_string())
+    }
+
+    #[test]
+    fn scan_cache_hits_only_on_identical_stat() {
+        let mut c: ScanCache<u32> = ScanCache::new(4);
+        c.insert(key("/a.log", 10, 1), Arc::new(1));
+        assert_eq!(c.get(&key("/a.log", 10, 1)).as_deref(), Some(&1));
+        // Grown or touched file → miss, and the stale entry is dropped.
+        assert!(c.get(&key("/a.log", 11, 1)).is_none());
+        assert!(c.get(&key("/a.log", 10, 1)).is_none());
+        c.insert(key("/a.log", 10, 1), Arc::new(1));
+        assert!(c.get(&key("/a.log", 10, 2)).is_none());
+        assert!(c.get(&key("/b.log", 10, 1)).is_none());
+    }
+
+    #[test]
+    fn scan_cache_replaces_same_path_instead_of_duplicating() {
+        let mut c: ScanCache<u32> = ScanCache::new(4);
+        c.insert(key("/a.log", 10, 1), Arc::new(1));
+        c.insert(key("/a.log", 20, 2), Arc::new(2));
+        assert_eq!(c.entries.len(), 1);
+        assert_eq!(c.get(&key("/a.log", 20, 2)).as_deref(), Some(&2));
+    }
+
+    #[test]
+    fn scan_cache_evicts_least_recently_used() {
+        let mut c: ScanCache<u32> = ScanCache::new(2);
+        c.insert(key("/a.log", 1, 1), Arc::new(1));
+        c.insert(key("/b.log", 1, 1), Arc::new(2));
+        // Touch /a so /b becomes the LRU entry.
+        assert!(c.get(&key("/a.log", 1, 1)).is_some());
+        c.insert(key("/c.log", 1, 1), Arc::new(3));
+        assert_eq!(c.entries.len(), 2);
+        assert!(c.get(&key("/b.log", 1, 1)).is_none());
+        assert!(c.get(&key("/a.log", 1, 1)).is_some());
+        assert!(c.get(&key("/c.log", 1, 1)).is_some());
+    }
+
+    #[test]
+    fn cached_scan_runs_the_scan_once_per_stat() {
+        let cache: std::sync::Mutex<ScanCache<u32>> = std::sync::Mutex::new(ScanCache::new(4));
+        let calls = std::cell::Cell::new(0);
+        let scan = |_: &Path| {
+            calls.set(calls.get() + 1);
+            Ok(7)
+        };
+        assert_eq!(*cached_scan(&cache, key("/x.log", 5, 5), scan).unwrap(), 7);
+        assert_eq!(*cached_scan(&cache, key("/x.log", 5, 5), scan).unwrap(), 7);
+        assert_eq!(calls.get(), 1);
+        cached_scan(&cache, key("/x.log", 6, 5), scan).unwrap();
+        assert_eq!(calls.get(), 2);
     }
 
     #[test]

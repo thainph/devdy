@@ -688,8 +688,13 @@ pub async fn reconcile_claude_sessions(
             Err(_) => continue,
         };
         for entry in entries {
-            let path = entry.map_err(|e| e.to_string())?.path();
+            let entry = entry.map_err(|e| e.to_string())?;
+            let path = entry.path();
             if path.extension().and_then(|e| e.to_str()) != Some("jsonl") {
+                continue;
+            }
+            // Regular files only (following symlinks), like `upsert_claude_session`.
+            if !path.is_file() {
                 continue;
             }
             let Some(session_id) = path.file_stem().and_then(|s| s.to_str()) else {
@@ -700,12 +705,16 @@ pub async fn reconcile_claude_sessions(
             if !seen.insert(session_id.to_string()) {
                 continue;
             }
-            match upsert_claude_session(
+            // `dirs` is walked in the same order `upsert_claude_session` would
+            // search it, and `seen` keeps the first hit, so this is the file it
+            // would resolve — without re-querying the dirs for every session.
+            match upsert_claude_session_file(
                 db.inner(),
                 &project_id,
                 &project_name,
                 &project_path,
                 session_id,
+                &path,
                 true,
             )
             .await

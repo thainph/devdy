@@ -20,11 +20,15 @@ const MAX_CELLS = 4_000_000
 function lcsDiff(a: string[], b: string[]): DiffRow[] {
   const n = a.length
   const m = b.length
-  // dp[i][j] = LCS length of a[i:] and b[j:].
-  const dp: number[][] = Array.from({ length: n + 1 }, () => new Array(m + 1).fill(0))
+  // dp[i*w + j] = LCS length of a[i:] and b[j:]. One flat typed array instead
+  // of n+1 boxed-number rows: a fraction of the memory and no per-row GC churn.
+  const w = m + 1
+  const dp = new Uint32Array((n + 1) * w)
   for (let i = n - 1; i >= 0; i--) {
+    const row = i * w
+    const next = row + w
     for (let j = m - 1; j >= 0; j--) {
-      dp[i][j] = a[i] === b[j] ? dp[i + 1][j + 1] + 1 : Math.max(dp[i + 1][j], dp[i][j + 1])
+      dp[row + j] = a[i] === b[j] ? dp[next + j + 1] + 1 : Math.max(dp[next + j], dp[row + j + 1])
     }
   }
   const rows: DiffRow[] = []
@@ -37,7 +41,7 @@ function lcsDiff(a: string[], b: string[]): DiffRow[] {
       rows.push({ type: 'ctx', text: a[i], oldNo: oldNo++, newNo: newNo++ })
       i++
       j++
-    } else if (dp[i + 1][j] >= dp[i][j + 1]) {
+    } else if (dp[(i + 1) * w + j] >= dp[i * w + j + 1]) {
       rows.push({ type: 'del', text: a[i], oldNo: oldNo++ })
       i++
     } else {
@@ -89,6 +93,43 @@ function splitLines(s: string): string[] {
   // spurious blank final row.
   const t = s.endsWith('\n') ? s.slice(0, -1) : s
   return t.split('\n')
+}
+
+/**
+ * Just the +added / −removed counts `computeDiff` would report, without
+ * building rows. Every LCS alignment has the same length, so the counts are
+ * `n − L` / `m − L`; the common head and tail are always part of an LCS, so
+ * they are trimmed first (an Edit's old/new strings mostly share both), and L
+ * of the middle takes two rolling rows instead of a full table. Same cap as
+ * `computeDiff`, so a header badge always matches the diff it summarizes.
+ */
+export function diffStats(before: string, after: string): { added: number; removed: number } {
+  const a = splitLines(before)
+  const b = splitLines(after)
+  const n = a.length
+  const m = b.length
+  if (!n || !m || n * m > MAX_CELLS) return { added: m, removed: n }
+  let lo = 0
+  while (lo < n && lo < m && a[lo] === b[lo]) lo++
+  let hiA = n
+  let hiB = m
+  while (hiA > lo && hiB > lo && a[hiA - 1] === b[hiB - 1]) {
+    hiA--
+    hiB--
+  }
+  let prev = new Uint32Array(hiB - lo + 1)
+  let cur = new Uint32Array(hiB - lo + 1)
+  for (let i = hiA - 1; i >= lo; i--) {
+    for (let j = hiB - 1; j >= lo; j--) {
+      const k = j - lo
+      cur[k] = a[i] === b[j] ? prev[k + 1] + 1 : Math.max(prev[k], cur[k + 1])
+    }
+    const t = prev
+    prev = cur
+    cur = t
+  }
+  const lcs = lo + (n - hiA) + prev[0]
+  return { added: m - lcs, removed: n - lcs }
 }
 
 export function computeDiff(

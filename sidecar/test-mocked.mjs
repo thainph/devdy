@@ -214,6 +214,24 @@ const tests = {
     // Keychain reads through the `security` CLI are denied in every session.
     assert.ok(o.disallowedTools.includes('Bash(security find-generic-password:*)'))
   },
+
+  // "Only use Devdy-managed MCP servers": the broker env turns on strictMcpConfig
+  // while keeping the servers Devdy passes in.
+  async 'DEVDY_STRICT_MCP=1 sets strictMcpConfig and keeps passed servers'() {
+    const servers = { devdy: { type: 'stdio', command: 'node' } }
+    const { messages } = await runSidecar('permission', (msg, ctl) => {
+      if (msg.type === '_devdy_ready') {
+        ctl.send({ type: 'prompt', text: 'go', options: { permissionMode: 'default', mcpServers: servers } })
+      }
+      if (msg.type === '_devdy_permission_request') {
+        ctl.send({ type: 'permission_response', requestId: msg.requestId, decision: 'allow' })
+        ctl.closeInput()
+      }
+    }, 10_000, { DEVDY_STRICT_MCP: '1' })
+    const o = messages.find((m) => m.type === 'system' && m.subtype === 'init').mock_options
+    assert.equal(o.strictMcpConfig, true)
+    assert.deepEqual(o.mcpServers, servers)
+  },
 }
 
 let failed = 0

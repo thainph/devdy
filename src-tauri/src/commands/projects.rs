@@ -351,6 +351,14 @@ pub async fn open_in_folder(path: String) -> Result<(), String> {
 
 #[tauri::command]
 pub async fn open_in_terminal(path: String, terminal_app: String) -> Result<(), String> {
+    // osascript / ps / lsof are synchronous subprocesses that can take seconds
+    // (one lsof per process on every open tab): keep them off the async workers.
+    tokio::task::spawn_blocking(move || open_in_terminal_blocking(path, terminal_app))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn open_in_terminal_blocking(path: String, terminal_app: String) -> Result<(), String> {
     if !Path::new(&path).exists() {
         return Err(format!("Path does not exist: {}", path));
     }
@@ -563,6 +571,13 @@ end tell
 
 #[tauri::command]
 pub async fn detect_project_info(path: String) -> Result<DetectedProjectInfo, String> {
+    // Directory scan + one `git remote` subprocess per repo: blocking work.
+    tokio::task::spawn_blocking(move || detect_project_info_blocking(path))
+        .await
+        .map_err(|e| e.to_string())?
+}
+
+fn detect_project_info_blocking(path: String) -> Result<DetectedProjectInfo, String> {
     if !Path::new(&path).exists() {
         return Err("Path does not exist".to_string());
     }

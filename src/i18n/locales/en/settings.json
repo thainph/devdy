@@ -323,6 +323,8 @@
     "permAuto": "Auto (classifier)",
     "permBypass": "Bypass all permissions",
     "permissionHint": "How tool calls are gated (Claude & Codex). \"Ask via UI\" surfaces each request in a modal; \"Bypass all\" skips the modal — fast, but unsafe outside trusted directories. You can still override engine, model and permission mode per run on the Run screen.",
+    "strictMcp": "Only use Devdy-managed MCP servers",
+    "strictMcpHint": "Claude sessions load only the MCP servers Devdy injects (your enabled servers and the built-ins). Servers from a repo's .mcp.json, plugins (e.g. synced from claude.ai) and Claude's own user config are skipped — fewer processes and less RAM per session, but those tools won't be available. Claude only (Codex is unaffected); applies to new and resumed sessions.",
     "translation": "Translation",
     "translationHint": "Used for translating highlighted text in the Run AI screen.",
     "translateEngine": "Translate engine",

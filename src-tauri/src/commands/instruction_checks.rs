@@ -54,9 +54,6 @@ pub async fn get_instruction_warnings(
         .await
         .map_err(|e| format!("Project not found: {}", e))?;
     let path: String = row.get("path");
-    let codex_home = codex_home();
-    let home = std::env::var_os("HOME").map(PathBuf::from);
-    let mut warnings = check_project(Path::new(&path), codex_home.as_deref(), home.as_deref());
 
     // Every place Devdy would install this project's skills/rules.
     let names = sqlx::query(
@@ -79,11 +76,19 @@ pub async fn get_instruction_warnings(
         }
         candidates.push(format!(".agents/skills/{}", name));
     }
-    let tracked = tracked_paths(Path::new(&path), &candidates);
-    if !tracked.is_empty() {
-        warnings.push(InstructionWarning::TrackedByGit { paths: tracked });
-    }
-    Ok(warnings)
+    // Filesystem walk + `git` subprocesses: keep them off the async workers.
+    tokio::task::spawn_blocking(move || {
+        let codex_home = codex_home();
+        let home = std::env::var_os("HOME").map(PathBuf::from);
+        let mut warnings = check_project(Path::new(&path), codex_home.as_deref(), home.as_deref());
+        let tracked = tracked_paths(Path::new(&path), &candidates);
+        if !tracked.is_empty() {
+            warnings.push(InstructionWarning::TrackedByGit { paths: tracked });
+        }
+        warnings
+    })
+    .await
+    .map_err(|e| e.to_string())
 }
 
 /// Which of `candidates` (relative paths) git tracks anything at, in one `git ls-files` call.

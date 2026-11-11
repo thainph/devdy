@@ -24,6 +24,7 @@
   "copyShort": "chép",
   "output": "kết quả",
   "noOutput": "(không có output)",
+  "showAllOutput": "Đã rút gọn — hiện toàn bộ ({size})",
   "readOutputWithRef": "Đọc output · {ref}",
   "readShellOutput": "Đọc output shell",
   "killShellWithRef": "Dừng shell · {ref}",

@@ -1,12 +1,24 @@
 use anyhow::Result;
-use sqlx::{sqlite::SqlitePool, Pool, Sqlite};
+use sqlx::{
+    sqlite::{SqliteConnectOptions, SqliteJournalMode, SqlitePool, SqliteSynchronous},
+    Pool, Sqlite,
+};
 use std::path::Path;
+use std::str::FromStr;
 
 pub type Db = Pool<Sqlite>;
 
 pub async fn init_db(db_path: &Path) -> Result<Db> {
     let db_url = format!("sqlite://{}?mode=rwc", db_path.to_string_lossy());
-    let pool = SqlitePool::connect(&db_url).await?;
+    // WAL: readers no longer wait on writers, which matters because every run's
+    // sidecar-mcp holds its own connection to this file. The mode persists in
+    // the file, so those connections get it too. NORMAL is durable under WAL
+    // short of power loss, and saves an fsync per commit.
+    let options = SqliteConnectOptions::from_str(&db_url)?
+        .journal_mode(SqliteJournalMode::Wal)
+        .synchronous(SqliteSynchronous::Normal)
+        .busy_timeout(std::time::Duration::from_secs(5));
+    let pool = SqlitePool::connect_with(options).await?;
     drop_sync_triggers(&pool).await?;
     sqlx::migrate!("./migrations").run(&pool).await?;
     reconcile_interrupted_runs(&pool).await?;
@@ -101,6 +113,8 @@ mod tests {
         assert_eq!(count(&pool, "SELECT COUNT(*) FROM sqlite_master WHERE type = 'trigger' AND name = 'trg_run_usage_claude_account'").await, 1);
         assert_eq!(count(&pool, "SELECT COUNT(*) FROM settings WHERE key LIKE 'sync_%'").await, 0);
         assert_eq!(count(&pool, "SELECT COUNT(*) FROM settings WHERE key = 'theme'").await, 1);
+        let mode: String = sqlx::query_scalar("PRAGMA journal_mode").fetch_one(&pool).await.unwrap();
+        assert_eq!(mode, "wal");
         pool.close().await;
 
         // Idempotent: a second startup finds nothing left to drop.

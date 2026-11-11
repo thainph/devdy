@@ -222,8 +222,47 @@ export interface StreamState {
   model: string | null
 }
 
+// ── Stable entry keys ────────────────────────────────────────────────────────
+// StreamLog keys its v-for and per-entry UI state (expanded tool cards, copy
+// flashes) by a stable id rather than the array index: loading older history
+// prepends entries, which would shift every index — re-rendering the whole log
+// and moving expand state onto the wrong entries. The id is assigned lazily the
+// first time an entry is keyed and lives under a Symbol so it is invisible to
+// JSON (the remote wire, saved state) and never shows up in field iteration,
+// yet object spread — how an entry is replaced on a delta or a tool result —
+// copies it to the replacement. Replacements built from scratch carry it over
+// explicitly (`carryEntryKey`).
+const ENTRY_KEY: unique symbol = Symbol('streamEntryKey')
+type Keyed = { [ENTRY_KEY]?: number }
+let nextEntryKey = 1
+
+/**
+ * Stable id for an entry, assigned on first use. Pass the RAW object (not a
+ * reactive proxy): it is written during render and must not trigger effects.
+ */
+export function entryKey(entry: StreamEntry): number {
+  const e = entry as StreamEntry & Keyed
+  return e[ENTRY_KEY] ?? (e[ENTRY_KEY] = nextEntryKey++)
+}
+
+/** Give `to` (a freshly built replacement of `from`) the same stable id. */
+function carryEntryKey(from: StreamEntry | undefined, to: StreamEntry): StreamEntry {
+  const k = (from as (StreamEntry & Keyed) | undefined)?.[ENTRY_KEY]
+  if (k !== undefined) (to as StreamEntry & Keyed)[ENTRY_KEY] = k
+  return to
+}
+
 export function createStreamState(): StreamState {
   return { entries: [], toolIndex: new Map(), contextTokens: 0, model: null }
+}
+
+/** Placeholder shown for an image block inside a tool result (e.g. a Read of a
+ *  PNG or a screenshot tool) instead of its base64 payload. A recognised block
+ *  also names its media type: `[image image/png]`. */
+const IMAGE_BLOCK_PLACEHOLDER = '[image]'
+
+function isImageBlock(c: Record<string, unknown>): boolean {
+  return c.type === 'image' || c.type === 'input_image' || c.type === 'image_url'
 }
 
 function blockText(content: unknown): string {
@@ -232,6 +271,13 @@ function blockText(content: unknown): string {
     return content
       .map((c) => {
         if (c && typeof c === 'object' && 'text' in c) return String((c as { text: unknown }).text ?? '')
+        // Stringifying an image block dumps megabytes of base64 into the
+        // transcript (and into a <pre> the browser must lay out) — say what it
+        // was instead.
+        if (c && typeof c === 'object' && isImageBlock(c as Record<string, unknown>)) {
+          const img = parseImageBlock(c as Record<string, unknown>)
+          return img ? `[image ${img.media_type}]` : IMAGE_BLOCK_PLACEHOLDER
+        }
         return JSON.stringify(c)
       })
       .join('\n')
@@ -321,7 +367,7 @@ function partialSlot(entries: StreamEntry[], kind: PartialKind): number {
 export function settlePartials(entries: StreamEntry[]): void {
   for (const i of streamingIndices(entries)) {
     const en = entries[i] as { kind: PartialKind; text: string }
-    entries[i] = { kind: en.kind, text: en.text }
+    entries[i] = carryEntryKey(entries[i], { kind: en.kind, text: en.text })
   }
 }
 
@@ -378,7 +424,7 @@ export function applyStreamEvent(
           : { kind: 'thinking', text: String(b.thinking ?? '') }
         // The complete block replaces the entry its deltas built, in place.
         const slot = mainThread ? partialSlot(state.entries, entry.kind) : -1
-        if (slot >= 0) state.entries[slot] = entry
+        if (slot >= 0) state.entries[slot] = carryEntryKey(state.entries[slot], entry)
         else state.entries.push(entry)
       } else if (b.type === 'tool_use') {
         const id = String(b.id ?? '')

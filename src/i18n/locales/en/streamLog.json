@@ -24,6 +24,7 @@
   "copyShort": "copy",
   "output": "output",
   "noOutput": "(no output)",
+  "showAllOutput": "Truncated — show all ({size})",
   "readOutputWithRef": "Read output · {ref}",
   "readShellOutput": "Read shell output",
   "killShellWithRef": "Kill shell · {ref}",
