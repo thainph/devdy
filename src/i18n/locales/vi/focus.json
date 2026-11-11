@@ -200,8 +200,8 @@
     "estimateHint": "Tổng estimate các todo có hạn trong ngày"
   },
   "settings": {
-    "title": "Focus",
-    "hint": "Giờ làm việc quyết định bảng Focus: hạn không có giờ được tính là cuối giờ làm việc của ngày đó, và thời gian còn lại chỉ đếm phút làm việc.",
+    "title": "Giờ làm việc & nhắc việc",
+    "hint": "Hạn không ghi giờ được tính là cuối giờ làm việc của ngày đó, và nhắc việc chạy theo giờ làm việc.",
     "workHours": "Giờ làm việc",
     "workStart": "Bắt đầu",
     "workEnd": "Kết thúc",
@@ -216,12 +216,12 @@
       "7": "CN"
     },
     "save": "Lưu",
-    "saved": "Đã lưu cài đặt Focus",
+    "saved": "Đã lưu cài đặt",
     "invalidHours": "Giờ kết thúc phải sau giờ bắt đầu.",
     "noDays": "Chọn ít nhất một ngày làm việc.",
     "reminders": {
       "title": "Nhắc việc",
-      "hint": "Thông báo macOS khi Devdy đang chạy; nhiều thông báo cùng lúc được gộp làm một. Bấm vào sẽ mở Focus tại todo đó.",
+      "hint": "Thông báo macOS khi Devdy đang chạy; nhiều thông báo cùng lúc được gộp làm một. Bấm vào sẽ mở todo đó.",
       "morningTime": "Tóm tắt buổi sáng lúc",
       "invalidMorning": "Giờ tóm tắt buổi sáng phải có dạng HH:MM.",
       "workHoursOnly": "Ngoài giờ làm việc và ngày nghỉ chỉ gửi các nhắc nhở do bạn tự đặt.",
@@ -241,19 +241,6 @@
         "remind": "Đúng giờ nhắc đặt trên todo",
         "snooze_end": "Khi todo đã hoãn quay lại \"Làm ngay\""
       }
-    },
-    "calendar": {
-      "title": "Google Calendar",
-      "hint": "Các sự kiện bận hôm nay (trừ sự kiện cả ngày, \"rảnh\", đã từ chối) được trừ khỏi giờ làm việc còn lại để biết hôm nay có quá tải không.",
-      "noAccount": "Chưa kết nối tài khoản Google — thêm ở Cài đặt → Google.",
-      "defaultAccount": "Tài khoản Google mặc định",
-      "loading": "Đang tải danh sách lịch…",
-      "busyCalendars": "Lịch tính là bận",
-      "primary": "chính"
-    },
-    "calibration": {
-      "title": "Hiệu chỉnh estimate",
-      "hint": "Nhân estimate theo thời gian thực tế của các todo đã xong (trung vị 20 việc gần nhất, cần ít nhất 5)."
     }
   },
   "ai": {

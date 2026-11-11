@@ -328,11 +328,10 @@
       "sourcePlaceholder": "Link to a Slack thread, issue, PR…"
     },
     "settings": {
-      "title": "Focus",
+      "title": "Working hours & reminders",
       "row": "Working hours & reminders",
       "notify": "Reminders",
       "notifyHint": "Reminders are shown by the desktop app (and sent to this phone when its notifications are on).",
-      "desktopOnly": "The AI engine and the Google Calendar used for today's free time are set in Devdy on the desktop.",
       "saved": "Saved"
     },
     "errors": {
