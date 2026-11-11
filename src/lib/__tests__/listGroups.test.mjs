@@ -4,6 +4,8 @@ import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   GROUP_NONE,
+  byNewest,
+  byText,
   groupRows,
   haystack,
   matchesSearch,
@@ -49,4 +51,14 @@ test('parseCollapsed tolerates bad data', () => {
   assert.deepEqual([...parseCollapsed('["a",1,"b"]')], ['a', 'b'])
   assert.deepEqual([...parseCollapsed('{')], [])
   assert.deepEqual([...parseCollapsed(null)], [])
+})
+
+test('byText sorts A–Z with empty text last', () => {
+  const rows = [{ n: 'beta' }, { n: '' }, { n: 'alpha' }]
+  assert.deepEqual(rows.sort(byText((r) => r.n)).map((r) => r.n), ['alpha', 'beta', ''])
+})
+
+test('byNewest sorts the latest time first, missing last', () => {
+  const rows = [{ at: '2026-01-01' }, { at: null }, { at: '2026-03-01' }]
+  assert.deepEqual(rows.sort(byNewest((r) => r.at)).map((r) => r.at), ['2026-03-01', '2026-01-01', null])
 })

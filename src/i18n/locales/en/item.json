@@ -102,5 +102,12 @@
     "today": "Today",
     "due-soon": "Due soon",
     "waiting": "Waiting"
-  }
+  },
+  "sortByDue": "By deadline",
+  "viewOptions": "Sort & view",
+  "showDone": "Show done",
+  "sortTitle": "Sort",
+  "sortByProject": "By project",
+  "sortByUpdated": "Recently edited",
+  "sortByTitle": "Title (A–Z)"
 }

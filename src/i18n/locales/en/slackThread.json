@@ -20,7 +20,10 @@
     "linkFilter": "Filter by linked session",
     "linkAll": "All",
     "linked": "Linked",
-    "unlinked": "Not linked"
+    "unlinked": "Not linked",
+    "sortByChannel": "By channel",
+    "sortByRecent": "Recent activity",
+    "sortByTitle": "Title (A–Z)"
   },
   "status": {
     "pending": "Queued",

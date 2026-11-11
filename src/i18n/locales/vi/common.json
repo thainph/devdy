@@ -26,5 +26,13 @@
     "cancelled": "Đã hủy",
     "fetched": "Đã tải",
     "draft": "Nháp"
-  }
+  },
+  "sort": "Sắp xếp",
+  "sortByGroup": "Theo nhóm",
+  "itemCount": "{n} mục",
+  "sortByName": "Tên (A–Z)",
+  "sortByUpdated": "Mới sửa gần đây",
+  "sortByAdded": "Mới thêm gần đây",
+  "sortByType": "Theo loại",
+  "sortByTag": "Theo tag"
 }

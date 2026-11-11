@@ -11,6 +11,31 @@ export interface RowGroup<T> {
   rows: T[]
 }
 
+/** A flat-list sort a sidebar offers next to its default, grouped order. */
+export interface ListSort<T> {
+  value: string
+  label: string
+  compare: (a: T, b: T) => number
+}
+
+/** A–Z by the given text, empty ones last. */
+export function byText<T>(textOf: (row: T) => string): (a: T, b: T) => number {
+  return (a, b) => {
+    const x = textOf(a)
+    const y = textOf(b)
+    return (!x ? 1 : 0) - (!y ? 1 : 0) || x.localeCompare(y)
+  }
+}
+
+/** Newest first by an ISO time (missing ones last). */
+export function byNewest<T>(timeOf: (row: T) => string | null | undefined): (a: T, b: T) => number {
+  return (a, b) => {
+    const x = timeOf(a) ?? ''
+    const y = timeOf(b) ?? ''
+    return x < y ? 1 : x > y ? -1 : 0
+  }
+}
+
 /** Lower-cased haystack from the given parts (null/undefined skipped). */
 export function haystack(...parts: Array<string | number | null | undefined>): string {
   return parts
