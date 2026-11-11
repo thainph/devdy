@@ -5,7 +5,8 @@
 //! and bridges to us over NDJSON on stdin/stdout:
 //!
 //! - Raw stream-json SDK messages are emitted verbatim → parsed exactly like the
-//!   old CLI output and forwarded on `run:event:<run_id>`.
+//!   old CLI output and forwarded, coalesced per ~40ms, as arrays on
+//!   `run:events:<run_id>` (see `EventBatch`).
 //! - Control messages are namespaced `_devdy_*`:
 //!     `_devdy_permission_request` → emitted on `run:permission_request:<run_id>`;
 //!         the frontend answers via `respond_permission`, which writes a
@@ -426,6 +427,51 @@ fn ends_with_newline(path: &Path) -> bool {
         .is_ok_and(|()| last[0] == b'\n')
 }
 
+/// How long a run's stream events may wait before they are emitted as one batch.
+/// Partial messages put a `stream_event` on stdout per token; one webview IPC
+/// message per token, times several streaming runs, swamps the UI thread.
+const EVENT_BATCH_WINDOW: std::time::Duration = std::time::Duration::from_millis(40);
+/// Emit early once this many events are buffered (bounds the payload size).
+const EVENT_BATCH_MAX: usize = 256;
+
+/// Coalesces a run's stream-json events into `run:events:<run_id>` arrays.
+///
+/// Every other per-run emit that the webview orders against the transcript
+/// (`run:output`, permission prompts, attention, budget, `run:done`) must call
+/// `flush` first, so the frontend still sees events in stdout order.
+struct EventBatch {
+    pending: Vec<Value>,
+    deadline: Option<tokio::time::Instant>,
+}
+
+impl EventBatch {
+    fn new() -> Self {
+        Self { pending: Vec::new(), deadline: None }
+    }
+
+    /// Queue an event; arms the batch window on the first one.
+    fn push(&mut self, v: Value) {
+        if self.pending.is_empty() {
+            self.deadline = Some(tokio::time::Instant::now() + EVENT_BATCH_WINDOW);
+        }
+        self.pending.push(v);
+    }
+
+    fn is_full(&self) -> bool {
+        self.pending.len() >= EVENT_BATCH_MAX
+    }
+
+    /// Emit whatever is buffered (no-op when empty) and disarm the window.
+    fn flush(&mut self, app: &AppHandle, run_id: &str) {
+        self.deadline = None;
+        if self.pending.is_empty() {
+            return;
+        }
+        let batch = std::mem::take(&mut self.pending);
+        let _ = app.emit(&format!("run:events:{}", run_id), batch);
+    }
+}
+
 /// Show a permission request to the user: desktop drawer and paired phones.
 fn surface_permission_request(
     app: &AppHandle,
@@ -670,8 +716,21 @@ pub async fn drain_sidecar(
     let mut flush_tick = tokio::time::interval(std::time::Duration::from_millis(500));
     flush_tick.set_missed_tick_behavior(tokio::time::MissedTickBehavior::Skip);
 
+    // Stream events headed for the webview, coalesced per ~40ms (see EventBatch).
+    let mut events = EventBatch::new();
+
     loop {
         tokio::select! {
+            // The batch window elapsed: hand the buffered events to the webview.
+            // Pends forever while nothing is buffered.
+            _ = async {
+                match events.deadline {
+                    Some(dl) => tokio::time::sleep_until(dl).await,
+                    None => std::future::pending::<()>().await,
+                }
+            } => {
+                events.flush(&app, &run_id);
+            }
             _ = flush_tick.tick() => {
                 let buf = log_buf.lock().await;
                 log_file.flush(&buf);
@@ -692,6 +751,9 @@ pub async fn drain_sidecar(
                     &pending,
                     engine == "claude",
                 );
+                if !actions.is_empty() {
+                    events.flush(&app, &run_id);
+                }
                 apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
 
                 if exit_deadline.is_none() {
@@ -736,6 +798,7 @@ pub async fn drain_sidecar(
                 }
             } => {
                 let pgid = registry.lock().await.get(&run_id).and_then(|h| h.pgid);
+                events.flush(&app, &run_id);
                 watchdog_line(&app, &log_buf, &remote_bus, &run_id, "warn", &detach_notice(pgid)).await;
                 detached = true;
                 break;
@@ -749,6 +812,15 @@ pub async fn drain_sidecar(
                             .and_then(|v| v.get("type"))
                             .and_then(|v| v.as_str())
                             .unwrap_or("");
+                        // Engine events join the batch; control lines and non-JSON
+                        // output emit on their own channels, so release the batch
+                        // first to keep the webview's view in stdout order.
+                        let is_engine_event = parsed.is_some() && !kind.starts_with("_devdy_");
+                        if !is_engine_event {
+                            events.flush(&app, &run_id);
+                        }
+                        let is_result = kind == "result";
+                        let mut queue_event = false;
 
                         // Liveness bookkeeping: `_devdy_*` lines prove the sidecar
                         // alive; anything else is the engine making progress.
@@ -770,6 +842,9 @@ pub async fn drain_sidecar(
                             (Some(v), _) => liveness.on_engine_event(now, v),
                             (None, _) => liveness.on_output(now),
                         };
+                        if !actions.is_empty() {
+                            events.flush(&app, &run_id);
+                        }
                         apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
                         match (parsed.as_ref(), kind) {
                             (Some(_), "_devdy_error") => unresolved_error = true,
@@ -1097,6 +1172,7 @@ pub async fn drain_sidecar(
                                         crate::commands::stats::budget_status_for(&db_pool, &engine, claude_account_id.as_deref()).await
                                     {
                                         if status.is_over {
+                                            events.flush(&app, &run_id);
                                             let _ = app.emit(
                                                 &format!("run:budget_exceeded:{}", run_id),
                                                 serde_json::json!({
@@ -1114,7 +1190,9 @@ pub async fn drain_sidecar(
                                         event: v.clone(),
                                     });
                                 }
-                                let _ = app.emit(&format!("run:event:{}", run_id), v.clone());
+                                // Queued below, once `parsed` is no longer borrowed
+                                // (moved into the batch rather than cloned).
+                                queue_event = true;
                             }
                             // ---- non-JSON line (rare) ---------------------------
                             (None, _) => {
@@ -1132,12 +1210,23 @@ pub async fn drain_sidecar(
                                 );
                             }
                         }
+                        if queue_event {
+                            if let Some(v) = parsed {
+                                events.push(v);
+                                // A turn's end goes out at once: `run:done` and the
+                                // finished state shouldn't wait on the window.
+                                if is_result || events.is_full() {
+                                    events.flush(&app, &run_id);
+                                }
+                            }
+                        }
                     }
                     _ => break,
                 }
             }
             line = stderr_reader.next_line() => {
                 if let Ok(Some(l)) = line {
+                    events.flush(&app, &run_id);
                     let actions = liveness.on_output(tokio::time::Instant::now());
                     apply_liveness(actions, &app, &log_buf, &remote_bus, &run_id).await;
                     append_log(&log_buf, &format!("[stderr] {}\n", l)).await;
@@ -1156,6 +1245,9 @@ pub async fn drain_sidecar(
             }
         }
     }
+
+    // Whatever is still batched precedes everything below, `run:done` included.
+    events.flush(&app, &run_id);
 
     // Drain any trailing stderr after stdout closed — bounded: a descendant may
     // hold stderr open long after the session ended. (Skipped when we already

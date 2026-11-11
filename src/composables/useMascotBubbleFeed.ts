@@ -74,11 +74,14 @@ function latestResult(session: LiveSession): Extract<StreamEntry, { kind: 'resul
   return null
 }
 
-function latestResultIndex(session: LiveSession): number {
-  for (let i = session.entries.length - 1; i >= 0; i--) {
-    if (session.entries[i].kind === 'result') return i
-  }
-  return -1
+/**
+ * Dedupe id of a finished session's "done" announcement, or null while it has
+ * nothing to announce. `resultCount` (maintained by the store) tells one turn's
+ * finish from the next without walking `entries`.
+ */
+function doneSignalId(session: LiveSession): string | null {
+  if (!session.notifyDone || session.status === 'running') return null
+  return `done:${session.runId}:${session.status}:${session.resultCount}`
 }
 
 function latestAssistantText(session: LiveSession): string {
@@ -290,7 +293,10 @@ export function useMascotBubbleFeed(
     })
   }
 
-  watch(coarse, (phase, prev) => {
+  watch([coarse, enabled], ([phase, on], [prev, wasOn]) => {
+    // Mascot off → `coarse` is pinned idle; turning it on is not a phase change
+    // worth announcing (it would otherwise read as idle → busy).
+    if (!on || !wasOn) return
     if (phase === prev) return
     switch (phase) {
       case 'busy':
@@ -306,21 +312,33 @@ export function useMascotBubbleFeed(
     }
   })
 
+  // The getter returns a primitive key (the set of pending done ids), so the
+  // callback only runs when one actually appears — not on every stream flush.
+  // A disabled mascot tracks nothing; ids already pending when it is turned on
+  // are marked seen without speaking, as they were while it was off.
+  let doneFeedArmed = enabled.value
   watch(
-    () =>
-      Array.from(live.sessions.values()).map((session) => ({
-        runId: session.runId,
-        status: session.status,
-        notifyDone: session.notifyDone,
-        resultIndex: latestResultIndex(session),
-      })),
     () => {
+      if (!enabled.value) return ''
+      const ids: string[] = []
       live.sessions.forEach((session) => {
-        if (!session.notifyDone || session.status === 'running') return
-        const resultIndex = latestResultIndex(session)
-        const id = `done:${session.runId}:${session.status}:${resultIndex}`
-        if (seenDoneSignals.has(id)) return
+        const id = doneSignalId(session)
+        if (id) ids.push(id)
+      })
+      return ids.join('\n')
+    },
+    () => {
+      if (!enabled.value) {
+        doneFeedArmed = false
+        return
+      }
+      const silent = !doneFeedArmed
+      doneFeedArmed = true
+      live.sessions.forEach((session) => {
+        const id = doneSignalId(session)
+        if (!id || seenDoneSignals.has(id)) return
         remember(seenDoneSignals, id)
+        if (silent) return
         const phase: ImportantCoarse =
           session.status === 'failed' || session.status === 'cancelled' ? 'error' : 'success'
         enqueueSpeechJob({

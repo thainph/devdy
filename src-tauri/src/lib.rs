@@ -805,6 +805,15 @@ pub fn run() {
                     }
                     app_handle.exit(0);
                 }
+                // Back in the app: withdraw the notifications still waiting for a
+                // click, each of which polls Notification Center on this thread.
+                tauri::RunEvent::WindowEvent {
+                    label,
+                    event: tauri::WindowEvent::Focused(true),
+                    ..
+                } if label == "main" => {
+                    commands::notifications::withdraw_all(app_handle);
+                }
                 // `app.exit()` and the last window closing: same question and
                 // cleanup. (Cmd+Q is a custom menu item that closes the main
                 // window, see `app_menu::QUIT_ITEM_ID`.)
