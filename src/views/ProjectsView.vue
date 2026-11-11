@@ -12,7 +12,8 @@ import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
 import { parseRepoUrl, repoKey } from '@/lib/repoUrl'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, Radar, GripVertical } from 'lucide-vue-next'
+import { foldText } from '@/lib/controllerProjectScope'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, Radar, GripVertical, Search, SearchX, X } from 'lucide-vue-next'
 import { Button, Input, Badge, Modal, Card, PageHeader, Banner } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -97,6 +98,18 @@ const projectChips = computed(() => {
     }
   }
   return map
+})
+
+// --- Search ------------------------------------------------------------------
+// Name or path, accent- and case-insensitive. Not persisted: a one-off lookup.
+const search = ref('')
+const searching = computed(() => search.value.trim() !== '')
+// Keep each project's index in store.projects — drag & drop works on those.
+const visibleProjects = computed(() => {
+  const q = foldText(search.value.trim())
+  return store.projects
+    .map((project, index) => ({ project, index }))
+    .filter(({ project }) => !q || foldText(`${project.name}\n${project.path}`).includes(q))
 })
 
 // --- Drag & drop reorder ------------------------------------------------------
@@ -284,7 +297,9 @@ async function handleOpenInFolder(project: { path: string }) {
     <!-- Header -->
     <PageHeader
       :title="t('projects.title')"
-      :count="!store.loading && store.projects.length > 0 ? store.projects.length : null"
+      :count="!store.loading && store.projects.length > 0
+        ? (searching ? `${visibleProjects.length}/${store.projects.length}` : store.projects.length)
+        : null"
     >
       <template #actions>
         <Button
@@ -322,9 +337,47 @@ async function handleOpenInFolder(project: { path: string }) {
         </Button>
       </div>
 
+      <template v-else>
+      <!-- Search: same icon + clear pattern as PR Inbox -->
+      <div class="relative max-w-md mb-4">
+        <Search
+          class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+          :stroke-width="1.75"
+        />
+        <Input
+          v-model="search"
+          class="pl-8 pr-7"
+          :placeholder="t('projects.searchPlaceholder')"
+          :aria-label="t('projects.searchPlaceholder')"
+          @keydown.esc="search = ''"
+        />
+        <button
+          v-if="search"
+          type="button"
+          class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+          :title="t('projects.clearSearch')"
+          :aria-label="t('projects.clearSearch')"
+          @click="search = ''"
+        >
+          <X class="h-3.5 w-3.5" :stroke-width="2" />
+        </button>
+      </div>
+
+      <div
+        v-if="visibleProjects.length === 0"
+        class="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-3 py-3 text-xs text-muted-foreground"
+      >
+        <SearchX class="h-4 w-4 shrink-0" :stroke-width="1.75" />
+        <span>{{ t('projects.noMatch') }}</span>
+        <span class="text-muted-foreground/50">·</span>
+        <button type="button" class="font-medium text-primary hover:underline cursor-pointer" @click="search = ''">
+          {{ t('projects.clearSearch') }}
+        </button>
+      </div>
+
       <div v-else ref="gridRef" class="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-3">
         <Card
-          v-for="(project, index) in store.projects"
+          v-for="{ project, index } in visibleProjects"
           :key="project.id"
           :data-drag-index="index"
           class="group relative flex flex-col cursor-pointer hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
@@ -338,8 +391,10 @@ async function handleOpenInFolder(project: { path: string }) {
           <!-- hover accent line -->
           <span class="absolute inset-x-0 top-0 h-0.5 origin-left scale-x-0 bg-linear-to-r from-primary to-primary/30 transition-transform duration-200 group-hover:scale-x-100" />
 
-          <!-- Drag handle: appears on hover, starts a pointer-based reorder -->
+          <!-- Drag handle: appears on hover, starts a pointer-based reorder.
+               Hidden while searching — reordering a filtered subset is ambiguous. -->
           <button
+            v-if="!searching"
             class="absolute top-1.5 right-1.5 z-10 flex h-6 w-6 items-center justify-center rounded-md text-muted-foreground/50 hover:text-foreground hover:bg-accent group-hover:opacity-100 transition-all cursor-grab active:cursor-grabbing touch-none"
             :class="dragFrom === index ? 'opacity-100 text-foreground' : 'opacity-0'"
             :title="t('projects.dragToReorder')"
@@ -480,6 +535,7 @@ async function handleOpenInFolder(project: { path: string }) {
           </div>
         </Card>
       </div>
+      </template>
     </div>
 
     <!-- Add project modal -->
