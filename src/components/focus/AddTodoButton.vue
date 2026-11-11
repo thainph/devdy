@@ -47,5 +47,9 @@ const open = ref(false)
     <ListPlus :class="size === 'sm' ? 'h-3.5 w-3.5' : 'h-3 w-3'" :stroke-width="1.75" />
     {{ t('focus.addTodo') }}
   </Button>
-  <TodoCaptureModal :open="open" :prefill="prefill" @close="open = false" />
+  <!-- Teleported: the button sits inside cards / container-query lists, which
+       would trap the fixed overlay (and leak their hover/text styles into it). -->
+  <Teleport to="body">
+    <TodoCaptureModal :open="open" :prefill="prefill" @close="open = false" />
+  </Teleport>
 </template>
