@@ -328,11 +328,10 @@
       "sourcePlaceholder": "Link Slack thread, issue, PR…"
     },
     "settings": {
-      "title": "Focus",
+      "title": "Giờ làm việc & nhắc việc",
       "row": "Giờ làm việc & nhắc việc",
       "notify": "Nhắc việc",
       "notifyHint": "Nhắc việc do ứng dụng desktop hiển thị (và gửi tới điện thoại này khi bật thông báo).",
-      "desktopOnly": "Engine AI và Google Calendar dùng để tính giờ trống hôm nay được chỉnh trong Devdy trên desktop.",
       "saved": "Đã lưu"
     },
     "errors": {

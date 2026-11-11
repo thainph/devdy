@@ -200,8 +200,8 @@
     "estimateHint": "Total estimate of the todos due this day"
   },
   "settings": {
-    "title": "Focus",
-    "hint": "Working hours drive the Focus board: deadlines without a time are due at the end of the working day, and time left is counted in working minutes only.",
+    "title": "Working hours & reminders",
+    "hint": "Deadlines without a time are due at the end of the working day, and reminders follow your working hours.",
     "workHours": "Working hours",
     "workStart": "Start",
     "workEnd": "End",
@@ -216,12 +216,12 @@
       "7": "Sun"
     },
     "save": "Save",
-    "saved": "Focus settings saved",
+    "saved": "Settings saved",
     "invalidHours": "The end of the working day must be after its start.",
     "noDays": "Pick at least one working day.",
     "reminders": {
       "title": "Reminders",
-      "hint": "macOS notifications while Devdy is running; several at once are grouped into one. Clicking one opens Focus on that todo.",
+      "hint": "macOS notifications while Devdy is running; several at once are grouped into one. Clicking one opens that todo.",
       "morningTime": "Morning summary at",
       "invalidMorning": "The morning summary time must be HH:MM.",
       "workHoursOnly": "Outside working hours and on days off, only reminders you set yourself are sent.",
@@ -241,19 +241,6 @@
         "remind": "At the reminder time set on a todo",
         "snooze_end": "When a snoozed todo is back in \"Do now\""
       }
-    },
-    "calendar": {
-      "title": "Google Calendar",
-      "hint": "Busy events of today (not all-day, not \"free\", not declined) are subtracted from the working hours left to show whether today is overloaded.",
-      "noAccount": "No Google account connected — add one in Settings → Google.",
-      "defaultAccount": "Default Google account",
-      "loading": "Loading calendars…",
-      "busyCalendars": "Calendars that count as busy",
-      "primary": "primary"
-    },
-    "calibration": {
-      "title": "Calibrate estimates",
-      "hint": "Scale estimates by how long your finished todos really took (median of the last 20, needs 5)."
     }
   },
   "ai": {
