@@ -566,7 +566,7 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="flex h-screen w-screen overflow-hidden bg-background text-foreground">
+  <div class="app-shell app-window flex h-screen w-screen overflow-hidden bg-background text-foreground">
     <VaultGate
       v-if="!unlocked"
       :status="status"

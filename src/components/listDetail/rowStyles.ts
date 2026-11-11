@@ -1,6 +1,7 @@
-// Shared look of the list-detail sidebars' rows (ListDetailSidebar and the
-// Notes / Todos ItemSidebar): hairline dividers between rows, a primary bar on
-// the selected row, and a two-level text scale (title / secondary line).
+// Shared look of the list-detail sidebars' rows (ListDetailSidebar, the Notes /
+// Todos ItemSidebar and the Slack threads SlackSidebar): hairline dividers
+// between rows, a primary bar on the selected row, and a two-level text scale
+// (title / secondary line).
 
 /** Wrapper of one group: a little air between folders. */
 export const groupClass = 'mb-3 last:mb-0'

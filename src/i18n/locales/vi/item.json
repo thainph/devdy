@@ -102,5 +102,12 @@
     "today": "Hôm nay",
     "due-soon": "Sắp hạn",
     "waiting": "Đang chờ"
-  }
+  },
+  "sortByDue": "Theo hạn",
+  "viewOptions": "Sắp xếp & hiển thị",
+  "showDone": "Hiện việc đã xong",
+  "sortTitle": "Sắp xếp",
+  "sortByProject": "Theo dự án",
+  "sortByUpdated": "Mới sửa gần đây",
+  "sortByTitle": "Tiêu đề (A–Z)"
 }

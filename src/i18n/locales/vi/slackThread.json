@@ -20,7 +20,10 @@
     "linkFilter": "Lọc theo phiên đã liên kết",
     "linkAll": "Tất cả",
     "linked": "Đã liên kết",
-    "unlinked": "Chưa liên kết"
+    "unlinked": "Chưa liên kết",
+    "sortByChannel": "Theo kênh",
+    "sortByRecent": "Hoạt động gần đây",
+    "sortByTitle": "Tiêu đề (A–Z)"
   },
   "status": {
     "pending": "Đang chờ",

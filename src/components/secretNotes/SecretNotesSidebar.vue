@@ -1,15 +1,21 @@
 <script setup lang="ts">
 // Left pane of the Secret notes window — the sibling of ItemSidebar, same
-// layout: search + the window's pin / lock, project filter + "+ New", then the
-// notes grouped by project (each header collapsible, remembered in localStorage).
+// layout: search + the window's pin / lock, project filter + "+ New" (as wide
+// as pin + lock, so the select lines up with the search box), the note count
+// and a ⇅ sort menu, then the notes grouped by project (each header
+// collapsible, remembered in localStorage). Sorting by last edit or title
+// instead gives one flat list, each row naming its project; last edit is the
+// default, the sort is remembered in localStorage.
 // The footer holds the vault itself: the auto-lock note and Change password.
 //
 // A row is the note's title and its age: there is no preview, the content is
 // only fetched on Reveal.
-import { computed, ref } from 'vue'
+import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   AlertCircle,
+  ArrowDownWideNarrow,
+  Check,
   ChevronDown,
   ChevronRight,
   Folder,
@@ -21,7 +27,8 @@ import {
   Search,
   X,
 } from 'lucide-vue-next'
-import { AppSelect, Banner, Button, Input } from '@/components/ui'
+import { AppSelect, Banner, Button, DropdownItem, DropdownMenu, Input } from '@/components/ui'
+import { groupClass, groupHeaderClass, rowClass, rowListClass, rowSubClass, rowTitleClass } from '@/components/listDetail/rowStyles'
 import { relativeAge } from '@/lib/itemText'
 import { formatFullDate } from '@/lib/slackThreadUtils'
 import type { SecretNoteMeta } from '@/lib/secretVault'
@@ -86,8 +93,41 @@ function toggle(key: string) {
 
 const NONE = '__none__'
 
-/** Notes by project (A–Z), "No project" last; vault order kept inside a group. */
+// ── Grouped by project, or one flat list by another sort ───────────────────
+type SortMode = 'project' | 'updated' | 'title'
+const SORT_KEY = 'items.secret.order'
+const SORTS = computed<{ value: SortMode; label: string }[]>(() => [
+  { value: 'project', label: t('item.sortByProject') },
+  { value: 'updated', label: t('item.sortByUpdated') },
+  { value: 'title', label: t('item.sortByTitle') },
+])
+const saved = localStorage.getItem(SORT_KEY)
+/** Flat by default: the last edited first. */
+const DEFAULT_SORT: SortMode = 'updated'
+const sortMode = ref<SortMode>(SORTS.value.find((o) => o.value === saved)?.value ?? DEFAULT_SORT)
+watch(sortMode, (m) => {
+  try {
+    localStorage.setItem(SORT_KEY, m)
+  } catch {
+    /* storage unavailable */
+  }
+})
+const flat = computed(() => sortMode.value !== 'project')
+
+const flatNotes = computed(() =>
+  [...props.notes].sort((a, b) => {
+    if (sortMode.value === 'updated') return a.updated_at < b.updated_at ? 1 : a.updated_at > b.updated_at ? -1 : 0
+    // By title: untitled last.
+    return (!a.title ? 1 : 0) - (!b.title ? 1 : 0) || a.title.localeCompare(b.title)
+  }),
+)
+
+/**
+ * Notes by project (A–Z), "No project" last; vault order kept inside a group.
+ * Any other sort: a single header-less group.
+ */
 const groups = computed(() => {
+  if (flat.value) return [{ key: '__flat__', label: '', notes: flatNotes.value }]
   const map = new Map<string, SecretNoteMeta[]>()
   for (const n of props.notes) {
     const key = n.project_id ?? NONE
@@ -106,7 +146,7 @@ const groups = computed(() => {
 </script>
 
 <template>
-  <aside class="flex w-[280px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
+  <aside class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
     <!-- Search + pin / lock, filter + new -->
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
       <div class="flex items-center gap-1.5">
@@ -156,10 +196,38 @@ const groups = computed(() => {
             </template>
           </AppSelect>
         </div>
-        <Button size="sm" class="shrink-0" @click="emit('add')">
+        <!-- As wide as pin + lock above: the select lines up with the search box. -->
+        <Button size="sm" class="w-[70px] shrink-0 px-0" @click="emit('add')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ t('secretNotes.new') }}
         </Button>
+      </div>
+      <div class="flex items-center gap-1.5">
+        <span class="min-w-0 flex-1 truncate px-1 text-[11px] text-muted-foreground">
+          {{ t('secretNotes.count', { n: notes.length }, notes.length) }}
+        </span>
+        <!-- Sort; tinted when not on the default. -->
+        <DropdownMenu align="right" class="shrink-0">
+          <template #trigger>
+            <Button
+              variant="outline"
+              size="icon-xs"
+              class="shrink-0"
+              :class="sortMode !== DEFAULT_SORT && 'border-primary/50 text-primary'"
+              :title="t('item.sortTitle')"
+              :aria-label="t('item.sortTitle')"
+            >
+              <ArrowDownWideNarrow class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </Button>
+          </template>
+          <div class="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
+            {{ t('item.sortTitle') }}
+          </div>
+          <DropdownItem v-for="o in SORTS" :key="o.value" @click="sortMode = o.value">
+            <Check class="h-3.5 w-3.5" :class="sortMode === o.value ? '' : 'invisible'" :stroke-width="2" />
+            {{ o.label }}
+          </DropdownItem>
+        </DropdownMenu>
       </div>
     </div>
 
@@ -196,10 +264,11 @@ const groups = computed(() => {
         {{ t('item.noResults') }}
       </p>
 
-      <div v-for="g in groups" v-else :key="g.key" class="mb-2">
+      <div v-for="g in groups" v-else :key="g.key" :class="groupClass">
+        <div v-if="!flat" :class="groupHeaderClass">
         <button
           type="button"
-          class="flex w-full cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-left text-xs font-semibold text-foreground hover:bg-accent/50"
+          class="flex min-w-0 flex-1 cursor-pointer items-center gap-1 px-1.5 py-1 text-left text-xs font-semibold text-foreground"
           :aria-expanded="!collapsed.has(g.key)"
           @click="toggle(g.key)"
         >
@@ -214,21 +283,29 @@ const groups = computed(() => {
             {{ g.notes.length }}
           </span>
         </button>
+        </div>
 
-        <ul v-if="!collapsed.has(g.key)" class="mt-px space-y-px">
+        <ul v-if="flat || !collapsed.has(g.key)" :class="rowListClass">
           <li v-for="n in g.notes" :key="n.id">
             <button
               type="button"
-              class="flex w-full cursor-pointer items-center gap-1.5 rounded-md py-1.5 pl-6 pr-2 text-left transition-colors"
-              :class="n.id === selectedId
-                ? 'bg-primary/15 text-foreground'
-                : 'text-foreground/85 hover:bg-accent/50'"
+              class="cursor-pointer flex-col pr-2 text-left"
+              :class="[flat ? 'pl-2' : 'pl-6', rowClass(n.id === selectedId)]"
               :title="n.title || t('secretNotes.untitled')"
               @click="emit('select', n.id)"
             >
-              <span class="min-w-0 flex-1 truncate text-[13px]">{{ n.title || t('secretNotes.untitled') }}</span>
-              <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/80" :title="formatFullDate(n.updated_at)">
-                {{ relativeAge(n.updated_at) }}
+              <span class="flex w-full min-w-0 items-center gap-1.5">
+                <span class="min-w-0 flex-1 truncate" :class="rowTitleClass">{{ n.title || t('secretNotes.untitled') }}</span>
+                <span class="shrink-0 text-[10px] tabular-nums text-muted-foreground/80" :title="formatFullDate(n.updated_at)">
+                  {{ relativeAge(n.updated_at) }}
+                </span>
+              </span>
+              <!-- Flat list: the note's project. -->
+              <span v-if="flat" class="flex w-full min-w-0 items-center gap-1" :class="rowSubClass">
+                <Folder class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                <span class="truncate">
+                  {{ n.project_id ? projectNames[n.project_id] ?? n.project_id : t('item.noProject') }}
+                </span>
               </span>
             </button>
           </li>
