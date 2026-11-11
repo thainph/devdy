@@ -47,7 +47,8 @@ const {
 } = useMascotState()
 
 // Feed app-wide signals (run phase + toasts) into the shared speech bubble.
-// Pass `enabled` so a disabled mascot generates NO speech (no backend LLM call).
+// Pass `enabled` so a disabled mascot generates NO speech (no backend LLM call)
+// and its watchers stop tracking the live runs' streams.
 useMascotBubbleFeed(displayState, activeSession, enabled)
 const { state: bubble, push } = useMascotBubble()
 const speech = useMascotSpeech()

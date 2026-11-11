@@ -119,8 +119,10 @@ function handleCommandMessage(state: Pick<StreamState, 'entries'>, text: string)
   if (name) {
     state.entries.push({ kind: 'command', name, ...(args ? { args } : {}), ...(stdout ? { stdout } : {}) })
   } else if (stdout) {
-    const last = state.entries[state.entries.length - 1]
-    if (last && last.kind === 'command' && !last.stdout) last.stdout = stdout
+    const lastIdx = state.entries.length - 1
+    const last = state.entries[lastIdx]
+    // Replace, never mutate: live entries are shallow-reactive (see liveRuns).
+    if (last && last.kind === 'command' && !last.stdout) state.entries[lastIdx] = { ...last, stdout }
     else state.entries.push({ kind: 'command', name: '', stdout })
   }
   return text
@@ -206,6 +208,11 @@ export type StreamEntry =
   | { kind: 'error'; text: string }
   | { kind: 'log'; level: string; text: string }
 
+/**
+ * `entries` must only ever change by slot writes (`entries[i] = …`) and array
+ * ops — never by mutating an entry object in place. The live store keeps them in
+ * a shallow-reactive array, so an in-place field write would not re-render.
+ */
 export interface StreamState {
   entries: StreamEntry[]
   toolIndex: Map<string, number>
@@ -436,8 +443,10 @@ export function applyStreamEvent(
         const idx = state.toolIndex.get(useId)
         if (idx !== undefined) {
           const entry = state.entries[idx]
+          // A new object, not a mutation: live entries are shallow-reactive (only
+          // slot writes are tracked) and StreamLog's v-memo keys on identity.
           if (entry && entry.kind === 'tool') {
-            entry.result = { content: text, is_error: isError }
+            state.entries[idx] = { ...entry, result: { content: text, is_error: isError } }
           }
         }
       } else if (b.type === 'text') {
@@ -531,6 +540,39 @@ export function applyStreamEvent(
     })
     return
   }
+}
+
+/** What `scanNewEntries` learned from the entries appended since the last scan. */
+export interface EntryScan {
+  /** Index to resume the next scan from. */
+  next: number
+  /** Latest `system` entry's session id / model in the scanned range, if any. */
+  sessionId?: string
+  model?: string
+  /** `result` entries in the scanned range. */
+  results: number
+}
+
+/**
+ * Incrementally scan `entries[from..]` for the session facts the live store
+ * mirrors (session id, model, finished-turn count), so a flush costs O(new
+ * entries) instead of re-walking the whole transcript. `from` is clamped: the
+ * tail may have shrunk (an `ide-context` entry folded into the next user turn).
+ * Entries replaced in place are never `system` / `result`, so skipping them is
+ * safe.
+ */
+export function scanNewEntries(entries: readonly StreamEntry[], from: number): EntryScan {
+  const out: EntryScan = { next: entries.length, results: 0 }
+  for (let i = Math.min(from, entries.length); i < entries.length; i++) {
+    const e = entries[i]
+    if (e.kind === 'system') {
+      if (e.sessionId) out.sessionId = e.sessionId
+      if (e.model) out.model = e.model
+    } else if (e.kind === 'result') {
+      out.results++
+    }
+  }
+  return out
 }
 
 /** Sum every input-side token (incl. cache) plus output for one `usage` blob. */

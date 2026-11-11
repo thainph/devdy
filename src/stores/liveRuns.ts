@@ -1,11 +1,12 @@
 import { defineStore } from 'pinia'
-import { reactive, computed } from 'vue'
+import { reactive, computed, shallowReactive, toRaw } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   applyStreamEvent,
   extractContextTokens,
   extractTurnTotalTokens,
   isCompactBoundary,
+  scanNewEntries,
   settlePartials,
   type StreamEntry,
   type ImageAttachment,
@@ -38,6 +39,10 @@ function usesProjectWriteTool(p: Record<string, unknown> | null): boolean {
 export interface LiveSession {
   runId: string
   projectId: string
+  /**
+   * Shallow-reactive: only slot writes / array ops are tracked, never fields of
+   * an entry. Replace an entry (`entries[i] = {...}`) instead of mutating it.
+   */
   entries: StreamEntry[]
   outputLines: { text: string; isStderr: boolean }[]
   hasStreamEvents: boolean
@@ -79,6 +84,11 @@ export interface LiveSession {
    * as a banner with a stop action; never acted on automatically.
    */
   attention: RunAttention[]
+  /**
+   * How many `result` entries (finished turns) the store has applied. A cheap
+   * per-turn key for watchers that would otherwise walk `entries` to find one.
+   */
+  resultCount: number
 }
 
 /** One liveness notice, keyed so the backend can clear it when it resolves. */
@@ -121,6 +131,18 @@ const OUTPUT_TRIM_SLACK = 500
 const MAX_TERMINAL_SESSIONS = 5
 
 const TERMINAL_STATUSES = new Set(['done', 'failed', 'cancelled'])
+
+/** A `run:output` line waiting in a run's flush buffer, in order with its events. */
+class BufferedOutput {
+  line: string
+  isStderr: boolean
+  level: string | undefined
+  constructor(line: string, isStderr: boolean, level: string | undefined) {
+    this.line = line
+    this.isStderr = isStderr
+    this.level = level
+  }
+}
 
 /** Append a raw output line, trimming the oldest once the cap is exceeded. */
 function pushOutputLine(s: LiveSession, text: string, isStderr: boolean) {
@@ -181,6 +203,44 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   // App-wide subscribers for "this prompt is still waiting" reminders (native
   // notification re-fire, see PermissionNotifier).
   const reminderCallbacks = new Set<(runId: string, projectId: string, request: PermissionRequest) => void>()
+  // How far each session's entries were scanned for sessionId / model / results
+  // (see `scanNewEntries`), so a flush only looks at what it appended.
+  const scannedUpTo = new Map<string, number>()
+
+  // ── Store-wide flush scheduler ──────────────────────────────────────────
+  // Every listened run buffers its incoming events; ONE frame callback drains
+  // all of them, so N streaming runs cost one rAF and one render pass per frame
+  // rather than N. A setTimeout fallback covers a hidden window (rAF is paused
+  // there) so a background run's state still advances.
+  const dirtyRuns = new Map<string, () => void>()
+  let flushQueued = false
+  function flushAllRuns() {
+    flushQueued = false
+    const fns = [...dirtyRuns.values()]
+    dirtyRuns.clear()
+    for (const fn of fns) {
+      try {
+        fn()
+      } catch (e) {
+        console.error('[liveRuns] flush failed', e) // one bad run must not stall the rest
+      }
+    }
+  }
+  function scheduleRunFlush(runId: string, flush: () => void) {
+    dirtyRuns.set(runId, flush)
+    if (flushQueued) return
+    flushQueued = true
+    if (typeof document !== 'undefined' && document.hidden) {
+      setTimeout(flushAllRuns, 48)
+      return
+    }
+    requestAnimationFrame(flushAllRuns)
+    // A frame queued just before the window hides never fires; without this
+    // every run would stall until it's shown again. A late extra flush is a no-op.
+    setTimeout(() => {
+      if (flushQueued) flushAllRuns()
+    }, 250)
+  }
 
   // Slash commands advertised by each engine on `system.init`, cached (and
   // persisted) per engine so a brand-new session — which hasn't produced an
@@ -255,7 +315,9 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
       s = reactive({
         runId,
         projectId,
-        entries: [] as StreamEntry[],
+        // Shallow: a deep proxy per entry made every stream event pay for
+        // tracking on each field read, across every live run.
+        entries: shallowReactive([] as StreamEntry[]),
         outputLines: [] as { text: string; isStderr: boolean }[],
         hasStreamEvents: false,
         status: 'running',
@@ -271,6 +333,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         budgetBlocked: false,
         notifyDone: false,
         attention: [] as RunAttention[],
+        resultCount: 0,
       }) as LiveSession
       // Seed the per-run allow/deny lists with the standing choices the user
       // made for this project in earlier runs, so they apply again here.
@@ -384,39 +447,32 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     const toolIndex = toolIndexes.get(runId)!
     const fns: UnlistenFn[] = []
 
-    fns.push(
-      await listen<{ run_id: string; line: string; is_stderr: boolean; level?: string }>(
-        `run:output:${runId}`,
-        (event) => {
-          const { line, is_stderr, level } = event.payload
-          pushOutputLine(s, line, is_stderr)
-          if (s.hasStreamEvents) {
-            if (level && level !== 'error') s.entries.push({ kind: 'log', level, text: line })
-            else if (is_stderr) s.entries.push({ kind: 'error', text: line })
-          }
-        },
-      ),
-    )
-
     // ── Batched stream-event processing ─────────────────────────────────────
     // Stream events arrive in rapid bursts (tool spam, or the flush released
     // when a permission is allowed). Applying + re-rendering per event freezes
-    // the main thread. Buffer the raw payloads and drain them once per frame so
-    // the UI re-renders at most ~once/frame no matter how fast events land. A
-    // setTimeout fallback covers a hidden window (rAF is paused there) so a
-    // background run's state still advances.
+    // the main thread. Buffer the raw payloads — and `run:output` lines, in
+    // arrival order, since both land in `entries` — and let the store-wide
+    // scheduler drain them once per frame.
     let eventBuffer: unknown[] = []
-    let flushScheduled = false
     // The devdy MCP sidecar writes projects/repos straight into the DB with no
     // Tauri event: refetch once the tool's result comes back.
     let projectsDirty = false
     function flushEvents() {
-      flushScheduled = false
+      dirtyRuns.delete(runId)
       if (!eventBuffer.length) return
       const batch = eventBuffer
       eventBuffer = []
-      s.hasStreamEvents = true
       for (const payload of batch) {
+        if (payload instanceof BufferedOutput) {
+          const { line, isStderr, level } = payload
+          pushOutputLine(s, line, isStderr)
+          if (s.hasStreamEvents) {
+            if (level && level !== 'error') s.entries.push({ kind: 'log', level, text: line })
+            else if (isStderr) s.entries.push({ kind: 'error', text: line })
+          }
+          continue
+        }
+        s.hasStreamEvents = true
         applyStreamEvent({ entries: s.entries, toolIndex }, payload)
         const p = payload as Record<string, unknown> | null
         if (usesProjectWriteTool(p)) projectsDirty = true
@@ -454,23 +510,35 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
           }
         }
       }
-      // sessionId/model come from a system entry; scan once per flush, not per
-      // event (the earlier per-event O(n) scan grew costly on long sessions).
-      for (const e of s.entries) {
-        if (e.kind === 'system' && e.sessionId) s.sessionId = e.sessionId
-        if (e.kind === 'system' && e.model) s.model = e.model
-      }
+      // sessionId/model come from a system entry and the turn count from result
+      // entries. Only scan what was appended since the last flush (incl. entries
+      // seeded from history by RunView); a full walk per flush grew costly on
+      // long sessions times many runs.
+      const scan = scanNewEntries(toRaw(s.entries), scannedUpTo.get(runId) ?? 0)
+      scannedUpTo.set(runId, scan.next)
+      if (scan.sessionId) s.sessionId = scan.sessionId
+      if (scan.model) s.model = scan.model
+      if (scan.results) s.resultCount += scan.results
     }
-    const scheduleFlush = () => {
-      if (flushScheduled) return
-      flushScheduled = true
-      if (typeof document !== 'undefined' && document.hidden) setTimeout(flushEvents, 48)
-      else requestAnimationFrame(flushEvents)
-    }
+    const scheduleFlush = () => scheduleRunFlush(runId, flushEvents)
 
     fns.push(
-      await listen<unknown>(`run:event:${runId}`, (event) => {
-        eventBuffer.push(event.payload)
+      await listen<{ run_id: string; line: string; is_stderr: boolean; level?: string }>(
+        `run:output:${runId}`,
+        (event) => {
+          const { line, is_stderr, level } = event.payload
+          eventBuffer.push(new BufferedOutput(line, is_stderr, level))
+          scheduleFlush()
+        },
+      ),
+    )
+
+    // The backend coalesces a run's stream events (~40ms) into one array.
+    fns.push(
+      await listen<unknown[]>(`run:events:${runId}`, (event) => {
+        const batch = event.payload
+        if (!Array.isArray(batch) || !batch.length) return
+        for (const payload of batch) eventBuffer.push(payload)
         scheduleFlush()
       }),
     )
@@ -521,6 +589,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         (event) => {
           // A turn just tipped the global budget over. The backend will refuse
           // the next turn; flag it so the UI can warn and disable quick-send.
+          flushEvents() // keep the notice after the transcript that preceded it
           s.budgetBlocked = true
           const pct = event.payload.percent
           const what = event.payload.source === 'plan' ? 'subscription plan' : 'token budget'
@@ -867,6 +936,8 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
   /** Drop a run's session entirely (stop listeners + free memory). */
   function discard(runId: string) {
     stopListening(runId)
+    dirtyRuns.delete(runId)
+    scannedUpTo.delete(runId)
     sessions.delete(runId)
     toolIndexes.delete(runId)
     lastTouched.delete(runId)

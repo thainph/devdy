@@ -36,6 +36,116 @@ pub const CALENDAR_REMINDER_CLICKED_EVENT: &str = "calendar-reminder-clicked";
 #[cfg(target_os = "macos")]
 static SET_APP: std::sync::Once = std::sync::Once::new();
 
+/// Most notifications kept waiting for a click at once. Each waiter makes
+/// `mac-notification-sys` install a 0.5 s timer on the MAIN run loop that does a
+/// synchronous XPC round-trip (`deliveredNotifications`) until the notification
+/// leaves Notification Center — and banners stay there until the user clears
+/// them. With many runs these piled up into the hundreds and starved the UI
+/// thread, so past this cap the oldest are withdrawn (which ends their wait as
+/// a plain dismissal).
+const MAX_WAITING: usize = 5;
+
+/// A notification still waiting for its click, identified by what it shows
+/// (the crate's own identifier isn't exposed).
+#[derive(Clone, Debug, PartialEq)]
+struct Waiting {
+    id: u64,
+    title: String,
+    body: String,
+}
+
+static WAITING: std::sync::Mutex<std::collections::VecDeque<Waiting>> =
+    std::sync::Mutex::new(std::collections::VecDeque::new());
+static NEXT_WAITING_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+/// Queue `entry` and return (copies of) the entries past `cap`, oldest first.
+/// They stay queued until their waiter actually ends (`unregister_waiting`), so
+/// one not yet delivered when withdrawn — or spared because another with the
+/// same text was removed instead — is simply retried on the next call.
+fn push_capped(
+    queue: &mut std::collections::VecDeque<Waiting>,
+    entry: Waiting,
+    cap: usize,
+) -> Vec<Waiting> {
+    queue.push_back(entry);
+    let excess = queue.len().saturating_sub(cap);
+    queue.iter().take(excess).cloned().collect()
+}
+
+/// Track a new waiter, withdrawing the oldest ones past `MAX_WAITING`.
+fn register_waiting(app: &AppHandle, title: &str, body: &str) -> u64 {
+    let id = NEXT_WAITING_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed);
+    let evicted = {
+        let mut queue = WAITING.lock().unwrap_or_else(|e| e.into_inner());
+        let entry = Waiting {
+            id,
+            title: title.to_string(),
+            body: body.to_string(),
+        };
+        push_capped(&mut queue, entry, MAX_WAITING)
+    };
+    withdraw(app, evicted);
+    id
+}
+
+fn unregister_waiting(id: u64) {
+    let mut queue = WAITING.lock().unwrap_or_else(|e| e.into_inner());
+    unregister_from(&mut queue, id);
+}
+
+fn unregister_from(queue: &mut std::collections::VecDeque<Waiting>, id: u64) {
+    queue.retain(|w| w.id != id);
+}
+
+/// Withdraw every notification still waiting for a click. Called when the main
+/// window gains focus: the user is back in the app, where the same state
+/// (pending permission, finished run…) is already shown.
+pub(crate) fn withdraw_all(app: &AppHandle) {
+    let all: Vec<Waiting> = {
+        let queue = WAITING.lock().unwrap_or_else(|e| e.into_inner());
+        queue.iter().cloned().collect()
+    };
+    withdraw(app, all);
+}
+
+/// Remove `entries` from Notification Center on the main thread (where the
+/// crate's poll timers also run); each one's waiter then returns `__closed`.
+fn withdraw(app: &AppHandle, entries: Vec<Waiting>) {
+    if entries.is_empty() {
+        return;
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let _ = app.run_on_main_thread(move || remove_delivered(entries));
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        let _ = (app, entries);
+    }
+}
+
+#[cfg(target_os = "macos")]
+#[allow(deprecated)]
+fn remove_delivered(mut entries: Vec<Waiting>) {
+    use objc2_foundation::NSUserNotificationCenter;
+
+    let center = NSUserNotificationCenter::defaultUserNotificationCenter();
+    for delivered in center.deliveredNotifications().iter() {
+        let title = delivered.title().map(|s| s.to_string()).unwrap_or_default();
+        let body = delivered
+            .informativeText()
+            .map(|s| s.to_string())
+            .unwrap_or_default();
+        if let Some(i) = entries.iter().position(|w| w.title == title && w.body == body) {
+            entries.swap_remove(i);
+            center.removeDeliveredNotification(&delivered);
+            if entries.is_empty() {
+                break;
+            }
+        }
+    }
+}
+
 /// Show a native notification whose click (body or "Open" button) raises the
 /// main window and then runs `on_click`. Returns immediately; the blocking
 /// wait for the user's click runs on a dedicated OS thread. `label` only names
@@ -72,6 +182,8 @@ pub(crate) fn show_clickable_opts(
         };
         let _ = notify_rust::set_application(ident);
     });
+
+    let waiting_id = register_waiting(&app, &title, &body);
 
     // `wait_for_action` blocks until the user interacts AND requires the main
     // run loop (Tauri's event loop) to keep pumping to receive the delegate
@@ -113,6 +225,7 @@ pub(crate) fn show_clickable_opts(
                 tracing::warn!("failed to show {label}: {err}");
             }
         }
+        unregister_waiting(waiting_id);
     });
 }
 
@@ -170,4 +283,30 @@ pub async fn show_calendar_reminder(
         let _ = app.emit(CALENDAR_REMINDER_CLICKED_EVENT, ReminderClick { event_id });
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn w(id: u64) -> Waiting {
+        Waiting {
+            id,
+            title: format!("t{id}"),
+            body: String::new(),
+        }
+    }
+
+    #[test]
+    fn push_capped_withdraws_oldest_past_cap() {
+        let mut queue = std::collections::VecDeque::new();
+        for id in 0..3 {
+            assert!(push_capped(&mut queue, w(id), 3).is_empty());
+        }
+        assert_eq!(push_capped(&mut queue, w(3), 3), vec![w(0)]);
+        // Still queued until its waiter ends, so a missed withdraw is retried.
+        assert_eq!(push_capped(&mut queue, w(4), 3), vec![w(0), w(1)]);
+        unregister_from(&mut queue, 0);
+        assert_eq!(queue.iter().map(|w| w.id).collect::<Vec<_>>(), [1, 2, 3, 4]);
+    }
 }

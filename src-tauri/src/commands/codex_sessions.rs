@@ -377,14 +377,23 @@ pub async fn reconcile_codex_sessions(
         return Ok(0);
     };
 
+    // The tree walk + first-line reads are blocking I/O; do them off the runtime.
+    let matching = {
+        let (root, project_path) = (root.clone(), project_path.clone());
+        super::sessions::blocking(move || {
+            all_rollout_files(&root)
+                .into_iter()
+                .filter_map(|file| {
+                    let (cwd, thread_id) = rollout_meta(&file)?;
+                    (cwd == project_path).then_some((file, thread_id))
+                })
+                .collect::<Vec<_>>()
+        })
+        .await?
+    };
+
     let mut changed = 0i64;
-    for file in all_rollout_files(&root) {
-        let Some((cwd, thread_id)) = rollout_meta(&file) else {
-            continue;
-        };
-        if cwd != project_path {
-            continue;
-        }
+    for (file, thread_id) in matching {
         match upsert_codex_session_file(
             db.inner(),
             &project_id,
@@ -403,7 +412,7 @@ pub async fn reconcile_codex_sessions(
 
     // Populate the Codex plan-usage snapshot from the newest rollout so the
     // budget badge / settings panel show a % even before the first live run.
-    if let Some(rl) = latest_codex_rate_limits_any(&root) {
+    if let Ok(Some(rl)) = super::sessions::blocking(move || latest_codex_rate_limits_any(&root)).await {
         persist_codex_plan_usage(db.inner(), &rl).await;
     }
     Ok(changed)
@@ -485,26 +494,96 @@ pub(crate) fn codex_rate_limits_to_snapshot(rl: &Value) -> Option<Value> {
     }))
 }
 
+/// The `rate_limits` object of one rollout line, when it is a `token_count`
+/// event carrying them. A substring check gates the JSON parse, so the bulk of a
+/// rollout (messages, tool output) is skipped without parsing.
+fn rate_limits_from_line(line: &str) -> Option<Value> {
+    let line = line.trim();
+    if line.is_empty() || !line.contains("rate_limits") {
+        return None;
+    }
+    let v = serde_json::from_str::<Value>(line).ok()?;
+    let p = v.get("payload").unwrap_or(&v);
+    if p.get("type").and_then(|t| t.as_str()) != Some("token_count") {
+        return None;
+    }
+    p.get("rate_limits").filter(|x| x.is_object()).cloned()
+}
+
 /// Scan a rollout for the LAST `token_count` event that carries `rate_limits`.
 pub(crate) fn latest_codex_rate_limits(file: &Path) -> Option<Value> {
     let f = fs::File::open(file).ok()?;
     let mut latest: Option<Value> = None;
     for line in BufReader::new(f).lines() {
         let Ok(line) = line else { break };
-        let line = line.trim();
-        if line.is_empty() || !line.contains("rate_limits") {
-            continue;
-        }
-        let Ok(v) = serde_json::from_str::<Value>(line) else { continue };
-        let p = v.get("payload").unwrap_or(&v);
-        if p.get("type").and_then(|t| t.as_str()) != Some("token_count") {
-            continue;
-        }
-        if let Some(rl) = p.get("rate_limits").filter(|x| x.is_object()) {
-            latest = Some(rl.clone());
+        if let Some(rl) = rate_limits_from_line(&line) {
+            latest = Some(rl);
         }
     }
     latest
+}
+
+/// Per-rollout read position for [`tail_rate_limits`].
+#[derive(Default)]
+pub(crate) struct RateLimitTail {
+    /// Bytes already consumed — always the end of a complete line.
+    offset: u64,
+    /// Identity (inode) of the file `offset` belongs to, so a rollout that was
+    /// replaced under the same path is re-read from the start.
+    file_id: Option<u64>,
+}
+
+/// Incremental [`latest_codex_rate_limits`]: read only the lines appended since
+/// the previous call for this `state` and return the newest `rate_limits` among
+/// them (`None` when nothing new carries any). Live Codex runs append to their
+/// rollout constantly and the watcher fires on each burst, so re-reading a
+/// multi-MB file every time is not an option. A trailing line still being
+/// written is left for the next call; a shrunk or replaced file restarts at 0.
+/// Blocking — call it off the async runtime.
+pub(crate) fn tail_rate_limits(state: &mut RateLimitTail, file: &Path) -> Option<Value> {
+    use std::io::{Read, Seek, SeekFrom};
+
+    let mut f = fs::File::open(file).ok()?;
+    let meta = f.metadata().ok()?;
+    #[cfg(unix)]
+    let file_id = Some(std::os::unix::fs::MetadataExt::ino(&meta));
+    #[cfg(not(unix))]
+    let file_id = None;
+    let len = meta.len();
+    if len < state.offset || file_id != state.file_id {
+        state.offset = 0;
+        state.file_id = file_id;
+    }
+    if len == state.offset {
+        return None;
+    }
+    f.seek(SeekFrom::Start(state.offset)).ok()?;
+
+    let mut reader = BufReader::new(f.take(len - state.offset));
+    let mut latest: Option<Value> = None;
+    let mut line = Vec::new();
+    loop {
+        line.clear();
+        let Ok(n) = reader.read_until(b'\n', &mut line) else { break };
+        // EOF, or a partial line the writer hasn't finished: stop before it.
+        if n == 0 || line.last() != Some(&b'\n') {
+            break;
+        }
+        state.offset += n as u64;
+        if let Some(rl) = std::str::from_utf8(&line).ok().and_then(rate_limits_from_line) {
+            latest = Some(rl);
+        }
+    }
+    latest
+}
+
+/// The thread id embedded in a rollout's file name
+/// (`rollout-<ts>-<thread-uuid>.jsonl`), without opening the file.
+pub(crate) fn thread_id_from_rollout_name(file: &Path) -> Option<String> {
+    let stem = file.file_stem()?.to_str()?.strip_prefix("rollout-")?;
+    let id = stem.get(stem.len().checked_sub(36)?..)?;
+    uuid::Uuid::parse_str(id).ok()?;
+    Some(id.to_string())
 }
 
 /// Newest rollout across the whole store that has usable rate-limits — used at
@@ -640,6 +719,79 @@ mod tests {
     fn codex_rate_limits_empty_returns_none() {
         let rl = serde_json::json!({ "primary": null, "secondary": null, "planType": "pro" });
         assert!(codex_rate_limits_to_snapshot(&rl).is_none());
+    }
+
+    fn token_count(pct: f64) -> String {
+        format!(
+            r#"{{"type":"event_msg","payload":{{"type":"token_count","rate_limits":{{"primary":{{"used_percent":{pct},"window_minutes":300}}}}}}}}"#
+        )
+    }
+
+    fn pct(rl: &Value) -> f64 {
+        rl["primary"]["used_percent"].as_f64().unwrap()
+    }
+
+    #[test]
+    fn tail_rate_limits_reads_only_appended_lines() {
+        let f = temp_file("tail", &format!("{}\n{}\n", ROLLOUT.lines().next().unwrap(), token_count(10.0)));
+        let mut st = RateLimitTail::default();
+        assert_eq!(pct(&tail_rate_limits(&mut st, &f).unwrap()), 10.0);
+        // Nothing appended → nothing new (the caller keeps its last snapshot).
+        assert!(tail_rate_limits(&mut st, &f).is_none());
+
+        // Append a non-rate-limit line and two token_counts: the newest wins.
+        let mut h = fs::OpenOptions::new().append(true).open(&f).unwrap();
+        writeln!(h, r#"{{"type":"event_msg","payload":{{"type":"agent_message","message":"x"}}}}"#).unwrap();
+        writeln!(h, "{}", token_count(20.0)).unwrap();
+        writeln!(h, "{}", token_count(30.0)).unwrap();
+        assert_eq!(pct(&tail_rate_limits(&mut st, &f).unwrap()), 30.0);
+        assert_eq!(st.offset, fs::metadata(&f).unwrap().len());
+        let _ = fs::remove_file(&f);
+    }
+
+    #[test]
+    fn tail_rate_limits_waits_for_a_partial_line() {
+        let f = temp_file("tail_partial", "");
+        let mut st = RateLimitTail::default();
+        let line = token_count(42.0);
+        let (head, rest) = line.split_at(20);
+        let mut h = fs::OpenOptions::new().append(true).open(&f).unwrap();
+        write!(h, "{head}").unwrap();
+        // Half-written line: not consumed, offset stays put.
+        assert!(tail_rate_limits(&mut st, &f).is_none());
+        assert_eq!(st.offset, 0);
+        writeln!(h, "{rest}").unwrap();
+        assert_eq!(pct(&tail_rate_limits(&mut st, &f).unwrap()), 42.0);
+        let _ = fs::remove_file(&f);
+    }
+
+    #[test]
+    fn tail_rate_limits_restarts_on_truncate_and_replace() {
+        let f = temp_file("tail_trunc", &format!("{}\n{}\n", token_count(10.0), token_count(11.0)));
+        let mut st = RateLimitTail::default();
+        assert_eq!(pct(&tail_rate_limits(&mut st, &f).unwrap()), 11.0);
+
+        // Truncated to something shorter than the offset → re-read from 0.
+        fs::write(&f, format!("{}\n", token_count(5.0))).unwrap();
+        assert_eq!(pct(&tail_rate_limits(&mut st, &f).unwrap()), 5.0);
+
+        // Replaced by a new (longer) file under the same path → new inode, from 0.
+        let tmp = f.with_extension("new");
+        fs::write(&tmp, format!("{}\n{}\n{}\n", token_count(1.0), token_count(2.0), token_count(7.0))).unwrap();
+        fs::rename(&tmp, &f).unwrap();
+        assert_eq!(pct(&tail_rate_limits(&mut st, &f).unwrap()), 7.0);
+        let _ = fs::remove_file(&f);
+    }
+
+    #[test]
+    fn thread_id_from_rollout_name_parses_suffix() {
+        let p = Path::new("/x/rollout-2025-05-07T17-24-21-5973b6c0-94b8-487b-a530-2aeb6098ae0e.jsonl");
+        assert_eq!(
+            thread_id_from_rollout_name(p).as_deref(),
+            Some("5973b6c0-94b8-487b-a530-2aeb6098ae0e")
+        );
+        assert!(thread_id_from_rollout_name(Path::new("/x/rollout-1-thread-1.jsonl")).is_none());
+        assert!(thread_id_from_rollout_name(Path::new("/x/abc.jsonl")).is_none());
     }
 
     #[test]

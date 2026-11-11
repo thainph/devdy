@@ -47,7 +47,7 @@ function sessionPhase(session: LiveSession): CyberFoxState {
     // A tool entry means the fox is actively working — whether the tool is still
     // running (no result yet) or its result just landed in place. We deliberately
     // do NOT flip to 'thinking' when a result attaches: the tool_result is folded
-    // back onto the SAME entry (streamEvents), so a multi-tool turn would otherwise
+    // back into the SAME slot (streamEvents), so a multi-tool turn would otherwise
     // flicker loading→thinking→loading between every tool call. Genuine reasoning
     // is surfaced by dedicated 'thinking' entries below.
     if (e.kind === 'tool') return 'loading'
@@ -110,6 +110,9 @@ export function useMascotState() {
   const steadyFocus = computed<{ state: CyberFoxState; session: LiveSession | null }>(() => {
     let best: CyberFoxState = 'idle'
     let bestSession: LiveSession | null = null
+    // A disabled fox shows nothing, so don't subscribe to every live run's
+    // stream: this would otherwise re-run on each flush of each run.
+    if (!enabled.value) return { state: best, session: bestSession }
     live.sessions.forEach((session) => {
       const phase = sessionPhase(session)
       if (PHASE_PRIORITY[phase] > PHASE_PRIORITY[best]) {
