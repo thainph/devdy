@@ -1029,12 +1029,19 @@ pub async fn replay_history(
     out: &OutboundTx,
     seq: &SeqCounter,
 ) -> usize {
-    let content = std::fs::read_to_string(log_path).unwrap_or_default();
-    // BR-006: cap the replay; keep the most recent lines.
-    let lines = select_replay_lines(&content);
-    let total = lines.len();
+    // Whole-log read + slimming is blocking and the log can be tens of MB: do it
+    // on the blocking pool. Sealing / sending stays here, unchanged.
+    let path = log_path.to_path_buf();
+    let (total, batches) = tokio::task::spawn_blocking(move || {
+        let content = std::fs::read_to_string(&path).unwrap_or_default();
+        // BR-006: cap the replay; keep the most recent lines.
+        let lines = select_replay_lines(&content);
+        (lines.len(), batch_replay_lines(lines))
+    })
+    .await
+    .unwrap_or_default();
 
-    let mut chunks = batch_replay_lines(lines).into_iter().peekable();
+    let mut chunks = batches.into_iter().peekable();
     if chunks.peek().is_none() {
         // No history — still signal completion so the Controller stops waiting.
         let payload = StreamPayload::History {

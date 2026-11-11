@@ -48,9 +48,32 @@ export function applyMermaidFence(md: MarkdownIt): void {
 let mermaidPromise: Promise<typeof import('mermaid').default> | null = null
 let lastTheme: 'dark' | 'default' | null = null
 let idCounter = 0
-// Cache rendered SVG by `${theme}\n${source}` so re-renders (frequent during
-// streaming) don't re-run the layout engine or flicker.
+// Cache rendered SVG by `${theme}\n${source}` so re-renders don't re-run the
+// layout engine or flicker. LRU-capped: a diagram SVG can be tens of KB, and a
+// long session (or a theme toggle doubling every key) would otherwise grow it
+// without bound.
 const svgCache = new Map<string, string>()
+const SVG_CACHE_MAX = 50
+
+function cacheGet(key: string): string | undefined {
+  const svg = svgCache.get(key)
+  if (svg !== undefined) {
+    // Re-insert so Map order tracks recency (first key = least recently used).
+    svgCache.delete(key)
+    svgCache.set(key, svg)
+  }
+  return svg
+}
+
+function cachePut(key: string, svg: string): void {
+  svgCache.delete(key)
+  svgCache.set(key, svg)
+  while (svgCache.size > SVG_CACHE_MAX) {
+    const oldest = svgCache.keys().next().value
+    if (oldest === undefined) break
+    svgCache.delete(oldest)
+  }
+}
 
 function currentTheme(): 'dark' | 'default' {
   return document.documentElement.classList.contains('dark') ? 'dark' : 'default'
@@ -74,8 +97,27 @@ async function loadMermaid() {
   return mermaid
 }
 
+// Renders run one host at a time: mermaid's layout is synchronous and heavy, so
+// a burst of updates (history load, several diagrams in a reply) firing them
+// all at once froze the main thread. A host already waiting in the queue is not
+// queued twice — its turn reads whatever DOM it has by then.
+let renderQueue: Promise<void> = Promise.resolve()
+const queuedHosts = new WeakSet<HTMLElement>()
+
 /** Render every un-rendered `.mermaid-diagram` placeholder inside `el`. */
-export async function renderMermaidIn(el: HTMLElement): Promise<void> {
+export function renderMermaidIn(el: HTMLElement): Promise<void> {
+  // Cheap pre-check so hosts without diagrams never touch the queue.
+  if (!el.querySelector('.mermaid-diagram')) return Promise.resolve()
+  if (queuedHosts.has(el)) return renderQueue
+  queuedHosts.add(el)
+  renderQueue = renderQueue.then(() => {
+    queuedHosts.delete(el)
+    return el.isConnected ? renderNow(el) : undefined
+  }).catch(() => {})
+  return renderQueue
+}
+
+async function renderNow(el: HTMLElement): Promise<void> {
   const blocks = Array.from(el.querySelectorAll<HTMLElement>('.mermaid-diagram'))
   if (!blocks.length) return
 
@@ -97,7 +139,7 @@ export async function renderMermaidIn(el: HTMLElement): Promise<void> {
     // Already showing this exact diagram for this theme — nothing to do.
     if (block.dataset.rendered === cacheKey) continue
 
-    const cached = svgCache.get(cacheKey)
+    const cached = cacheGet(cacheKey)
     if (cached) {
       target.innerHTML = cached
       block.dataset.rendered = cacheKey
@@ -117,7 +159,9 @@ export async function renderMermaidIn(el: HTMLElement): Promise<void> {
 
     try {
       const { svg } = await mermaid.render(`mermaid-${idCounter++}`, src)
-      svgCache.set(cacheKey, svg)
+      cachePut(cacheKey, svg)
+      // The host may have been re-rendered (v-html) while we awaited; writing
+      // into a detached block is harmless, the next update renders the new one.
       target.innerHTML = svg
       block.dataset.rendered = cacheKey
       enableMermaidZoom(block)
@@ -130,13 +174,16 @@ export async function renderMermaidIn(el: HTMLElement): Promise<void> {
 /**
  * Directive for the markdown host element. Re-renders diagrams whenever the
  * v-html content mounts or updates. Fire-and-forget (async) so it never blocks
- * Vue's patch cycle.
+ * Vue's patch cycle. `v-mermaid="false"` defers rendering — used while a
+ * message is still streaming, when the source is incomplete and the host is
+ * re-rendered several times a second; the first update with a truthy (or
+ * absent) value renders it.
  */
-export const vMermaid: Directive<HTMLElement> = {
-  mounted: (el) => {
-    void renderMermaidIn(el)
+export const vMermaid: Directive<HTMLElement, boolean | undefined> = {
+  mounted: (el, binding) => {
+    if (binding.value !== false) void renderMermaidIn(el)
   },
-  updated: (el) => {
-    void renderMermaidIn(el)
+  updated: (el, binding) => {
+    if (binding.value !== false) void renderMermaidIn(el)
   },
 }

@@ -3,6 +3,7 @@ import { invoke } from '@/lib/tauri'
 import { ref, reactive, computed } from 'vue'
 import type { ImageAttachment } from '@/lib/streamEvents'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
+import { reconcileById, shallowEqualRecord } from '@/lib/reconcileRows'
 
 /**
  * Fingerprint of the file(s) backing a run's log, from `get_run_log_revision`.
@@ -164,8 +165,24 @@ export const useRunsStore = defineStore('runs', () => {
   // read titles from this accumulated cache instead.
   const runMeta = reactive(new Map<string, RunRecord>())
 
+  // Only touch entries whose data changed, patching them in place: a blanket
+  // `set` per row re-triggered every reader (tray, dock, notifier) on each
+  // background refetch even when nothing moved.
   function rememberRuns(list: RunRecord[]) {
-    for (const r of list) runMeta.set(r.id, r)
+    for (const r of list) {
+      const cur = runMeta.get(r.id)
+      if (!cur) runMeta.set(r.id, r)
+      else if (!shallowEqualRecord(cur, r)) Object.assign(cur, r)
+    }
+  }
+
+  // Swap in a fresh list while reusing (and patching) the rows already on
+  // screen; the array itself is only replaced when membership/order changed.
+  // `runs` stays a deep ref: callers (setLocalRunStatus, touchRun, rename…)
+  // mutate rows in place and rely on that being reactive.
+  function applyRuns(next: RunRecord[]) {
+    const rows = reconcileById(runs.value, next)
+    if (rows) runs.value = rows
   }
 
   /**
@@ -201,7 +218,7 @@ export const useRunsStore = defineStore('runs', () => {
     if (!keepOrder) loading.value = true
     try {
       const list = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
-      runs.value = keepOrder && loadedProjectId.value === project_id ? mergeKeepingOrder(list) : list
+      applyRuns(keepOrder && loadedProjectId.value === project_id ? mergeKeepingOrder(list) : list)
       loadedProjectId.value = project_id
       rememberRuns(runs.value)
     } finally {
@@ -236,7 +253,7 @@ export const useRunsStore = defineStore('runs', () => {
   async function refreshMeta(project_id: string) {
     const list = await invoke<RunRecord[]>('list_runs', { projectId: project_id })
     rememberRuns(list)
-    if (project_id === loadedProjectId.value) runs.value = mergeKeepingOrder(list)
+    if (project_id === loadedProjectId.value) applyRuns(mergeKeepingOrder(list))
   }
 
   async function fetchIssue(project_id: string, repo_id: string, issue_number: number): Promise<RunRecord> {

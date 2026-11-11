@@ -9,7 +9,7 @@
  * nothing ~36px inward — no blur filter, no layout.
  *
  * Layers:
- *   html::before  running — rotating multi-color edge from the palette
+ *   html::before  running — stepwise-rotating multi-color edge from the palette
  *   html::after   waiting (amber) / error (red) / done (green → cyan)
  * The status colors are registered properties, so waiting ↔ error ↔ done
  * crossfade their colors; entering/leaving any state crossfades opacity.
@@ -105,12 +105,13 @@ html[data-agent-state='error']:not(.mascot-window)::after {
       --agent-edge-b 600ms ease;
   }
 
-  /* running — the edge slowly rotates and breathes. */
+  /* running — the edge slowly rotates. This state can last for hours and
+     every angle change repaints a window-sized masked gradient (WebKit can't
+     composite it), so it turns in 7.5° steps — ~6 repaints/s instead of 60 —
+     and skips the breath, which would repaint every frame on its own. */
   html[data-agent-state='running']:not([data-animated-bg='false']):not(.mascot-window)::before {
     opacity: 1;
-    animation:
-      agent-spin 8s linear infinite,
-      agent-breathe 4s ease-in-out infinite;
+    animation: agent-spin 8s steps(48) infinite;
   }
 
   /* waiting — steady amber, slow deep breath (the human has to act). */
@@ -137,10 +138,6 @@ html[data-agent-state='error']:not(.mascot-window)::after {
   to { --agent-angle: 360deg; }
 }
 /* Breaths start/end at identity, so attaching/removing them never flashes. */
-@keyframes agent-breathe {
-  0%, 100% { filter: none; }
-  50% { filter: opacity(0.6); }
-}
 @keyframes agent-breathe-deep {
   0%, 100% { filter: none; }
   50% { filter: opacity(0.45); }

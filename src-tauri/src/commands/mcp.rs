@@ -1294,6 +1294,27 @@ pub async fn builtin_mcp_globally_enabled(db: &Db, name: &str) -> bool {
     !matches!(v.as_deref(), Some("false"))
 }
 
+/// Settings key for "Only use Devdy-managed MCP servers".
+pub const STRICT_MCP_CONFIG_KEY: &str = "mcp_strict_config";
+
+/// Parse the `mcp_strict_config` setting value: on only for an explicit `"true"`
+/// (default off keeps the CLI's own MCP sources — `.mcp.json`, user settings, plugins).
+pub fn strict_mcp_config_from(value: Option<&str>) -> bool {
+    matches!(value.map(str::trim), Some("true"))
+}
+
+/// Whether Claude runs load ONLY the MCP servers Devdy passes in (Agent SDK
+/// `strictMcpConfig`, CLI `--strict-mcp-config`). Codex has no equivalent.
+pub async fn strict_mcp_config_enabled(db: &Db) -> bool {
+    let v = sqlx::query_scalar::<_, String>("SELECT value FROM settings WHERE key = ?")
+        .bind(STRICT_MCP_CONFIG_KEY)
+        .fetch_optional(db)
+        .await
+        .ok()
+        .flatten();
+    strict_mcp_config_from(v.as_deref())
+}
+
 /// Whether the built-in `devdy` MCP server is on app-wide.
 pub async fn builtin_devdy_enabled(db: &Db) -> bool {
     builtin_mcp_globally_enabled(db, "devdy").await
@@ -1526,6 +1547,16 @@ mod tests {
     use super::{sh_quote, McpLaunch};
 
     use super::stderr_reason;
+
+    #[test]
+    fn strict_mcp_config_is_on_only_for_an_explicit_true() {
+        use super::strict_mcp_config_from;
+        assert!(!strict_mcp_config_from(None));
+        assert!(!strict_mcp_config_from(Some("")));
+        assert!(!strict_mcp_config_from(Some("false")));
+        assert!(strict_mcp_config_from(Some("true")));
+        assert!(strict_mcp_config_from(Some(" true ")));
+    }
 
     fn launch() -> McpLaunch {
         McpLaunch {

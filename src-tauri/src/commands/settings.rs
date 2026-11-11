@@ -63,6 +63,10 @@ pub struct AppSettings {
     /// Inject the built-in `google` MCP server when an account is connected.
     /// "true" (default) | "false".
     pub mcp_builtin_google_enabled: String,
+    /// "Only use Devdy-managed MCP servers": Claude runs pass `strictMcpConfig`
+    /// so `.mcp.json`, user-settings and plugin MCP servers are not loaded.
+    /// "false" (default) | "true". Read by `mcp::strict_mcp_config_enabled`.
+    pub mcp_strict_config: String,
     /// Show the floating DY Cyber Fox mascot. "true" | "false" (default).
     pub cyber_fox_enabled: String,
     /// Floating mascot size: "sm" | "md" (default) | "lg".
@@ -128,6 +132,7 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "translate_style",
     "mcp_builtin_devdy_enabled",
     "mcp_builtin_google_enabled",
+    "mcp_strict_config",
     "cyber_fox_enabled",
     "cyber_fox_size",
     "cyber_fox_mode",
@@ -189,6 +194,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         translate_style: "natural".to_string(),
         mcp_builtin_devdy_enabled: "true".to_string(),
         mcp_builtin_google_enabled: "true".to_string(),
+        mcp_strict_config: "false".to_string(),
         cyber_fox_enabled: "false".to_string(),
         cyber_fox_size: "md".to_string(),
         cyber_fox_mode: "in-app".to_string(),
@@ -238,6 +244,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "translate_style" => settings.translate_style = value,
             "mcp_builtin_devdy_enabled" => settings.mcp_builtin_devdy_enabled = value,
             "mcp_builtin_google_enabled" => settings.mcp_builtin_google_enabled = value,
+            "mcp_strict_config" => settings.mcp_strict_config = value,
             "cyber_fox_enabled" => settings.cyber_fox_enabled = value,
             "cyber_fox_size" => settings.cyber_fox_size = value,
             "cyber_fox_mode" => settings.cyber_fox_mode = value,
