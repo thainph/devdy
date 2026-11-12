@@ -24,7 +24,7 @@ import { Button, Card, Badge } from '@/components/ui'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import PrAvatar from './PrAvatar.vue'
 import {
-  RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Users, Eye, Bot, MoreHorizontal, Tag,
+  RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Users, Eye, Bot, MoreHorizontal, Tag, RotateCcw,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -53,6 +53,8 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   review: [item: PrInboxItem]
+  /** Review again with a fresh run (new commits since the linked review). */
+  're-review': [item: PrInboxItem]
   'open-run': [item: PrInboxItem]
   /** "Add to devdy" on an unmapped PR — the host decides how to navigate
    * (router in the main window, a request to it from the PR Inbox window). */
@@ -115,6 +117,10 @@ const statusText = computed(() => {
 const runLabel = computed(() => (running.value ? t('prInbox.reviewingShort') : t('prInbox.viewReview')))
 const runTitle = computed(() => (statusText.value ? `${runLabel.value} · ${statusText.value}` : runLabel.value))
 const reviewLabel = computed(() => (props.reviewing ? t('prInbox.opening') : t('prInbox.aiReview')))
+// New commits since the finished review → a "Re-review" button next to it
+// (any finished review can also be re-run from the ⋯ menu).
+const showReReview = computed(() => !!props.item.existing_run_id && props.item.updated_since_review && !running.value)
+const reReviewLabel = computed(() => (props.reviewing ? t('prInbox.opening') : t('prInbox.reReview')))
 // Action labels show from this container width up; below it, icon-only.
 const actionLabelClass = computed(() => (compact.value ? 'hidden @[44rem]/list:inline' : 'hidden @[36rem]/list:inline'))
 
@@ -280,6 +286,18 @@ function relativeTime(iso: string): string {
           </span>
           <span v-if="accounts.length > 1" class="text-[10px]">+{{ accounts.length - 1 }}</span>
         </span>
+        <!-- Linked review is behind the PR's head → offer a fresh review -->
+        <Button
+          v-if="showReReview"
+          :size="compact ? 'xs' : 'sm'"
+          :disabled="reviewing"
+          :title="t('prInbox.reReviewTitle')"
+          :aria-label="t('prInbox.reReviewTitle')"
+          @click="emit('re-review', item)"
+        >
+          <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" />
+          <span :class="actionLabelClass">{{ reReviewLabel }}</span>
+        </Button>
         <!-- Linked review session → open it; button shows its state -->
         <Button
           v-if="item.existing_run_id"

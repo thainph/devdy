@@ -7,6 +7,8 @@
   "viewReview": "Xem review",
   "opening": "Đang mở…",
   "aiReview": "AI Review",
+  "reReview": "Review lại",
+  "reReviewTitle": "Có commit mới sau lần review trước — review lại",
   "addToDevdy": "Thêm vào devdy",
   "partialFailTitle": "{count} account tải review request thất bại",
   "partialFailBody": "một số PR có thể bị thiếu. Thử refresh lại.",
@@ -50,6 +52,7 @@
   "status": {
     "not_reviewed": "Chưa review",
     "running": "Đang review",
+    "updated": "Có cập nhật mới",
     "reviewed": "Đã review",
     "unmapped": "Chưa có trong devdy"
   },

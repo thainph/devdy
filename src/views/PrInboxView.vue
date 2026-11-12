@@ -29,6 +29,7 @@ import {
   applyFilters,
   buildFilterOptions,
   bulkReviewCandidates,
+  canReReview,
   canStartReview,
   effectiveAccountCount,
   effectiveFilters,
@@ -49,7 +50,7 @@ import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
   GitPullRequest, RefreshCw, Sparkles, User, Bot, ChevronRight, Folder, BookMarked,
-  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, Pin, PinOff,
+  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, Pin, PinOff, RotateCcw,
 } from 'lucide-vue-next'
 
 // Named explicitly (devtools / warnings): an inferred name is a build detail
@@ -275,9 +276,11 @@ function openProjects() {
 
 // Create + launch a review run for a mapped PR with no linked run. Throws on
 // failure; returns false when there was nothing to start (unmapped, already
-// linked, or already being started).
-async function startReview(item: PrInboxItem): Promise<boolean> {
-  if (!item.mapped || !item.project_id || !item.repo_id || item.existing_run_id) return false
+// linked, or already being started). `again` = re-review: a linked PR gets a
+// fresh run (re-fetched diff + the reviews posted since), which becomes the
+// PR's linked run; the previous one stays in the project's history.
+async function startReview(item: PrInboxItem, again = false): Promise<boolean> {
+  if (!item.mapped || !item.project_id || !item.repo_id || (item.existing_run_id && !again)) return false
   const key = prKey(item)
   if (store.reviewingKeys.has(key)) return false
   store.setReviewing(key, true)
@@ -322,6 +325,19 @@ async function handleReview(item: PrInboxItem) {
     if (await startReview(item)) {
       // Stay on this screen (no focus jump — the window is for multitasking):
       // the button turns into "Reviewing" / "View review", which opens it.
+      toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
+    }
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+// Review a PR again with a new session — offered once the linked review has
+// finished, highlighted when new commits landed after it.
+async function handleReReview(item: PrInboxItem) {
+  if (!canReReview(item, runStatus(item), store.reviewingKeys.has(prKey(item)))) return
+  try {
+    if (await startReview(item, true)) {
       toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
     }
   } catch (e) {
@@ -691,6 +707,7 @@ async function reviewAll(group: PrGroup) {
               :now="now"
               :index="i"
               @review="handleReview"
+              @re-review="handleReReview"
               @open-run="openRun"
               @add-to-devdy="openProjects"
               @menu="openMenu"
@@ -723,6 +740,14 @@ async function reviewAll(group: PrGroup) {
         <DropdownItem @click="openPr(menu.item)">
           <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('prInbox.openOnGitHub') }}
+        </DropdownItem>
+        <DropdownItem
+          v-if="menu.item.existing_run_id && menu.item.mapped"
+          :disabled="!canReReview(menu.item, runStatus(menu.item), store.reviewingKeys.has(prKey(menu.item)))"
+          @click="handleReReview(menu.item)"
+        >
+          <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('prInbox.reReview') }}
         </DropdownItem>
         <DropdownSeparator />
         <DropdownItem v-if="isCustomBot(menu.item.author_login)" @click="store.removeBotLogin(menu.item.author_login)">
