@@ -8,6 +8,7 @@ import {
   applyFilters,
   buildFilterOptions,
   bulkReviewCandidates,
+  canReReview,
   canStartReview,
   effectiveAccountCount,
   makeAccountTone,
@@ -49,6 +50,7 @@ function pr(extra = {}) {
     existing_run_status: null,
     reviewer_accounts: [{ account_id: 'acc1', account_label: 'Work' }],
     requested_reviewers: [],
+    updated_since_review: false,
     ...extra,
   }
 }
@@ -56,12 +58,26 @@ function pr(extra = {}) {
 const unmapped = { mapped: false, project_id: null, repo_id: null, project_name: null }
 const statusOf = item => reviewStatusOf(item, item.existing_run_status)
 
-test('reviewStatusOf covers the four states', () => {
+test('canReReview: a finished linked review, not while streaming or starting', () => {
+  const linked = pr({ existing_run_id: 'r' })
+  assert.equal(canReReview(linked, 'done', false), true)
+  assert.equal(canReReview(linked, 'failed', false), true)
+  assert.equal(canReReview(linked, 'running', false), false)
+  assert.equal(canReReview(linked, 'fetched', false), false)
+  assert.equal(canReReview(linked, 'done', true), false)
+  assert.equal(canReReview(pr(), null, false), false)
+  assert.equal(canReReview(pr({ ...unmapped, existing_run_id: 'r' }), 'done', false), false)
+})
+
+test('reviewStatusOf covers every state', () => {
   assert.equal(reviewStatusOf(pr(unmapped), null), 'unmapped')
   assert.equal(reviewStatusOf(pr(), null), 'not_reviewed')
   assert.equal(reviewStatusOf(pr({ existing_run_id: 'r' }), 'running'), 'running')
   assert.equal(reviewStatusOf(pr({ existing_run_id: 'r' }), 'fetched'), 'running')
   assert.equal(reviewStatusOf(pr({ existing_run_id: 'r' }), 'done'), 'reviewed')
+  assert.equal(reviewStatusOf(pr({ existing_run_id: 'r', updated_since_review: true }), 'done'), 'updated')
+  // A run that is (re)streaming reads as running, even with new pushes.
+  assert.equal(reviewStatusOf(pr({ existing_run_id: 'r', updated_since_review: true }), 'running'), 'running')
 })
 
 test('sanitizeFilters drops malformed shapes and unknown statuses', () => {

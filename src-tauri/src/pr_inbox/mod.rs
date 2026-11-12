@@ -321,6 +321,7 @@ mod tests {
                 account_label: "A".into(),
             }],
             requested_reviewers: vec![],
+            updated_since_review: false,
         }
     }
 
