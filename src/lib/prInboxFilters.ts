@@ -9,10 +9,11 @@ import { AVATAR_TONES, avatarTone } from './slackThreadUtils.ts'
  * - `unmapped`:     repo isn't tracked in devdy (no Review action)
  * - `not_reviewed`: mapped, no review run yet
  * - `running`:      the linked review run is streaming
+ * - `updated`:      reviewed, but new commits were pushed since (re-review)
  * - `reviewed`:     the linked review run exists and isn't running
  */
-export type PrReviewStatus = 'not_reviewed' | 'running' | 'reviewed' | 'unmapped'
-export const PR_REVIEW_STATUSES: readonly PrReviewStatus[] = ['not_reviewed', 'running', 'reviewed', 'unmapped']
+export type PrReviewStatus = 'not_reviewed' | 'running' | 'updated' | 'reviewed' | 'unmapped'
+export const PR_REVIEW_STATUSES: readonly PrReviewStatus[] = ['not_reviewed', 'running', 'updated', 'reviewed', 'unmapped']
 
 /** Filter value standing for "Not in devdy" in the project filter. */
 export const UNMAPPED_PROJECT_VALUE = '__unmapped__'
@@ -41,7 +42,15 @@ export function hasActiveFilters(f: PrFilters): boolean {
 export function reviewStatusOf(item: PrInboxItem, runStatus: string | null): PrReviewStatus {
   if (!item.mapped) return 'unmapped'
   if (!item.existing_run_id) return 'not_reviewed'
-  return runStatus === 'running' || runStatus === 'fetched' ? 'running' : 'reviewed'
+  if (runStatus === 'running' || runStatus === 'fetched') return 'running'
+  return item.updated_since_review ? 'updated' : 'reviewed'
+}
+
+/** A linked, finished review whose PR can be reviewed again with a fresh run
+ * (re-fetched diff). Not while that run streams or a new one is starting. */
+export function canReReview(item: PrInboxItem, runStatus: string | null, reviewing: boolean): boolean {
+  if (reviewing || !item.mapped || !item.project_id || !item.repo_id || !item.existing_run_id) return false
+  return runStatus !== 'running' && runStatus !== 'fetched'
 }
 
 // ---------------------------------------------------------------------------

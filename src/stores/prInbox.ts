@@ -33,6 +33,8 @@ export interface PrInboxItem {
   /** Other pending reviewers (users / teams), excluding the user's accounts.
    * Best-effort — empty when the backend's GraphQL lookup failed. */
   requested_reviewers: PrRequestedReviewer[]
+  /** New commits were pushed after the linked review run fetched the PR. */
+  updated_since_review: boolean
 }
 
 /** Mirrors the Rust `PrInboxReviewerAccount`. */
@@ -275,6 +277,7 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     if (item) {
       item.existing_run_id = runId
       item.existing_run_status = status
+      item.updated_since_review = false
     }
   }
 

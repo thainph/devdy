@@ -7,6 +7,8 @@
   "viewReview": "View review",
   "opening": "Opening…",
   "aiReview": "AI Review",
+  "reReview": "Re-review",
+  "reReviewTitle": "New commits since the last review — review again",
   "addToDevdy": "Add to devdy",
   "partialFailTitle": "{count} account failed to load review requests | {count} accounts failed to load review requests",
   "partialFailBody": "some PRs may be missing. Try refreshing.",
@@ -50,6 +52,7 @@
   "status": {
     "not_reviewed": "Not reviewed",
     "running": "Reviewing",
+    "updated": "Updated since review",
     "reviewed": "Reviewed",
     "unmapped": "Not in devdy"
   },

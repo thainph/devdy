@@ -961,6 +961,10 @@ pub struct PrInboxItem {
     /// Other pending reviewers (users and teams), excluding the user's own
     /// accounts. Best-effort: empty when the GraphQL lookup failed.
     pub requested_reviewers: Vec<PrRequestedReviewer>,
+    /// The PR's head moved past the commit the linked review run fetched (new
+    /// pushes since the review) — the UI offers a re-review. False when there
+    /// is no linked run or either SHA is unknown.
+    pub updated_since_review: bool,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -1033,20 +1037,41 @@ struct SearchPrItem {
     draft: bool,
 }
 
+/// `head_sha` from a PR task file's frontmatter (see `build_pr_markdown`).
+fn frontmatter_head_sha(md: &str) -> Option<String> {
+    let rest = md.strip_prefix("---\n")?;
+    let front = &rest[..rest.find("\n---")?];
+    front
+        .lines()
+        .find_map(|l| l.strip_prefix("head_sha:"))
+        .map(|v| v.trim().to_string())
+        .filter(|v| !v.is_empty())
+}
+
 /// `owner/repo#number`, lowercased — joins GraphQL results onto search hits.
 fn pr_map_key(owner: &str, repo: &str, number: u64) -> String {
     format!("{}/{}#{}", owner.to_lowercase(), repo.to_lowercase(), number)
 }
 
+/// What the GraphQL search adds to a search hit: the other pending reviewers
+/// and the PR's current head commit (to spot pushes after a devdy review).
+#[derive(Debug, Default, Clone, PartialEq)]
+struct PrGraphInfo {
+    reviewers: Vec<PrRequestedReviewer>,
+    head_sha: Option<String>,
+}
+
+type PrGraphMap = std::collections::HashMap<String, PrGraphInfo>;
+
 /// Parse one page of the review-requests GraphQL search (see
-/// `fetch_requested_reviewers`) into `pr_map_key -> reviewers`, plus the cursor
+/// `fetch_requested_reviewers`) into `pr_map_key -> PrGraphInfo`, plus the cursor
 /// of the next page (None when this was the last one). Reviewers whose login
 /// is in `exclude_logins` (lowercased — the user's own accounts) are dropped.
 /// Returns Err when the response carries no search data (GraphQL errors).
 fn parse_review_requests_page(
     resp: &serde_json::Value,
     exclude_logins: &std::collections::HashSet<String>,
-) -> Result<(std::collections::HashMap<String, Vec<PrRequestedReviewer>>, Option<String>), String> {
+) -> Result<(PrGraphMap, Option<String>), String> {
     let Some(search) = resp.pointer("/data/search").filter(|v| v.is_object()) else {
         let msg = resp
             .pointer("/errors/0/message")
@@ -1091,7 +1116,8 @@ fn parse_review_requests_page(
                 reviewers.push(reviewer);
             }
         }
-        map.insert(pr_map_key(owner, repo, number), reviewers);
+        let head_sha = node.get("headRefOid").and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+        map.insert(pr_map_key(owner, repo, number), PrGraphInfo { reviewers, head_sha });
     }
     let has_next = search.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) == Some(true);
     let cursor = search
@@ -1102,15 +1128,15 @@ fn parse_review_requests_page(
     Ok((map, cursor))
 }
 
-/// Pending reviewers for every PR matched by `query`, via GraphQL search — one
+/// Pending reviewers + head commit for every PR matched by `query`, via GraphQL search — one
 /// call per 100 PRs (capped at 5 pages), not one per PR. Best-effort: on any
 /// failure the pages fetched so far are kept and the rest is skipped.
 async fn fetch_requested_reviewers(
     client: &octocrab::Octocrab,
     query: &str,
     exclude_logins: &std::collections::HashSet<String>,
-) -> std::collections::HashMap<String, Vec<PrRequestedReviewer>> {
-    const GQL: &str = "query($q:String!,$cursor:String){ search(type:ISSUE, query:$q, first:100, after:$cursor){ pageInfo{ hasNextPage endCursor } nodes{ ... on PullRequest{ number repository{ nameWithOwner } reviewRequests(first:20){ nodes{ requestedReviewer{ __typename ... on User{ login avatarUrl } ... on Bot{ login avatarUrl } ... on Mannequin{ login avatarUrl } ... on Team{ slug combinedSlug avatarUrl } ... on EnterpriseTeam{ slug combinedSlug } } } } } } } }";
+) -> PrGraphMap {
+    const GQL: &str = "query($q:String!,$cursor:String){ search(type:ISSUE, query:$q, first:100, after:$cursor){ pageInfo{ hasNextPage endCursor } nodes{ ... on PullRequest{ number headRefOid repository{ nameWithOwner } reviewRequests(first:20){ nodes{ requestedReviewer{ __typename ... on User{ login avatarUrl } ... on Bot{ login avatarUrl } ... on Mannequin{ login avatarUrl } ... on Team{ slug combinedSlug avatarUrl } ... on EnterpriseTeam{ slug combinedSlug } } } } } } } }";
     let mut map = std::collections::HashMap::new();
     let mut cursor: Option<String> = None;
     for _ in 0..5 {
@@ -1153,7 +1179,7 @@ pub async fn list_review_requested_prs(
 /// One account's share of the inbox: its search hits plus the other pending
 /// reviewers of those PRs, or why the fetch failed.
 type AccountHits = Result<
-    (Vec<SearchPrItem>, std::collections::HashMap<String, Vec<PrRequestedReviewer>>),
+    (Vec<SearchPrItem>, PrGraphMap),
     String,
 >;
 
@@ -1203,7 +1229,8 @@ async fn fetch_account_review_requests(
         }
         Err(last_err.unwrap_or_else(|| "GitHub search failed".to_string()))
     };
-    // Non-fatal: a failed lookup only leaves `requested_reviewers` empty.
+    // Non-fatal: a failed lookup only leaves `requested_reviewers` empty (and
+    // the "updated since review" flag off).
     let reviewers = fetch_requested_reviewers(&client, query, own_logins);
     let (issues, reviewers) = tokio::join!(search, reviewers);
     Ok((issues?, reviewers))
@@ -1268,10 +1295,10 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
             row.get("project_name"),
         ));
     }
-    let mut latest_runs: std::collections::HashMap<(String, i64), (String, String)> =
+    let mut latest_runs: std::collections::HashMap<(String, i64), (String, String, Option<String>)> =
         std::collections::HashMap::new();
     for row in sqlx::query(
-        "SELECT id, status, project_id, ref_number FROM runs
+        "SELECT id, status, project_id, ref_number, input_path FROM runs
          WHERE type = 'review_pr' AND ref_number IS NOT NULL
          ORDER BY created_at DESC",
     )
@@ -1281,15 +1308,16 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
     {
         latest_runs
             .entry((row.get("project_id"), row.get("ref_number")))
-            .or_insert((row.get("id"), row.get("status")));
+            .or_insert((row.get("id"), row.get("status"), row.get("input_path")));
     }
 
     // Dedup a PR that multiple accounts are asked to review onto its first hit,
     // recording the later accounts in `reviewer_accounts` (key -> items index).
     let mut seen: std::collections::HashMap<(String, String, u64), usize> = std::collections::HashMap::new();
-    // pr_map_key -> other pending reviewers, merged across accounts.
-    let mut reviewers_by_pr: std::collections::HashMap<String, Vec<PrRequestedReviewer>> =
-        std::collections::HashMap::new();
+    // pr_map_key -> other pending reviewers + head commit, merged across accounts.
+    let mut graph_by_pr: PrGraphMap = std::collections::HashMap::new();
+    // Index into `items` -> the linked run's input file, read once at the end.
+    let mut run_inputs: Vec<(usize, String)> = Vec::new();
     let mut items: Vec<PrInboxItem> = Vec::new();
     // Accounts whose fetch failed after retries — surfaced to the UI so a
     // transiently-missing PR reads as "try again" instead of "no PRs".
@@ -1307,8 +1335,8 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
             }
         };
         fetched_accounts.push(account_id.clone());
-        for (key, reviewers) in reviewers {
-            reviewers_by_pr.entry(key).or_insert(reviewers);
+        for (key, info) in reviewers {
+            graph_by_pr.entry(key).or_insert(info);
         }
 
         for SearchPrItem { issue, draft } in issues {
@@ -1340,10 +1368,13 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
 
             // Link the latest existing review run for this PR (same project +
             // ref_number) so the UI can resume it instead of duplicating.
-            let (existing_run_id, existing_run_status) = project_id
+            let (existing_run_id, existing_run_status, run_input) = project_id
                 .as_ref()
                 .and_then(|pid| latest_runs.get(&(pid.clone(), number as i64)).cloned())
-                .map_or((None, None), |(id, status)| (Some(id), Some(status)));
+                .map_or((None, None, None), |(id, status, input)| (Some(id), Some(status), input));
+            if let Some(input) = run_input {
+                run_inputs.push((items.len(), input));
+            }
 
             items.push(PrInboxItem {
                 account_id: account_id.clone(),
@@ -1370,13 +1401,22 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
                     account_label: account_label.clone(),
                 }],
                 requested_reviewers: Vec::new(),
+                updated_since_review: false,
             });
         }
     }
 
+    for (idx, input) in run_inputs {
+        let item = &mut items[idx];
+        let head = graph_by_pr
+            .get(&pr_map_key(&item.owner, &item.repo, item.number))
+            .and_then(|info| info.head_sha.as_deref());
+        let reviewed = fs::read_to_string(&input).ok().and_then(|md| frontmatter_head_sha(&md));
+        item.updated_since_review = matches!((head, reviewed), (Some(h), Some(r)) if h != r);
+    }
     for item in &mut items {
-        if let Some(reviewers) = reviewers_by_pr.remove(&pr_map_key(&item.owner, &item.repo, item.number)) {
-            item.requested_reviewers = reviewers;
+        if let Some(info) = graph_by_pr.remove(&pr_map_key(&item.owner, &item.repo, item.number)) {
+            item.requested_reviewers = info.reviewers;
         }
     }
 
@@ -2158,7 +2198,7 @@ pub async fn list_milestone_board(
 #[cfg(test)]
 mod tests {
     use super::{
-        inherit_parent_deadlines, is_bot_author, parse_issue_node, parse_review_requests_page, pr_map_key,
+        frontmatter_head_sha, inherit_parent_deadlines, is_bot_author, parse_issue_node, parse_review_requests_page, pr_map_key,
         BoardItemFields, SearchPrItem,
     };
 
@@ -2258,7 +2298,7 @@ mod tests {
         let resp = serde_json::json!({ "data": { "search": {
             "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29y" },
             "nodes": [
-                { "number": 7, "repository": { "nameWithOwner": "Acme/Web" },
+                { "number": 7, "headRefOid": "abc123", "repository": { "nameWithOwner": "Acme/Web" },
                   "reviewRequests": { "nodes": [
                       { "requestedReviewer": { "__typename": "User", "login": "Me", "avatarUrl": "https://a/me" } },
                       { "requestedReviewer": { "__typename": "User", "login": "bob", "avatarUrl": "https://a/bob" } },
@@ -2275,7 +2315,9 @@ mod tests {
         let (map, cursor) = parse_review_requests_page(&resp, &own).unwrap();
         assert_eq!(cursor.as_deref(), Some("Y3Vyc29y"));
         assert_eq!(map.len(), 1);
-        let reviewers = &map[&pr_map_key("acme", "web", 7)];
+        let info = &map[&pr_map_key("acme", "web", 7)];
+        assert_eq!(info.head_sha.as_deref(), Some("abc123"));
+        let reviewers = &info.reviewers;
         let names: Vec<(&str, &str)> =
             reviewers.iter().map(|r| (r.login_or_slug.as_str(), r.kind.as_str())).collect();
         assert_eq!(
@@ -2284,6 +2326,14 @@ mod tests {
         );
         assert_eq!(reviewers[0].avatar_url.as_deref(), Some("https://a/bob"));
         assert_eq!(reviewers[1].avatar_url, None);
+    }
+
+    #[test]
+    fn frontmatter_head_sha_reads_the_pr_header_only() {
+        let md = "---\npr: 7\nhead: feat/x\nhead_sha: abc123\ncreated: x\n---\n\n# T\n\nhead_sha: nope\n";
+        assert_eq!(frontmatter_head_sha(md).as_deref(), Some("abc123"));
+        assert_eq!(frontmatter_head_sha("---\npr: 7\nhead_sha: \n---\n"), None);
+        assert_eq!(frontmatter_head_sha("# no frontmatter\nhead_sha: abc\n"), None);
     }
 
     #[test]
