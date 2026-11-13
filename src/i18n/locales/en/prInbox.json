@@ -8,7 +8,7 @@
   "opening": "Opening…",
   "aiReview": "AI Review",
   "reReview": "Re-review",
-  "reReviewTitle": "New commits since the last review — review again",
+  "reReviewTitle": "New commits since the last review — continue the review session",
   "addToDevdy": "Add to devdy",
   "partialFailTitle": "{count} account failed to load review requests | {count} accounts failed to load review requests",
   "partialFailBody": "some PRs may be missing. Try refreshing.",
@@ -106,5 +106,13 @@
   "reviewersTitle": "Also requested: {list}",
   "window": {
     "title": "PR Inbox"
+  },
+  "reReviewFailed": "Could not re-review: {error}",
+  "reReviewPrompt": {
+    "button": "Re-review prompt",
+    "title": "Re-review prompt",
+    "hint": "Re-review continues the PR’s existing review session: it re-fetches the PR (latest diff, comments and reviews), then sends this prompt. Leave it blank to use the default.",
+    "reset": "Reset to default",
+    "saveFailed": "Could not save: {error}"
   }
 }

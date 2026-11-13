@@ -733,7 +733,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, model, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, last_activity_at, title, pinned, protected FROM runs WHERE id = ?",
+        "SELECT id, project_id, repo_id, type, ref_number, status, engine, model, input_path, output_path, session_id, claude_account_id, github_account_id, started_at, finished_at, created_at, last_activity_at, title, pinned, protected FROM runs WHERE id = ?",
     )
     .bind(&run_id)
     .fetch_one(db.inner())
@@ -821,9 +821,14 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
                 .github_repo
                 .clone()
                 .ok_or("Repo has no GitHub repo configured")?;
-            let client = github::client_for_project(db.inner(), &project_id)
-                .await
-                .map_err(|e| e.to_string())?;
+            // A run pinned to an account (e.g. a PR inbox review, run as the
+            // requested reviewer) re-fetches as that account, like `fetch_pr`.
+            let github_account_id: Option<String> = row.get("github_account_id");
+            let client = match &github_account_id {
+                Some(account_id) => github::client_for_account(account_id),
+                None => github::client_for_project(db.inner(), &project_id).await,
+            }
+            .map_err(|e| e.to_string())?;
             match run_type.as_str() {
                 "analyze_issue" => build_issue_markdown(&client, &owner, &gh_repo, ref_num).await?,
                 _ => {

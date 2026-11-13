@@ -4,6 +4,7 @@
 // `rounded-md bg-muted p-0.5` + per-button class blocks.
 //
 // - `stretch` (default) spreads segments over the full width (sidebar filters).
+//   Labels never wrap; a too-narrow track scrolls sideways instead.
 // - `iconOnly` renders just the icon; `label` becomes the tooltip/aria-label.
 import type { Component } from 'vue'
 import { cn } from '@/lib/utils'
@@ -33,14 +34,14 @@ const emit = defineEmits<{ 'update:modelValue': [value: T] }>()
 
 <template>
   <div
-    :class="cn('ui-segmented flex rounded-md bg-muted p-0.5 text-[11px] font-medium', !stretch && 'shrink-0', props.class)"
+    :class="cn('ui-segmented flex overflow-x-auto rounded-md bg-muted p-0.5 text-[11px] font-medium [scrollbar-width:none]', !stretch && 'shrink-0', props.class)"
     role="group"
   >
     <button
       v-for="o in options"
       :key="String(o.value)"
       type="button"
-      class="flex cursor-pointer items-center justify-center gap-1 rounded transition-colors"
+      class="flex cursor-pointer items-center justify-center gap-1 whitespace-nowrap rounded transition-colors"
       :class="[
         stretch && 'flex-1',
         iconOnly ? 'p-1' : 'px-2 py-1',
