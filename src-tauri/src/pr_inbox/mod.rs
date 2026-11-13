@@ -28,6 +28,10 @@ const WINDOW_LABEL: &str = "pr-inbox";
 pub const POLL_MINUTES_KEY: &str = "pr_inbox.poll_minutes";
 const SEEN_KEY: &str = "pr_inbox.seen";
 pub const DEFAULT_POLL_MINUTES: u64 = 5;
+/// Follow-up prompt sent when the inbox re-reviews a PR in its existing session.
+pub const REREVIEW_PROMPT_KEY: &str = "pr_inbox.rereview_prompt";
+/// Used while the user hasn't saved their own re-review prompt.
+const DEFAULT_REREVIEW_PROMPT: &str = "The pull request has been updated since your last review. Its task file (the same input file as before) has just been re-fetched with the latest diff, comments and reviews — read it again.\n\nReview the changes made since your previous review: check whether each of your earlier findings was addressed, and flag any new issues the update introduced. Follow the same review process and output format as your previous review.";
 /// Let startup settle (network, keychain) before the first poll.
 const FIRST_TICK: Duration = Duration::from_secs(10);
 /// Sleep while polling is off; a settings change wakes the poller earlier.
@@ -276,6 +280,33 @@ pub fn get_cached_pr_inbox() -> Option<CachedPrInbox> {
 #[tauri::command]
 pub async fn get_pr_inbox_poll_minutes(db: tauri::State<'_, Db>) -> Result<u64, String> {
     Ok(poll_minutes(db.inner()).await)
+}
+
+/// The re-review follow-up prompt: the user's saved one, else the default.
+#[tauri::command]
+pub async fn get_pr_inbox_rereview_prompt(db: tauri::State<'_, Db>) -> Result<String, String> {
+    let saved: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(REREVIEW_PROMPT_KEY)
+        .fetch_optional(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(saved.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| DEFAULT_REREVIEW_PROMPT.to_string()))
+}
+
+/// Save the re-review prompt. A blank one (or the default itself) clears the
+/// setting, so the built-in default applies again.
+#[tauri::command]
+pub async fn set_pr_inbox_rereview_prompt(db: tauri::State<'_, Db>, prompt: String) -> Result<(), String> {
+    let prompt = prompt.trim();
+    if prompt.is_empty() || prompt == DEFAULT_REREVIEW_PROMPT {
+        sqlx::query("DELETE FROM settings WHERE key = ?")
+            .bind(REREVIEW_PROMPT_KEY)
+            .execute(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
+        return Ok(());
+    }
+    crate::commands::settings::set_setting(db.inner(), REREVIEW_PROMPT_KEY, prompt).await
 }
 
 #[tauri::command]

@@ -19,6 +19,7 @@ import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
 import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
 import PrInboxDisplayPopover from '@/components/prInbox/PrInboxDisplayPopover.vue'
 import PrInboxBotAccountsModal from '@/components/prInbox/PrInboxBotAccountsModal.vue'
+import PrInboxReReviewPromptModal from '@/components/prInbox/PrInboxReReviewPromptModal.vue'
 import {
   groupPrInbox,
   isGroupCollapsedByDefault,
@@ -224,6 +225,7 @@ function groupLabel(group: PrGroup): string {
 // --- Bots ---------------------------------------------------------------------
 
 const botAccountsOpen = ref(false)
+const reReviewPromptOpen = ref(false)
 
 function isCustomBot(login: string): boolean {
   return store.botLogins.includes(normalizeLogin(login))
@@ -276,11 +278,9 @@ function openProjects() {
 
 // Create + launch a review run for a mapped PR with no linked run. Throws on
 // failure; returns false when there was nothing to start (unmapped, already
-// linked, or already being started). `again` = re-review: a linked PR gets a
-// fresh run (re-fetched diff + the reviews posted since), which becomes the
-// PR's linked run; the previous one stays in the project's history.
-async function startReview(item: PrInboxItem, again = false): Promise<boolean> {
-  if (!item.mapped || !item.project_id || !item.repo_id || (item.existing_run_id && !again)) return false
+// linked, or already being started).
+async function startReview(item: PrInboxItem): Promise<boolean> {
+  if (!item.mapped || !item.project_id || !item.repo_id || item.existing_run_id) return false
   const key = prKey(item)
   if (store.reviewingKeys.has(key)) return false
   store.setReviewing(key, true)
@@ -332,16 +332,29 @@ async function handleReview(item: PrInboxItem) {
   }
 }
 
-// Review a PR again with a new session — offered once the linked review has
-// finished, highlighted when new commits landed after it.
+// Review a PR again IN its existing session — offered once the linked review
+// has finished, highlighted when new commits landed after it. Re-fetches the
+// run's task file (latest diff, comments, reviews; also moves its head_sha so
+// the "updated" flag clears), resumes the session and sends the configured
+// re-review prompt — the same resume → send path as Remote Control. The
+// backend's `run:activated` makes the main window's liveRuns / dock (and this
+// window's status feed) pick the turn up.
 async function handleReReview(item: PrInboxItem) {
-  if (!canReReview(item, runStatus(item), store.reviewingKeys.has(prKey(item)))) return
+  const key = prKey(item)
+  const runId = item.existing_run_id
+  if (!runId || !canReReview(item, runStatus(item), store.reviewingKeys.has(key))) return
+  store.setReviewing(key, true)
   try {
-    if (await startReview(item, true)) {
-      toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
-    }
+    const prompt = await store.loadReReviewPrompt()
+    await runsStore.refetchRun(runId)
+    await runsStore.resumeRun(runId, resolvePermissionMode(null, appSettings.settings?.default_permission_mode))
+    await runsStore.sendUserMessage(runId, prompt)
+    store.linkRun(key, runId, 'running')
+    toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
   } catch (e) {
-    toast.error(String(e))
+    toast.error(t('prInbox.reReviewFailed', { error: String(e) }))
+  } finally {
+    store.setReviewing(key, false)
   }
 }
 
@@ -474,7 +487,7 @@ async function reviewAll(group: PrGroup) {
             @update="setFilter"
             @clear="store.clearFilters()"
           />
-          <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" />
+          <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" @edit-rereview-prompt="reReviewPromptOpen = true" />
         </div>
       </div>
     </div>
@@ -766,5 +779,6 @@ async function reviewAll(group: PrGroup) {
     </ContextMenu>
 
     <PrInboxBotAccountsModal :open="botAccountsOpen" @close="botAccountsOpen = false" />
+    <PrInboxReReviewPromptModal :open="reReviewPromptOpen" @close="reReviewPromptOpen = false" />
   </div>
 </template>

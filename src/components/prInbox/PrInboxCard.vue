@@ -53,7 +53,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   review: [item: PrInboxItem]
-  /** Review again with a fresh run (new commits since the linked review). */
+  /** Continue the linked review session (new commits since that review). */
   're-review': [item: PrInboxItem]
   'open-run': [item: PrInboxItem]
   /** "Add to devdy" on an unmapped PR — the host decides how to navigate

@@ -46,8 +46,8 @@ export function reviewStatusOf(item: PrInboxItem, runStatus: string | null): PrR
   return item.updated_since_review ? 'updated' : 'reviewed'
 }
 
-/** A linked, finished review whose PR can be reviewed again with a fresh run
- * (re-fetched diff). Not while that run streams or a new one is starting. */
+/** A linked, finished review that can be continued with a re-review turn
+ * (re-fetched diff + the re-review prompt). Not while it streams or starts. */
 export function canReReview(item: PrInboxItem, runStatus: string | null, reviewing: boolean): boolean {
   if (reviewing || !item.mapped || !item.project_id || !item.repo_id || !item.existing_run_id) return false
   return runStatus !== 'running' && runStatus !== 'fetched'

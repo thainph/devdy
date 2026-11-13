@@ -8,7 +8,7 @@
   "opening": "Đang mở…",
   "aiReview": "AI Review",
   "reReview": "Review lại",
-  "reReviewTitle": "Có commit mới sau lần review trước — review lại",
+  "reReviewTitle": "Có commit mới sau lần review trước — chạy tiếp phiên review",
   "addToDevdy": "Thêm vào devdy",
   "partialFailTitle": "{count} account tải review request thất bại",
   "partialFailBody": "một số PR có thể bị thiếu. Thử refresh lại.",
@@ -106,5 +106,13 @@
   "reviewersTitle": "Cũng được mời: {list}",
   "window": {
     "title": "PR Inbox"
+  },
+  "reReviewFailed": "Không thể review lại: {error}",
+  "reReviewPrompt": {
+    "button": "Prompt review lại",
+    "title": "Prompt review lại",
+    "hint": "Review lại sẽ chạy tiếp phiên review cũ của PR: tải lại PR (diff mới nhất, comment và review), rồi gửi prompt này. Để trống để dùng prompt mặc định.",
+    "reset": "Khôi phục mặc định",
+    "saveFailed": "Không lưu được: {error}"
   }
 }

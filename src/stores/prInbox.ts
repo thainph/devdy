@@ -247,6 +247,16 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     }
   }
 
+  /** Follow-up prompt for "Re-review" (the saved one, else the default). */
+  async function loadReReviewPrompt(): Promise<string> {
+    return invoke<string>('get_pr_inbox_rereview_prompt')
+  }
+
+  /** Save the re-review prompt; blank restores the default. */
+  async function saveReReviewPrompt(prompt: string): Promise<void> {
+    await invoke('set_pr_inbox_rereview_prompt', { prompt })
+  }
+
   async function refresh() {
     loading.value = true
     lastAttemptAt.value = Date.now()
@@ -340,7 +350,7 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     items, loading, error, warnings, lastRefreshedAt, lastAttemptAt, reviewingKeys,
     groupBy, hideBots, collapsedGroups, filters, density, botLogins,
     pollMinutes,
-    load, refresh, loadPollMinutes, setPollMinutes, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
+    load, refresh, loadPollMinutes, setPollMinutes, loadReReviewPrompt, saveReReviewPrompt, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
     setFilters, clearFilters, setDensity, setBotLogins, addBotLogin, removeBotLogin,
   }
 })
