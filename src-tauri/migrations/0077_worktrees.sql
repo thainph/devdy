@@ -17,6 +17,8 @@ CREATE INDEX IF NOT EXISTS idx_worktrees_project ON worktrees(project_id);
 
 -- The run's working directory when it is not the project root (NULL = project root).
 ALTER TABLE runs ADD COLUMN worktree_path TEXT;
+-- 1 = a conductor session the user started on a batch of todos (Batch Board).
+ALTER TABLE runs ADD COLUMN todo_batch INTEGER NOT NULL DEFAULT 0;
 
 -- Per-project worktree setup.
 -- worktree_base_branch: branch new worktrees start from (NULL = the remote's default branch).

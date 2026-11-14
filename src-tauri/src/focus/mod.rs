@@ -23,6 +23,7 @@ pub mod source;
 pub mod source_content;
 pub mod validate;
 
+use crate::db::Db;
 use crate::item_links::{self, ItemKind};
 use tauri::{AppHandle, Emitter};
 
@@ -33,4 +34,51 @@ pub const CHANGED_EVENT: &str = "focus:changed";
 pub fn emit_todos_changed(app: &AppHandle) {
     let _ = app.emit(CHANGED_EVENT, ());
     item_links::emit_changed(app, Some(ItemKind::Todo));
+}
+
+/// A session was started to work on `todo_id`: link it (`created_from_item`) and
+/// move the todo to `doing`. Bookkeeping only — failures are logged, not raised,
+/// since the session is already running.
+pub async fn start_todo_for_run(app: &AppHandle, db: &Db, todo_id: &str, run_id: &str) {
+    if let Err(e) = item_links::link(db, ItemKind::Todo, todo_id, run_id, "created_from_item").await {
+        tracing::warn!(event = "todo_run_link_failed", run_id, error = %String::from(e));
+    }
+    let now = chrono::Utc::now().to_rfc3339();
+    if let Err(e) = sqlx::query(
+        "UPDATE todos SET status = 'doing', started_at = COALESCE(started_at, ?), updated_at = ? \
+         WHERE id = ? AND done = 0",
+    )
+    .bind(&now)
+    .bind(&now)
+    .bind(todo_id)
+    .execute(db)
+    .await
+    {
+        tracing::warn!(event = "todo_start_status_failed", run_id, error = %e);
+    }
+    emit_todos_changed(app);
+}
+
+/// Keep a todo's status in step with the session working on it (linked as
+/// `created_from_item`): a turn starting → `doing`; a turn finishing cleanly →
+/// `waiting` (its result waits for the user's review). Done todos and todos the
+/// user moved elsewhere are left alone.
+pub async fn sync_todo_with_run(app: &AppHandle, db: &Db, run_id: &str, turn_running: bool) {
+    let (to, from) = if turn_running { ("doing", "waiting") } else { ("waiting", "doing") };
+    let changed = sqlx::query(
+        "UPDATE todos SET status = ?, updated_at = ? \
+         WHERE done = 0 AND status = ? AND id IN \
+           (SELECT todo_id FROM todo_runs WHERE run_id = ? AND source = 'created_from_item')",
+    )
+    .bind(to)
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(from)
+    .bind(run_id)
+    .execute(db)
+    .await
+    .map(|r| r.rows_affected())
+    .unwrap_or(0);
+    if changed > 0 {
+        emit_todos_changed(app);
+    }
 }

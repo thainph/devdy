@@ -24,7 +24,6 @@ use crate::focus::github::{GithubFetch, OctoGithub};
 use crate::focus::score::{self, Bucket};
 use crate::focus::settings::{self as focus_settings, FocusSettings};
 use crate::focus::source_content::{github_content, slack_content, SlackMsg};
-use crate::item_links::{self, ItemKind};
 use crate::runs::RunRegistry;
 use async_trait::async_trait;
 use chrono::{DateTime, Local, NaiveDateTime};
@@ -968,25 +967,8 @@ pub async fn start_with_ai_inner(
         }
         return Err(e);
     }
-    // The session is running from here on: a bookkeeping failure is logged,
-    // the caller still gets the run to open.
-    if let Err(e) = item_links::link(&pool, ItemKind::Todo, &todo_id, &run.id, "created_from_item").await {
-        tracing::warn!(event = "focus_start_link_failed", run_id = %run.id, error = %String::from(e));
-    }
-    let now = chrono::Utc::now().to_rfc3339();
-    if let Err(e) = sqlx::query(
-        "UPDATE todos SET status = 'doing', started_at = COALESCE(started_at, ?), updated_at = ? \
-         WHERE id = ? AND done = 0",
-    )
-    .bind(&now)
-    .bind(&now)
-    .bind(&todo_id)
-    .execute(&pool)
-    .await
-    {
-        tracing::warn!(event = "focus_start_status_failed", run_id = %run.id, error = %e);
-    }
-    crate::focus::emit_todos_changed(app);
+    // The session is running from here on: bookkeeping failures are only logged.
+    crate::focus::start_todo_for_run(app, &pool, &todo_id, &run.id).await;
     Ok(run.id)
 }
 

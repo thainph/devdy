@@ -192,19 +192,22 @@ async fn ensure_devdy_excluded(project: &Path) {
 }
 
 /// Link `src` at `dst` where nothing exists yet; where both are real folders (part
-/// of it is tracked), recurse so only the missing pieces get linked.
-fn link_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
+/// of it is tracked), recurse so only the missing pieces get linked. `rel` is
+/// `dst` relative to the worktree; every link made is pushed to `made`.
+fn link_missing(src: &Path, dst: &Path, rel: &str, made: &mut Vec<String>) -> std::io::Result<()> {
     match fs::symlink_metadata(dst) {
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => {
             #[cfg(unix)]
             std::os::unix::fs::symlink(src, dst)?;
+            made.push(rel.to_string());
             Ok(())
         }
         Err(e) => Err(e),
         Ok(meta) if meta.is_dir() && src.is_dir() => {
             for entry in fs::read_dir(src)? {
                 let entry = entry?;
-                link_missing(&entry.path(), &dst.join(entry.file_name()))?;
+                let name = entry.file_name().to_string_lossy().into_owned();
+                link_missing(&entry.path(), &dst.join(&name), &format!("{rel}/{name}"), made)?;
             }
             Ok(())
         }
@@ -213,11 +216,13 @@ fn link_missing(src: &Path, dst: &Path) -> std::io::Result<()> {
 }
 
 /// Bring the files git doesn't carry from the project root into a new worktree.
-pub fn carry_untracked(project: &Path, worktree: &Path) -> Result<(), String> {
+/// Returns what was linked or copied, relative to the worktree.
+pub fn carry_untracked(project: &Path, worktree: &Path) -> Result<Vec<String>, String> {
+    let mut made = Vec::new();
     for name in LINK_ENTRIES {
         let src = project.join(name);
         if fs::symlink_metadata(&src).is_ok() {
-            link_missing(&src, &worktree.join(name)).map_err(|e| format!("{name}: {e}"))?;
+            link_missing(&src, &worktree.join(name), name, &mut made).map_err(|e| format!("{name}: {e}"))?;
         }
     }
     for entry in fs::read_dir(project).map_err(|e| e.to_string())? {
@@ -226,9 +231,49 @@ pub fn carry_untracked(project: &Path, worktree: &Path) -> Result<(), String> {
         let dst = worktree.join(&name);
         if is_copied_entry(&name) && entry.path().is_file() && !dst.exists() {
             fs::copy(entry.path(), &dst).map_err(|e| format!("{name}: {e}"))?;
+            made.push(name);
         }
     }
-    Ok(())
+    Ok(made)
+}
+
+/// Keep carried files out of the worktree's commits: whatever git would pick up
+/// (not ignored) is added to the repo's exclude file. That file is shared by all
+/// worktrees, so these paths are also hidden from the project's own status —
+/// they are the same Devdy-managed files there.
+async fn exclude_carried(worktree: &Path, carried: &[String]) {
+    let mut lines = Vec::new();
+    for rel in carried {
+        if git(worktree, &["check-ignore", "-q", "--no-index", rel], local_git()).await.is_err() {
+            lines.push(format!("/{rel}"));
+        }
+    }
+    if lines.is_empty() {
+        return;
+    }
+    let Ok(common) = git(worktree, &["rev-parse", "--git-common-dir"], local_git()).await else {
+        return;
+    };
+    let exclude = worktree.join(common).join("info").join("exclude");
+    let existing = fs::read_to_string(&exclude).unwrap_or_default();
+    let mut body = existing.clone();
+    for line in lines {
+        if !existing.lines().any(|l| l == line) {
+            if !body.is_empty() && !body.ends_with('\n') {
+                body.push('\n');
+            }
+            body.push_str(&line);
+            body.push('\n');
+        }
+    }
+    if body != existing {
+        if let Some(dir) = exclude.parent() {
+            let _ = fs::create_dir_all(dir);
+        }
+        if let Err(e) = fs::write(&exclude, body) {
+            tracing::warn!(event = "worktree_exclude_failed", error = %e);
+        }
+    }
 }
 
 /// Run the project's setup command in the worktree. The error carries the tail of
@@ -317,7 +362,8 @@ pub async fn create(
     git(&root, &["worktree", "add", "--no-track", "-b", &branch, &path_str, &base_ref], local_git()).await?;
 
     let prepared = async {
-        carry_untracked(&root, &path)?;
+        let carried = carry_untracked(&root, &path)?;
+        exclude_carried(&path, &carried).await;
         if let Some(setup) = project.setup_cmd.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             run_setup(&path, setup).await?;
         }
@@ -410,9 +456,103 @@ pub async fn remove(db: &Db, id: &str, delete_branch: bool) -> Result<(), String
     Ok(())
 }
 
+/// A local `git` call in `dir` (no network); stdout trimmed.
+pub async fn git_local(dir: &Path, args: &[&str]) -> Result<String, String> {
+    git(dir, args, local_git()).await
+}
+
+/// An active worktree whose checkout still exists.
+async fn active(db: &Db, id: &str) -> Result<Worktree, String> {
+    let wt = get(db, id).await?;
+    if wt.removed_at.is_some() || !Path::new(&wt.path).is_dir() {
+        return Err("worktree_gone: this worktree was already removed".into());
+    }
+    Ok(wt)
+}
+
+/// Stage and commit everything in the worktree, as the project's git identity.
+pub async fn commit_all(app: &AppHandle, db: &Db, id: &str, message: &str) -> Result<(), String> {
+    let wt = active(db, id).await?;
+    let dir = PathBuf::from(&wt.path);
+    let message = message.trim();
+    if message.is_empty() {
+        return Err("a commit message is required".into());
+    }
+    git(&dir, &["add", "-A"], local_git()).await?;
+    let call_id = format!("worktree-{}", uuid::Uuid::new_v4());
+    let (cmd, _guard) =
+        crate::commands::runs::backend_git_command(app, db, &wt.project_id, &call_id, &wt.path).await?;
+    git(&dir, &["commit", "-m", message], cmd).await?;
+    Ok(())
+}
+
+/// Push the worktree's branch to `origin` (project's git account) and return the
+/// web page that opens a pull / merge request for it against its base.
+pub async fn push(app: &AppHandle, db: &Db, id: &str) -> Result<String, String> {
+    let wt = active(db, id).await?;
+    let dir = PathBuf::from(&wt.path);
+    let remote = git(&dir, &["remote", "get-url", "origin"], local_git())
+        .await
+        .map_err(|_| "no_remote: this repository has no `origin` remote".to_string())?;
+    let call_id = format!("worktree-{}", uuid::Uuid::new_v4());
+    let (cmd, _guard) =
+        crate::commands::runs::backend_git_command(app, db, &wt.project_id, &call_id, &wt.path).await?;
+    git(&dir, &["push", "-u", "origin", &wt.branch], cmd)
+        .await
+        .map_err(|e| format!("push_failed: {e}"))?;
+    let base = wt.base_ref.strip_prefix("origin/").unwrap_or(&wt.base_ref);
+    review_url(&remote, base, &wt.branch).ok_or_else(|| format!("pushed {}; open a PR for it on the remote", wt.branch))
+}
+
+/// `https://host/owner/repo` for an `origin` URL (https, ssh or scp-like).
+fn web_base(remote: &str) -> Option<String> {
+    let r = remote.trim().trim_end_matches('/').trim_end_matches(".git");
+    let (host, path) = if let Some(rest) = r.strip_prefix("https://").or_else(|| r.strip_prefix("http://")) {
+        let rest = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
+        rest.split_once('/')?
+    } else if let Some(rest) = r.strip_prefix("ssh://") {
+        let rest = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
+        let (host, path) = rest.split_once('/')?;
+        (host.split(':').next()?, path)
+    } else {
+        let rest = r.rsplit_once('@').map(|(_, h)| h).unwrap_or(r);
+        rest.split_once(':')?
+    };
+    (!host.is_empty() && !path.is_empty()).then(|| format!("https://{host}/{path}"))
+}
+
+/// Page that opens a PR (GitHub) or MR (GitLab and anything else) for `branch` into `base`.
+pub fn review_url(remote: &str, base: &str, branch: &str) -> Option<String> {
+    let web = web_base(remote)?;
+    if web.starts_with("https://github.com/") {
+        Some(format!("{web}/compare/{base}...{branch}?expand=1"))
+    } else {
+        Some(format!(
+            "{web}/-/merge_requests/new?merge_request%5Bsource_branch%5D={branch}&merge_request%5Btarget_branch%5D={base}"
+        ))
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn review_url_for_github_and_gitlab_remotes() {
+        assert_eq!(
+            review_url("git@github.com:acme/shop.git", "main", "devdy/fix").as_deref(),
+            Some("https://github.com/acme/shop/compare/main...devdy/fix?expand=1")
+        );
+        assert_eq!(
+            review_url("https://x-access-token@github.com/acme/shop", "dev", "devdy/a").as_deref(),
+            Some("https://github.com/acme/shop/compare/dev...devdy/a?expand=1")
+        );
+        assert_eq!(
+            review_url("ssh://git@gitlab.corp.io:2222/team/app.git", "main", "devdy/b").as_deref(),
+            Some("https://gitlab.corp.io/team/app/-/merge_requests/new?merge_request%5Bsource_branch%5D=devdy/b&merge_request%5Btarget_branch%5D=main")
+        );
+        assert_eq!(review_url("/local/path/repo", "main", "x"), None);
+    }
 
     #[test]
     fn slugify_drops_diacritics_and_punctuation() {
@@ -454,7 +594,9 @@ mod tests {
         fs::create_dir_all(wt.join(".claude")).unwrap();
         fs::write(wt.join(".claude/settings.json"), "{\"tracked\":1}").unwrap();
 
-        carry_untracked(&project, &wt).unwrap();
+        let mut made = carry_untracked(&project, &wt).unwrap();
+        made.sort();
+        assert_eq!(made, vec![".claude/rules", ".env", ".env.local", "AGENTS.md"]);
 
         assert!(fs::symlink_metadata(wt.join("AGENTS.md")).unwrap().file_type().is_symlink());
         assert!(fs::symlink_metadata(wt.join(".claude/rules")).unwrap().file_type().is_symlink());

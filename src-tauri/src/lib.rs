@@ -134,6 +134,10 @@ use commands::focus_ai::{
     focus_ai_analyze, focus_ai_cancel, focus_ai_plan_today, focus_ai_suggest, focus_day_plan_get,
     focus_plan_to_calendar, focus_start_with_ai, focus_suggest_actual,
 };
+use commands::todo_batch::{
+    board_batches, board_close_item, board_items, list_all_pending_permissions, todo_batch_start,
+    worktree_commit_all, worktree_push,
+};
 use commands::worktrees::{
     get_project_worktree_settings, set_project_worktree_settings, worktree_remove, worktrees_list,
 };
@@ -704,6 +708,13 @@ pub fn run() {
             worktree_remove,
             get_project_worktree_settings,
             set_project_worktree_settings,
+            todo_batch_start,
+            board_batches,
+            board_items,
+            board_close_item,
+            worktree_commit_all,
+            worktree_push,
+            list_all_pending_permissions,
             delete_todo,
             delete_todos,
             clear_completed_todos,

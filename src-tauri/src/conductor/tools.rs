@@ -89,6 +89,18 @@ pub async fn dispatch(
     }
 }
 
+/// A project by id, else by name (case-insensitive).
+async fn resolve_project(db: &Db, key: &str) -> Result<String, String> {
+    sqlx::query_scalar::<_, String>(
+        "SELECT id FROM projects WHERE id = ?1 OR lower(name) = lower(?1) ORDER BY id = ?1 DESC LIMIT 1",
+    )
+    .bind(key)
+    .fetch_optional(db)
+    .await
+    .map_err(|e| e.to_string())?
+    .ok_or_else(|| format!("unknown project `{key}` — use projects_list for ids/names"))
+}
+
 fn db(state: &HttpState) -> Db {
     state.app.state::<Db>().inner().clone()
 }
@@ -133,29 +145,71 @@ async fn session_spawn(
         None => crate::commands::settings::resolve_default_engine(&db).await,
     };
 
+    // Todo batches: the worker can work on a todo, in another project, in its
+    // own worktree. Project = explicit `project` > the todo's > the conductor's.
+    let todo = match arg_str(&args, "todo_id") {
+        Some(id) => Some(crate::commands::todos::get_todo(&db, &id).await?),
+        None => None,
+    };
+    let project_id = match arg_str(&args, "project") {
+        Some(p) => resolve_project(&db, &p).await?,
+        None => todo
+            .as_ref()
+            .and_then(|t| t.project_id.clone())
+            .unwrap_or_else(|| session.project_id.clone()),
+    };
+    let use_worktree = args.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false);
+    // Prepared before taking the start guard: fetch + setup can take minutes and
+    // must not hold up other spawns.
+    let worktree = if use_worktree {
+        let hint = todo.as_ref().map(|t| t.text.clone()).unwrap_or_else(|| role_label.clone());
+        let hint = hint.lines().next().unwrap_or("").to_string();
+        Some(
+            crate::worktrees::create(&state.app, &db, &project_id, &hint, todo.as_ref().map(|t| t.id.as_str()))
+                .await?,
+        )
+    } else {
+        None
+    };
+    let drop_worktree = |db: Db, wt: Option<crate::worktrees::Worktree>| async move {
+        if let Some(wt) = wt {
+            let _ = crate::worktrees::remove(&db, &wt.id, true).await;
+        }
+    };
+
     // Held until the worker is running, so parallel spawns see each other.
     let _start_guard = state.conductor.lock_worker_start().await;
-    let running = count_running_workers(&db, conductor_run_id).await?;
+    let running = match count_running_workers(&db, conductor_run_id).await {
+        Ok(n) => n,
+        Err(e) => {
+            drop_worktree(db.clone(), worktree).await;
+            return Err(e);
+        }
+    };
 
     let worker_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
     let title = truncate(&format!("[{}] {}", role_label, prompt), 80);
 
-    sqlx::query(
-        "INSERT INTO runs (id, project_id, type, status, engine, created_at, title, role, conductor_run_id, system_instruction)
-         VALUES (?, ?, 'session', 'fetched', ?, ?, ?, 'worker', ?, ?)",
+    let inserted = sqlx::query(
+        "INSERT INTO runs (id, project_id, type, status, engine, created_at, title, role, conductor_run_id, system_instruction, worktree_path)
+         VALUES (?, ?, 'session', 'fetched', ?, ?, ?, 'worker', ?, ?, ?)",
     )
     .bind(&worker_id)
-    .bind(&session.project_id)
+    .bind(&project_id)
     .bind(&engine)
     .bind(&now)
     .bind(&title)
     .bind(conductor_run_id)
     // Persisted so a resume (session_send to a stopped worker) re-applies it.
     .bind(&instruction)
+    .bind(worktree.as_ref().map(|w| w.path.as_str()))
     .execute(&db)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    if let Err(e) = inserted {
+        drop_worktree(db.clone(), worktree).await;
+        return Err(e.to_string());
+    }
 
     // Reserve the worker slot (enforces the per-conductor concurrency cap).
     if !state.conductor.add_worker(conductor_run_id, &worker_id, running) {
@@ -163,6 +217,7 @@ async fn session_spawn(
             .bind(&worker_id)
             .execute(&db)
             .await;
+        drop_worktree(db.clone(), worktree).await;
         return Err(cap_reached(session.max_workers));
     }
 
@@ -178,23 +233,41 @@ async fn session_spawn(
         conductor_token: None,
     };
 
-    start_run_inner(state.app.clone(), db.clone(), registry(state), payload).await?;
+    if let Err(e) = start_run_inner(state.app.clone(), db.clone(), registry(state), payload).await {
+        drop_worktree(db.clone(), worktree).await;
+        return Err(e);
+    }
+
+    if let Some(todo) = &todo {
+        crate::focus::start_todo_for_run(&state.app, &db, &todo.id, &worker_id).await;
+    }
 
     log_event(
         state,
         conductor_run_id,
         "spawn",
-        json!({ "worker_id": worker_id, "role_label": role_label, "engine": engine }),
+        json!({ "worker_id": worker_id, "role_label": role_label, "engine": engine, "project_id": project_id, "todo_id": todo.as_ref().map(|t| t.id.clone()) }),
     )
     .await;
 
-    Ok(json!({ "worker_id": worker_id, "role_label": role_label, "status": "running" }))
+    Ok(json!({
+        "worker_id": worker_id,
+        "role_label": role_label,
+        "status": "running",
+        "project_id": project_id,
+        "todo_id": todo.as_ref().map(|t| t.id.clone()),
+        "worktree": worktree.as_ref().map(|w| json!({ "path": w.path, "branch": w.branch, "base": w.base_ref })),
+    }))
 }
 
 async fn session_list(state: &HttpState, conductor_run_id: &str) -> Result<Value, String> {
     let db = db(state);
     let rows = sqlx::query(
-        "SELECT id, title, status, engine, role FROM runs WHERE conductor_run_id = ? ORDER BY created_at",
+        "SELECT r.id, r.title, r.status, r.engine, r.role, p.name AS project, w.branch AS worktree_branch,
+                (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id LIMIT 1) AS todo_id
+         FROM runs r JOIN projects p ON p.id = r.project_id
+         LEFT JOIN worktrees w ON w.path = r.worktree_path
+         WHERE r.conductor_run_id = ? ORDER BY r.created_at",
     )
     .bind(conductor_run_id)
     .fetch_all(&db)
@@ -211,6 +284,9 @@ async fn session_list(state: &HttpState, conductor_run_id: &str) -> Result<Value
                 "title": r.get::<Option<String>, _>("title"),
                 "engine": r.get::<String, _>("engine"),
                 "status": normalize_status(&status),
+                "project": r.get::<String, _>("project"),
+                "todo_id": r.get::<Option<String>, _>("todo_id"),
+                "worktree_branch": r.get::<Option<String>, _>("worktree_branch"),
             });
             with_awaiting_permission(entry, &id)
         })

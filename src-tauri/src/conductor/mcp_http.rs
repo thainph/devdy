@@ -333,7 +333,10 @@ fn tool_specs() -> Value {
                     "instruction": { "type": "string", "description": "Optional role/system framing appended to the worker's system prompt." },
                     "engine": { "type": "string", "enum": ["claude", "codex"], "description": "Engine for the worker. Defaults to project default." },
                     "model": { "type": "string", "description": "Optional model override. Must belong to the worker's engine; a mismatched id is ignored and the worker uses that engine's global default model. Omit to use the global default." },
-                    "permission_mode": { "type": "string", "enum": ["default", "acceptEdits", "bypassPermissions", "plan"], "description": "Worker permission mode. Defaults to the project's default; the human answers any prompts in the permission drawer." }
+                    "permission_mode": { "type": "string", "enum": ["default", "acceptEdits", "bypassPermissions", "plan"], "description": "Worker permission mode. Defaults to the project's default; the human answers any prompts in the permission drawer." },
+                    "todo_id": { "type": "string", "description": "Devdy todo the worker works on: runs in the todo's project, links the todo and keeps its status in step." },
+                    "project": { "type": "string", "description": "Project id or name to run the worker in (default: the todo's project, else yours)." },
+                    "worktree": { "type": "boolean", "description": "Run in a fresh git worktree of the project (own branch from the latest remote base) so workers can edit one repo in parallel." }
                 },
                 "required": ["prompt"]
             }
