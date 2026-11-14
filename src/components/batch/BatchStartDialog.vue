@@ -5,7 +5,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit as emitEvent } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
-import { AppSelect, Banner, Button, Checkbox, Modal, SegmentedControl, ToggleSwitch } from '@/components/ui'
+import { AppSelect, Banner, Button, Checkbox, Modal, SegmentedControl } from '@/components/ui'
 import { BOARD_OPEN_ROUTE, boardPath, type BatchCandidate } from '@/lib/batchBoard'
 
 const props = defineProps<{
@@ -19,7 +19,8 @@ const { t } = useI18n()
 
 const picked = ref(new Set<string>())
 const parallel = ref('3')
-const worktree = ref(true)
+/** How workers keep their changes apart; `rules` works for any project layout. */
+const isolation = ref<'rules' | 'devdy' | 'none'>('rules')
 const permissionMode = ref('')
 const engine = ref('')
 const starting = ref(false)
@@ -52,6 +53,11 @@ function toggleAll() {
 }
 
 const parallelOptions = ['1', '2', '3', '5', '8'].map((v) => ({ value: v, label: v }))
+const isolationOptions = computed(() => [
+  { value: 'rules' as const, label: t('board.start.isolationRules') },
+  { value: 'devdy' as const, label: t('board.start.isolationDevdy') },
+  { value: 'none' as const, label: t('board.start.isolationNone') },
+])
 const permissionOptions = computed(() => [
   { value: '', label: t('board.start.permissionDefault') },
   { value: 'acceptEdits', label: t('board.start.permissionAcceptEdits') },
@@ -73,7 +79,7 @@ async function start() {
       todoIds: props.candidates.filter((c) => picked.value.has(c.id)).map((c) => c.id),
       homeProjectId: null,
       maxParallel: Number(parallel.value),
-      worktree: worktree.value,
+      isolation: isolation.value,
       engine: engine.value || null,
       permissionMode: permissionMode.value || null,
     })
@@ -119,12 +125,10 @@ async function start() {
           <label class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{{ t('board.start.parallel') }}</label>
           <SegmentedControl v-model="parallel" :options="parallelOptions" />
         </div>
-        <div class="space-y-1.5">
-          <label class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{{ t('board.start.worktree') }}</label>
-          <div class="flex h-8 items-center gap-2">
-            <ToggleSwitch :checked="worktree" size="md" @toggle="worktree = !worktree" />
-            <span class="text-[11px] text-muted-foreground">{{ worktree ? t('board.start.worktreeOn') : t('board.start.worktreeOff') }}</span>
-          </div>
+        <div class="space-y-1.5 sm:col-span-2">
+          <label class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{{ t('board.start.isolation') }}</label>
+          <SegmentedControl v-model="isolation" :options="isolationOptions" />
+          <p class="text-[11px] text-muted-foreground">{{ t(`board.start.isolationHint.${isolation}`) }}</p>
         </div>
         <div class="space-y-1.5">
           <label class="text-[11px] font-medium uppercase tracking-wider text-muted-foreground">{{ t('board.start.permission') }}</label>

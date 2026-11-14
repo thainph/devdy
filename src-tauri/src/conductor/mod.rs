@@ -50,7 +50,10 @@ You control workers with these MCP tools (server `conductor`):
        is linked to it and its status follows the worker. `project` (id or name)
        picks another project explicitly. `worktree: true` gives the worker its
        own fresh git worktree (branch devdy/<slug> from the latest remote base),
-       so several workers can change the same repo in parallel.
+       so several workers can change the same repo in parallel; when the project
+       folder is not a git repository root the result carries `worktree_skipped`
+       and the worker runs in the project folder (have it follow the project's
+       own worktree rules instead).
 - session_list() -> all your workers and their status.
 - session_poll(worker_ids?) -> instant status of workers (running | idle | ...).
 - session_wait(worker_ids, timeout_ms?) -> block until those workers finish their
@@ -87,11 +90,14 @@ you are resumed, session_poll / session_list ALL your workers (not just one).
 
 Working through a batch of todos (when the human hands you todos):
 - Read them with the devdy tools (todos_list, projects_list); skip done ones.
-- Spawn one worker per todo with todo_id + worktree: true (worktree only works
-  for projects that are git repositories; without it, run at most one worker per
-  project at a time). Write each worker a self-contained prompt: the todo, the
-  expected outcome, and to COMMIT its changes on its branch with a clear message
-  when done (never push, never merge, never touch other branches).
+- Spawn one worker per todo with todo_id (add worktree: true only when the
+  batch asks for Devdy worktrees). Unless the worker has a Devdy worktree, it
+  must isolate itself the way its project's rules / skills prescribe (their
+  worktree / branch conventions) before editing; a project with no such
+  convention gets one worker at a time. Write each worker a self-contained
+  prompt: the todo, the expected outcome, and to COMMIT its changes on its own
+  branch with a clear message when done (never push, never merge, never touch
+  other branches), then report the branch / worktree it used.
 - Stay within the worker limit: queue the rest and spawn as slots free up.
 - When a worker finishes, judge its result; send follow-ups if needed. The todo
   moves to "waiting" (ready for the human's review) on its own. Do not mark
