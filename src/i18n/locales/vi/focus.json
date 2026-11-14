@@ -5,38 +5,6 @@
   },
   "addTodo": "Todo",
   "addTodoHint": "Tạo todo mới",
-  "nowSection": "Làm ngay",
-  "loadError": "Không tải được bảng",
-  "retry": "Thử lại",
-  "empty": {
-    "title": "Chưa có việc nào",
-    "hint": "Tạo todo tại đây, hoặc bấm “+ Todo” ở Slack thread, issue, PR hay session. Devdy cho biết việc nào đang trễ theo từng dự án.",
-    "filtered": "Không có todo nào khớp bộ lọc."
-  },
-  "buckets": {
-    "doing": "Đang làm",
-    "overdue": "Quá hạn",
-    "today": "Hôm nay",
-    "tomorrow": "Ngày mai",
-    "this_week": "Tuần này",
-    "later": "Sau",
-    "no_due": "Không hạn",
-    "waiting": "Đang chờ người khác",
-    "snoozed": "Đã hoãn",
-    "done": "Đã xong gần đây"
-  },
-  "views": {
-    "label": "Xem",
-    "time": "Theo thời gian",
-    "project": "Theo dự án",
-    "week": "Tuần"
-  },
-  "filters": {
-    "allProjects": "Mọi dự án",
-    "noProject": "Không có dự án",
-    "allSources": "Mọi nguồn",
-    "noSource": "Không có nguồn"
-  },
   "sources": {
     "slack": "Slack",
     "github": "GitHub",
@@ -44,126 +12,19 @@
     "run": "Session",
     "url": "Link"
   },
-  "capacity": {
-    "summary": "Hôm nay: {need} việc · {free} trống",
-    "overloaded": "Quá tải {over}",
-    "busy": "{n} khung bận",
-    "connect": "Kết nối Google Calendar (Cài đặt → Google) để xem giờ trống hôm nay.",
-    "error": "Không tải được lịch hôm nay"
-  },
-  "calibration": {
-    "slower": "Bạn thường làm lâu hơn ước tính {factor}×",
-    "faster": "Bạn thường làm xong trong {factor}× thời gian ước tính"
-  },
-  "due": {
-    "overdue": "Quá hạn {span}",
-    "startBy": "Bắt đầu trước {time}",
-    "startByLate": "Lẽ ra bắt đầu lúc {time}",
-    "today": "Hôm nay",
-    "todayAt": "{time} hôm nay",
-    "tomorrow": "Ngày mai",
-    "tomorrowAt": "Mai {time}",
-    "dateAt": "{date} {time}"
-  },
-  "span": {
-    "m": "{n} phút",
-    "h": "{n} giờ",
-    "d": "{n} ngày"
-  },
-  "estimate": {
-    "missing": "Chưa estimate — tạm tính {estimate}"
-  },
   "priority": {
     "label": "Ưu tiên",
     "1": "P1 · Cao",
     "2": "P2 · Bình thường",
     "3": "P3 · Thấp"
   },
-  "status": {
-    "label": "Trạng thái",
-    "todo": "Cần làm",
-    "doing": "Đang làm",
-    "waiting": "Đang chờ người khác"
-  },
-  "whyHere": "Vì sao ở đây",
-  "reasons": {
-    "doing": "đang làm",
-    "waiting": "đang chờ người khác",
-    "no_due": "không hạn",
-    "done": "đã xong",
-    "snoozed": "hoãn đến {when}",
-    "snoozedNoTime": "đang hoãn",
-    "due": "hạn {when}",
-    "overdue": "quá hạn {span}",
-    "work_left": "còn {span} làm việc",
-    "late_by": "thiếu {span} thời gian",
-    "estimate": "cần ~{estimate}",
-    "estimate_missing": "chưa estimate (tạm tính {estimate})",
-    "priority": "P{n}",
-    "age_days": "đã mở {n} ngày",
-    "unknown": "{kind}: {value}"
-  },
-  "actions": {
-    "done": "Xong",
-    "undone": "Bỏ đánh dấu xong",
-    "start": "Bắt đầu",
-    "backToTodo": "Về cần làm",
-    "snooze": "Hoãn",
-    "waiting": "Chờ người khác",
-    "edit": "Sửa",
-    "delete": "Xoá",
-    "openSource": "Mở nguồn",
-    "sessions": "{n} session liên kết"
-  },
-  "snooze": {
-    "hour": "1 giờ",
-    "afternoon": "Chiều nay (14:00)",
-    "tomorrow": "Mai {time}",
-    "nextWeek": "Tuần sau (T2 {time})",
-    "custom": "Chọn thời gian…",
-    "wake": "Bỏ hoãn",
-    "customTitle": "Hoãn đến",
-    "until": "Hoãn đến {time}",
-    "apply": "Hoãn"
-  },
-  "confirmDelete": {
-    "title": "Xoá todo?",
-    "message": "“{text}” sẽ bị xoá và không khôi phục được.",
-    "button": "Xoá"
-  },
   "toast": {
-    "added": "Đã thêm todo",
-    "saved": "Đã lưu",
-    "deleted": "Đã xoá todo",
-    "snoozed": "Đã hoãn đến {time}"
+    "added": "Đã thêm todo"
   },
   "drawer": {
-    "text": "Tiêu đề",
-    "project": "Dự án",
-    "dueTime": "Giờ (tuỳ chọn)",
     "clearDue": "Xoá hạn",
-    "estimate": "Estimate",
     "estimatePlaceholder": "30m, 2h, 1h30",
-    "estimateInvalid": "Nhập kiểu 30m, 2h, 1h30 hoặc số phút (5 phút – 40h)",
-    "effectiveEstimate": "Tính là {estimate} trên bảng",
-    "snoozedUntil": "Hoãn đến",
-    "remindAt": "Nhắc lúc",
-    "clear": "Xoá",
-    "source": "Nguồn",
-    "created": "Tạo lúc {time}",
-    "started": "Bắt đầu lúc {time}",
-    "completed": "Xong lúc {time}",
-    "save": "Lưu",
-    "cancel": "Huỷ",
-    "unsaved": "Bỏ các thay đổi chưa lưu?",
-    "discard": "Bỏ thay đổi",
-    "description": "Nội dung",
-    "editText": "Sửa nội dung",
-    "doneEditing": "Xong",
-    "textHint": "Dòng đầu là tiêu đề, phần còn lại là mô tả (hỗ trợ markdown).",
-    "addDescription": "Thêm mô tả…",
-    "properties": "Thuộc tính",
-    "schedule": "Hoãn, nhắc & thời gian thực tế"
+    "estimateInvalid": "Nhập kiểu 30m, 2h, 1h30 hoặc số phút (5 phút – 40h)"
   },
   "capture": {
     "title": "Todo mới",
@@ -178,14 +39,6 @@
     "save": "Thêm todo",
     "reviewPr": "Review {title} (#{number})",
     "suggest": "Gợi ý"
-  },
-  "columns": {
-    "noProject": "Không có dự án",
-    "overdue": "{n} quá hạn"
-  },
-  "week": {
-    "overloaded": "Quá tải",
-    "estimateHint": "Tổng estimate các todo có hạn trong ngày"
   },
   "settings": {
     "title": "Giờ làm việc & nhắc việc",
@@ -252,14 +105,6 @@
     }
   },
   "radar": {
-    "status": {
-      "overdue": "Quá hạn",
-      "today": "Hạn hôm nay",
-      "due-soon": "Sắp hạn ≤{days} ngày",
-      "waiting": "Đang chờ",
-      "no-due": "Chưa có hạn",
-      "later": "Còn xa"
-    },
     "hint": {
       "overdue": "Đã qua hạn mà vẫn chưa xong",
       "today": "Hạn là trong hôm nay",
@@ -267,18 +112,6 @@
       "waiting": "Đang chờ người khác — không tính là trễ",
       "no-due": "Chưa đặt hạn",
       "later": "Hạn còn xa"
-    },
-    "searchPlaceholder": "Tìm todo…",
-    "colProject": "Dự án",
-    "colOpen": "Đang mở",
-    "colWorst": "Trễ nhất",
-    "noProject": "Không dự án",
-    "lateDays": "trễ {n} ngày",
-    "lateToday": "quá giờ hôm nay {time}",
-    "today": "hôm nay",
-    "dueToday": "hạn hôm nay",
-    "dueTodayAt": "hạn hôm nay {time}",
-    "daysLeft": "còn {n} ngày",
-    "noDeadline": "chưa có hạn"
+    }
   }
 }

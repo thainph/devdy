@@ -159,7 +159,6 @@ export const useFocusStore = defineStore('focus', () => {
   const setWaiting = (id: string) => update(id, { status: 'waiting' })
   const backToTodo = (id: string) => update(id, { status: 'todo' })
   const snooze = (id: string, until: string | null) => update(id, { snoozed_until: until })
-  const setActual = (id: string, minutes: number | null) => update(id, { actual_min: minutes })
 
   async function remove(id: string) {
     await invoke('delete_todo', { id })
@@ -189,7 +188,6 @@ export const useFocusStore = defineStore('focus', () => {
     setWaiting,
     backToTodo,
     snooze,
-    setActual,
     remove,
   }
 })
