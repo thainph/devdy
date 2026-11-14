@@ -4,9 +4,10 @@
 // workers never leave it), and every batch shows here as its own section: the
 // conductor on top, its workers in lanes by what they need from the user
 // (answer a prompt, check a stall, review the result). To talk to a conductor,
-// open its session. Finished batches go to the history. Any other session
-// waiting on the user shows up too, so nothing has to be answered in a separate
-// window while this screen is open (see useBoardPresence).
+// open its session. Finished batches go to the history. Every prompt waiting on
+// the user — the batches' and any other session's — is answered in the
+// "Waiting for you" panel on top, so nothing needs a separate window while this
+// screen is open (see useBoardPresence).
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
@@ -14,10 +15,10 @@ import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { ChevronDown, ChevronRight, History, Inbox, Layers, RefreshCw } from 'lucide-vue-next'
 import { invoke } from '@/lib/tauri'
-import { Badge, Banner, Button, Card, PageHeader } from '@/components/ui'
+import { Badge, Banner, Button, PageHeader } from '@/components/ui'
 import BatchGroupSection from '@/components/batch/BatchGroupSection.vue'
 import BatchQueuePanel from '@/components/batch/BatchQueuePanel.vue'
-import PermissionPrompt from '@/components/PermissionPrompt.vue'
+import BatchInbox, { type InboxEntry } from '@/components/batch/BatchInbox.vue'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
 import { useConfirm } from '@/composables/useConfirm'
@@ -25,7 +26,6 @@ import { usePrompt } from '@/composables/usePrompt'
 import { useToast } from '@/composables/useToast'
 import { useBoardPresence } from '@/composables/useBoardPresence'
 import { runDisplayName } from '@/lib/tray'
-import { useMarkdown } from '@/lib/markdown'
 import {
   SOLO_BATCH,
   commitMessageFor,
@@ -43,7 +43,6 @@ const runs = useRunsStore()
 const { confirm } = useConfirm()
 const { prompt } = usePrompt()
 const { toast } = useToast()
-const { renderText, loadMarkdown } = useMarkdown()
 useBoardPresence()
 
 const groups = ref<BoardGroup[]>([])
@@ -61,15 +60,47 @@ const highlight = ref<string>(typeof route.query.batch === 'string' ? route.quer
 const active = computed(() => groups.value.filter((g) => g.active))
 const history = computed(() => groups.value.filter((g) => !g.active))
 
-/** Sessions outside every batch on screen that wait on the user (answered here too). */
-const otherPending = computed(() => {
-  const mine = new Set(active.value.flatMap((g) => g.items.map((i) => i.runId)))
-  const out: { runId: string; projectId: string }[] = []
+/**
+ * Every session waiting on the user, for the "Waiting for you" panel: the
+ * batches' conductors first (a blocked conductor holds up its whole batch),
+ * then their workers, then any other session.
+ */
+const pending = computed<InboxEntry[]>(() => {
+  const known = new Map<string, BoardItem>()
+  for (const g of active.value) for (const i of g.items) known.set(i.runId, i)
+  const rank = { conductor: 0, worker: 1, session: 2 }
+  const out: InboxEntry[] = []
   live.sessions.forEach((s, runId) => {
-    if (s.permissionQueue.length && !mine.has(runId)) out.push({ runId, projectId: s.projectId })
+    const request = s.permissionQueue[0]
+    if (!request) return
+    const item = known.get(runId)
+    const shown = runDisplayName(runId, s.projectId)
+    // A worker's todo; a conductor's batch title without its "🗂 project ·" lead.
+    const text =
+      item?.todo?.text ??
+      item?.title?.replace(/^\[[^\]]*\]\s*/, '').replace(/^🗂\s*/, '').replace(`${item.projectName} · `, '') ??
+      ''
+    out.push({
+      runId,
+      projectId: s.projectId,
+      projectName: item?.projectName || shown.project,
+      name: text.split('\n')[0].trim() || shown.name,
+      role: item ? item.role : 'session',
+      request,
+      more: s.permissionQueue.length - 1,
+    })
   })
-  return out
+  return out.sort((a, b) => rank[a.role] - rank[b.role])
 })
+/** Run id of the prompt shown in full in the panel. */
+const selectedPending = ref('')
+
+/** "Answer" on a card / conductor: show its prompt in the panel. */
+async function answerRun(runId: string) {
+  selectedPending.value = runId
+  await nextTick()
+  document.getElementById('board-inbox')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+}
 
 // Only the newest request may land: an older answer must not overwrite a newer one.
 let loadSeq = 0
@@ -197,19 +228,6 @@ async function discard(item: BoardItem) {
   void withBusy(item.runId, () => invoke('board_close_item', { runId: item.runId, done: false }))
 }
 
-// Same answer path as the permission windows.
-function decideOther(runId: string, decision: 'allow' | 'deny', remember: boolean) {
-  const req = live.get(runId)?.permissionQueue[0]
-  if (!req) return
-  if (remember && decision === 'allow') live.rememberAllowedTool(runId, req.tool_name, req.request_id)
-  else if (remember && decision === 'deny') live.rememberDeniedTool(runId, req.tool_name, req.request_id)
-  void live.respondPermission(runId, req, decision, { remember })
-}
-function answerOther(runId: string, answers: Record<string, string>) {
-  const req = live.get(runId)?.permissionQueue[0]
-  if (req) void live.respondPermission(runId, req, 'allow', { answers })
-}
-
 // Live updates: worktree/todo changes, runs finishing, new workers; plus a slow
 // poll for diffs (git changes made by the sessions emit nothing).
 const unlisten: UnlistenFn[] = []
@@ -226,7 +244,6 @@ watch(() => live.sessions.size, scheduleReload)
 // Left before the async setup finished: what it registers late is undone at once.
 let disposed = false
 onMounted(async () => {
-  void loadMarkdown()
   await load()
   if (disposed) return
   if (highlight.value) void reveal(highlight.value)
@@ -269,31 +286,15 @@ onBeforeUnmount(() => {
     <div class="flex-1 min-h-0 overflow-auto px-6 py-4 space-y-4">
       <Banner v-if="error" tone="destructive">{{ error }}</Banner>
 
-      <!-- Other sessions waiting on the user. -->
-      <div v-if="otherPending.length" class="space-y-2">
-        <p class="text-[11px] font-medium uppercase tracking-wider text-primary">{{ t('board.otherPending') }}</p>
-        <div class="grid gap-3 md:grid-cols-2">
-          <Card v-for="p in otherPending" :key="p.runId" body-class="p-0">
-            <button
-              type="button"
-              class="flex w-full items-center gap-1.5 px-3 pt-2.5 text-left text-xs font-medium hover:text-primary cursor-pointer"
-              @click="openRun(p)"
-            >
-              <Badge size="xs" tone="neutral">{{ runDisplayName(p.runId, p.projectId).project }}</Badge>
-              <span class="truncate">{{ runDisplayName(p.runId, p.projectId).name }}</span>
-            </button>
-            <PermissionPrompt
-              v-if="live.get(p.runId)?.permissionQueue[0]"
-              :key="live.get(p.runId)!.permissionQueue[0].request_id"
-              :request="live.get(p.runId)!.permissionQueue[0]"
-              :allowed-tools="live.get(p.runId)?.allowedTools ?? []"
-              :render-text="renderText"
-              @decide="(d, r) => decideOther(p.runId, d, r)"
-              @answer="(a) => answerOther(p.runId, a)"
-            />
-          </Card>
-        </div>
-      </div>
+      <!-- Every prompt waiting on the user, answered here. -->
+      <BatchInbox
+        v-if="pending.length"
+        id="board-inbox"
+        v-model:selected="selectedPending"
+        class="scroll-mt-4"
+        :entries="pending"
+        @open="openRun"
+      />
 
       <!-- Queued todos, by project: run them. -->
       <BatchQueuePanel v-if="queue.length" :queue="queue" @started="onStarted" @changed="load" />
@@ -321,6 +322,7 @@ onBeforeUnmount(() => {
         @push="push"
         @finish="finish"
         @discard="discard"
+        @answer="answerRun"
       />
       <p v-if="groups.length && !active.length" class="py-6 text-center text-xs text-muted-foreground">
         {{ t('board.nothingActive') }}
@@ -351,6 +353,7 @@ onBeforeUnmount(() => {
               @push="push"
               @finish="finish"
               @discard="discard"
+              @answer="answerRun"
             />
             <button
               type="button"

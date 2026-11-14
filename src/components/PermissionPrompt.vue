@@ -198,7 +198,7 @@ function applyFocus() {
       const active = document.activeElement as HTMLElement | null
       if (active && (active.tagName === 'INPUT' || active.tagName === 'TEXTAREA')) {
         active.blur()
-        rootEl.value?.focus()
+        rootEl.value?.focus({ preventScroll: true })
       }
     }
   })
@@ -301,7 +301,7 @@ function splitLines(s: string): string[] {
 // without stealing them from the composer when the user clicks back into it.
 const rootEl = ref<HTMLElement | null>(null)
 onMounted(() => {
-  rootEl.value?.focus()
+  rootEl.value?.focus({ preventScroll: true })
 })
 
 function isEditableTarget(e: KeyboardEvent): boolean {

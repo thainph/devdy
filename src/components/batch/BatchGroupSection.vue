@@ -1,6 +1,6 @@
 <script setup lang="ts">
 // One batch on the Batch Board: a project's Todo Conductor (status, what it said
-// last, a prompt waiting on it, "Open session" to chat with it) above its
+// last, the prompt waiting on it as one line, "Open session" to chat with it) above its
 // workers sorted into lanes. The solo pseudo batch has no conductor. Card
 // actions bubble up to the board, which runs them.
 import { computed } from 'vue'
@@ -8,9 +8,8 @@ import { useI18n } from 'vue-i18n'
 import { Bot, ExternalLink, Folder, Rocket, Square } from 'lucide-vue-next'
 import { Badge, Button, Card, StatusBadge } from '@/components/ui'
 import BatchBoardCard from '@/components/batch/BatchBoardCard.vue'
-import PermissionPrompt from '@/components/PermissionPrompt.vue'
+import BatchPendingChip from '@/components/batch/BatchPendingChip.vue'
 import { useLiveRunsStore } from '@/stores/liveRuns'
-import { useMarkdown } from '@/lib/markdown'
 import {
   SOLO_BATCH,
   groupByLane,
@@ -36,12 +35,12 @@ const emit = defineEmits<{
   push: [item: BoardItem]
   finish: [item: BoardItem]
   discard: [item: BoardItem]
+  /** Show a session's pending prompt in the board's "Waiting for you" panel. */
+  answer: [runId: string]
 }>()
 
 const { t } = useI18n()
 const live = useLiveRunsStore()
-const { renderText, loadMarkdown } = useMarkdown()
-void loadMarkdown()
 
 const solo = computed(() => props.group.batch.runId === SOLO_BATCH)
 const conductor = computed(() => props.group.items.find((i) => i.role === 'conductor') ?? null)
@@ -49,6 +48,7 @@ const conductorLive = computed(() => (conductor.value ? live.get(conductor.value
 const conductorStatus = computed(() => conductorLive.value?.status || conductor.value?.status || '')
 const conductorActivity = computed(() => lastActivity(conductorLive.value?.entries ?? [], 300))
 const conductorPending = computed(() => conductorLive.value?.permissionQueue[0] ?? null)
+const conductorMore = computed(() => Math.max(0, (conductorLive.value?.permissionQueue.length ?? 0) - 1))
 const projectName = computed(() => conductor.value?.projectName || props.group.batch.projectName)
 /** The batch title without its "🗂 project ·" lead (the project has its own badge). */
 const title = computed(() => {
@@ -68,28 +68,13 @@ const lanes = computed(() => groupByLane(props.group.items, liveOf))
 
 /** Columns: what needs the user first. */
 const COLUMNS: { key: string; lanes: Lane[]; tone: string }[] = [
-  { key: 'needs', lanes: ['needs', 'alert'], tone: 'text-primary' },
+  { key: 'needs', lanes: ['needs', 'alert'], tone: 'text-warning' },
   { key: 'running', lanes: ['running'], tone: 'text-info' },
   { key: 'review', lanes: ['review'], tone: 'text-success' },
   { key: 'closed', lanes: ['failed', 'closed'], tone: 'text-muted-foreground' },
 ]
 function columnItems(col: { lanes: Lane[] }) {
   return col.lanes.flatMap((l) => lanes.value[l].map((item) => ({ item, lane: l })))
-}
-
-// Same answer path as the permission windows.
-function decide(decision: 'allow' | 'deny', remember: boolean) {
-  const c = conductor.value
-  const req = conductorPending.value
-  if (!c || !req) return
-  if (remember && decision === 'allow') live.rememberAllowedTool(c.runId, req.tool_name, req.request_id)
-  else if (remember && decision === 'deny') live.rememberDeniedTool(c.runId, req.tool_name, req.request_id)
-  void live.respondPermission(c.runId, req, decision, { remember })
-}
-function answer(answers: Record<string, string>) {
-  const c = conductor.value
-  const req = conductorPending.value
-  if (c && req) void live.respondPermission(c.runId, req, 'allow', { answers })
 }
 </script>
 
@@ -131,16 +116,12 @@ function answer(answers: Record<string, string>) {
         </template>
       </div>
       <p v-if="conductorActivity" class="text-xs text-muted-foreground line-clamp-3 whitespace-pre-line">{{ conductorActivity }}</p>
-      <div v-if="conductorPending" class="-mx-4 border-y border-border/60 bg-muted/30">
-        <PermissionPrompt
-          :key="conductorPending.request_id"
-          :request="conductorPending"
-          :allowed-tools="conductorLive?.allowedTools ?? []"
-          :render-text="renderText"
-          @decide="decide"
-          @answer="answer"
-        />
-      </div>
+      <BatchPendingChip
+        v-if="conductor && conductorPending"
+        :request="conductorPending"
+        :more="conductorMore"
+        @answer="emit('answer', conductor.runId)"
+      />
       <!-- Todos no worker picked up yet. -->
       <div v-if="waiting.length" class="flex flex-wrap items-center gap-1.5">
         <span class="text-[10px] font-medium uppercase tracking-wider text-muted-foreground">{{ t('board.queued') }}</span>
@@ -175,6 +156,7 @@ function answer(answers: Record<string, string>) {
           @push="emit('push', item)"
           @finish="emit('finish', item)"
           @discard="emit('discard', item)"
+          @answer="emit('answer', item.runId)"
         />
         <p
           v-if="!columnItems(col).length"
