@@ -404,7 +404,18 @@ pub async fn create(
         .await
         .unwrap_or_default();
     let taken: Vec<&str> = branches.lines().collect();
-    let slug = unique_slug(&dir, &slugify(hint, 40), |b| taken.contains(&b));
+    // Removed worktrees keep their row (old sessions still point at the path), so
+    // their names stay taken too: a new checkout must never inherit an old path.
+    let recorded: Vec<String> = sqlx::query_scalar("SELECT path FROM worktrees WHERE project_id = ?")
+        .bind(project_id)
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    let slug = unique_slug(&dir, &slugify(hint, 40), |b| {
+        taken.contains(&b)
+            || b.strip_prefix(BRANCH_PREFIX)
+                .is_some_and(|s| recorded.iter().any(|p| Path::new(p) == dir.join(s)))
+    });
     let path = dir.join(&slug);
     let path_str = path.to_string_lossy().into_owned();
     let branch = format!("{BRANCH_PREFIX}{slug}");
@@ -423,11 +434,13 @@ pub async fn create(
         cleanup(root.clone(), path_str.clone(), branch.clone()).await;
         return Err(e);
     }
-    drop(lock);
 
     let prepared = async {
         let carried = carry_untracked(&root, &path)?;
+        // Still under the lock: `info/exclude` is shared, a parallel creation
+        // must not overwrite these lines (a lost `/.env` would get committed).
         exclude_carried(&path, &carried).await?;
+        drop(lock);
         if let Some(setup) = project.setup_cmd.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
             let (cmd, _guard) = backend_command(app, db, "/bin/sh", project_id, &path_str).await?;
             run_setup(cmd, &path, setup).await?;

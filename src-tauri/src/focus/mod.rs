@@ -59,6 +59,22 @@ pub async fn start_todo_for_run(app: &AppHandle, db: &Db, todo_id: &str, run_id:
     emit_todos_changed(app);
 }
 
+/// A session started by [`start_todo_for_run`] never ran: drop the link and put
+/// the todo back to `todo` (unless something else moved it meanwhile).
+pub async fn undo_todo_start(app: &AppHandle, db: &Db, todo_id: &str, run_id: &str) {
+    let _ = sqlx::query("DELETE FROM todo_runs WHERE todo_id = ? AND run_id = ?")
+        .bind(todo_id)
+        .bind(run_id)
+        .execute(db)
+        .await;
+    let _ = sqlx::query("UPDATE todos SET status = 'todo', updated_at = ? WHERE id = ? AND done = 0 AND status = 'doing'")
+        .bind(chrono::Utc::now().to_rfc3339())
+        .bind(todo_id)
+        .execute(db)
+        .await;
+    emit_todos_changed(app);
+}
+
 /// Keep a todo's status in step with the session working on it (linked as
 /// `created_from_item`): a turn starting → `doing`; a turn ending → `waiting`
 /// (its result — or its failure — waits for the user). Done todos and todos the

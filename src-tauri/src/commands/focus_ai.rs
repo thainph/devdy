@@ -930,6 +930,8 @@ pub async fn start_with_ai_inner(
         todo.source_url.as_deref(),
         todo.ai_plan.as_deref(),
     );
+    // Linked before the start: a turn that ends at once must find the link.
+    crate::focus::start_todo_for_run(app, &pool, &todo_id, &run.id).await;
     let started = async {
         let title = crate::focus::ai_util::truncate(&first_line(&todo.text), 80);
         sqlx::query("UPDATE runs SET title = ?, worktree_path = ? WHERE id = ?")
@@ -961,14 +963,13 @@ pub async fn start_with_ai_inner(
     .await;
     if let Err(e) = started {
         // Nothing ran: don't leave an empty session (or its checkout) behind.
+        crate::focus::undo_todo_start(app, &pool, &todo_id, &run.id).await;
         discard_run(&pool, &run.id).await;
         if let Some(wt) = &wt {
             let _ = crate::worktrees::remove(&pool, &wt.id, true).await;
         }
         return Err(e);
     }
-    // The session is running from here on: bookkeeping failures are only logged.
-    crate::focus::start_todo_for_run(app, &pool, &todo_id, &run.id).await;
     Ok(run.id)
 }
 

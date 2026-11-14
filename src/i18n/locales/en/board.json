@@ -74,5 +74,6 @@
     "failed": "Failed / stopped",
     "closed": "Done"
   },
-  "mobilePending": "Waiting for you"
+  "mobilePending": "Waiting for you",
+  "discardMessageCommits": "Discard the result? Branch {branch} has {n} commits — if they are not pushed they are LOST with the worktree. Use \"Push & open PR\" first to keep them. The todo goes back to not started."
 }

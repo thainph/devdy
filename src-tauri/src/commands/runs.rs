@@ -1006,6 +1006,11 @@ pub(crate) async fn wire_backend_command(
     cmd.env("DEVDY_RUN_ID", call_id);
     wire_git_config(cmd, &shim_dir.join("git-credential-devdy"));
     wire_commit_identity(cmd, db, project_id).await;
+    // Same cloud / CLI isolation as a run: no inherited AWS / Azure / gh / glab
+    // credentials reach a setup command or a git hook.
+    wire_aws_config(app, db, cmd, project_id).await;
+    wire_azure_config(app, cmd);
+    wire_git_cli_config(app, cmd);
     Ok(guard)
 }
 

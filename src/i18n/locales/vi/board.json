@@ -74,5 +74,6 @@
     "failed": "Lỗi / dừng",
     "closed": "Xong"
   },
-  "mobilePending": "Đang chờ bạn"
+  "mobilePending": "Đang chờ bạn",
+  "discardMessageCommits": "Bỏ kết quả? Nhánh {branch} có {n} commit — nếu chưa push, chúng sẽ MẤT cùng bản sao. Muốn giữ thì bấm \"Push & tạo PR\" trước. Todo quay về trạng thái chưa làm."
 }

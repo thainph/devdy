@@ -232,7 +232,11 @@ async function finish(item: BoardItem) {
 async function discard(item: BoardItem) {
   if (!(await confirm({
     title: t('board.discardTitle'),
-    message: item.worktree ? t('board.discardMessageWorktree', { branch: item.worktree.branch }) : t('board.discardMessage'),
+    message: item.worktree
+      ? item.diff?.commits
+        ? t('board.discardMessageCommits', { branch: item.worktree.branch, n: item.diff.commits })
+        : t('board.discardMessageWorktree', { branch: item.worktree.branch })
+      : t('board.discardMessage'),
     confirmLabel: t('board.discard'),
   }))) return
   void withBusy(item.runId, () => invoke('board_close_item', { runId: item.runId, done: false }))

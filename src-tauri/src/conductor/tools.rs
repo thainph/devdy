@@ -233,6 +233,12 @@ async fn session_spawn(
         conductor_token: None,
     };
 
+    // Linked before the start: a turn that ends at once must find the link to
+    // move the todo on to `waiting`.
+    if let Some(todo) = &todo {
+        crate::focus::start_todo_for_run(&state.app, &db, &todo.id, &worker_id).await;
+    }
+
     if let Err(e) = start_run_inner(state.app.clone(), db.clone(), registry(state), payload).await {
         // start_run_inner may already have marked it running: it never will be,
         // and a "running" row would hold the cap slot and block the worktree's removal.
@@ -240,12 +246,11 @@ async fn session_spawn(
             .bind(&worker_id)
             .execute(&db)
             .await;
+        if let Some(todo) = &todo {
+            crate::focus::undo_todo_start(&state.app, &db, &todo.id, &worker_id).await;
+        }
         drop_worktree(db.clone(), worktree).await;
         return Err(e);
-    }
-
-    if let Some(todo) = &todo {
-        crate::focus::start_todo_for_run(&state.app, &db, &todo.id, &worker_id).await;
     }
 
     log_event(
