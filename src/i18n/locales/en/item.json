@@ -110,6 +110,7 @@
   "sortByProject": "By project",
   "sortByUpdated": "Recently edited",
   "sortByTitle": "Title (A–Z)",
-  "batchAll": "Hand the todos shown to AI",
-  "batchFolder": "Hand this project’s todos to AI"
+  "addToBoard": "Add to Batch Board (pick how to run it and follow it there)",
+  "addedToBoard": "Added to the Batch Board queue",
+  "addToBoardNeedsProject": "Pick a project for this todo before adding it to the Batch Board."
 }

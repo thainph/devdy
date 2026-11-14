@@ -35,6 +35,7 @@ import { noteRow, todoRow, type ItemRow } from '@/components/items/itemRow'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
+import { invoke } from '@/lib/tauri'
 import { useProjectsStore } from '@/stores/projects'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
@@ -60,8 +61,6 @@ import { useFocusStore } from '@/stores/focus'
 import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
 import { useFocusAiActions } from '@/components/focus/useFocusAiActions'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
-import BatchStartDialog from '@/components/batch/BatchStartDialog.vue'
-import type { BatchCandidate } from '@/lib/batchBoard'
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -310,14 +309,16 @@ async function setDueDate(next: string | null) {
   announce()
 }
 
-// "Hand to AI" (todos): the open todos shown (or one folder's) go to a Todo Conductor.
-const batchOpen = ref(false)
-const batchCandidates = ref<BatchCandidate[]>([])
-function openBatch(projectId?: string | null) {
-  batchCandidates.value = visibleRows.value
-    .filter((r) => !r.done && (projectId === undefined || (r.projectId ?? null) === projectId))
-    .map((r) => ({ id: r.id, title: r.title, projectId: r.projectId }))
-  batchOpen.value = true
+// "Add to Batch Board" (todos): queue it; how it runs is picked on the board.
+async function addToBoard() {
+  const it = item.value
+  if (kind !== 'todo' || !it) return
+  try {
+    await invoke('board_queue_add', { todoId: it.id })
+    toast.success(t('item.addedToBoard'))
+  } catch (e) {
+    toast.error(String(e).startsWith('project_required') ? t('item.addToBoardNeedsProject') : String(e))
+  }
 }
 
 // "Start with AI" (todos): a session working on the todo, like the old Focus board.
@@ -631,14 +632,6 @@ onBeforeUnmount(() => {
       @toggle-pin="togglePin"
       @reload="reloadAll"
       @retry="reloadAll"
-      @batch="openBatch"
-    />
-    <BatchStartDialog
-      v-if="kind === 'todo'"
-      :open="batchOpen"
-      :candidates="batchCandidates"
-      :project-names="projectNames"
-      @close="batchOpen = false"
     />
 
     <section v-if="item" class="flex min-w-0 flex-1 flex-col">
@@ -665,6 +658,7 @@ onBeforeUnmount(() => {
         @link-run="linkRun"
         @new-session="newSession"
         @start-with-ai="startWithAi"
+        @add-to-board="addToBoard"
         @copy-id="copyId"
         @make-secret="makeSecret"
         @delete="remove"

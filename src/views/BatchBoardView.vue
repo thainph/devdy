@@ -14,6 +14,7 @@ import { Bot, Inbox, Layers, RefreshCw, Send } from 'lucide-vue-next'
 import { invoke } from '@/lib/tauri'
 import { AppSelect, Badge, Banner, Button, Card, Input, PageHeader, StatusBadge } from '@/components/ui'
 import BatchBoardCard from '@/components/batch/BatchBoardCard.vue'
+import BatchQueuePanel from '@/components/batch/BatchQueuePanel.vue'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
@@ -33,6 +34,7 @@ import {
   type BoardItem,
   type Lane,
   type LiveState,
+  type QueuedTodo,
 } from '@/lib/batchBoard'
 
 const { t } = useI18n()
@@ -47,6 +49,8 @@ const { renderText, loadMarkdown } = useMarkdown()
 useBoardPresence()
 
 const batches = ref<BatchSummary[]>([])
+/** Todos added with "Add to Batch Board", waiting to be run. */
+const queue = ref<QueuedTodo[]>([])
 const batchId = ref<string>(typeof route.query.batch === 'string' ? route.query.batch : '')
 const data = ref<BoardData>({ items: [], queued: [] })
 const loading = ref(false)
@@ -128,13 +132,23 @@ async function loadItems() {
   }
 }
 
+async function loadQueue() {
+  queue.value = await invoke<QueuedTodo[]>('board_queue_list')
+}
+
 async function refresh() {
   try {
-    await loadBatches()
+    await Promise.all([loadBatches(), loadQueue()])
   } catch (e) {
     error.value = String(e)
   }
   await loadItems()
+}
+
+/** A batch started from the queue: show it. */
+async function onStarted(runId: string) {
+  batchId.value = runId
+  await refresh()
 }
 
 watch(batchId, (id) => {
@@ -336,8 +350,13 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- No batch yet. -->
-      <div v-if="!batches.length && !loading" class="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
+      <!-- Queued todos: pick how to run them. -->
+      <div v-if="queue.length" class="px-6 pt-4">
+        <BatchQueuePanel :queue="queue" @started="onStarted" @changed="refresh" />
+      </div>
+
+      <!-- Nothing queued or run yet. -->
+      <div v-if="!batches.length && !queue.length && !loading" class="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
           <Inbox class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>

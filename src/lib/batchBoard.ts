@@ -13,11 +13,12 @@ export const BOARD_OPEN_ROUTE = 'board:open-route'
  */
 export const SOLO_BATCH = 'solo'
 
-/** A todo offered in the "Hand to AI" dialog. */
-export interface BatchCandidate {
-  id: string
-  title: string
+/** A todo waiting in the board queue ("Add to Batch Board"). */
+export interface QueuedTodo {
+  todo: BoardTodo
   projectId: string | null
+  projectName: string | null
+  addedAt: string
 }
 
 /** The board's route for a batch. */
