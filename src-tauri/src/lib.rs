@@ -127,13 +127,9 @@ use commands::slack_threads::{
     translate_slack_reply, unlink_slack_thread_run,
 };
 use commands::focus::{
-    focus_board, focus_refresh_calendar, focus_settings_get, focus_settings_set,
-    focus_take_open_todo,
+    focus_board, focus_settings_get, focus_settings_set, focus_take_open_todo,
 };
-use commands::focus_ai::{
-    focus_ai_analyze, focus_ai_cancel, focus_ai_plan_today, focus_ai_suggest, focus_day_plan_get,
-    focus_plan_to_calendar, focus_start_with_ai, focus_suggest_actual,
-};
+use commands::focus_ai::{focus_ai_cancel, focus_ai_suggest, focus_start_with_ai};
 use commands::todo_batch::{
     board_batches, board_close_item, board_items, board_queue_add, board_queue_list, board_queue_remove,
     board_overview, board_run, list_all_pending_permissions,
@@ -695,16 +691,10 @@ pub fn run() {
             focus_board,
             focus_settings_get,
             focus_settings_set,
-            focus_refresh_calendar,
             focus_take_open_todo,
             focus_ai_suggest,
-            focus_ai_analyze,
-            focus_ai_plan_today,
-            focus_day_plan_get,
-            focus_plan_to_calendar,
             focus_ai_cancel,
             focus_start_with_ai,
-            focus_suggest_actual,
             worktrees_list,
             worktree_remove,
             get_project_worktree_settings,

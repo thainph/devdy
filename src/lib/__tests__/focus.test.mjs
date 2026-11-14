@@ -7,7 +7,6 @@ import {
   BUCKET_ORDER,
   aiErrorCode,
   applySuggestion,
-  blockMinutes,
   FILTER_NONE,
   calibrationHint,
   draftToInput,
@@ -268,11 +267,6 @@ test('aiErrorCode splits coded command errors', () => {
   assert.deepEqual(aiErrorCode('project_required: pick a project'), { code: 'project_required', detail: 'pick a project' })
   assert.deepEqual(aiErrorCode('cancelled'), { code: 'cancelled', detail: '' })
   assert.deepEqual(aiErrorCode(new Error('Boom')), { code: null, detail: 'Boom' })
-})
-
-test('blockMinutes', () => {
-  assert.equal(blockMinutes({ start: '10:05', end: '11:30' }), 85)
-  assert.equal(blockMinutes({ start: '11:00', end: '10:00' }), 0)
 })
 
 test('draftToInput maps the capture form to add_todo args', () => {

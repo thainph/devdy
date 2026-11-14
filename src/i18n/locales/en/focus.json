@@ -49,8 +49,7 @@
     "overloaded": "Overloaded by {over}",
     "busy": "{n} busy block | {n} busy blocks",
     "connect": "Connect Google Calendar (Settings → Google) to see today's free time.",
-    "error": "Couldn't load today's calendar",
-    "refresh": "Refresh calendar"
+    "error": "Couldn't load today's calendar"
   },
   "calibration": {
     "slower": "You usually take {factor}× longer than estimated",
@@ -72,8 +71,7 @@
     "d": "{n} day | {n} days"
   },
   "estimate": {
-    "missing": "Not estimated yet — counted as {estimate}",
-    "ai": "Estimated by AI"
+    "missing": "Not estimated yet — counted as {estimate}"
   },
   "priority": {
     "label": "Priority",
@@ -139,13 +137,6 @@
     "deleted": "Todo deleted",
     "snoozed": "Snoozed until {time}"
   },
-  "actual": {
-    "title": "How long did it take?",
-    "hint": "Estimated {estimate}. Logging the real time helps calibrate future estimates.",
-    "placeholder": "e.g. 1h30",
-    "skip": "Skip",
-    "save": "Save"
-  },
   "drawer": {
     "text": "Title",
     "project": "Project",
@@ -159,9 +150,6 @@
     "remindAt": "Remind me at",
     "clear": "Clear",
     "source": "Source",
-    "actual": "Actual time",
-    "aiPlan": "AI plan",
-    "aiAnalyzedAt": "Analyzed {time}",
     "created": "Created {time}",
     "started": "Started {time}",
     "completed": "Completed {time}",
@@ -244,18 +232,8 @@
     }
   },
   "ai": {
-    "analyze": "Analyze",
-    "reanalyze": "Analyze again",
-    "analyzing": "Analyzing…",
     "cancel": "Cancel",
     "start": "Start with AI",
-    "apply": "Apply",
-    "estimate": "AI estimates {low}–{high} (~{likely})",
-    "suggestedPriority": "AI suggests P{p}",
-    "suggestedDue": "AI suggests the deadline {due}",
-    "editPlan": "Edit the plan",
-    "noPlan": "No AI plan yet — Analyze breaks the todo into steps, risks and an estimate.",
-    "analyzed": "Analysis ready — open the todo to see it",
     "started": "Session started",
     "suggested": "Suggestion filled in",
     "suggestedWhy": "Suggestion filled in: {reason}",
@@ -266,36 +244,12 @@
     "errors": {
       "busy": "An AI request for this is already running.",
       "project_required": "Pick a project for this todo first.",
-      "no_free_time": "No working time is left today.",
-      "nothing_to_plan": "There is no open todo to plan.",
-      "no_google_account": "Connect a Google account (Settings → Google) to add blocks to Calendar.",
-      "no_plan": "There is no plan for this day.",
-      "calendar_failed": "Some blocks could not be added to Google Calendar.",
       "ai_invalid_answer": "The AI answer could not be used. Try again.",
       "unknown": "AI request failed: {detail}",
-      "calendar_unavailable": "Couldn't read today's Google Calendar, so the plan could miss your meetings. Try again in a moment (or refresh the calendar).",
       "not_git_repo": "This project is not a git repository (or its folder is not the repository root), so a worktree can’t be created.",
       "fetch_failed": "Couldn’t fetch the latest code from the remote: {detail}",
       "setup_failed": "The worktree setup command failed: {detail}"
     }
-  },
-  "plan": {
-    "button": "Plan today",
-    "hint": "Let AI fit today's todos into your free working time",
-    "title": "Today's plan",
-    "planning": "Planning your day…",
-    "empty": "No plan for today yet.",
-    "make": "Plan today",
-    "replan": "Plan again",
-    "missingTodo": "(todo removed)",
-    "pushOne": "Add this block to Google Calendar",
-    "pushAll": "Add all to Calendar",
-    "onCalendar": "On Google Calendar",
-    "pushed": "Added to Google Calendar",
-    "noBlocks": "Nothing could be scheduled today.",
-    "dropped": "{n} block was dropped (outside free time or unknown todo) | {n} blocks were dropped (outside free time or unknown todo)",
-    "deferred": "Not today",
-    "createdAt": "Planned {time}"
   },
   "radar": {
     "status": {

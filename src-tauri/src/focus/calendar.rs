@@ -2,11 +2,10 @@
 //!
 //! The account is `focus.calendar_account_id`, else the default Google
 //! account; the calendars are `focus.calendar_ids`, else `primary`. Results
-//! (or the error) are cached 10 minutes per account + calendars + date;
-//! `invalidate` busts the cache (the refresh button). `focus_board` never
-//! waits on Google for more than 3 s: a slower fetch keeps running, fills the
-//! cache and emits `focus:changed` so the board reloads; meanwhile the last
-//! result for the same day (stale) is used.
+//! (or the error) are cached 10 minutes per account + calendars + date.
+//! `focus_board` never waits on Google for more than 3 s: a slower fetch keeps
+//! running, fills the cache and emits `focus:changed` so the board reloads;
+//! meanwhile the last result for the same day (stale) is used.
 
 use super::capacity::CalEvent;
 use super::settings::FocusSettings;
@@ -21,8 +20,6 @@ use tokio::sync::watch;
 const TTL: Duration = Duration::from_secs(10 * 60);
 /// How long `focus_board` waits on Google.
 pub const BOARD_WAIT: Duration = Duration::from_secs(3);
-/// How long "plan today" waits: planning over meetings is worse than waiting.
-pub const PLAN_WAIT: Duration = Duration::from_secs(15);
 
 /// No Google account linked: the UI shows "connect Google Calendar".
 pub const ERR_NO_ACCOUNT: &str = "no_account";
@@ -57,8 +54,9 @@ fn state() -> &'static Mutex<State> {
     S.get_or_init(Mutex::default)
 }
 
-/// Forget the cached events (next board fetches again).
-pub fn invalidate() {
+/// Forget the cached events (tests start from an empty cache).
+#[cfg(test)]
+fn invalidate() {
     if let Ok(mut s) = state().lock() {
         s.entry = None;
     }

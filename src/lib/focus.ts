@@ -620,56 +620,6 @@ export interface AiSuggestion {
   reason: string
 }
 
-/** `focus_ai_analyze` structured result (the markdown goes to `ai_plan`). */
-export interface AiAnalysis {
-  summary: string
-  steps: string[]
-  estimate_min: number
-  estimate_low_min: number
-  estimate_high_min: number
-  confidence: 'low' | 'medium' | 'high'
-  risks: string[]
-  questions: string[]
-  suggested_priority: TodoPriority | null
-  suggested_due_date: string | null
-  suggested_due_time: string | null
-}
-
-export interface AiAnalyzeResult {
-  analysis: AiAnalysis
-  todo: FocusTodo
-}
-
-export interface DayPlanBlock {
-  /** `b1`, `b2`… in time order. */
-  id: string
-  todo_id: string
-  /** Local `HH:MM`. */
-  start: string
-  end: string
-  note: string
-  calendar_event_id: string | null
-}
-
-/** `focus_ai_plan_today` / `focus_day_plan_get`. */
-export interface DayPlan {
-  date: string
-  blocks: DayPlanBlock[]
-  deferred: { todo_id: string; reason: string }[]
-  summary: string
-  /** Blocks the backend dropped (unknown todo, outside free time, overlap). */
-  dropped: number
-  created_at: string
-}
-
-/** What "Apply" of an analysis puts into the drawer's form. */
-export interface AiApply {
-  estimateMin?: number
-  priority?: TodoPriority
-  dueDate?: string
-  dueTime?: string
-}
-
 /** Command errors are `"<code>: <detail>"`; `cancelled` is bare. */
 export function aiErrorCode(e: unknown): { code: string | null; detail: string } {
   const msg = String(e instanceof Error ? e.message : e)
@@ -687,15 +637,6 @@ export function applySuggestion(d: TodoDraft, s: AiSuggestion): TodoDraft {
     next.dueTime = s.due_time ?? ''
   }
   return next
-}
-
-/** Minutes between two `HH:MM`. */
-export function blockMinutes(b: Pick<DayPlanBlock, 'start' | 'end'>): number {
-  const m = (hm: string) => {
-    const [h, mm] = hm.split(':').map(Number)
-    return h * 60 + mm
-  }
-  return Math.max(0, m(b.end) - m(b.start))
 }
 
 // ── Sources ─────────────────────────────────────────────────────────────────

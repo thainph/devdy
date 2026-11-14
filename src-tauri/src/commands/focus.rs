@@ -8,7 +8,7 @@ use crate::focus::capacity::{self, BusyOut, CalEvent, Capacity};
 use crate::focus::settings::{self as focus_settings, FocusSettings};
 use chrono::{DateTime, NaiveDateTime, TimeZone};
 use serde::Serialize;
-use tauri::{AppHandle, Emitter, State};
+use tauri::{AppHandle, State};
 
 #[derive(Debug, Serialize)]
 pub struct BoardItem {
@@ -255,14 +255,6 @@ pub async fn load_board(app: AppHandle, db: &Db) -> Result<Board, String> {
         Err(e) => board.capacity_error = Some(e),
     }
     Ok(board)
-}
-
-/// Drop the cached Calendar events; the next `focus_board` fetches again.
-#[tauri::command]
-pub async fn focus_refresh_calendar(app: AppHandle) -> Result<(), String> {
-    crate::focus::calendar::invalidate();
-    let _ = app.emit(crate::focus::CHANGED_EVENT, ());
-    Ok(())
 }
 
 /// The todo a reminder click asked to open, once (the Focus window reads it
