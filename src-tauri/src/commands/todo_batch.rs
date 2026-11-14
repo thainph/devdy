@@ -2,8 +2,9 @@
 //! session, and the data + actions behind the Batch Board that tracks it.
 //!
 //! The conductor is an ordinary top-level session (every one is a conductor)
-//! flagged `runs.todo_batch = 1`; its workers run in the todos' projects, usually
-//! in their own worktrees (`session_spawn` with `todo_id` / `worktree`).
+//! flagged `runs.todo_batch = 1`; its workers run in the todos' projects and keep
+//! their changes apart as the batch's isolation says: following each project's
+//! own worktree rules (default), in Devdy worktrees, or one at a time.
 
 use std::collections::HashMap;
 use std::path::Path;
@@ -15,7 +16,7 @@ use tauri::{AppHandle, Emitter, State};
 use crate::commands::runs::{create_session_run_inner, start_run_inner, StartRunPayload};
 use crate::commands::todos::get_todo;
 use crate::db::Db;
-use crate::focus::ai::{batch_prompt, BatchOptions, BatchTodo};
+use crate::focus::ai::{batch_prompt, BatchIsolation, BatchOptions, BatchTodo};
 use crate::runs::RunRegistry;
 use crate::worktrees;
 
@@ -34,7 +35,9 @@ pub async fn todo_batch_start(
     todo_ids: Vec<String>,
     home_project_id: Option<String>,
     max_parallel: Option<usize>,
-    worktree: Option<bool>,
+    // `rules` (default: workers follow their project's worktree rules), `devdy`
+    // (Devdy creates a worktree per worker) or `none`.
+    isolation: Option<String>,
     engine: Option<String>,
     permission_mode: Option<String>,
 ) -> Result<String, String> {
@@ -63,7 +66,7 @@ pub async fn todo_batch_start(
         None => most_common_project(todos.iter().filter_map(|t| t.project_id.as_deref())).unwrap_or_default(),
     };
     let max_parallel = max_parallel.unwrap_or(3).clamp(1, crate::conductor::DEFAULT_MAX_WORKERS);
-    let worktree = worktree.unwrap_or(true);
+    let isolation = BatchIsolation::parse(isolation.as_deref());
     let batch: Vec<BatchTodo> = todos
         .iter()
         .map(|t| BatchTodo {
@@ -77,7 +80,7 @@ pub async fn todo_batch_start(
         &batch,
         &BatchOptions {
             max_parallel,
-            worktree,
+            isolation,
             engine: engine.as_deref().filter(|e| !e.is_empty()),
             permission_mode: permission_mode.as_deref().filter(|m| !m.is_empty()),
         },

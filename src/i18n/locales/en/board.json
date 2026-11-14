@@ -54,9 +54,6 @@
     "noProject": "no project",
     "none": "No open todos.",
     "parallel": "Tasks at once",
-    "worktree": "A worktree per todo",
-    "worktreeOn": "On — parallel even within a project, latest code, own branch",
-    "worktreeOff": "Off — work in the project folder, one task per project at a time",
     "permission": "Worker permissions",
     "permissionDefault": "Project default",
     "permissionAcceptEdits": "Edit files freely (acceptEdits)",
@@ -65,7 +62,16 @@
     "engine": "Engine",
     "engineDefault": "Default",
     "submit": "Hand over {n} todos",
-    "starting": "Starting…"
+    "starting": "Starting…",
+    "isolation": "Keeping workers apart",
+    "isolationRules": "Project rules",
+    "isolationDevdy": "Devdy worktrees",
+    "isolationNone": "None",
+    "isolationHint": {
+      "rules": "Each worker creates its own worktree / branch the way its project’s rules & skills say (e.g. project-docs-structure) before editing — works for any project layout, including a workspace around its repos. Projects without such a convention run one task at a time.",
+      "devdy": "Devdy creates .devdy/worktrees/<name> from the latest code for each task. Only for project folders that are a git repository root; other projects fall back to \"Project rules\".",
+      "none": "Work right in the project folder, one task per project at a time."
+    }
   },
   "mobileLanes": {
     "needs": "Needs you",

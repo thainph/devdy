@@ -54,9 +54,6 @@
     "noProject": "chưa có dự án",
     "none": "Không có todo nào đang mở.",
     "parallel": "Số việc chạy cùng lúc",
-    "worktree": "Bản sao riêng cho mỗi todo",
-    "worktreeOn": "Bật — chạy song song cả trong cùng dự án, code mới nhất, nhánh riêng",
-    "worktreeOff": "Tắt — làm trong thư mục dự án, mỗi dự án một việc một lúc",
     "permission": "Quyền của AI nhân viên",
     "permissionDefault": "Mặc định của dự án",
     "permissionAcceptEdits": "Tự sửa file (acceptEdits)",
@@ -65,7 +62,16 @@
     "engine": "Engine",
     "engineDefault": "Mặc định",
     "submit": "Giao {n} todo",
-    "starting": "Đang khởi động…"
+    "starting": "Đang khởi động…",
+    "isolation": "Tách việc giữa các AI nhân viên",
+    "isolationRules": "Theo rule dự án",
+    "isolationDevdy": "Devdy tạo worktree",
+    "isolationNone": "Không tách",
+    "isolationHint": {
+      "rules": "Mỗi AI nhân viên tự tạo worktree/nhánh theo rule & skill của dự án đó (vd project-docs-structure) trước khi sửa code — dùng được cho mọi kiểu dự án, kể cả workspace bọc ngoài repo. Dự án không có quy ước thì chạy mỗi lúc một việc.",
+      "devdy": "Devdy tạo .devdy/worktrees/<tên> từ code mới nhất cho mỗi việc. Chỉ dùng được khi thư mục dự án là gốc git repo; dự án khác tự chuyển sang \"Theo rule dự án\".",
+      "none": "Làm thẳng trong thư mục dự án, mỗi dự án chỉ chạy một việc một lúc."
+    }
   },
   "mobileLanes": {
     "needs": "Cần bạn",

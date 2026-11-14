@@ -161,13 +161,21 @@ async fn session_spawn(
     let use_worktree = args.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false);
     // Prepared before taking the start guard: fetch + setup can take minutes and
     // must not hold up other spawns.
+    // A project folder that isn't a git repository root (e.g. a workspace around
+    // its repos) can't get a Devdy worktree: the worker then runs in the project
+    // folder and the conductor is told (`worktree_skipped`).
+    let mut worktree_skipped: Option<String> = None;
     let worktree = if use_worktree {
         let hint = todo.as_ref().map(|t| t.text.clone()).unwrap_or_else(|| role_label.clone());
         let hint = hint.lines().next().unwrap_or("").to_string();
-        Some(
-            crate::worktrees::create(&state.app, &db, &project_id, &hint, todo.as_ref().map(|t| t.id.as_str()))
-                .await?,
-        )
+        match crate::worktrees::create(&state.app, &db, &project_id, &hint, todo.as_ref().map(|t| t.id.as_str())).await {
+            Ok(wt) => Some(wt),
+            Err(e) if e.starts_with("not_git_repo") => {
+                worktree_skipped = Some(e);
+                None
+            }
+            Err(e) => return Err(e),
+        }
     } else {
         None
     };
@@ -268,6 +276,7 @@ async fn session_spawn(
         "project_id": project_id,
         "todo_id": todo.as_ref().map(|t| t.id.clone()),
         "worktree": worktree.as_ref().map(|w| json!({ "path": w.path, "branch": w.branch, "base": w.base_ref })),
+        "worktree_skipped": worktree_skipped,
     }))
 }
 
