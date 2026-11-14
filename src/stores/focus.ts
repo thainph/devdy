@@ -151,15 +151,6 @@ export const useFocusStore = defineStore('focus', () => {
     return todo
   }
 
-  const markDone = (id: string) => update(id, { done: true })
-  /** Back to open work (§3.3); the backend resets status and `completed_at` on `done: false` anyway. */
-  const markUndone = (id: string) => update(id, { done: false, status: 'todo' })
-  /** `doing`; the backend stamps `started_at` the first time. */
-  const startTodo = (id: string) => update(id, { status: 'doing' })
-  const setWaiting = (id: string) => update(id, { status: 'waiting' })
-  const backToTodo = (id: string) => update(id, { status: 'todo' })
-  const snooze = (id: string, until: string | null) => update(id, { snoozed_until: until })
-
   async function remove(id: string) {
     await invoke('delete_todo', { id })
     await load()
@@ -182,12 +173,6 @@ export const useFocusStore = defineStore('focus', () => {
     stop,
     add,
     update,
-    markDone,
-    markUndone,
-    startTodo,
-    setWaiting,
-    backToTodo,
-    snooze,
     remove,
   }
 })
