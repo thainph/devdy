@@ -14,7 +14,7 @@
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Copy, LockKeyhole, Pencil, Rocket } from 'lucide-vue-next'
+import { Check, Copy, ListPlus, LockKeyhole, Pencil, Rocket } from 'lucide-vue-next'
 import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
@@ -57,6 +57,8 @@ const emit = defineEmits<{
   linkRun: [runId: string]
   newSession: []
   startWithAi: []
+  /** Queue the todo on the Batch Board (run and followed from there). */
+  addToBoard: []
   copyId: []
   makeSecret: []
   delete: []
@@ -183,13 +185,24 @@ const newSessionLabel = computed(() =>
         <Button
           v-if="todo && !todo.done && canStartWithAi"
           variant="outline"
-          size="sm"
+          size="icon"
           class="shrink-0"
           :title="t('focus.ai.start')"
+          :aria-label="t('focus.ai.start')"
           @click="emit('startWithAi')"
         >
           <Rocket class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('focus.ai.start') }}
+        </Button>
+        <Button
+          v-if="todo && !todo.done && canStartWithAi"
+          variant="outline"
+          size="icon"
+          class="shrink-0"
+          :title="t('item.addToBoard')"
+          :aria-label="t('item.addToBoard')"
+          @click="emit('addToBoard')"
+        >
+          <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
         <Button
           v-if="todo"

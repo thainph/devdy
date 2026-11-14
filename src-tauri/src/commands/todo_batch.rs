@@ -120,8 +120,82 @@ pub async fn todo_batch_start(
         let _ = sqlx::query("DELETE FROM runs WHERE id = ?").bind(&run.id).execute(&db).await;
         return Err(e);
     }
+    // Started: these todos leave the board queue.
+    for t in &todos {
+        let _ = sqlx::query("DELETE FROM board_queue WHERE todo_id = ?").bind(&t.id).execute(&db).await;
+    }
     let _ = app.emit(BOARD_CHANGED_EVENT, ());
     Ok(run.id)
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct QueuedTodo {
+    pub todo: BoardTodo,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+    pub added_at: String,
+}
+
+/// "Add to Batch Board": queue a todo to be run from the board. Errors
+/// `project_required` for a todo without a project (its session needs one).
+#[tauri::command]
+pub async fn board_queue_add(app: AppHandle, db: State<'_, Db>, todo_id: String) -> Result<(), String> {
+    let todo = get_todo(db.inner(), &todo_id).await?;
+    if todo.project_id.is_none() {
+        return Err("project_required: pick a project for this todo first".into());
+    }
+    sqlx::query("INSERT OR IGNORE INTO board_queue (todo_id, added_at) VALUES (?, ?)")
+        .bind(&todo_id)
+        .bind(chrono::Utc::now().to_rfc3339())
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(BOARD_CHANGED_EVENT, ());
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn board_queue_remove(app: AppHandle, db: State<'_, Db>, todo_id: String) -> Result<(), String> {
+    sqlx::query("DELETE FROM board_queue WHERE todo_id = ?")
+        .bind(&todo_id)
+        .execute(db.inner())
+        .await
+        .map_err(|e| e.to_string())?;
+    let _ = app.emit(BOARD_CHANGED_EVENT, ());
+    Ok(())
+}
+
+/// The queue in the order todos were added; done todos drop out.
+#[tauri::command]
+pub async fn board_queue_list(db: State<'_, Db>) -> Result<Vec<QueuedTodo>, String> {
+    load_queue(db.inner()).await
+}
+
+pub async fn load_queue(db: &Db) -> Result<Vec<QueuedTodo>, String> {
+    let rows = sqlx::query(
+        "SELECT t.id, t.text, t.status, t.done, t.project_id, p.name AS project_name, q.added_at
+         FROM board_queue q JOIN todos t ON t.id = q.todo_id
+         LEFT JOIN projects p ON p.id = t.project_id
+         WHERE t.done = 0 ORDER BY q.added_at",
+    )
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(rows
+        .iter()
+        .map(|r| QueuedTodo {
+            todo: BoardTodo {
+                id: r.get("id"),
+                text: r.get("text"),
+                status: r.get("status"),
+                done: r.get::<i64, _>("done") != 0,
+            },
+            project_id: r.get("project_id"),
+            project_name: r.get("project_name"),
+            added_at: r.get("added_at"),
+        })
+        .collect())
 }
 
 async fn project_names(db: &Db) -> Result<HashMap<String, String>, String> {
@@ -526,6 +600,33 @@ mod tests {
         assert_eq!(board.items[0].role, "worker");
         assert_eq!(board.items[0].todo.as_ref().map(|t| t.text.as_str()), Some("Fix login"));
         assert!(board.queued.is_empty());
+    }
+
+    #[tokio::test]
+    async fn the_queue_lists_open_todos_in_added_order() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        for sql in [
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('p', 'shop', '/tmp/p', 'c')",
+            "INSERT INTO todos (id, text, done, position, created_at, project_id) VALUES ('a', 'A', 0, 0, 'c', 'p')",
+            "INSERT INTO todos (id, text, done, position, created_at, project_id) VALUES ('b', 'B', 0, 1, 'c', 'p')",
+            "INSERT INTO todos (id, text, done, position, created_at, project_id) VALUES ('d', 'Done', 1, 2, 'c', 'p')",
+            "INSERT INTO board_queue (todo_id, added_at) VALUES ('b', '2026-01-01T00:00:01Z')",
+            "INSERT INTO board_queue (todo_id, added_at) VALUES ('a', '2026-01-01T00:00:02Z')",
+            "INSERT INTO board_queue (todo_id, added_at) VALUES ('d', '2026-01-01T00:00:03Z')",
+        ] {
+            sqlx::query(sql).execute(&db).await.unwrap();
+        }
+        let q = load_queue(&db).await.unwrap();
+        assert_eq!(q.iter().map(|x| x.todo.id.as_str()).collect::<Vec<_>>(), ["b", "a"]);
+        assert_eq!(q[0].project_name.as_deref(), Some("shop"));
+        // Deleting a todo takes it out of the queue too.
+        sqlx::query("DELETE FROM todos WHERE id = 'b'").execute(&db).await.unwrap();
+        assert_eq!(load_queue(&db).await.unwrap().len(), 1);
     }
 
     #[test]

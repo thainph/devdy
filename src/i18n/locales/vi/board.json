@@ -8,7 +8,7 @@
   "summary": "{workers} nhân viên · {queued} todo đang chờ",
   "otherPending": "Session khác đang chờ bạn",
   "emptyTitle": "Chưa có lô todo nào",
-  "emptyBody": "Bấm 🚀 \"Bắt đầu với AI\" trên một todo, hoặc mở cửa sổ Todo và bấm nút 🤖 \"Giao cho AI\" (hoặc nút 🤖 trên một nhóm dự án), chọn các todo rồi bắt đầu. Bảng này sẽ hiện trạng thái từng việc để bạn duyệt quyền, trả lời câu hỏi và review kết quả.",
+  "emptyBody": "Ở màn Todo, bấm nút ➕ \"Thêm vào Batch Board\" trên các todo muốn giao cho AI. Chúng vào hàng chờ ở đây; bạn chọn cách chạy rồi bấm Chạy, sau đó theo dõi, duyệt quyền và review kết quả ngay trên bảng này. Session mở bằng nút 🚀 cũng hiện ở mục \"Việc lẻ\".",
   "lanes": {
     "needs": "Cần bạn",
     "running": "Đang làm",
@@ -48,11 +48,8 @@
   "discardMessage": "Bỏ kết quả của việc này? Todo sẽ quay về trạng thái chưa làm.",
   "discardMessageWorktree": "Bỏ kết quả? Bản sao và nhánh {branch} sẽ bị xoá (kể cả commit chưa push), todo quay về trạng thái chưa làm.",
   "start": {
-    "title": "Giao todo cho AI",
     "hint": "Một AI quản lý sẽ chia việc: mỗi todo một AI nhân viên chạy trong đúng dự án của nó (đủ cấu hình, rules, tài khoản). Bạn theo dõi và duyệt quyền ở Batch Board.",
     "pickAll": "Chọn {n}/{total} todo",
-    "noProject": "chưa có dự án",
-    "none": "Không có todo nào đang mở.",
     "parallel": "Số việc chạy cùng lúc",
     "permission": "Quyền của AI nhân viên",
     "permissionDefault": "Mặc định của dự án",
@@ -83,5 +80,9 @@
   "mobilePending": "Đang chờ bạn",
   "discardMessageCommits": "Bỏ kết quả? Nhánh {branch} có {n} commit — nếu chưa push, chúng sẽ MẤT cùng bản sao. Muốn giữ thì bấm \"Push & tạo PR\" trước. Todo quay về trạng thái chưa làm.",
   "solo": "Việc lẻ (Bắt đầu với AI)",
-  "soloHint": "{n} session mở từ nút 🚀 trong 30 ngày qua"
+  "soloHint": "{n} session mở từ nút 🚀 trong 30 ngày qua",
+  "queue": {
+    "title": "Hàng chờ",
+    "remove": "Bỏ khỏi hàng chờ"
+  }
 }

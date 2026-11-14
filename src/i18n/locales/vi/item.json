@@ -110,6 +110,7 @@
   "sortByProject": "Theo dự án",
   "sortByUpdated": "Mới sửa gần đây",
   "sortByTitle": "Tiêu đề (A–Z)",
-  "batchAll": "Giao các todo đang hiện cho AI",
-  "batchFolder": "Giao todo của dự án này cho AI"
+  "addToBoard": "Thêm vào Batch Board (chọn cách chạy và theo dõi ở đó)",
+  "addedToBoard": "Đã thêm vào hàng chờ của Batch Board",
+  "addToBoardNeedsProject": "Hãy chọn dự án cho todo này trước khi thêm vào Batch Board."
 }

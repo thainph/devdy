@@ -8,7 +8,7 @@
   "summary": "{workers} workers · {queued} todos queued",
   "otherPending": "Other sessions waiting for you",
   "emptyTitle": "No todo batch yet",
-  "emptyBody": "Press 🚀 \"Start with AI\" on a todo, or open the Todos window and press 🤖 \"Hand to AI\" (or 🤖 on a project folder), pick todos and start. This board then shows every task so you can answer permissions and questions and review the results.",
+  "emptyBody": "On the todo screen, press ➕ \"Add to Batch Board\" on the todos to hand to AI. They land in the queue here; pick how to run them and press Run, then follow, answer permissions and review the results right on this board. Sessions started with 🚀 also show under \"Single tasks\".",
   "lanes": {
     "needs": "Needs you",
     "running": "In progress",
@@ -48,11 +48,8 @@
   "discardMessage": "Discard this task's result? The todo goes back to not started.",
   "discardMessageWorktree": "Discard the result? The worktree and branch {branch} are deleted (unpushed commits included) and the todo goes back to not started.",
   "start": {
-    "title": "Hand todos to AI",
     "hint": "A conductor splits the work: one worker per todo, each in its todo's own project (settings, rules, accounts). Follow along and answer permissions on the Batch Board.",
     "pickAll": "{n}/{total} todos picked",
-    "noProject": "no project",
-    "none": "No open todos.",
     "parallel": "Tasks at once",
     "permission": "Worker permissions",
     "permissionDefault": "Project default",
@@ -83,5 +80,9 @@
   "mobilePending": "Waiting for you",
   "discardMessageCommits": "Discard the result? Branch {branch} has {n} commits — if they are not pushed they are LOST with the worktree. Use \"Push & open PR\" first to keep them. The todo goes back to not started.",
   "solo": "Single tasks (Start with AI)",
-  "soloHint": "{n} sessions started with 🚀 in the last 30 days"
+  "soloHint": "{n} sessions started with 🚀 in the last 30 days",
+  "queue": {
+    "title": "Queue",
+    "remove": "Remove from the queue"
+  }
 }
