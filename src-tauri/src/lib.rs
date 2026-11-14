@@ -136,7 +136,7 @@ use commands::focus_ai::{
 };
 use commands::todo_batch::{
     board_batches, board_close_item, board_items, board_queue_add, board_queue_list, board_queue_remove,
-    list_all_pending_permissions, todo_batch_start,
+    board_overview, board_run, list_all_pending_permissions,
     worktree_commit_all, worktree_push,
 };
 use commands::worktrees::{
@@ -709,7 +709,8 @@ pub fn run() {
             worktree_remove,
             get_project_worktree_settings,
             set_project_worktree_settings,
-            todo_batch_start,
+            board_run,
+            board_overview,
             board_queue_add,
             board_queue_remove,
             board_queue_list,

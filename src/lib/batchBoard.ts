@@ -79,6 +79,61 @@ export interface BoardData {
   queued: BoardQueuedTodo[]
 }
 
+/** One batch (a project's conductor + its workers) on the board overview. */
+export interface BoardGroup extends BoardData {
+  batch: BatchSummary
+  /** Still going on or waiting for the user; finished ones go to the history. */
+  active: boolean
+}
+
+/** Why a todo couldn't be queued / run (backend `SkippedTodo`). */
+export interface SkippedTodo {
+  id: string
+  reason: 'not_found' | 'done' | 'no_project' | 'in_progress'
+}
+
+export interface QueueAddResult {
+  added: number
+  skipped: SkippedTodo[]
+}
+
+/** `board_run`: one conductor started per project. */
+export interface BoardRunResult {
+  started: { runId: string; projectId: string; projectName: string; todoCount: number }[]
+  failed: { projectId: string; projectName: string; error: string }[]
+  skipped: SkippedTodo[]
+}
+
+/** Options of a board run, shared by every project's conductor. */
+export interface BoardRunOptions {
+  maxParallel: number
+  isolation: 'rules' | 'devdy' | 'none'
+  engine: string | null
+  permissionMode: string | null
+}
+
+export interface QueueGroup {
+  projectId: string
+  projectName: string
+  todos: QueuedTodo[]
+}
+
+/**
+ * The queue by project — each project gets its own conductor when run.
+ * Projects A–Z, todos in the order they were added; todos without a project
+ * (can't happen through the queue command) are left out.
+ */
+export function groupQueueByProject(queue: QueuedTodo[]): QueueGroup[] {
+  const map = new Map<string, QueueGroup>()
+  for (const q of queue) {
+    if (!q.projectId) continue
+    const g = map.get(q.projectId)
+    if (g) g.todos.push(q)
+    else map.set(q.projectId, { projectId: q.projectId, projectName: q.projectName ?? q.projectId, todos: [q] })
+  }
+  return [...map.values()].sort((a, b) => a.projectName.localeCompare(b.projectName))
+}
+
 export interface BatchSummary {
   runId: string
   title: string | null
@@ -107,7 +162,7 @@ export const LANES: Lane[] = ['needs', 'alert', 'running', 'review', 'failed', '
 /**
  * Which lane a worker belongs in. A prompt beats everything (the session is
  * blocked on the user); a finished worker waits for review until its todo is
- * done or its worktree is gone.
+ * done, discarded (back to "todo") or its worktree is gone.
  */
 export function laneOf(item: BoardItem, live: LiveState | undefined): Lane {
   if (live && live.pending > 0) return 'needs'
@@ -117,6 +172,8 @@ export function laneOf(item: BoardItem, live: LiveState | undefined): Lane {
   if (item.worktree?.removedAt) return 'closed'
   if (status === 'failed' || status === 'cancelled') return 'failed'
   if (status === 'fetched') return 'running'
+  // Discarded on the board: the todo went back to "todo" (a finished turn leaves it "waiting").
+  if (item.todo?.status === 'todo') return 'closed'
   return 'review'
 }
 

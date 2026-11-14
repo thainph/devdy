@@ -35,6 +35,7 @@ import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, openPrInboxWindow, ty
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
+import { BOARD_OPEN_ROUTE } from '@/lib/batchBoard'
 import {
   SLACK_API_RECEIVED,
   type SlackApiReceived,
@@ -360,6 +361,7 @@ let unlistenSlackRoute: UnlistenFn | null = null
 let unlistenPrInboxRoute: UnlistenFn | null = null
 let unlistenCalendarRoute: UnlistenFn | null = null
 let unlistenRadarRoute: UnlistenFn | null = null
+let unlistenBoardRoute: UnlistenFn | null = null
 
 // Listeners for the Slack / Notes / Todos windows opening a linked session or
 // starting a new one (lib/sessionLinks).
@@ -504,6 +506,8 @@ onBeforeUnmount(() => {
   unlistenCalendarRoute = null
   unlistenRadarRoute?.()
   unlistenRadarRoute = null
+  unlistenBoardRoute?.()
+  unlistenBoardRoute = null
   unlistenWindowRun?.()
   unlistenWindowRun = null
   unlistenWindowNewSession?.()
@@ -755,6 +759,15 @@ onMounted(async () => {
   // Same for the Delivery Radar window (e.g. "Open settings" → a project's settings).
   try {
     unlistenRadarRoute = await listen<DeliveryRadarOpenRoute>(DELIVERY_RADAR_OPEN_ROUTE, (e) => {
+      void openRouteFromWindow(e.payload?.path)
+    })
+  } catch {
+    // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // Same for the Todos window ("Open Batch Board").
+  try {
+    unlistenBoardRoute = await listen<{ path?: string }>(BOARD_OPEN_ROUTE, (e) => {
       void openRouteFromWindow(e.payload?.path)
     })
   } catch {

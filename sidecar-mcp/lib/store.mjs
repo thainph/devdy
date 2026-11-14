@@ -631,7 +631,29 @@ export function clearDoneTodos() {
  */
 export function setTodoProject({ id, ids, scope = 'project', project } = {}) {
   const projectId = targetProjectId({ scope, project }, { strict: true });
+  // A todo being worked on can't move: its workers run in its current project
+  // (mirrors TODO_BUSY_SQL in src-tauri/src/commands/todo_batch.rs).
+  const busy = normIds(ids ?? id).filter((tid) => todoBusy(tid, projectId));
+  if (busy.length) {
+    throw new Error(`todo_busy: ${busy.join(', ')} is being worked on — stop its session / batch before moving it to another project`);
+  }
   return setRowsProject('todos', 'todo', ids ?? id, projectId, nowRfc3339());
+}
+
+/** A session runs on the todo, or a live todo batch holds it (and it would move). */
+function todoBusy(todoId, projectId) {
+  const row = db()
+    .prepare(
+      `SELECT 1 AS busy FROM todos t WHERE t.id = ?1 AND t.project_id IS NOT ?2 AND (
+         EXISTS (SELECT 1 FROM todo_runs ir JOIN runs r ON r.id = ir.run_id
+                 WHERE ir.todo_id = ?1 AND ir.source = 'created_from_item' AND r.status IN ('running', 'fetched'))
+         OR (t.done = 0 AND EXISTS (
+           SELECT 1 FROM todo_batch_items b WHERE b.todo_id = ?1 AND (
+             EXISTS (SELECT 1 FROM runs c WHERE c.id = b.batch_run_id AND c.status IN ('running', 'fetched'))
+             OR EXISTS (SELECT 1 FROM runs w WHERE w.conductor_run_id = b.batch_run_id AND w.status IN ('running', 'fetched'))))))`,
+    )
+    .get(todoId, projectId);
+  return !!row;
 }
 
 export function reorderTodos({ ids } = {}) {

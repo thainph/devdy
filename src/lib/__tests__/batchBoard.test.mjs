@@ -2,7 +2,7 @@
 // Run: node --test src/lib/__tests__/batchBoard.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { commitMessageFor, diffParts, groupByLane, laneOf, lastActivity, roleLabel } from '../batchBoard.ts'
+import { commitMessageFor, diffParts, groupByLane, groupQueueByProject, laneOf, lastActivity, roleLabel } from '../batchBoard.ts'
 
 const item = (over = {}) => ({
   runId: 'r1',
@@ -75,4 +75,23 @@ test('commitMessageFor uses the todo first line, capped', () => {
   assert.equal(commitMessageFor(item()), 'Fix login')
   assert.equal(commitMessageFor(item({ todo: null, title: null })), 'Devdy task')
   assert.equal(commitMessageFor(item({ todo: { id: 't', text: 'x'.repeat(100), status: '', done: false } })).length, 72)
+})
+
+test('groupQueueByProject: one group per project, A–Z, todos in added order', () => {
+  const q = (id, projectId, projectName) => ({ todo: { id, text: id, status: 'todo', done: false }, projectId, projectName, addedAt: '' })
+  const groups = groupQueueByProject([q('a', 'p2', 'shop'), q('b', 'p1', 'admin'), q('c', 'p2', 'shop'), q('x', null, null)])
+  assert.deepEqual(
+    groups.map((g) => [g.projectId, g.projectName, g.todos.map((t) => t.todo.id)]),
+    [['p1', 'admin', ['b']], ['p2', 'shop', ['a', 'c']]],
+  )
+})
+
+test('laneOf: a discarded result (todo back to "todo") is closed, not waiting for review', () => {
+  assert.equal(laneOf(item({ todo: { id: 't', text: 'x', status: 'todo', done: false } }), undefined), 'closed')
+  assert.equal(laneOf(item({ todo: { id: 't', text: 'x', status: 'waiting', done: false } }), undefined), 'review')
+  // Still running: it stays in its live lane whatever the todo says.
+  assert.equal(laneOf(item({ status: 'running', todo: { id: 't', text: 'x', status: 'todo', done: false } }), undefined), 'running')
+  // A failed / not yet started run keeps its own lane.
+  assert.equal(laneOf(item({ status: 'failed', todo: { id: 't', text: 'x', status: 'todo', done: false } }), undefined), 'failed')
+  assert.equal(laneOf(item({ status: 'fetched', todo: { id: 't', text: 'x', status: 'todo', done: false } }), undefined), 'running')
 })

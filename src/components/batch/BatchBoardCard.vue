@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// One worker of a todo batch on the Batch Board: its todo, project, branch and
-// diff, what it did last, and the actions of its lane. A pending permission
-// prompt / question is answered right on the card.
+// One worker of a todo batch on the Batch Board: its todo, branch and diff, what
+// it did last, and the actions of its lane. A pending permission prompt /
+// question is answered right on the card; to chat with it, open its session.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -10,7 +10,6 @@ import {
   ExternalLink,
   GitBranch,
   GitCommitHorizontal,
-  MessageSquare,
   Square,
   Trash2,
   Upload,
@@ -26,11 +25,12 @@ const props = defineProps<{
   lane: Lane
   /** An action on this card is in flight. */
   busy?: boolean
+  /** Name the project (solo sessions; a batch's section already does). */
+  showProject?: boolean
 }>()
 
 const emit = defineEmits<{
   open: []
-  message: []
   stop: []
   commit: []
   push: []
@@ -76,8 +76,8 @@ function answer(answers: Record<string, string>) {
 
 <template>
   <Card body-class="p-3 space-y-2" :class="lane === 'needs' ? 'ring-1 ring-primary/50' : ''">
-    <div class="flex items-center gap-1.5 min-w-0">
-      <Badge size="xs" tone="neutral" class="shrink-0 max-w-[45%] truncate" :title="item.projectName">{{ item.projectName }}</Badge>
+    <div v-if="showProject || role || item.costUsd > 0" class="flex items-center gap-1.5 min-w-0">
+      <Badge v-if="showProject" size="xs" tone="neutral" class="shrink-0 max-w-[45%] truncate" :title="item.projectName">{{ item.projectName }}</Badge>
       <span v-if="role" class="truncate text-[10px] text-muted-foreground">{{ role }}</span>
       <span v-if="item.costUsd > 0" class="ml-auto shrink-0 font-mono text-[10px] text-muted-foreground">${{ item.costUsd.toFixed(2) }}</span>
     </div>
@@ -127,9 +127,6 @@ function answer(answers: Record<string, string>) {
     <div class="flex flex-wrap items-center gap-1 pt-0.5">
       <Button variant="outline" size="xs" @click="emit('open')">
         <ExternalLink class="h-3 w-3" :stroke-width="2" />{{ t('board.open') }}
-      </Button>
-      <Button variant="outline" size="xs" :disabled="busy" @click="emit('message')">
-        <MessageSquare class="h-3 w-3" :stroke-width="2" />{{ t('board.message') }}
       </Button>
       <template v-if="lane === 'running' || lane === 'alert' || lane === 'needs'">
         <Button variant="destructive-ghost" size="xs" :disabled="busy" @click="emit('stop')">

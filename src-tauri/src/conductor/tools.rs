@@ -89,16 +89,110 @@ pub async fn dispatch(
     }
 }
 
-/// A project by id, else by name (case-insensitive).
+/// A project by id, else by name (case-insensitive). A name two projects share
+/// is refused: guessing could run a worker in the wrong project.
 async fn resolve_project(db: &Db, key: &str) -> Result<String, String> {
-    sqlx::query_scalar::<_, String>(
-        "SELECT id FROM projects WHERE id = ?1 OR lower(name) = lower(?1) ORDER BY id = ?1 DESC LIMIT 1",
+    let by_id = sqlx::query_scalar::<_, String>("SELECT id FROM projects WHERE id = ?")
+        .bind(key)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if let Some(id) = by_id {
+        return Ok(id);
+    }
+    let ids = sqlx::query_scalar::<_, String>("SELECT id FROM projects WHERE lower(name) = lower(?)")
+        .bind(key)
+        .fetch_all(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    match ids.as_slice() {
+        [id] => Ok(id.clone()),
+        [] => Err(format!("unknown project `{key}` — use projects_list for ids/names")),
+        _ => Err(format!("ambiguous project `{key}`: {} projects share that name — pass the project id", ids.len())),
+    }
+}
+
+/// A session linked to an open todo that has since moved to another project (or
+/// lost its project) must not go on: it would keep working on that todo in the
+/// old project's checkout. Sessions of done todos can still be reopened.
+pub(crate) async fn ensure_worker_in_todo_project(db: &Db, run_id: &str) -> Result<(), String> {
+    let moved: Option<String> = sqlx::query_scalar(
+        "SELECT t.id FROM runs r
+         JOIN todo_runs ir ON ir.run_id = r.id AND ir.source = 'created_from_item'
+         JOIN todos t ON t.id = ir.todo_id
+         WHERE r.id = ? AND t.done = 0 AND t.project_id IS NOT r.project_id
+         LIMIT 1",
     )
-    .bind(key)
+    .bind(run_id)
     .fetch_optional(db)
     .await
-    .map_err(|e| e.to_string())?
-    .ok_or_else(|| format!("unknown project `{key}` — use projects_list for ids/names"))
+    .map_err(|e| e.to_string())?;
+    match moved {
+        Some(todo_id) => Err(format!(
+            "wrong_project: todo `{todo_id}` moved to another project — this worker can't go on with it here"
+        )),
+        None => Ok(()),
+    }
+}
+
+/// The todos of a todo batch when this conductor runs one (`runs.todo_batch`),
+/// else None.
+async fn batch_todo_ids(db: &Db, conductor_run_id: &str) -> Result<Option<Vec<String>>, String> {
+    let is_batch: Option<i64> = sqlx::query_scalar("SELECT todo_batch FROM runs WHERE id = ?")
+        .bind(conductor_run_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    if is_batch.unwrap_or(0) == 0 {
+        return Ok(None);
+    }
+    sqlx::query_scalar("SELECT todo_id FROM todo_batch_items WHERE batch_run_id = ?")
+        .bind(conductor_run_id)
+        .fetch_all(db)
+        .await
+        .map(Some)
+        .map_err(|e| e.to_string())
+}
+
+/// The project a worker runs in. Never the wrong one:
+/// - a todo batch's conductor works on its own project's todos only, so its
+///   workers always run in that project, take only the batch's todos, and any
+///   other `project` / a todo now in another project is refused;
+/// - otherwise a todo pins the worker to the todo's project (a different
+///   explicit `project` is refused), then the explicit project, then the
+///   conductor's.
+pub(crate) fn worker_project(
+    conductor_project: &str,
+    batch_todos: Option<&[String]>,
+    todo: Option<(&str, Option<&str>)>,
+    explicit: Option<&str>,
+) -> Result<String, String> {
+    if let Some(batch) = batch_todos {
+        if let Some(p) = explicit.filter(|p| *p != conductor_project) {
+            return Err(format!(
+                "wrong_project: this todo batch works in project `{conductor_project}` only — workers can't run in `{p}`"
+            ));
+        }
+        if let Some((id, project)) = todo {
+            if !batch.iter().any(|b| b == id) {
+                return Err(format!("todo_not_in_batch: todo `{id}` is not part of this batch — work only on the todos you were given"));
+            }
+            if project != Some(conductor_project) {
+                return Err(format!(
+                    "wrong_project: todo `{id}` is no longer in this batch's project — skip it and tell the human"
+                ));
+            }
+        }
+        return Ok(conductor_project.to_string());
+    }
+    match (todo.and_then(|(_, p)| p), explicit) {
+        (Some(tp), Some(p)) if tp != p => Err(format!(
+            "wrong_project: the todo belongs to project `{tp}`, not `{p}` — omit `project` to run it in the todo's project"
+        )),
+        (Some(tp), _) => Ok(tp.to_string()),
+        (None, Some(p)) => Ok(p.to_string()),
+        (None, None) => Ok(conductor_project.to_string()),
+    }
 }
 
 fn db(state: &HttpState) -> Db {
@@ -145,19 +239,24 @@ async fn session_spawn(
         None => crate::commands::settings::resolve_default_engine(&db).await,
     };
 
-    // Todo batches: the worker can work on a todo, in another project, in its
-    // own worktree. Project = explicit `project` > the todo's > the conductor's.
+    // Todo batches: the worker can work on a todo, in its own worktree. A worker
+    // never runs outside its todo's project, and a todo batch's workers never
+    // leave the batch's project (see `worker_project`).
     let todo = match arg_str(&args, "todo_id") {
         Some(id) => Some(crate::commands::todos::get_todo(&db, &id).await?),
         None => None,
     };
-    let project_id = match arg_str(&args, "project") {
-        Some(p) => resolve_project(&db, &p).await?,
-        None => todo
-            .as_ref()
-            .and_then(|t| t.project_id.clone())
-            .unwrap_or_else(|| session.project_id.clone()),
+    let explicit = match arg_str(&args, "project") {
+        Some(p) => Some(resolve_project(&db, &p).await?),
+        None => None,
     };
+    let batch = batch_todo_ids(&db, conductor_run_id).await?;
+    let project_id = worker_project(
+        &session.project_id,
+        batch.as_deref(),
+        todo.as_ref().map(|t| (t.id.as_str(), t.project_id.as_deref())),
+        explicit.as_deref(),
+    )?;
     let use_worktree = args.get("worktree").and_then(|v| v.as_bool()).unwrap_or(false);
     // Prepared before taking the start guard: fetch + setup can take minutes and
     // must not hold up other spawns.
@@ -194,6 +293,34 @@ async fn session_spawn(
             return Err(e);
         }
     };
+
+    // Preparing the worktree can take minutes: the todo may have moved to another
+    // project (or the batch changed) meanwhile. Decide again on fresh data, right
+    // before the worker exists.
+    if let Some(t) = &todo {
+        let fresh = match crate::commands::todos::get_todo(&db, &t.id).await {
+            Ok(f) => f,
+            Err(e) => {
+                drop_worktree(db.clone(), worktree).await;
+                return Err(e);
+            }
+        };
+        let batch = batch_todo_ids(&db, conductor_run_id).await;
+        let again = batch.and_then(|b| {
+            worker_project(&session.project_id, b.as_deref(), Some((fresh.id.as_str(), fresh.project_id.as_deref())), explicit.as_deref())
+        });
+        match again {
+            Ok(p) if p == project_id => {}
+            Ok(_) => {
+                drop_worktree(db.clone(), worktree).await;
+                return Err(format!("wrong_project: todo `{}` moved to another project while the worker was being prepared — spawn it again", t.id));
+            }
+            Err(e) => {
+                drop_worktree(db.clone(), worktree).await;
+                return Err(e);
+            }
+        }
+    }
 
     let worker_id = uuid::Uuid::new_v4().to_string();
     let now = chrono::Utc::now().to_rfc3339();
@@ -485,6 +612,7 @@ async fn session_send(
     let db = db(state);
     let reg = registry(state);
     let status = worker_status(&db, &worker_id).await?;
+    ensure_worker_in_todo_project(&db, &worker_id).await?;
 
     // A worker's turn ends by exiting its sidecar, so a follow-up first resumes
     // the session, then delivers the message — mirroring the desktop composer.
@@ -922,5 +1050,35 @@ mod reply_tests {
         let p = write_log(&[assistant("only")]);
         assert_eq!(extract_latest_reply(&p), "only");
         assert_eq!(extract_latest_reply(std::path::Path::new("/nonexistent/devdy.log")), "");
+    }
+}
+
+#[cfg(test)]
+mod worker_project_tests {
+    use super::worker_project;
+
+    #[test]
+    fn a_batch_never_leaves_its_project() {
+        let batch = vec!["t1".to_string(), "t2".to_string()];
+        let b = Some(batch.as_slice());
+        assert_eq!(worker_project("shop", b, Some(("t1", Some("shop"))), None).unwrap(), "shop");
+        // A helper without a todo stays in the batch's project too.
+        assert_eq!(worker_project("shop", b, None, None).unwrap(), "shop");
+        assert_eq!(worker_project("shop", b, None, Some("shop")).unwrap(), "shop");
+        assert!(worker_project("shop", b, None, Some("admin")).unwrap_err().starts_with("wrong_project"));
+        // A todo outside the batch, or moved to another project since.
+        assert!(worker_project("shop", b, Some(("t9", Some("shop"))), None).unwrap_err().starts_with("todo_not_in_batch"));
+        assert!(worker_project("shop", b, Some(("t2", Some("admin"))), None).unwrap_err().starts_with("wrong_project"));
+        assert!(worker_project("shop", b, Some(("t2", None)), None).unwrap_err().starts_with("wrong_project"));
+    }
+
+    #[test]
+    fn a_todo_pins_the_worker_to_its_project() {
+        assert_eq!(worker_project("home", None, Some(("t", Some("shop"))), None).unwrap(), "shop");
+        assert_eq!(worker_project("home", None, Some(("t", Some("shop"))), Some("shop")).unwrap(), "shop");
+        assert!(worker_project("home", None, Some(("t", Some("shop"))), Some("admin")).unwrap_err().starts_with("wrong_project"));
+        assert_eq!(worker_project("home", None, Some(("t", None)), Some("admin")).unwrap(), "admin");
+        assert_eq!(worker_project("home", None, None, Some("admin")).unwrap(), "admin");
+        assert_eq!(worker_project("home", None, None, None).unwrap(), "home");
     }
 }

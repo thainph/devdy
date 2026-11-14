@@ -223,6 +223,19 @@ check(out['note-home'] === `Note ${noteId} is now in project "proj" (${PROJECT})
   'notes_set_project: back to the current project');
 check(row(full).project_id === null && out['note-global'].includes('global (no project)'), 'todos_set_project: scope=global detaches');
 
+// A todo a session is working on can't move to another project (its worker runs in the current one).
+db.prepare("INSERT INTO runs (id, project_id, type, status, created_at) VALUES ('busy-run', 'proj-2', 'session', 'running', ?)").run(T0);
+db.prepare("INSERT INTO todo_runs (todo_id, run_id, project_id, source, linked_at) VALUES ('old', 'busy-run', 'proj-2', 'created_from_item', ?)").run(T0);
+out = await drive([
+  ['busy-move', 'todos_set_project', { id: 'old', scope: 'global' }],
+  ['busy-same', 'todos_set_project', { id: 'old', project: 'proj-2' }],
+]);
+check(out['busy-move'].includes('todo_busy') && row('old').project_id === 'proj-2', 'todos_set_project: a todo being worked on stays put');
+check(out['busy-same'].includes('Other App'), 'todos_set_project: "moving" it to its own project is fine');
+db.prepare("UPDATE runs SET status = 'done' WHERE id = 'busy-run'").run();
+out = await drive([['free-move', 'todos_set_project', { id: 'old', scope: 'global' }]]);
+check(row('old').project_id === null, 'todos_set_project: moves again once the session stopped');
+
 db.close();
 rmSync(appData, { recursive: true, force: true });
 if (failures.length) {

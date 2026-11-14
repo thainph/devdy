@@ -8,7 +8,7 @@
   "summary": "{workers} workers · {queued} todos queued",
   "otherPending": "Other sessions waiting for you",
   "emptyTitle": "No todo batch yet",
-  "emptyBody": "On the todo screen, press ➕ \"Add to Batch Board\" on the todos to hand to AI. They land in the queue here; pick how to run them and press Run, then follow, answer permissions and review the results right on this board. Sessions started with 🚀 also show under \"Single tasks\".",
+  "emptyBody": "On the todo screen, hover a todo and press the board icon (or the one on a project's header to add all its todos). They wait in the queue here, grouped by project. Press Run: each project gets its own conductor, working in that project only, that spawns workers for its todos. Follow, answer permissions and review the results here; to chat with a conductor, open its session. Sessions started with 🚀 show under \"Single tasks\".",
   "lanes": {
     "needs": "Needs you",
     "running": "In progress",
@@ -48,7 +48,7 @@
   "discardMessage": "Discard this task's result? The todo goes back to not started.",
   "discardMessageWorktree": "Discard the result? The worktree and branch {branch} are deleted (unpushed commits included) and the todo goes back to not started.",
   "start": {
-    "hint": "A conductor splits the work: one worker per todo, each in its todo's own project (settings, rules, accounts). Follow along and answer permissions on the Batch Board.",
+    "hint": "Each project gets its own conductor, working in that project only: it spawns one worker per todo there (the project's settings, rules and accounts). Todos are never run in another project.",
     "pickAll": "{n}/{total} todos picked",
     "parallel": "Tasks at once",
     "permission": "Worker permissions",
@@ -58,7 +58,7 @@
     "permissionBypass": "Skip all permission prompts (dangerous)",
     "engine": "Engine",
     "engineDefault": "Default",
-    "submit": "Hand over {n} todos",
+    "submit": "Run {n} todo · {projects} project(s) | Run {n} todos · {projects} project(s)",
     "starting": "Starting…",
     "isolation": "Keeping workers apart",
     "isolationRules": "Project rules",
@@ -68,6 +68,15 @@
       "rules": "Each worker creates its own worktree / branch the way its project’s rules & skills say (e.g. project-docs-structure) before editing — works for any project layout, including a workspace around its repos. Projects without such a convention run one task at a time.",
       "devdy": "Devdy creates .devdy/worktrees/<name> from the latest code for each task. Only for project folders that are a git repository root; other projects fall back to \"Project rules\".",
       "none": "Work right in the project folder, one task per project at a time."
+    },
+    "options": "Options",
+    "started": "Started {n} conductor | Started {n} conductors (one per project)",
+    "skipped": "{n} todo skipped | {n} todos skipped",
+    "skippedReason": {
+      "done": "{n} done | {n} done",
+      "no_project": "{n} without a project | {n} without a project",
+      "in_progress": "{n} already being worked on | {n} already being worked on",
+      "not_found": "{n} not found | {n} not found"
     }
   },
   "mobileLanes": {
@@ -84,5 +93,10 @@
   "queue": {
     "title": "Queue",
     "remove": "Remove from the queue"
-  }
+  },
+  "openConductor": "Open session",
+  "openConductorTitle": "Open this project's conductor session (chat with it there)",
+  "stopConductorTitle": "Stop the conductor (its running workers keep going)",
+  "nothingActive": "Nothing in progress. Finished batches are in the history below.",
+  "history": "History ({n})"
 }

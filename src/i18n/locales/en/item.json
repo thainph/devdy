@@ -110,7 +110,14 @@
   "sortByProject": "By project",
   "sortByUpdated": "Recently edited",
   "sortByTitle": "Title (A–Z)",
-  "addToBoard": "Add to Batch Board (pick how to run it and follow it there)",
-  "addedToBoard": "Added to the Batch Board queue",
-  "addToBoardNeedsProject": "Pick a project for this todo before adding it to the Batch Board."
+  "addToBoard": "Add to Batch Board (run it there, one conductor per project)",
+  "addedToBoard": "Added to the Batch Board queue | Added {n} todos to the Batch Board queue",
+  "addToBoardNeedsProject": "Pick a project for this todo before adding it to the Batch Board. | {n} todos have no project: pick one before adding them to the Batch Board.",
+  "addToBoardShort": "Add to Batch Board",
+  "removeFromBoard": "Remove from the Batch Board queue",
+  "addGroupToBoard": "Add this project's open todos to the Batch Board",
+  "addToBoardInProgress": "Already being worked on — not queued again. | {n} todos are already being worked on — not queued again.",
+  "boardQueued": "{n} todos waiting in the Batch Board",
+  "openBoard": "Open board",
+  "moveBusy": "This todo is being worked on (a session or a Batch Board batch). Stop it before moving the todo to another project."
 }
