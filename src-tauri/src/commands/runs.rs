@@ -2805,6 +2805,9 @@ pub async fn create_handoff_run(
     fs::write(&context_path, body).map_err(|e| e.to_string())?;
     let context_path = context_path.to_string_lossy().to_string();
 
+    // A session on a todo that moved to another project can't go on, handed off or not.
+    crate::conductor::tools::ensure_worker_in_todo_project(db.inner(), &run_id).await?;
+    let mut tx = db.inner().begin().await.map_err(|e| e.to_string())?;
     sqlx::query(
         // The handed-off run keeps working in the same checkout (worktree or root).
         "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title, worktree_path)
@@ -2821,9 +2824,28 @@ pub async fn create_handoff_run(
     .bind(&now)
     .bind(src.title.as_deref())
     .bind(&run_id)
-    .execute(db.inner())
+    .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
+    // It carries on the same work: a todo batch's conductor stays one (same
+    // project-bound todos, so its `session_spawn` keeps refusing other projects /
+    // todos), and a todo session stays linked to its todo (so the project checks
+    // on resume still apply).
+    for sql in [
+        "UPDATE runs SET todo_batch = (SELECT todo_batch FROM runs WHERE id = ?2) WHERE id = ?1",
+        "INSERT OR IGNORE INTO todo_batch_items (batch_run_id, todo_id, position)
+         SELECT ?1, todo_id, position FROM todo_batch_items WHERE batch_run_id = ?2",
+        "INSERT OR IGNORE INTO todo_runs (todo_id, run_id, project_id, source, linked_at)
+         SELECT todo_id, ?1, project_id, source, linked_at FROM todo_runs WHERE run_id = ?2 AND source = 'created_from_item'",
+    ] {
+        sqlx::query(sql)
+            .bind(&new_id)
+            .bind(&run_id)
+            .execute(&mut *tx)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
+    tx.commit().await.map_err(|e| e.to_string())?;
 
     Ok(HandoffResult {
         run: RunRecord {
@@ -3630,6 +3652,10 @@ pub(crate) async fn resume_run_with(
     stamp_activity: bool,
 ) -> Result<(), String> {
     use sqlx::Row;
+
+    // Every resume path (desktop, Remote Control, a conductor's session_send):
+    // a session working on a todo that moved to another project stops here.
+    crate::conductor::tools::ensure_worker_in_todo_project(db.inner(), &run_id).await?;
 
     let row = sqlx::query(
         "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, r.claude_account_id, p.path as project_path,

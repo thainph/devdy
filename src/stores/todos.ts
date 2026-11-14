@@ -75,8 +75,9 @@ export const useTodosStore = defineStore('todos', () => {
     try {
       await invoke('set_todo_project', { id, projectId })
     } catch (e) {
-      error.value = String(e)
+      // Refused (e.g. `todo_busy`: being worked on): the caller tells the user.
       if (todo) todo.project_id = prev
+      throw e
     }
   }
 

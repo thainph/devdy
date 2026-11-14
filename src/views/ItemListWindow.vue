@@ -54,6 +54,7 @@ import {
   type WindowOpenRun,
 } from '@/lib/sessionLinks'
 import { firstLine } from '@/lib/itemText'
+import { BOARD_OPEN_ROUTE, type QueueAddResult, type QueuedTodo } from '@/lib/batchBoard'
 import { refreshTray } from '@/lib/tray'
 import { secretNoteFromNote, vaultError } from '@/lib/secretVault'
 import { countFocus, latenessById, type FocusRadarStatus } from '@/lib/focusRadar'
@@ -298,7 +299,14 @@ async function setProject(next: string | null) {
   const it = item.value
   if (!it || next === it.project_id) return
   if (kind === 'note') await notes.setProject(it.id, next)
-  else await todos.setProject(it.id, next)
+  else {
+    try {
+      await todos.setProject(it.id, next)
+    } catch (e) {
+      toast.error(String(e).startsWith('todo_busy') ? t('item.moveBusy') : String(e))
+      return
+    }
+  }
   announce()
 }
 
@@ -309,16 +317,54 @@ async function setDueDate(next: string | null) {
   announce()
 }
 
-// "Add to Batch Board" (todos): queue it; how it runs is picked on the board.
-async function addToBoard() {
-  const it = item.value
-  if (kind !== 'todo' || !it) return
+// Batch Board queue (todos): the ids waiting there, shown on the rows. The board
+// groups them by project and runs one conductor per project.
+const queuedIds = ref(new Set<string>())
+async function loadQueue() {
+  if (kind !== 'todo') return
   try {
-    await invoke('board_queue_add', { todoId: it.id })
-    toast.success(t('item.addedToBoard'))
-  } catch (e) {
-    toast.error(String(e).startsWith('project_required') ? t('item.addToBoardNeedsProject') : String(e))
+    const q = await invoke<QueuedTodo[]>('board_queue_list')
+    queuedIds.value = new Set(q.map((x) => x.todo.id))
+  } catch {
+    /* the queue is a convenience here */
   }
+}
+
+/** Queue todos; tell what was added and why others weren't. */
+async function queueTodos(ids: string[]) {
+  if (kind !== 'todo' || !ids.length) return
+  try {
+    const res = await invoke<QueueAddResult>('board_queue_add', { todoIds: ids })
+    void loadQueue()
+    const noProject = res.skipped.filter((s) => s.reason === 'no_project').length
+    const busy = res.skipped.filter((s) => s.reason === 'in_progress').length
+    if (res.added) toast.success(t('item.addedToBoard', { n: res.added }, res.added))
+    if (noProject) toast.error(t('item.addToBoardNeedsProject', { n: noProject }, noProject))
+    if (busy) toast.info(t('item.addToBoardInProgress', { n: busy }, busy), 4000)
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+// "Add to Batch Board" from the header (the selected todo).
+function addToBoard() {
+  const it = item.value
+  if (kind === 'todo' && it) void queueTodos([it.id])
+}
+
+async function toggleBoard(id: string) {
+  if (!queuedIds.value.has(id)) return queueTodos([id])
+  try {
+    await invoke('board_queue_remove', { todoId: id })
+    void loadQueue()
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+// The pop-out has no app router: the main window shows the board (App.vue).
+function openBoard() {
+  void emit(BOARD_OPEN_ROUTE, { path: '/board' })
 }
 
 // "Start with AI" (todos): a session working on the todo, like the old Focus board.
@@ -581,6 +627,7 @@ onMounted(async () => {
         await getCurrentWindow().destroy()
       }),
     )
+    if (kind === 'todo') unlisten.push(await listen('board:changed', () => void loadQueue()))
     // MCP sidecar writes (notes_* / todos_*) emit no Tauri event.
     unlisten.push(
       await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -591,6 +638,7 @@ onMounted(async () => {
     /* running outside the Tauri shell */
   }
   await refresh()
+  void loadQueue()
   await nextTick()
   // A stale `id` (deleted since) falls back to the first row.
   const wanted = initialId && allRows.value.some((r) => r.id === initialId) ? initialId : null
@@ -625,6 +673,7 @@ onBeforeUnmount(() => {
       :lateness="lateness"
       :lateness-counts="latenessCounts"
       :note-counts="noteCounts"
+      :queued-ids="queuedIds"
       @select="select"
       @add="openCreate"
       @toggle-done="toggleDone"
@@ -632,6 +681,9 @@ onBeforeUnmount(() => {
       @toggle-pin="togglePin"
       @reload="reloadAll"
       @retry="reloadAll"
+      @toggle-board="toggleBoard"
+      @add-group-to-board="queueTodos"
+      @open-board="openBoard"
     />
 
     <section v-if="item" class="flex min-w-0 flex-1 flex-col">

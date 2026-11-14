@@ -110,7 +110,14 @@
   "sortByProject": "Theo dự án",
   "sortByUpdated": "Mới sửa gần đây",
   "sortByTitle": "Tiêu đề (A–Z)",
-  "addToBoard": "Thêm vào Batch Board (chọn cách chạy và theo dõi ở đó)",
-  "addedToBoard": "Đã thêm vào hàng chờ của Batch Board",
-  "addToBoardNeedsProject": "Hãy chọn dự án cho todo này trước khi thêm vào Batch Board."
+  "addToBoard": "Thêm vào Batch Board (chạy ở đó, mỗi dự án một conductor)",
+  "addedToBoard": "Đã thêm vào hàng chờ Batch Board | Đã thêm {n} todo vào hàng chờ Batch Board",
+  "addToBoardNeedsProject": "Hãy chọn dự án cho todo này trước khi thêm vào Batch Board. | {n} todo chưa có dự án: hãy chọn dự án trước khi thêm vào Batch Board.",
+  "addToBoardShort": "Thêm vào Batch Board",
+  "removeFromBoard": "Bỏ khỏi hàng chờ Batch Board",
+  "addGroupToBoard": "Thêm các todo đang mở của dự án này vào Batch Board",
+  "addToBoardInProgress": "Todo đang được làm — không thêm lại. | {n} todo đang được làm — không thêm lại.",
+  "boardQueued": "{n} todo đang chờ trong Batch Board",
+  "openBoard": "Mở board",
+  "moveBusy": "Todo này đang được làm (có session hoặc batch trên Batch Board). Hãy dừng trước khi chuyển todo sang dự án khác."
 }

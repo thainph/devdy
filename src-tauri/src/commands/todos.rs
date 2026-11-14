@@ -217,7 +217,9 @@ pub async fn add_todo_inner(app: &AppHandle, db: &Db, input: NewTodo) -> Result<
 }
 
 /// Link or unlink a todo from a project. Pass `None` to clear the link. Session
-/// links are independent of it (a session may live in another project).
+/// links are independent of it (a session may live in another project). A todo
+/// being worked on (a session running on it, or in a live todo batch) can't
+/// move: its workers run in its current project (`todo_busy: …`).
 #[tauri::command]
 pub async fn set_todo_project(
     app: AppHandle,
@@ -225,14 +227,30 @@ pub async fn set_todo_project(
     id: String,
     project_id: Option<String>,
 ) -> Result<(), String> {
-    sqlx::query("UPDATE todos SET project_id = ?, updated_at = ? WHERE id = ?")
-        .bind(&project_id)
-        .bind(now())
-        .bind(&id)
-        .execute(db.inner())
-        .await
-        .map_err(|e| e.to_string())?;
+    set_todo_project_inner(db.inner(), &id, project_id.as_deref()).await?;
     focus::emit_todos_changed(&app);
+    Ok(())
+}
+
+pub async fn set_todo_project_inner(db: &Db, id: &str, project_id: Option<&str>) -> Result<(), String> {
+    // One statement: the busy check and the move can't be split by a worker start.
+    let sql = format!(
+        "UPDATE todos SET project_id = ?2, updated_at = ?3
+         WHERE id = ?1 AND (project_id IS ?2 OR NOT ({}))",
+        crate::commands::todo_batch::TODO_BUSY_SQL
+    );
+    let moved = sqlx::query(&sql)
+        .bind(id)
+        .bind(project_id)
+        .bind(now())
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .rows_affected();
+    if moved == 0 {
+        get_todo(db, id).await?;
+        return Err("todo_busy: this todo is being worked on — stop its session / batch before moving it to another project".into());
+    }
     Ok(())
 }
 

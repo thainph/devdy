@@ -30,6 +30,7 @@ import {
   ChevronDown,
   ChevronRight,
   Folder,
+  Layers,
   Link2,
   Pin,
   PinOff,
@@ -74,6 +75,8 @@ const props = defineProps<{
   latenessCounts?: FocusRadarCounts | null
   /** Notes: counts behind the All / Linked tabs. */
   noteCounts?: { all: number; linked: number } | null
+  /** Todos: ids waiting in the Batch Board queue. */
+  queuedIds?: Set<string> | null
 }>()
 
 const search = defineModel<string>('search', { required: true })
@@ -113,6 +116,12 @@ const emit = defineEmits<{
   togglePin: []
   reload: []
   retry: []
+  /** Todos: add a todo to the Batch Board queue, or take it out. */
+  toggleBoard: [id: string]
+  /** Todos: add a project's shown open todos to the Batch Board queue. */
+  addGroupToBoard: [ids: string[]]
+  /** Todos: show the Batch Board in the main window. */
+  openBoard: []
 }>()
 
 const { t, locale } = useI18n()
@@ -407,6 +416,17 @@ const groups = computed(() => {
             </span>
           </button>
           <Button
+            v-if="kind === 'todo' && g.key !== NONE && g.rows.some((r) => !r.done)"
+            variant="ghost"
+            size="icon-xs"
+            class="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/folder:opacity-100"
+            :title="t('item.addGroupToBoard')"
+            :aria-label="t('item.addGroupToBoard')"
+            @click="emit('addGroupToBoard', g.rows.filter((r) => !r.done).map((r) => r.id))"
+          >
+            <Layers class="h-3 w-3" :stroke-width="1.75" />
+          </Button>
+          <Button
             variant="destructive-ghost"
             size="icon-xs"
             class="mr-1 opacity-0 transition-opacity focus-visible:opacity-100 group-hover/folder:opacity-100"
@@ -421,7 +441,7 @@ const groups = computed(() => {
         <ul v-if="flat || !collapsed.has(g.key)" :class="rowListClass">
           <li v-for="row in g.rows" :key="row.id">
             <div
-              class="gap-2 pr-2"
+              class="group/row gap-2 pr-2"
               :class="[flat ? 'pl-2' : 'pl-6', rowClass(row.id === selectedId)]"
             >
               <button
@@ -487,10 +507,37 @@ const groups = computed(() => {
                   {{ row.preview }}
                 </span>
               </button>
+              <!-- Batch Board queue: tinted while queued, else shown on hover. -->
+              <button
+                v-if="kind === 'todo' && !row.done && row.projectId"
+                type="button"
+                class="mt-0.5 flex h-4 w-4 shrink-0 cursor-pointer items-center justify-center rounded transition-opacity"
+                :class="queuedIds?.has(row.id)
+                  ? 'text-primary'
+                  : 'text-muted-foreground opacity-0 hover:text-foreground focus-visible:opacity-100 group-hover/row:opacity-100'"
+                :aria-pressed="!!queuedIds?.has(row.id)"
+                :title="queuedIds?.has(row.id) ? t('item.removeFromBoard') : t('item.addToBoardShort')"
+                :aria-label="queuedIds?.has(row.id) ? t('item.removeFromBoard') : t('item.addToBoardShort')"
+                @click="emit('toggleBoard', row.id)"
+              >
+                <Layers class="h-3 w-3" :stroke-width="queuedIds?.has(row.id) ? 2.25 : 1.75" />
+              </button>
             </div>
           </li>
         </ul>
       </div>
     </div>
+
+    <!-- Todos queued for the Batch Board: jump there to run them. -->
+    <button
+      v-if="kind === 'todo' && queuedIds?.size"
+      type="button"
+      class="flex shrink-0 cursor-pointer items-center gap-2 border-t border-border/60 px-3 py-2 text-left text-xs hover:bg-muted/50"
+      @click="emit('openBoard')"
+    >
+      <Layers class="h-3.5 w-3.5 shrink-0 text-primary" :stroke-width="1.75" />
+      <span class="min-w-0 flex-1 truncate">{{ t('item.boardQueued', { n: queuedIds.size }) }}</span>
+      <span class="shrink-0 font-medium text-primary">{{ t('item.openBoard') }}</span>
+    </button>
   </aside>
 </template>

@@ -8,7 +8,7 @@
   "summary": "{workers} nhân viên · {queued} todo đang chờ",
   "otherPending": "Session khác đang chờ bạn",
   "emptyTitle": "Chưa có lô todo nào",
-  "emptyBody": "Ở màn Todo, bấm nút ➕ \"Thêm vào Batch Board\" trên các todo muốn giao cho AI. Chúng vào hàng chờ ở đây; bạn chọn cách chạy rồi bấm Chạy, sau đó theo dõi, duyệt quyền và review kết quả ngay trên bảng này. Session mở bằng nút 🚀 cũng hiện ở mục \"Việc lẻ\".",
+  "emptyBody": "Ở màn Todo, rê chuột lên todo và bấm biểu tượng board (hoặc biểu tượng trên tiêu đề dự án để thêm cả nhóm). Todo vào hàng chờ ở đây, tự nhóm theo dự án. Bấm Chạy: mỗi dự án có một conductor riêng, chỉ làm trong dự án đó, tự sinh worker cho các todo của nó. Theo dõi, duyệt quyền và review kết quả ngay tại đây; muốn chat với conductor thì mở session của nó. Session mở bằng nút 🚀 hiện ở mục \"Việc lẻ\".",
   "lanes": {
     "needs": "Cần bạn",
     "running": "Đang làm",
@@ -48,7 +48,7 @@
   "discardMessage": "Bỏ kết quả của việc này? Todo sẽ quay về trạng thái chưa làm.",
   "discardMessageWorktree": "Bỏ kết quả? Bản sao và nhánh {branch} sẽ bị xoá (kể cả commit chưa push), todo quay về trạng thái chưa làm.",
   "start": {
-    "hint": "Một AI quản lý sẽ chia việc: mỗi todo một AI nhân viên chạy trong đúng dự án của nó (đủ cấu hình, rules, tài khoản). Bạn theo dõi và duyệt quyền ở Batch Board.",
+    "hint": "Mỗi dự án có một conductor riêng, chỉ làm trong dự án đó: nó sinh một worker cho mỗi todo ngay trong dự án (đúng cấu hình, rules, tài khoản). Todo không bao giờ bị chạy ở dự án khác.",
     "pickAll": "Chọn {n}/{total} todo",
     "parallel": "Số việc chạy cùng lúc",
     "permission": "Quyền của AI nhân viên",
@@ -58,7 +58,7 @@
     "permissionBypass": "Bỏ qua mọi hỏi quyền (nguy hiểm)",
     "engine": "Engine",
     "engineDefault": "Mặc định",
-    "submit": "Giao {n} todo",
+    "submit": "Chạy {n} todo · {projects} dự án",
     "starting": "Đang khởi động…",
     "isolation": "Tách việc giữa các AI nhân viên",
     "isolationRules": "Theo rule dự án",
@@ -68,6 +68,15 @@
       "rules": "Mỗi AI nhân viên tự tạo worktree/nhánh theo rule & skill của dự án đó (vd project-docs-structure) trước khi sửa code — dùng được cho mọi kiểu dự án, kể cả workspace bọc ngoài repo. Dự án không có quy ước thì chạy mỗi lúc một việc.",
       "devdy": "Devdy tạo .devdy/worktrees/<tên> từ code mới nhất cho mỗi việc. Chỉ dùng được khi thư mục dự án là gốc git repo; dự án khác tự chuyển sang \"Theo rule dự án\".",
       "none": "Làm thẳng trong thư mục dự án, mỗi dự án chỉ chạy một việc một lúc."
+    },
+    "options": "Tuỳ chọn",
+    "started": "Đã khởi chạy {n} conductor (mỗi dự án một)",
+    "skipped": "Bỏ qua {n} todo",
+    "skippedReason": {
+      "done": "{n} đã xong",
+      "no_project": "{n} chưa có dự án",
+      "in_progress": "{n} đang được làm",
+      "not_found": "{n} không tìm thấy"
     }
   },
   "mobileLanes": {
@@ -84,5 +93,10 @@
   "queue": {
     "title": "Hàng chờ",
     "remove": "Bỏ khỏi hàng chờ"
-  }
+  },
+  "openConductor": "Mở session",
+  "openConductorTitle": "Mở session conductor của dự án này (chat với nó ở đó)",
+  "stopConductorTitle": "Dừng conductor (các worker đang chạy vẫn tiếp tục)",
+  "nothingActive": "Không có việc nào đang chạy. Các batch đã xong nằm ở lịch sử bên dưới.",
+  "history": "Lịch sử ({n})"
 }

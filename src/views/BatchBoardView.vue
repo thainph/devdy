@@ -1,19 +1,21 @@
 <script setup lang="ts">
-// Batch Board: one screen for a todo batch run by a Todo Conductor. Workers are
-// sorted into lanes by what they need from the user (answer a prompt, check a
-// stall, review the result), prompts are answered on the cards, and the
-// conductor can be talked to from the top bar. Any other session waiting on the
-// user shows up too, so nothing has to be answered in a separate window while
-// this screen is open (see useBoardPresence).
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+// Batch Board: todos added from the todo screen wait in the queue, grouped by
+// project. Run starts one Todo Conductor per project (in that project; its
+// workers never leave it), and every batch shows here as its own section: the
+// conductor on top, its workers in lanes by what they need from the user
+// (answer a prompt, check a stall, review the result). To talk to a conductor,
+// open its session. Finished batches go to the history. Any other session
+// waiting on the user shows up too, so nothing has to be answered in a separate
+// window while this screen is open (see useBoardPresence).
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Bot, Inbox, Layers, RefreshCw, Send } from 'lucide-vue-next'
+import { ChevronDown, ChevronRight, History, Inbox, Layers, RefreshCw } from 'lucide-vue-next'
 import { invoke } from '@/lib/tauri'
-import { AppSelect, Badge, Banner, Button, Card, Input, PageHeader, StatusBadge } from '@/components/ui'
-import BatchBoardCard from '@/components/batch/BatchBoardCard.vue'
+import { Badge, Banner, Button, Card, PageHeader } from '@/components/ui'
+import BatchGroupSection from '@/components/batch/BatchGroupSection.vue'
 import BatchQueuePanel from '@/components/batch/BatchQueuePanel.vue'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import { useLiveRunsStore } from '@/stores/liveRuns'
@@ -27,13 +29,9 @@ import { useMarkdown } from '@/lib/markdown'
 import {
   SOLO_BATCH,
   commitMessageFor,
-  groupByLane,
-  lastActivity,
-  type BatchSummary,
-  type BoardData,
+  type BoardGroup,
   type BoardItem,
-  type Lane,
-  type LiveState,
+  type BoardRunResult,
   type QueuedTodo,
 } from '@/lib/batchBoard'
 
@@ -48,54 +46,24 @@ const { toast } = useToast()
 const { renderText, loadMarkdown } = useMarkdown()
 useBoardPresence()
 
-const batches = ref<BatchSummary[]>([])
+const groups = ref<BoardGroup[]>([])
 /** Todos added with "Add to Batch Board", waiting to be run. */
 const queue = ref<QueuedTodo[]>([])
-const batchId = ref<string>(typeof route.query.batch === 'string' ? route.query.batch : '')
-const data = ref<BoardData>({ items: [], queued: [] })
 const loading = ref(false)
 const error = ref<string | null>(null)
 const busy = ref(new Set<string>())
-const conductorMessage = ref('')
+const showHistory = ref(false)
+/** History batches opened one by one. */
+const expanded = ref(new Set<string>())
+/** A batch to scroll to and outline (`?batch=` or just started). */
+const highlight = ref<string>(typeof route.query.batch === 'string' ? route.query.batch : '')
 
-const batchOptions = computed(() =>
-  batches.value.map((b) =>
-    b.runId === SOLO_BATCH
-      ? { value: b.runId, label: t('board.solo'), description: t('board.soloHint', { n: b.workerCount }) }
-      : {
-          value: b.runId,
-          label: b.title || t('board.untitled'),
-          description: `${b.projectName} · ${new Date(b.createdAt).toLocaleString()}`,
-        },
-  ),
-)
+const active = computed(() => groups.value.filter((g) => g.active))
+const history = computed(() => groups.value.filter((g) => !g.active))
 
-const conductor = computed(() => data.value.items.find((i) => i.role === 'conductor') ?? null)
-const conductorLive = computed(() => (conductor.value ? live.get(conductor.value.runId) : undefined))
-const conductorStatus = computed(() => conductorLive.value?.status || conductor.value?.status || '')
-const conductorActivity = computed(() => lastActivity(conductorLive.value?.entries ?? [], 400))
-
-function liveOf(runId: string): LiveState | undefined {
-  const s = live.get(runId)
-  if (!s) return undefined
-  return { pending: s.permissionQueue.length, attention: s.attention.length, status: s.status || undefined }
-}
-const lanes = computed(() => groupByLane(data.value.items, liveOf))
-
-/** Board columns: what needs the user first. */
-const columns = computed(() => [
-  { key: 'needs', lanes: ['needs', 'alert'] as Lane[], tone: 'text-primary' },
-  { key: 'running', lanes: ['running'] as Lane[], tone: 'text-info' },
-  { key: 'review', lanes: ['review'] as Lane[], tone: 'text-success' },
-  { key: 'closed', lanes: ['failed', 'closed'] as Lane[], tone: 'text-muted-foreground' },
-])
-function columnItems(col: { lanes: Lane[] }) {
-  return col.lanes.flatMap((l) => lanes.value[l].map((item) => ({ item, lane: l })))
-}
-
-/** Sessions outside this batch that wait on the user (answered here too). */
+/** Sessions outside every batch on screen that wait on the user (answered here too). */
 const otherPending = computed(() => {
-  const mine = new Set(data.value.items.map((i) => i.runId))
+  const mine = new Set(active.value.flatMap((g) => g.items.map((i) => i.runId)))
   const out: { runId: string; projectId: string }[] = []
   live.sessions.forEach((s, runId) => {
     if (s.permissionQueue.length && !mine.has(runId)) out.push({ runId, projectId: s.projectId })
@@ -103,27 +71,19 @@ const otherPending = computed(() => {
   return out
 })
 
-async function loadBatches() {
-  batches.value = await invoke<BatchSummary[]>('board_batches')
-  if (!batchId.value || !batches.value.some((b) => b.runId === batchId.value)) {
-    batchId.value = batches.value[0]?.runId ?? ''
-  }
-}
-
-// Only the newest request may land: switching batches quickly must not let an
-// older answer overwrite the board of the batch now shown.
+// Only the newest request may land: an older answer must not overwrite a newer one.
 let loadSeq = 0
-async function loadItems() {
+async function load() {
   const seq = ++loadSeq
-  if (!batchId.value) {
-    data.value = { items: [], queued: [] }
-    return
-  }
   loading.value = true
   try {
-    const next = await invoke<BoardData>('board_items', { batchRunId: batchId.value })
+    const [nextGroups, nextQueue] = await Promise.all([
+      invoke<BoardGroup[]>('board_overview'),
+      invoke<QueuedTodo[]>('board_queue_list'),
+    ])
     if (seq !== loadSeq) return
-    data.value = next
+    groups.value = nextGroups
+    queue.value = nextQueue
     error.value = null
   } catch (e) {
     if (seq === loadSeq) error.value = String(e)
@@ -132,35 +92,37 @@ async function loadItems() {
   }
 }
 
-async function loadQueue() {
-  queue.value = await invoke<QueuedTodo[]>('board_queue_list')
-}
-
-async function refresh() {
-  try {
-    await Promise.all([loadBatches(), loadQueue()])
-  } catch (e) {
-    error.value = String(e)
+/** Bring a batch into view (opening it in the history if it's there). */
+async function reveal(runId: string) {
+  if (!runId) return
+  if (history.value.some((g) => g.batch.runId === runId)) {
+    showHistory.value = true
+    expanded.value = new Set(expanded.value).add(runId)
   }
-  await loadItems()
+  await nextTick()
+  document.getElementById(`batch-${runId}`)?.scrollIntoView({ behavior: 'smooth', block: 'start' })
 }
 
-/** A batch started from the queue: show it. */
-async function onStarted(runId: string) {
-  batchId.value = runId
-  await refresh()
+/** Conductors started from the queue: show the first one. */
+async function onStarted(result: BoardRunResult) {
+  await load()
+  highlight.value = result.started[0]?.runId ?? ''
+  void reveal(highlight.value)
 }
 
-watch(batchId, (id) => {
-  if (route.query.batch !== id) void router.replace({ query: { ...route.query, batch: id || undefined } })
-  void loadItems()
-})
 watch(() => route.query.batch, (b) => {
-  if (typeof b === 'string' && b !== batchId.value) {
-    batchId.value = b
-    void refresh()
+  if (typeof b === 'string' && b) {
+    highlight.value = b
+    void load().then(() => reveal(b))
   }
 })
+
+function toggleHistoryGroup(runId: string) {
+  const next = new Set(expanded.value)
+  if (next.has(runId)) next.delete(runId)
+  else next.add(runId)
+  expanded.value = next
+}
 
 function openRun(item: { runId: string; projectId: string }) {
   void router.push({ name: 'project-run-detail', params: { projectId: item.projectId, runId: item.runId } })
@@ -176,34 +138,8 @@ async function withBusy(runId: string, fn: () => Promise<void>) {
     const next = new Set(busy.value)
     next.delete(runId)
     busy.value = next
-    void loadItems()
+    void load()
   }
-}
-
-/** A follow-up turn, the way RunView sends one: resume a stopped session first. */
-async function sendTo(runId: string, projectId: string, text: string) {
-  const wasRunning = live.get(runId)?.status === 'running'
-  live.pushUser(runId, projectId, text)
-  if (!wasRunning) {
-    live.setStatus(runId, 'running')
-    await live.startListening(runId, projectId)
-    await runs.resumeRun(runId)
-  }
-  await runs.sendUserMessage(runId, text)
-}
-
-async function message(item: BoardItem) {
-  const text = await prompt({ title: t('board.messageTitle'), label: t('board.messageLabel'), confirmLabel: t('board.send') })
-  if (!text) return
-  await withBusy(item.runId, () => sendTo(item.runId, item.projectId, text))
-}
-
-async function sendToConductor() {
-  const text = conductorMessage.value.trim()
-  if (!text || !conductor.value) return
-  const { runId, projectId } = conductor.value
-  conductorMessage.value = ''
-  await withBusy(runId, () => sendTo(runId, projectId, text))
 }
 
 function stop(item: BoardItem) {
@@ -276,28 +212,40 @@ function answerOther(runId: string, answers: Record<string, string>) {
 
 // Live updates: worktree/todo changes, runs finishing, new workers; plus a slow
 // poll for diffs (git changes made by the sessions emit nothing).
-let unlisten: UnlistenFn[] = []
+const unlisten: UnlistenFn[] = []
 let offDone: (() => void) | null = null
 let poll: ReturnType<typeof setInterval> | null = null
 let reloadTimer: ReturnType<typeof setTimeout> | null = null
 function scheduleReload() {
   if (reloadTimer) clearTimeout(reloadTimer)
-  reloadTimer = setTimeout(() => void loadItems(), 400)
+  reloadTimer = setTimeout(() => void load(), 400)
 }
-// A worker spawned by the conductor shows up as a new live session.
+// A worker spawned by a conductor shows up as a new live session.
 watch(() => live.sessions.size, scheduleReload)
 
+// Left before the async setup finished: what it registers late is undone at once.
+let disposed = false
 onMounted(async () => {
   void loadMarkdown()
-  await refresh()
-  unlisten = await Promise.all([
-    listen('board:changed', () => void refresh()),
-    listen('focus:changed', scheduleReload),
-  ])
+  await load()
+  if (disposed) return
+  if (highlight.value) void reveal(highlight.value)
+  // One by one: a failed registration must not leak the ones that succeeded.
+  for (const event of ['board:changed', 'focus:changed']) {
+    try {
+      const off = await listen(event, scheduleReload)
+      if (disposed) off()
+      else unlisten.push(off)
+    } catch {
+      /* outside the Tauri shell */
+    }
+  }
+  if (disposed) return
   offDone = live.onAnyDone(scheduleReload)
-  poll = setInterval(() => void loadItems(), 15000)
+  poll = setInterval(() => void load(), 15000)
 })
 onBeforeUnmount(() => {
+  disposed = true
   unlisten.forEach((off) => off())
   offDone?.()
   if (poll) clearInterval(poll)
@@ -312,20 +260,17 @@ onBeforeUnmount(() => {
         <Layers class="h-4 w-4 text-muted-foreground" :stroke-width="1.75" />
       </template>
       <template #actions>
-        <div v-if="batchOptions.length" class="w-72">
-          <AppSelect v-model="batchId" :options="batchOptions" size="sm" />
-        </div>
-        <Button variant="outline" size="icon" :title="t('board.refresh')" :aria-label="t('board.refresh')" @click="refresh">
+        <Button variant="outline" size="icon" :title="t('board.refresh')" :aria-label="t('board.refresh')" @click="load">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': loading }" :stroke-width="1.75" />
         </Button>
       </template>
     </PageHeader>
 
-    <div class="flex-1 min-h-0 overflow-auto">
-      <Banner v-if="error" tone="destructive" class="mx-6 mt-4">{{ error }}</Banner>
+    <div class="flex-1 min-h-0 overflow-auto px-6 py-4 space-y-4">
+      <Banner v-if="error" tone="destructive">{{ error }}</Banner>
 
       <!-- Other sessions waiting on the user. -->
-      <div v-if="otherPending.length" class="px-6 pt-4 space-y-2">
+      <div v-if="otherPending.length" class="space-y-2">
         <p class="text-[11px] font-medium uppercase tracking-wider text-primary">{{ t('board.otherPending') }}</p>
         <div class="grid gap-3 md:grid-cols-2">
           <Card v-for="p in otherPending" :key="p.runId" body-class="p-0">
@@ -350,13 +295,11 @@ onBeforeUnmount(() => {
         </div>
       </div>
 
-      <!-- Queued todos: pick how to run them. -->
-      <div v-if="queue.length" class="px-6 pt-4">
-        <BatchQueuePanel :queue="queue" @started="onStarted" @changed="refresh" />
-      </div>
+      <!-- Queued todos, by project: run them. -->
+      <BatchQueuePanel v-if="queue.length" :queue="queue" @started="onStarted" @changed="load" />
 
       <!-- Nothing queued or run yet. -->
-      <div v-if="!batches.length && !queue.length && !loading" class="flex flex-col items-center justify-center gap-3 px-6 py-20 text-center">
+      <div v-if="!groups.length && !queue.length && !loading" class="flex flex-col items-center justify-center gap-3 py-20 text-center">
         <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
           <Inbox class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>
@@ -364,90 +307,70 @@ onBeforeUnmount(() => {
         <p class="max-w-md text-xs text-muted-foreground">{{ t('board.emptyBody') }}</p>
       </div>
 
-      <template v-else-if="batchId">
-        <!-- The conductor: status, latest word, talk to it. -->
-        <div v-if="conductor" class="px-6 pt-4">
-          <Card body-class="p-3 space-y-2">
-            <div class="flex items-center gap-2 min-w-0">
-              <Bot class="h-4 w-4 shrink-0 text-primary" :stroke-width="1.75" />
-              <button
-                type="button"
-                class="truncate text-[13px] font-medium hover:text-primary cursor-pointer"
-                @click="openRun(conductor)"
-              >
-                {{ t('board.conductor') }} · {{ conductor.projectName }}
-              </button>
-              <StatusBadge :status="conductorStatus" size="xs" run-type="session" />
-              <span class="ml-auto text-[11px] text-muted-foreground">
-                {{ t('board.summary', { workers: data.items.length - 1, queued: data.queued.length }) }}
-              </span>
-            </div>
-            <p v-if="conductorActivity" class="text-xs text-muted-foreground line-clamp-3 whitespace-pre-line">{{ conductorActivity }}</p>
-            <div v-if="conductorLive?.permissionQueue[0]" class="-mx-3 border-y border-border/60 bg-muted/30">
-              <PermissionPrompt
-                :key="conductorLive.permissionQueue[0].request_id"
-                :request="conductorLive.permissionQueue[0]"
-                :allowed-tools="conductorLive.allowedTools"
-                :render-text="renderText"
-                @decide="(d, r) => decideOther(conductor!.runId, d, r)"
-                @answer="(a) => answerOther(conductor!.runId, a)"
-              />
-            </div>
-            <form class="flex gap-2" @submit.prevent="sendToConductor">
-              <Input v-model="conductorMessage" size="sm" class="flex-1" :placeholder="t('board.conductorPlaceholder')" />
-              <Button type="submit" size="sm" :disabled="!conductorMessage.trim() || busy.has(conductor.runId)">
-                <Send class="h-3.5 w-3.5" :stroke-width="1.75" />{{ t('board.send') }}
-              </Button>
-            </form>
-          </Card>
-        </div>
+      <!-- Batches in progress / waiting for review: one section per project run. -->
+      <BatchGroupSection
+        v-for="g in active"
+        :id="`batch-${g.batch.runId}`"
+        :key="g.batch.runId"
+        :group="g"
+        :busy="busy"
+        :highlighted="highlight === g.batch.runId"
+        @open="openRun"
+        @stop="stop"
+        @commit="commit"
+        @push="push"
+        @finish="finish"
+        @discard="discard"
+      />
+      <p v-if="groups.length && !active.length" class="py-6 text-center text-xs text-muted-foreground">
+        {{ t('board.nothingActive') }}
+      </p>
 
-        <!-- Lanes. -->
-        <div class="grid gap-4 p-6 lg:grid-cols-4 md:grid-cols-2">
-          <section v-for="col in columns" :key="col.key" class="min-w-0 space-y-2">
-            <h3 class="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider" :class="col.tone">
-              {{ t(`board.lanes.${col.key}`) }}
-              <span class="rounded-full bg-muted px-1.5 text-[10px] tabular-nums text-muted-foreground">
-                {{ columnItems(col).length + (col.key === 'running' ? data.queued.length : 0) }}
-              </span>
-            </h3>
-            <BatchBoardCard
-              v-for="{ item, lane } in columnItems(col)"
-              :key="item.runId"
-              :item="item"
-              :lane="lane"
-              :busy="busy.has(item.runId)"
-              @open="openRun(item)"
-              @message="message(item)"
-              @stop="stop(item)"
-              @commit="commit(item)"
-              @push="push(item)"
-              @finish="finish(item)"
-              @discard="discard(item)"
+      <!-- Finished batches. -->
+      <div v-if="history.length" class="space-y-2">
+        <button
+          type="button"
+          class="flex items-center gap-1.5 text-[11px] font-medium uppercase tracking-wider text-muted-foreground hover:text-foreground cursor-pointer"
+          :aria-expanded="showHistory"
+          @click="showHistory = !showHistory"
+        >
+          <component :is="showHistory ? ChevronDown : ChevronRight" class="h-3.5 w-3.5" :stroke-width="2" />
+          <History class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('board.history', { n: history.length }) }}
+        </button>
+        <template v-if="showHistory">
+          <div v-for="g in history" :id="`batch-${g.batch.runId}`" :key="g.batch.runId">
+            <BatchGroupSection
+              v-if="expanded.has(g.batch.runId)"
+              :group="g"
+              :busy="busy"
+              :highlighted="highlight === g.batch.runId"
+              @open="openRun"
+              @stop="stop"
+              @commit="commit"
+              @push="push"
+              @finish="finish"
+              @discard="discard"
             />
-            <!-- Todos no worker picked up yet. -->
-            <template v-if="col.key === 'running'">
-              <div
-                v-for="q in data.queued"
-                :key="q.todo.id"
-                class="rounded-lg border border-dashed border-border px-3 py-2 space-y-1"
-              >
-                <div class="flex items-center gap-1.5">
-                  <Badge v-if="q.projectName" size="xs" tone="neutral">{{ q.projectName }}</Badge>
-                  <span class="text-[10px] text-muted-foreground">{{ q.todo.done ? t('board.queuedDone') : t('board.queued') }}</span>
-                </div>
-                <p class="text-xs line-clamp-2">{{ q.todo.text.split('\n')[0] }}</p>
-              </div>
-            </template>
-            <p
-              v-if="!columnItems(col).length && !(col.key === 'running' && data.queued.length)"
-              class="rounded-lg border border-dashed border-border/60 px-3 py-4 text-center text-[11px] text-muted-foreground/70"
+            <button
+              type="button"
+              class="flex w-full items-center gap-2 rounded-md px-3 py-1.5 text-left text-xs hover:bg-muted/50 cursor-pointer"
+              :class="expanded.has(g.batch.runId) ? 'mt-1 text-muted-foreground' : ''"
+              @click="toggleHistoryGroup(g.batch.runId)"
             >
-              {{ t(`board.empty.${col.key}`) }}
-            </p>
-          </section>
-        </div>
-      </template>
+              <component :is="expanded.has(g.batch.runId) ? ChevronDown : ChevronRight" class="h-3.5 w-3.5 shrink-0" :stroke-width="2" />
+              <template v-if="g.batch.runId === SOLO_BATCH">
+                <span class="truncate">{{ t('board.solo') }}</span>
+              </template>
+              <template v-else>
+                <Badge size="xs" tone="neutral" class="shrink-0">{{ g.batch.projectName }}</Badge>
+                <span class="min-w-0 truncate">{{ (g.batch.title ?? '').replace(/^🗂\s*/, '') || t('board.untitled') }}</span>
+                <span class="ml-auto shrink-0 text-[10px] text-muted-foreground">{{ new Date(g.batch.createdAt).toLocaleString() }}</span>
+              </template>
+            </button>
+          </div>
+        </template>
+      </div>
     </div>
   </div>
 </template>

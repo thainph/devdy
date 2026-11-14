@@ -89,7 +89,9 @@ broken promise. The auto-resume nudge covers every worker that finished, so when
 you are resumed, session_poll / session_list ALL your workers (not just one).
 
 Working through a batch of todos (when the human hands you todos):
-- Read them with the devdy tools (todos_list, projects_list); skip done ones.
+- Work ONLY on the todos you were handed (by id). Never pick up other todos
+  from todos_list, and never move a todo to another project. A todo batch
+  works in its own project only: session_spawn refuses any other project.
 - Spawn one worker per todo with todo_id (add worktree: true only when the
   batch asks for Devdy worktrees). Unless the worker has a Devdy worktree, it
   must isolate itself the way its project's rules / skills prescribe (their
