@@ -68,12 +68,9 @@ export const useFocusAiStore = defineStore('focusAi', () => {
     }
   }
 
-  /**
-   * New session on the todo (throws `project_required: …` without a project), then open it.
-   * `worktree`: in a fresh worktree of the project (fetch + setup first, so it takes longer).
-   */
-  async function startWithAi(todoId: string, projectId: string, worktree = false) {
-    const runId = await invoke<string>('focus_start_with_ai', { todoId, worktree })
+  /** New session on the todo (throws `project_required: …` without a project), then open it. */
+  async function startWithAi(todoId: string, projectId: string) {
+    const runId = await invoke<string>('focus_start_with_ai', { todoId })
     await emit(WINDOW_OPEN_RUN, { projectId, runId } satisfies WindowOpenRun)
     return runId
   }

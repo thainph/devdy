@@ -11,8 +11,6 @@ import { aiErrorCode, type AiAnalyzeResult, type FocusTodo } from '@/lib/focus'
 
 /** "Pick a project" before starting a session on a project-less todo. */
 const pickProjectFor = ref<FocusTodo | null>(null)
-/** Whether the start waiting on that pick goes into a worktree. */
-let pickForWorktree = false
 
 export function useFocusAiActions() {
   const { t, te } = useI18n()
@@ -48,23 +46,17 @@ export function useFocusAiActions() {
 
   const cancelAnalyze = (todo: FocusTodo) => ai.cancel(`todo:${todo.id}`)
 
-  async function startWithAi(todo: FocusTodo, opts: { worktree?: boolean } = {}) {
-    const worktree = opts.worktree ?? false
+  async function startWithAi(todo: FocusTodo) {
     if (!todo.project_id) {
       pickProjectFor.value = todo
-      pickForWorktree = worktree
       return
     }
     try {
-      // Fetch + setup can take a while before the session opens.
-      if (worktree) toast.info(t('focus.ai.preparingWorktree'))
-      await ai.startWithAi(todo.id, todo.project_id, worktree)
+      await ai.startWithAi(todo.id, todo.project_id)
       toast.success(t('focus.ai.started'))
     } catch (e) {
-      if (aiErrorCode(e).code === 'project_required') {
-        pickProjectFor.value = todo
-        pickForWorktree = worktree
-      } else fail(e)
+      if (aiErrorCode(e).code === 'project_required') pickProjectFor.value = todo
+      else fail(e)
     }
   }
 
@@ -73,7 +65,7 @@ export function useFocusAiActions() {
     pickProjectFor.value = null
     try {
       const updated = await store.update(todo.id, { project_id: projectId })
-      await startWithAi(updated, { worktree: pickForWorktree })
+      await startWithAi(updated)
     } catch (e) {
       fail(e)
     }
