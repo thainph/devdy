@@ -8,7 +8,7 @@
   "summary": "{workers} workers · {queued} todos queued",
   "otherPending": "Other sessions waiting for you",
   "emptyTitle": "No todo batch yet",
-  "emptyBody": "Open the Todos window, press 🤖 \"Hand to AI\" (or 🤖 on a project folder), pick todos and start. This board then shows every task so you can answer permissions and questions and review the results.",
+  "emptyBody": "Press 🚀 \"Start with AI\" on a todo, or open the Todos window and press 🤖 \"Hand to AI\" (or 🤖 on a project folder), pick todos and start. This board then shows every task so you can answer permissions and questions and review the results.",
   "lanes": {
     "needs": "Needs you",
     "running": "In progress",
@@ -81,5 +81,7 @@
     "closed": "Done"
   },
   "mobilePending": "Waiting for you",
-  "discardMessageCommits": "Discard the result? Branch {branch} has {n} commits — if they are not pushed they are LOST with the worktree. Use \"Push & open PR\" first to keep them. The todo goes back to not started."
+  "discardMessageCommits": "Discard the result? Branch {branch} has {n} commits — if they are not pushed they are LOST with the worktree. Use \"Push & open PR\" first to keep them. The todo goes back to not started.",
+  "solo": "Single tasks (Start with AI)",
+  "soloHint": "{n} sessions started with 🚀 in the last 30 days"
 }

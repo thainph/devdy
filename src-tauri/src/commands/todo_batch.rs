@@ -163,8 +163,36 @@ pub async fn board_batches(db: State<'_, Db>) -> Result<Vec<BatchSummary>, Strin
     load_batches(db.inner()).await
 }
 
+/// Pseudo batch id for the todo sessions started one by one ("Start with AI"),
+/// outside any batch. Listed first on the board when there are any.
+pub const SOLO_BATCH: &str = "solo";
+
+/// Runs started on a todo outside any batch, recent ones first (`r` = runs).
+const SOLO_WHERE: &str = "r.todo_batch = 0 AND r.conductor_run_id IS NULL AND r.type = 'session'
+         AND r.created_at >= datetime('now', '-30 days')
+         AND EXISTS (SELECT 1 FROM todo_runs ir WHERE ir.run_id = r.id AND ir.source = 'created_from_item')";
+
 /// `board_batches`, shared with Remote Control.
 pub async fn load_batches(db: &Db) -> Result<Vec<BatchSummary>, String> {
+    let mut out = Vec::new();
+    let solo = sqlx::query(&format!(
+        "SELECT COUNT(*) AS n, MAX(r.created_at) AS latest FROM runs r WHERE {SOLO_WHERE}"
+    ))
+    .fetch_one(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let solo_count: i64 = solo.get("n");
+    if solo_count > 0 {
+        out.push(BatchSummary {
+            run_id: SOLO_BATCH.to_string(),
+            title: None,
+            project_id: String::new(),
+            project_name: String::new(),
+            status: String::new(),
+            created_at: solo.get::<Option<String>, _>("latest").unwrap_or_default(),
+            worker_count: solo_count,
+        });
+    }
     let rows = sqlx::query(
         "SELECT r.id, r.title, r.project_id, p.name AS project_name, r.status, r.created_at,
                 (SELECT COUNT(*) FROM runs w WHERE w.conductor_run_id = r.id) AS worker_count
@@ -174,9 +202,7 @@ pub async fn load_batches(db: &Db) -> Result<Vec<BatchSummary>, String> {
     .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
-    Ok(rows
-        .iter()
-        .map(|r| BatchSummary {
+    out.extend(rows.iter().map(|r| BatchSummary {
             run_id: r.get("id"),
             title: r.get("title"),
             project_id: r.get("project_id"),
@@ -184,8 +210,8 @@ pub async fn load_batches(db: &Db) -> Result<Vec<BatchSummary>, String> {
             status: r.get("status"),
             created_at: r.get("created_at"),
             worker_count: r.get("worker_count"),
-        })
-        .collect())
+        }));
+    Ok(out)
 }
 
 #[derive(Debug, Serialize, Default)]
@@ -257,19 +283,26 @@ pub async fn board_items(db: State<'_, Db>, batch_run_id: String) -> Result<Boar
 /// `board_items`, shared with Remote Control.
 pub async fn load_board(db: &Db, batch_run_id: &str) -> Result<BoardData, String> {
     let batch_run_id = batch_run_id.to_string();
-    let rows = sqlx::query(
+    // A batch: its conductor first, then its workers. The solo pseudo batch:
+    // every todo session started on its own, newest first.
+    let (filter, order) = if batch_run_id == SOLO_BATCH {
+        (SOLO_WHERE.to_string(), "r.created_at DESC LIMIT 50")
+    } else {
+        ("(r.id = ?1 OR r.conductor_run_id = ?1)".to_string(), "r.id != ?1, r.created_at")
+    };
+    let sql = format!(
         "SELECT r.id, r.title, r.role, r.project_id, p.name AS project_name, r.engine, r.status,
                 r.created_at, r.started_at, r.finished_at, r.worktree_path,
-                (SELECT COALESCE(SUM(u.cost_usd), 0) FROM run_usage u WHERE u.run_id = r.id) AS cost,
+                (SELECT CAST(COALESCE(SUM(u.cost_usd), 0) AS REAL) FROM run_usage u WHERE u.run_id = r.id) AS cost,
                 (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id AND ir.source = 'created_from_item' ORDER BY ir.linked_at LIMIT 1) AS todo_id
          FROM runs r JOIN projects p ON p.id = r.project_id
-         WHERE r.id = ?1 OR r.conductor_run_id = ?1
-         ORDER BY r.id != ?1, r.created_at",
-    )
-    .bind(&batch_run_id)
-    .fetch_all(db)
-    .await
-    .map_err(|e| e.to_string())?;
+         WHERE {filter}
+         ORDER BY {order}"
+    );
+    let query = sqlx::query(&sql);
+    // The solo filter has no placeholder to bind.
+    let query = if batch_run_id == SOLO_BATCH { query } else { query.bind(&batch_run_id) };
+    let rows = query.fetch_all(db).await.map_err(|e| e.to_string())?;
 
     let mut items = Vec::new();
     for r in rows {
@@ -302,7 +335,8 @@ pub async fn load_board(db: &Db, batch_run_id: &str) -> Result<BoardData, String
             created_at: r.get("created_at"),
             started_at: r.get("started_at"),
             finished_at: r.get("finished_at"),
-            cost_usd: r.get("cost"),
+            // Never panic on a decode: a missing / odd value just shows no cost.
+            cost_usd: r.try_get::<Option<f64>, _>("cost").ok().flatten().unwrap_or(0.0),
             todo,
             worktree: wt,
             diff,
@@ -458,6 +492,41 @@ pub async fn list_all_pending_permissions() -> Result<Vec<crate::runs::permissio
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test]
+    async fn todo_sessions_outside_a_batch_show_as_the_solo_batch() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&db).await.unwrap();
+        let now = chrono::Utc::now().to_rfc3339();
+        for sql in [
+            "INSERT INTO projects (id, name, path, created_at) VALUES ('p', 'shop', '/tmp/p', ?1)",
+            "INSERT INTO todos (id, text, done, position, created_at, project_id) VALUES ('t', 'Fix login', 0, 0, ?1, 'p')",
+            // Started on its own ("Start with AI"), linked to the todo.
+            "INSERT INTO runs (id, project_id, type, status, created_at) VALUES ('solo1', 'p', 'session', 'done', ?1)",
+            "INSERT INTO todo_runs (todo_id, run_id, project_id, source, linked_at) VALUES ('t', 'solo1', 'p', 'created_from_item', ?1)",
+            // A plain session (no todo) and a batch conductor stay out of it.
+            "INSERT INTO runs (id, project_id, type, status, created_at) VALUES ('plain', 'p', 'session', 'done', ?1)",
+            "INSERT INTO runs (id, project_id, type, status, created_at, todo_batch) VALUES ('b', 'p', 'session', 'running', ?1, 1)",
+            "INSERT INTO todo_runs (todo_id, run_id, project_id, source, linked_at) VALUES ('t', 'b', 'p', 'created_from_item', ?1)",
+        ] {
+            sqlx::query(sql).bind(&now).execute(&db).await.unwrap();
+        }
+
+        let batches = load_batches(&db).await.unwrap();
+        assert_eq!(batches.iter().map(|b| b.run_id.as_str()).collect::<Vec<_>>(), [SOLO_BATCH, "b"]);
+        assert_eq!(batches[0].worker_count, 1);
+
+        let board = load_board(&db, SOLO_BATCH).await.unwrap();
+        assert_eq!(board.items.len(), 1);
+        assert_eq!(board.items[0].run_id, "solo1");
+        assert_eq!(board.items[0].role, "worker");
+        assert_eq!(board.items[0].todo.as_ref().map(|t| t.text.as_str()), Some("Fix login"));
+        assert!(board.queued.is_empty());
+    }
 
     #[test]
     fn shortstat_parses_every_part() {

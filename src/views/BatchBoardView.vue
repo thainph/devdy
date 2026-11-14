@@ -24,6 +24,7 @@ import { useBoardPresence } from '@/composables/useBoardPresence'
 import { runDisplayName } from '@/lib/tray'
 import { useMarkdown } from '@/lib/markdown'
 import {
+  SOLO_BATCH,
   commitMessageFor,
   groupByLane,
   lastActivity,
@@ -54,11 +55,15 @@ const busy = ref(new Set<string>())
 const conductorMessage = ref('')
 
 const batchOptions = computed(() =>
-  batches.value.map((b) => ({
-    value: b.runId,
-    label: b.title || t('board.untitled'),
-    description: `${b.projectName} · ${new Date(b.createdAt).toLocaleString()}`,
-  })),
+  batches.value.map((b) =>
+    b.runId === SOLO_BATCH
+      ? { value: b.runId, label: t('board.solo'), description: t('board.soloHint', { n: b.workerCount }) }
+      : {
+          value: b.runId,
+          label: b.title || t('board.untitled'),
+          description: `${b.projectName} · ${new Date(b.createdAt).toLocaleString()}`,
+        },
+  ),
 )
 
 const conductor = computed(() => data.value.items.find((i) => i.role === 'conductor') ?? null)

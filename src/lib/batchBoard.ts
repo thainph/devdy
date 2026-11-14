@@ -7,6 +7,12 @@
  */
 export const BOARD_OPEN_ROUTE = 'board:open-route'
 
+/**
+ * Pseudo batch: the todo sessions started one by one ("Start with AI"), outside
+ * any batch (backend `SOLO_BATCH`).
+ */
+export const SOLO_BATCH = 'solo'
+
 /** A todo offered in the "Hand to AI" dialog. */
 export interface BatchCandidate {
   id: string
