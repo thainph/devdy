@@ -486,20 +486,6 @@ async fn require_project(ctx: &HandlerCtx, project_id: Option<&str>) -> DataResu
     }
 }
 
-/// The fresh list after a todo write; a Focus Controller also gets the
-/// re-ranked board, so the write shows up in its place without another round
-/// trip. Best effort: the write itself already landed, so a board failure must
-/// not fail its ack.
-async fn send_todos_after_write(ctx: &HandlerCtx) -> DataResult {
-    send_todo_list(ctx).await?;
-    if ctx.focus {
-        if let Err(Failure::Failed(e)) = send_focus_board(ctx).await {
-            tracing::debug!(event = "remote_focus_board_failed", error = %e);
-        }
-    }
-    Ok(None)
-}
-
 async fn send_todo_list(ctx: &HandlerCtx) -> DataResult {
     let list = todos::load_todos(&ctx.db).await.map_err(Failure::Failed)?;
     send_payload(
@@ -512,24 +498,10 @@ async fn send_todo_list(ctx: &HandlerCtx) -> DataResult {
     Ok(None)
 }
 
-async fn send_focus_board(ctx: &HandlerCtx) -> DataResult {
-    push_focus_board(ctx).await.map_err(Failure::Failed)?;
-    Ok(None)
-}
-
-/// The ranked board at this instant (`focus_board`, and after Focus writes).
-pub(super) async fn push_focus_board(ctx: &HandlerCtx) -> Result<(), String> {
-    let board = crate::commands::focus::load_board(ctx.app.clone(), &ctx.db).await?;
-    let board = serde_json::to_value(board).map_err(|e| e.to_string())?;
-    send_payload(ctx, StreamPayload::FocusBoard { board }).await;
-    Ok(())
-}
-
-/// A fresh `todo_list` + board after a write the phone did not make through
-/// a todo action (Focus AI, the live board). Best effort, like the push after
-/// a todo write.
+/// A fresh `todo_list` after a write the phone did not make (the live todo
+/// list). Best effort.
 pub(super) async fn push_todos(ctx: &HandlerCtx) {
-    if let Err(Failure::Failed(e)) = send_todos_after_write(ctx).await {
+    if let Err(Failure::Failed(e)) = send_todo_list(ctx).await {
         tracing::debug!(event = "remote_todo_list_failed", error = %e);
     }
 }
@@ -563,7 +535,7 @@ async fn todo_add(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
         .await
         .map_err(Failure::Failed)?;
     // Push the fresh list so the phone shows the write without a round trip.
-    send_todos_after_write(ctx).await?;
+    send_todo_list(ctx).await?;
     Ok(Some(todo.id))
 }
 
@@ -599,7 +571,7 @@ async fn todo_update(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     todos::update_todo_fields_inner(&ctx.app, &ctx.db, &id, &patch)
         .await
         .map_err(Failure::Failed)?;
-    send_todos_after_write(ctx).await
+    send_todo_list(ctx).await
 }
 
 async fn todo_toggle(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -607,7 +579,7 @@ async fn todo_toggle(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     todos::toggle_todo_inner(&ctx.app, &ctx.db, &id)
         .await
         .map_err(Failure::Failed)?;
-    send_todos_after_write(ctx).await
+    send_todo_list(ctx).await
 }
 
 async fn todo_delete(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
@@ -615,7 +587,7 @@ async fn todo_delete(ctx: &HandlerCtx, cmd: &CmdPayload) -> DataResult {
     todos::delete_todo_inner(&ctx.app, &ctx.db, &id)
         .await
         .map_err(Failure::Failed)?;
-    send_todos_after_write(ctx).await
+    send_todo_list(ctx).await
 }
 
 /// `note_list` / `note_search`: the reply echoes the filter. Writes are not

@@ -2,7 +2,7 @@
 //! changes what they show or their order (pin, rename, delete, project
 //! reorder …), so the phone's run browser never lags behind the desktop.
 //!
-//! Same shape as the live Focus board ([`crate::remote::focus::start_live_board`]):
+//! Same shape as the live todo list ([`crate::remote::focus::start_live_todos`]):
 //! one app-wide listener per session, bursts coalesced, the task holding only a
 //! weak reference so it goes away with the session.
 

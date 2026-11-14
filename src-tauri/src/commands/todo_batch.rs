@@ -425,7 +425,7 @@ const SOLO_WHERE: &str = "r.todo_batch = 0 AND r.conductor_run_id IS NULL AND r.
          AND r.created_at >= datetime('now', '-30 days')
          AND EXISTS (SELECT 1 FROM todo_runs ir WHERE ir.run_id = r.id AND ir.source = 'created_from_item')";
 
-/// `board_batches`, shared with Remote Control.
+/// `board_batches`.
 /// A batch still going on or waiting for the user — the SQL twin of
 /// `group_active`: a session of it running (its conductor or a worker), or a
 /// worker's todo being worked on / waiting for review.
@@ -436,7 +436,7 @@ const OPEN_BATCH: &str = "r.status IN ('running', 'fetched')
                     WHERE w.conductor_run_id = r.id AND t.done = 0 AND t.status IN ('doing', 'waiting'))";
 
 /// The 30 newest batches plus every older one still open, so a long-running
-/// batch never drops off the board (desktop and Remote Control alike).
+/// batch never drops off the board.
 pub async fn load_batches(db: &Db) -> Result<Vec<BatchSummary>, String> {
     let mut out = Vec::new();
     let solo = sqlx::query(&format!(
@@ -546,7 +546,7 @@ pub async fn board_items(db: State<'_, Db>, batch_run_id: String) -> Result<Boar
     load_board(db.inner(), &batch_run_id).await
 }
 
-/// `board_items`, shared with Remote Control.
+/// `board_items`.
 pub async fn load_board(db: &Db, batch_run_id: &str) -> Result<BoardData, String> {
     load_board_with(db, batch_run_id, true).await
 }

@@ -439,7 +439,7 @@ pub async fn focus_ai_suggest(
     suggest_inner(&app, db.inner(), state.inner(), source_url, project_id, title, request_id).await
 }
 
-/// `focus_ai_suggest`, shared with Remote Control.
+/// `focus_ai_suggest`.
 pub async fn suggest_inner(
     app: &AppHandle,
     db: &Db,
@@ -496,7 +496,7 @@ pub async fn focus_ai_analyze(
     analyze_inner(&app, db.inner(), state.inner(), todo_id, request_id).await
 }
 
-/// `focus_ai_analyze`, shared with Remote Control.
+/// `focus_ai_analyze`.
 pub async fn analyze_inner(
     app: &AppHandle,
     db: &Db,
@@ -651,7 +651,7 @@ pub async fn focus_ai_plan_today(
     plan_today_inner(&app, db.inner(), state.inner(), request_id).await
 }
 
-/// `focus_ai_plan_today`, shared with Remote Control.
+/// `focus_ai_plan_today`.
 pub async fn plan_today_inner(
     app: &AppHandle,
     db: &Db,
@@ -726,7 +726,7 @@ pub async fn focus_day_plan_get(
     day_plan_get_inner(db.inner(), date).await.map(|(_, plan)| plan)
 }
 
-/// `focus_day_plan_get`, shared with Remote Control: the date it read (today
+/// `focus_day_plan_get`: the date it read (today
 /// when omitted) and its plan.
 pub async fn day_plan_get_inner(db: &Db, date: Option<String>) -> Result<(String, Option<DayPlan>), String> {
     let date = date.unwrap_or_else(|| local_now().format("%Y-%m-%d").to_string());
@@ -774,7 +774,7 @@ pub async fn focus_plan_to_calendar(
     plan_to_calendar_inner(db.inner(), date, block_ids).await
 }
 
-/// `focus_plan_to_calendar`, shared with Remote Control.
+/// `focus_plan_to_calendar`.
 pub async fn plan_to_calendar_inner(
     db: &Db,
     date: String,
@@ -895,7 +895,7 @@ pub async fn focus_start_with_ai(
     start_with_ai_inner(&app, db.inner(), registry.inner(), todo_id, worktree.unwrap_or(false)).await
 }
 
-/// `focus_start_with_ai`, shared with Remote Control.
+/// `focus_start_with_ai`.
 pub async fn start_with_ai_inner(
     app: &AppHandle,
     db: &Db,
@@ -1004,7 +1004,7 @@ pub async fn focus_suggest_actual(
     suggest_actual_inner(db.inner(), &todo_id).await
 }
 
-/// `focus_suggest_actual`, shared with Remote Control.
+/// `focus_suggest_actual`.
 pub async fn suggest_actual_inner(db: &Db, todo_id: &str) -> Result<Option<i64>, String> {
     let todo = get_todo(db, todo_id).await?;
     let runs: Vec<(Option<String>, Option<String>)> = sqlx::query_as(

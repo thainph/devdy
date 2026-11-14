@@ -235,8 +235,7 @@ pub async fn focus_board(app: AppHandle, db: State<'_, Db>) -> Result<Board, Str
     load_board(app, db.inner()).await
 }
 
-/// The board at this instant with today's Calendar load. Shared by the
-/// `focus_board` command and Remote Control.
+/// The board at this instant with today's Calendar load (`focus_board`).
 pub async fn load_board(app: AppHandle, db: &Db) -> Result<Board, String> {
     let (settings, todos, samples) = board_inputs(db).await?;
     let now = chrono::Local::now();
