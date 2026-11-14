@@ -56,6 +56,10 @@ pub struct RunRecord {
     /// History list nest workers under their conductor without a per-row lookup.
     #[serde(default)]
     pub conductor_run_id: Option<String>,
+    /// Branch of the worktree the session works in; `None` when it runs in the
+    /// project root.
+    #[serde(default)]
+    pub worktree_branch: Option<String>,
 }
 
 /// Repo identity loaded from the `repos` row, used to branch fetch by provider
@@ -347,6 +351,7 @@ pub async fn fetch_issue(
         protected: false,
         role: None,
         conductor_run_id: None,
+        worktree_branch: None,
     })
 }
 
@@ -720,6 +725,7 @@ pub async fn fetch_pr(
         protected: false,
         role: None,
         conductor_run_id: None,
+        worktree_branch: None,
     })
 }
 
@@ -870,6 +876,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         protected: row.get::<i64, _>("protected") != 0,
         role: None,
         conductor_run_id: None,
+        worktree_branch: None,
     })
 }
 
@@ -893,10 +900,12 @@ pub async fn list_runs(
     // reports as `last_activity_at`, so the list and the timestamp the UI prints
     // can never disagree.
     let rows = sqlx::query(
-        "SELECT id, project_id, repo_id, type, ref_number, status, engine, model, input_path, output_path, session_id, claude_account_id, started_at, finished_at, created_at, title, pinned, protected, role, conductor_run_id,
-                COALESCE(last_activity_at, finished_at, started_at, created_at) AS last_activity_at
-         FROM runs WHERE project_id = ?
-         ORDER BY pinned DESC, COALESCE(last_activity_at, finished_at, started_at, created_at) DESC
+        "SELECT r.id, r.project_id, r.repo_id, r.type, r.ref_number, r.status, r.engine, r.model, r.input_path, r.output_path, r.session_id, r.claude_account_id, r.started_at, r.finished_at, r.created_at, r.title, r.pinned, r.protected, r.role, r.conductor_run_id,
+                COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) AS last_activity_at,
+                w.branch AS worktree_branch
+         FROM runs r LEFT JOIN worktrees w ON w.path = r.worktree_path
+         WHERE r.project_id = ?
+         ORDER BY r.pinned DESC, COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) DESC
          LIMIT 500"
     )
     .bind(&project_id)
@@ -926,6 +935,7 @@ pub async fn list_runs(
         protected: row.get::<i64, _>("protected") != 0,
         role: row.get("role"),
         conductor_run_id: row.get("conductor_run_id"),
+        worktree_branch: row.get("worktree_branch"),
     }).collect())
 }
 

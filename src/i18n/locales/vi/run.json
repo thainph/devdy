@@ -183,5 +183,6 @@
     "comfortable": "Thoáng",
     "compact": "Gọn",
     "dense": "Dày"
-  }
+  },
+  "inWorktree": "Chạy trong bản sao riêng · nhánh {branch}"
 }

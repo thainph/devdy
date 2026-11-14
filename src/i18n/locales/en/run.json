@@ -183,5 +183,6 @@
     "comfortable": "Comfortable",
     "compact": "Compact",
     "dense": "Dense"
-  }
+  },
+  "inWorktree": "Runs in its own worktree · branch {branch}"
 }

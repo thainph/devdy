@@ -16,6 +16,7 @@ mod runs;
 mod secret_vault;
 mod secrets;
 mod slack_threads;
+mod worktrees;
 
 use commands::app_menu::set_app_menu;
 use commands::tray::set_tray_menu;
@@ -132,6 +133,9 @@ use commands::focus::{
 use commands::focus_ai::{
     focus_ai_analyze, focus_ai_cancel, focus_ai_plan_today, focus_ai_suggest, focus_day_plan_get,
     focus_plan_to_calendar, focus_start_with_ai, focus_suggest_actual,
+};
+use commands::worktrees::{
+    get_project_worktree_settings, set_project_worktree_settings, worktree_remove, worktrees_list,
 };
 use commands::item_links::{link_item_run, list_item_runs, list_run_items, unlink_item_run};
 use commands::notes::{
@@ -696,6 +700,10 @@ pub fn run() {
             focus_ai_cancel,
             focus_start_with_ai,
             focus_suggest_actual,
+            worktrees_list,
+            worktree_remove,
+            get_project_worktree_settings,
+            set_project_worktree_settings,
             delete_todo,
             delete_todos,
             clear_completed_todos,

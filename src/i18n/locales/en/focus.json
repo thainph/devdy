@@ -273,8 +273,13 @@
       "calendar_failed": "Some blocks could not be added to Google Calendar.",
       "ai_invalid_answer": "The AI answer could not be used. Try again.",
       "unknown": "AI request failed: {detail}",
-      "calendar_unavailable": "Couldn't read today's Google Calendar, so the plan could miss your meetings. Try again in a moment (or refresh the calendar)."
-    }
+      "calendar_unavailable": "Couldn't read today's Google Calendar, so the plan could miss your meetings. Try again in a moment (or refresh the calendar).",
+      "not_git_repo": "This project is not a git repository (or its folder is not the repository root), so a worktree can’t be created.",
+      "fetch_failed": "Couldn’t fetch the latest code from the remote: {detail}",
+      "setup_failed": "The worktree setup command failed: {detail}"
+    },
+    "startInWorktree": "Start with AI in its own worktree: latest code, a separate branch, the project folder stays untouched",
+    "preparingWorktree": "Preparing the worktree (fetch + setup)…"
   },
   "plan": {
     "button": "Plan today",

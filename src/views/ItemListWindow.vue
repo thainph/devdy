@@ -310,10 +310,10 @@ async function setDueDate(next: string | null) {
 
 // "Start with AI" (todos): a session working on the todo, like the old Focus board.
 const ai = useFocusAiActions()
-function startWithAi() {
+function startWithAi(worktree: boolean) {
   const it = item.value
   const focusTodo = it ? focus.items.find((x) => x.todo.id === it.id)?.todo : null
-  if (focusTodo) void ai.startWithAi(focusTodo)
+  if (focusTodo) void ai.startWithAi(focusTodo, { worktree })
 }
 
 async function toggleDone(id: string) {

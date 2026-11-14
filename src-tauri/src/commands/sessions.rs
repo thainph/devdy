@@ -112,7 +112,7 @@ pub(crate) fn parse_transcript(file: &Path, project_path: &str) -> Option<Parsed
         };
         if !cwd_matches {
             if let Some(c) = v.get("cwd").and_then(|x| x.as_str()) {
-                cwd_matches = c == project_path;
+                cwd_matches = crate::worktrees::cwd_in_project(project_path, c);
             }
         }
         match v.get("type").and_then(|x| x.as_str()).unwrap_or("") {
@@ -611,12 +611,15 @@ pub(crate) async fn upsert_claude_session(
     project_id: &str,
     project_name: &str,
     project_path: &str,
+    // The session's working directory (project root or one of its worktrees):
+    // Claude files transcripts under it.
+    cwd: &str,
     session_id: &str,
     defer_when_busy: bool,
 ) -> Result<SyncOutcome, String> {
     let file = {
         let mut found: Option<PathBuf> = None;
-        for dir in claude_sessions_dirs(db, project_path).await {
+        for dir in claude_sessions_dirs(db, cwd).await {
             let candidate = dir.join(format!("{}.jsonl", session_id));
             if candidate.is_file() {
                 found = Some(candidate);

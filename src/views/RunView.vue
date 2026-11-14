@@ -38,7 +38,7 @@ import {
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
   HardDrive, Cloud, CloudCog, Languages, StickyNote, ListTodo, FolderTree, Loader2,
-  MoreHorizontal, Search, Network, ChevronLeft, ChevronRight,
+  MoreHorizontal, Search, Network, GitBranch, ChevronLeft, ChevronRight,
   Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
@@ -3979,6 +3979,14 @@ function handleRefInput(val: string) {
                     :title="t('conductor.workerCountShort', { n: runWorkerCount(run) })"
                   >
                     <Network class="h-3 w-3" :stroke-width="1.75" />{{ runWorkerCount(run) }}
+                  </span>
+                  <!-- Runs in its own worktree (branch on hover). -->
+                  <span
+                    v-if="run.worktree_branch"
+                    class="flex shrink-0 text-muted-foreground"
+                    :title="t('run.inWorktree', { branch: run.worktree_branch })"
+                  >
+                    <GitBranch class="h-3 w-3" :stroke-width="1.75" />
                   </span>
                   <!-- Animated attention marker: this run is waiting for a
                        permission / question answer (replaces the floating toast). -->

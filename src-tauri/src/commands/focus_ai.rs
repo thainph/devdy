@@ -883,15 +883,17 @@ pub async fn focus_ai_cancel(
 // ── d. Start with AI ────────────────────────────────────────────────────────
 
 /// Open a session in the todo's project working on it; returns the run id.
-/// Errors `project_required` when the todo has no project.
+/// Errors `project_required` when the todo has no project. With `worktree`, the
+/// session works in its own fresh worktree of the project (see `crate::worktrees`).
 #[tauri::command]
 pub async fn focus_start_with_ai(
     app: AppHandle,
     db: State<'_, Db>,
     registry: State<'_, RunRegistry>,
     todo_id: String,
+    worktree: Option<bool>,
 ) -> Result<String, String> {
-    start_with_ai_inner(&app, db.inner(), registry.inner(), todo_id).await
+    start_with_ai_inner(&app, db.inner(), registry.inner(), todo_id, worktree.unwrap_or(false)).await
 }
 
 /// `focus_start_with_ai`, shared with Remote Control.
@@ -900,6 +902,7 @@ pub async fn start_with_ai_inner(
     db: &Db,
     registry: &RunRegistry,
     todo_id: String,
+    worktree: bool,
 ) -> Result<String, String> {
     let pool = db.clone();
     let todo = get_todo(&pool, &todo_id).await?;
@@ -907,7 +910,21 @@ pub async fn start_with_ai_inner(
         .project_id
         .clone()
         .ok_or("project_required: pick a project for this todo first")?;
-    let run = crate::commands::runs::create_session_run_inner(&pool, project_id, None).await?;
+    // Prepared before the session row exists, so a failed fetch/setup leaves nothing behind.
+    let wt = if worktree {
+        Some(crate::worktrees::create(app, &pool, &project_id, &first_line(&todo.text), Some(&todo.id)).await?)
+    } else {
+        None
+    };
+    let run = match crate::commands::runs::create_session_run_inner(&pool, project_id, None).await {
+        Ok(run) => run,
+        Err(e) => {
+            if let Some(wt) = &wt {
+                let _ = crate::worktrees::remove(&pool, &wt.id, true).await;
+            }
+            return Err(e);
+        }
+    };
     let prompt = ai::start_prompt(
         &todo.id,
         &todo.text,
@@ -916,8 +933,9 @@ pub async fn start_with_ai_inner(
     );
     let started = async {
         let title = crate::focus::ai_util::truncate(&first_line(&todo.text), 80);
-        sqlx::query("UPDATE runs SET title = ? WHERE id = ?")
+        sqlx::query("UPDATE runs SET title = ?, worktree_path = ? WHERE id = ?")
             .bind(&title)
+            .bind(wt.as_ref().map(|w| w.path.as_str()))
             .bind(&run.id)
             .execute(&pool)
             .await
@@ -943,8 +961,11 @@ pub async fn start_with_ai_inner(
     }
     .await;
     if let Err(e) = started {
-        // Nothing ran: don't leave an empty session behind.
+        // Nothing ran: don't leave an empty session (or its checkout) behind.
         discard_run(&pool, &run.id).await;
+        if let Some(wt) = &wt {
+            let _ = crate::worktrees::remove(&pool, &wt.id, true).await;
+        }
         return Err(e);
     }
     // The session is running from here on: a bookkeeping failure is logged,

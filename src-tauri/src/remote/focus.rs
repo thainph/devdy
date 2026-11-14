@@ -470,7 +470,7 @@ async fn start_ai(ctx: &HandlerCtx, cmd: &CmdPayload) -> FocusResult {
         return Err(RejectReason::NotAllowed.into());
     }
     let todo_id = require_todo(ctx, cmd).await?;
-    let run_id = focus_ai::start_with_ai_inner(&ctx.app, &ctx.db, &ctx.registry, todo_id)
+    let run_id = focus_ai::start_with_ai_inner(&ctx.app, &ctx.db, &ctx.registry, todo_id, false)
         .await
         .map_err(failed)?;
     ctx.subscriptions.lock().await.insert(run_id.clone());
