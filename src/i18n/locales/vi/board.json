@@ -8,7 +8,7 @@
   "summary": "{workers} nhân viên · {queued} todo đang chờ",
   "otherPending": "Session khác đang chờ bạn",
   "emptyTitle": "Chưa có lô todo nào",
-  "emptyBody": "Mở cửa sổ Todo, bấm nút 🤖 \"Giao cho AI\" (hoặc nút 🤖 trên một nhóm dự án), chọn các todo rồi bắt đầu. Bảng này sẽ hiện trạng thái từng việc để bạn duyệt quyền, trả lời câu hỏi và review kết quả.",
+  "emptyBody": "Bấm 🚀 \"Bắt đầu với AI\" trên một todo, hoặc mở cửa sổ Todo và bấm nút 🤖 \"Giao cho AI\" (hoặc nút 🤖 trên một nhóm dự án), chọn các todo rồi bắt đầu. Bảng này sẽ hiện trạng thái từng việc để bạn duyệt quyền, trả lời câu hỏi và review kết quả.",
   "lanes": {
     "needs": "Cần bạn",
     "running": "Đang làm",
@@ -81,5 +81,7 @@
     "closed": "Xong"
   },
   "mobilePending": "Đang chờ bạn",
-  "discardMessageCommits": "Bỏ kết quả? Nhánh {branch} có {n} commit — nếu chưa push, chúng sẽ MẤT cùng bản sao. Muốn giữ thì bấm \"Push & tạo PR\" trước. Todo quay về trạng thái chưa làm."
+  "discardMessageCommits": "Bỏ kết quả? Nhánh {branch} có {n} commit — nếu chưa push, chúng sẽ MẤT cùng bản sao. Muốn giữ thì bấm \"Push & tạo PR\" trước. Todo quay về trạng thái chưa làm.",
+  "solo": "Việc lẻ (Bắt đầu với AI)",
+  "soloHint": "{n} session mở từ nút 🚀 trong 30 ngày qua"
 }

@@ -57,6 +57,8 @@ pub async fn start_todo_for_run(app: &AppHandle, db: &Db, todo_id: &str, run_id:
         tracing::warn!(event = "todo_start_status_failed", run_id, error = %e);
     }
     emit_todos_changed(app);
+    // A new todo session: the Batch Board lists it (solo or in its batch).
+    let _ = app.emit(crate::commands::todo_batch::BOARD_CHANGED_EVENT, ());
 }
 
 /// A session started by [`start_todo_for_run`] never ran: drop the link and put

@@ -8,7 +8,7 @@
 import { computed, onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ChevronLeft, GitBranch, RefreshCw } from 'lucide-vue-next'
-import { groupByLane, roleLabel, type BoardItem, type Lane } from '@/lib/batchBoard'
+import { SOLO_BATCH, groupByLane, roleLabel, type BoardItem, type Lane } from '@/lib/batchBoard'
 import ControllerHeader from './ControllerHeader.vue'
 import HeaderButton from './HeaderButton.vue'
 import type { BatchBoardKind, RunInfo } from '../protocol'
@@ -85,7 +85,7 @@ function pick(e: Event) {
             @change="pick"
           >
             <option v-for="b in batch.batches" :key="b.runId" :value="b.runId">
-              {{ b.title || t('board.untitled') }} · {{ b.projectName }}
+              {{ b.runId === SOLO_BATCH ? t('board.solo') : `${b.title || t('board.untitled')} · ${b.projectName}` }}
             </option>
           </select>
         </div>
