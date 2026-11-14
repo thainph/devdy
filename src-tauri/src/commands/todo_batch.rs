@@ -258,7 +258,7 @@ pub async fn load_board(db: &Db, batch_run_id: &str) -> Result<BoardData, String
         "SELECT r.id, r.title, r.role, r.project_id, p.name AS project_name, r.engine, r.status,
                 r.created_at, r.started_at, r.finished_at, r.worktree_path,
                 (SELECT COALESCE(SUM(u.cost_usd), 0) FROM run_usage u WHERE u.run_id = r.id) AS cost,
-                (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id ORDER BY ir.linked_at LIMIT 1) AS todo_id
+                (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id AND ir.source = 'created_from_item' ORDER BY ir.linked_at LIMIT 1) AS todo_id
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?1 OR r.conductor_run_id = ?1
          ORDER BY r.id != ?1, r.created_at",
@@ -414,7 +414,7 @@ pub async fn board_close_item(
     let db = db.inner();
     let row = sqlx::query(
         "SELECT r.status, r.worktree_path,
-                (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id ORDER BY ir.linked_at LIMIT 1) AS todo_id
+                (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id AND ir.source = 'created_from_item' ORDER BY ir.linked_at LIMIT 1) AS todo_id
          FROM runs r WHERE r.id = ?",
     )
     .bind(&run_id)

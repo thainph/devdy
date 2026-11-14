@@ -60,8 +60,8 @@ pub async fn start_todo_for_run(app: &AppHandle, db: &Db, todo_id: &str, run_id:
 }
 
 /// Keep a todo's status in step with the session working on it (linked as
-/// `created_from_item`): a turn starting → `doing`; a turn finishing cleanly →
-/// `waiting` (its result waits for the user's review). Done todos and todos the
+/// `created_from_item`): a turn starting → `doing`; a turn ending → `waiting`
+/// (its result — or its failure — waits for the user). Done todos and todos the
 /// user moved elsewhere are left alone.
 pub async fn sync_todo_with_run(app: &AppHandle, db: &Db, run_id: &str, turn_running: bool) {
     let (to, from) = if turn_running { ("doing", "waiting") } else { ("waiting", "doing") };

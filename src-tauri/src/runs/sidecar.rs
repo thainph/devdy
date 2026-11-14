@@ -1390,9 +1390,8 @@ pub async fn drain_sidecar(
         serde_json::json!({ "run_id": run_id, "status": final_status }),
     );
     drop(reg);
-    if final_status == "done" {
-        crate::focus::sync_todo_with_run(&app, &db_pool, &run_id, false).await;
-    }
+    // Done, failed or stopped: the outcome waits for the user either way.
+    crate::focus::sync_todo_with_run(&app, &db_pool, &run_id, false).await;
 
     // Close the conductor control loop: hand this finished run's id to the
     // conductor wake consumer (a channel send, never a direct resume). If the run

@@ -99,9 +99,16 @@ pub fn cwd_in_project(project_path: &str, cwd: &str) -> bool {
     cwd == project_path || is_project_worktree(project_path, cwd)
 }
 
-/// `<slug>-<n>` free in both the worktrees folder and the branch namespace.
+/// `<slug>-<n>` free in both the worktrees folder and the branch namespace. A
+/// hint with nothing to slug (e.g. Japanese text) becomes `task-<random>`.
 fn unique_slug(root: &Path, base: &str, branch_taken: impl Fn(&str) -> bool) -> String {
-    let base = if base.is_empty() { "task" } else { base };
+    let random;
+    let base = if base.is_empty() {
+        random = format!("task-{}", &uuid::Uuid::new_v4().simple().to_string()[..6]);
+        random.as_str()
+    } else {
+        base
+    };
     let mut n = 1;
     loop {
         let slug = if n == 1 { base.to_string() } else { format!("{base}-{n}") };
@@ -129,12 +136,43 @@ async fn git(cwd: &Path, args: &[&str], mut cmd: Command) -> Result<String, Stri
     }
 }
 
-/// A plain local `git` (no network, no credentials needed).
+/// A plain local `git` (no network). The inherited credential helpers are reset
+/// so nothing it triggers can authenticate with the user's own credentials.
 fn local_git() -> Command {
     let mut cmd = Command::new("git");
     crate::runs::sidecar::augment_command_path(&mut cmd);
+    cmd.env("GIT_CONFIG_COUNT", "1");
+    cmd.env("GIT_CONFIG_KEY_0", "credential.helper");
+    cmd.env("GIT_CONFIG_VALUE_0", "");
     cmd.env("GIT_TERMINAL_PROMPT", "0");
     cmd
+}
+
+/// Serialises fetch → name pick → `worktree add` per project: parallel spawns
+/// would otherwise pick the same branch name or collide on fetch's ref locks.
+async fn project_lock(project_id: &str) -> tokio::sync::OwnedMutexGuard<()> {
+    use std::collections::HashMap;
+    use std::sync::{Arc, Mutex, OnceLock};
+    static LOCKS: OnceLock<Mutex<HashMap<String, Arc<tokio::sync::Mutex<()>>>>> = OnceLock::new();
+    let lock = {
+        let mut map = LOCKS.get_or_init(Default::default).lock().unwrap_or_else(|e| e.into_inner());
+        map.entry(project_id.to_string()).or_default().clone()
+    };
+    lock.lock_owned().await
+}
+
+/// A fresh broker-wired command (see `wire_backend_command`) for `program`.
+async fn backend_command(
+    app: &AppHandle,
+    db: &Db,
+    program: &str,
+    project_id: &str,
+    cwd: &str,
+) -> Result<(Command, crate::runs::BrokerRunGuard), String> {
+    let mut cmd = Command::new(program);
+    let call_id = format!("worktree-{}", uuid::Uuid::new_v4());
+    let guard = crate::commands::runs::wire_backend_command(app, db, &mut cmd, project_id, &call_id, cwd).await?;
+    Ok((cmd, guard))
 }
 
 /// The project's repo root must be the project folder itself.
@@ -241,7 +279,7 @@ pub fn carry_untracked(project: &Path, worktree: &Path) -> Result<Vec<String>, S
 /// (not ignored) is added to the repo's exclude file. That file is shared by all
 /// worktrees, so these paths are also hidden from the project's own status —
 /// they are the same Devdy-managed files there.
-async fn exclude_carried(worktree: &Path, carried: &[String]) {
+async fn exclude_carried(worktree: &Path, carried: &[String]) -> Result<(), String> {
     let mut lines = Vec::new();
     for rel in carried {
         if git(worktree, &["check-ignore", "-q", "--no-index", rel], local_git()).await.is_err() {
@@ -249,11 +287,9 @@ async fn exclude_carried(worktree: &Path, carried: &[String]) {
         }
     }
     if lines.is_empty() {
-        return;
+        return Ok(());
     }
-    let Ok(common) = git(worktree, &["rev-parse", "--git-common-dir"], local_git()).await else {
-        return;
-    };
+    let common = git(worktree, &["rev-parse", "--git-common-dir"], local_git()).await?;
     let exclude = worktree.join(common).join("info").join("exclude");
     let existing = fs::read_to_string(&exclude).unwrap_or_default();
     let mut body = existing.clone();
@@ -266,28 +302,42 @@ async fn exclude_carried(worktree: &Path, carried: &[String]) {
             body.push('\n');
         }
     }
+    // Failing here is fatal: a later "commit all" would commit the copied .env.
     if body != existing {
         if let Some(dir) = exclude.parent() {
-            let _ = fs::create_dir_all(dir);
+            fs::create_dir_all(dir).map_err(|e| format!("git exclude: {e}"))?;
         }
-        if let Err(e) = fs::write(&exclude, body) {
-            tracing::warn!(event = "worktree_exclude_failed", error = %e);
-        }
+        fs::write(&exclude, body).map_err(|e| format!("git exclude: {e}"))?;
     }
+    Ok(())
 }
 
-/// Run the project's setup command in the worktree. The error carries the tail of
-/// its output so the user can see why it failed.
-async fn run_setup(worktree: &Path, setup: &str) -> Result<(), String> {
-    let mut cmd = Command::new("/bin/sh");
+/// Run the project's setup command in the worktree, broker-wired like a run (a
+/// git dependency fetched by the package manager uses the project's account).
+/// The error carries the tail of its output so the user can see why it failed.
+async fn run_setup(mut cmd: Command, worktree: &Path, setup: &str) -> Result<(), String> {
     cmd.arg("-c").arg(setup).current_dir(worktree);
-    crate::runs::sidecar::augment_command_path(&mut cmd);
     cmd.stdin(std::process::Stdio::null());
+    cmd.stdout(std::process::Stdio::piped());
+    cmd.stderr(std::process::Stdio::piped());
+    // Its own process group, so a timeout stops the package manager too, not just sh.
+    crate::runs::sidecar::detach_process_group(&mut cmd);
     cmd.kill_on_drop(true);
-    let out = tokio::time::timeout(SETUP_TIMEOUT, cmd.output())
-        .await
-        .map_err(|_| format!("setup_failed: `{setup}` took longer than 15 minutes"))?
-        .map_err(|e| format!("setup_failed: {e}"))?;
+    let child = cmd.spawn().map_err(|e| format!("setup_failed: {e}"))?;
+    let pgid = child.id();
+    let out = match tokio::time::timeout(SETUP_TIMEOUT, child.wait_with_output()).await {
+        Ok(out) => out.map_err(|e| format!("setup_failed: {e}"))?,
+        Err(_) => {
+            #[cfg(unix)]
+            if let Some(pgid) = pgid {
+                unsafe {
+                    libc::killpg(pgid as libc::pid_t, libc::SIGKILL);
+                }
+            }
+            let _ = pgid;
+            return Err(format!("setup_failed: `{setup}` took longer than 15 minutes"));
+        }
+    };
     if out.status.success() {
         return Ok(());
     }
@@ -333,12 +383,12 @@ pub async fn create(
     require_repo_root(&root).await?;
     let base = resolve_base_branch(&root, project.base_branch).await?;
 
+    // Fetch, pick a free name and add the worktree under one per-project lock.
+    let lock = project_lock(project_id).await;
     // Always start from the latest remote state, through the project's git account.
     let has_origin = git(&root, &["remote", "get-url", "origin"], local_git()).await.is_ok();
     let base_ref = if has_origin {
-        let call_id = format!("worktree-{}", uuid::Uuid::new_v4());
-        let (cmd, _guard) =
-            crate::commands::runs::backend_git_command(app, db, project_id, &call_id, &project.path).await?;
+        let (cmd, _guard) = backend_command(app, db, "git", project_id, &project.path).await?;
         git(&root, &["fetch", "origin", &base], cmd)
             .await
             .map_err(|e| format!("fetch_failed: {e}"))?;
@@ -359,35 +409,48 @@ pub async fn create(
     let path_str = path.to_string_lossy().into_owned();
     let branch = format!("{BRANCH_PREFIX}{slug}");
 
-    git(&root, &["worktree", "add", "--no-track", "-b", &branch, &path_str, &base_ref], local_git()).await?;
+    // A half-made checkout is worse than none: every failure below removes it.
+    let cleanup = |root: PathBuf, path_str: String, branch: String| async move {
+        let _ = git(&root, &["worktree", "remove", "--force", &path_str], local_git()).await;
+        let _ = fs::remove_dir_all(&path_str);
+        let _ = git(&root, &["worktree", "prune"], local_git()).await;
+        let _ = git(&root, &["branch", "-D", &branch], local_git()).await;
+    };
+
+    // The checkout may run LFS / hooks that authenticate: broker-wired too.
+    let (cmd, _guard) = backend_command(app, db, "git", project_id, &project.path).await?;
+    if let Err(e) = git(&root, &["worktree", "add", "--no-track", "-b", &branch, &path_str, &base_ref], cmd).await {
+        cleanup(root.clone(), path_str.clone(), branch.clone()).await;
+        return Err(e);
+    }
+    drop(lock);
 
     let prepared = async {
         let carried = carry_untracked(&root, &path)?;
-        exclude_carried(&path, &carried).await;
+        exclude_carried(&path, &carried).await?;
         if let Some(setup) = project.setup_cmd.as_deref().map(str::trim).filter(|s| !s.is_empty()) {
-            run_setup(&path, setup).await?;
+            let (cmd, _guard) = backend_command(app, db, "/bin/sh", project_id, &path_str).await?;
+            run_setup(cmd, &path, setup).await?;
         }
         Ok::<(), String>(())
     }
     .await;
     if let Err(e) = prepared {
-        // A half-prepared checkout is worse than none: remove it and its branch.
-        let _ = git(&root, &["worktree", "remove", "--force", &path_str], local_git()).await;
-        let _ = git(&root, &["branch", "-D", &branch], local_git()).await;
+        cleanup(root.clone(), path_str.clone(), branch.clone()).await;
         return Err(e);
     }
 
     let wt = Worktree {
         id: uuid::Uuid::new_v4().to_string(),
         project_id: project_id.to_string(),
-        path: path_str,
-        branch,
+        path: path_str.clone(),
+        branch: branch.clone(),
         base_ref,
         todo_id: todo_id.map(str::to_string),
         created_at: chrono::Utc::now().to_rfc3339(),
         removed_at: None,
     };
-    sqlx::query(
+    let inserted = sqlx::query(
         "INSERT INTO worktrees (id, project_id, path, branch, base_ref, todo_id, created_at) VALUES (?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&wt.id)
@@ -398,8 +461,11 @@ pub async fn create(
     .bind(&wt.todo_id)
     .bind(&wt.created_at)
     .execute(db)
-    .await
-    .map_err(|e| e.to_string())?;
+    .await;
+    if let Err(e) = inserted {
+        cleanup(root, path_str, branch).await;
+        return Err(e.to_string());
+    }
     Ok(wt)
 }
 
@@ -479,9 +545,7 @@ pub async fn commit_all(app: &AppHandle, db: &Db, id: &str, message: &str) -> Re
         return Err("a commit message is required".into());
     }
     git(&dir, &["add", "-A"], local_git()).await?;
-    let call_id = format!("worktree-{}", uuid::Uuid::new_v4());
-    let (cmd, _guard) =
-        crate::commands::runs::backend_git_command(app, db, &wt.project_id, &call_id, &wt.path).await?;
+    let (cmd, _guard) = backend_command(app, db, "git", &wt.project_id, &wt.path).await?;
     git(&dir, &["commit", "-m", message], cmd).await?;
     Ok(())
 }
@@ -494,9 +558,7 @@ pub async fn push(app: &AppHandle, db: &Db, id: &str) -> Result<String, String> 
     let remote = git(&dir, &["remote", "get-url", "origin"], local_git())
         .await
         .map_err(|_| "no_remote: this repository has no `origin` remote".to_string())?;
-    let call_id = format!("worktree-{}", uuid::Uuid::new_v4());
-    let (cmd, _guard) =
-        crate::commands::runs::backend_git_command(app, db, &wt.project_id, &call_id, &wt.path).await?;
+    let (cmd, _guard) = backend_command(app, db, "git", &wt.project_id, &wt.path).await?;
     git(&dir, &["push", "-u", "origin", &wt.branch], cmd)
         .await
         .map_err(|e| format!("push_failed: {e}"))?;
@@ -576,7 +638,8 @@ mod tests {
         fs::create_dir_all(tmp.join("fix")).unwrap();
         assert_eq!(unique_slug(&tmp, "fix", |_| false), "fix-2");
         assert_eq!(unique_slug(&tmp, "fix", |b| b == "devdy/fix-2"), "fix-3");
-        assert_eq!(unique_slug(&tmp, "", |_| false), "task");
+        let random = unique_slug(&tmp, "", |_| false);
+        assert!(random.starts_with("task-") && random.len() == 11, "{random}");
         fs::remove_dir_all(&tmp).unwrap();
     }
 

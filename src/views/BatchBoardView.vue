@@ -101,19 +101,25 @@ async function loadBatches() {
   }
 }
 
+// Only the newest request may land: switching batches quickly must not let an
+// older answer overwrite the board of the batch now shown.
+let loadSeq = 0
 async function loadItems() {
+  const seq = ++loadSeq
   if (!batchId.value) {
     data.value = { items: [], queued: [] }
     return
   }
   loading.value = true
   try {
-    data.value = await invoke<BoardData>('board_items', { batchRunId: batchId.value })
+    const next = await invoke<BoardData>('board_items', { batchRunId: batchId.value })
+    if (seq !== loadSeq) return
+    data.value = next
     error.value = null
   } catch (e) {
-    error.value = String(e)
+    if (seq === loadSeq) error.value = String(e)
   } finally {
-    loading.value = false
+    if (seq === loadSeq) loading.value = false
   }
 }
 

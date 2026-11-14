@@ -142,6 +142,7 @@ pub(crate) async fn start_run_inner(
     // Where the session works: the project root, or its own worktree. Logs and
     // per-run scratch files stay under the project root either way.
     let run_cwd: String = run_row.get("run_cwd");
+    require_worktree(&project_path, &run_cwd)?;
     let existing_claude_account_id: Option<String> = run_row.get("claude_account_id");
     let stored_instruction: Option<String> = run_row.get("system_instruction");
 
@@ -961,17 +962,29 @@ async fn wire_broker(
     Ok((guard, ssh_access))
 }
 
-/// A `git` command for a backend network call on a project's behalf (worktree
-/// fetch): same credential helper, shims and fail-closed config as a run's git,
-/// authenticated as the project's linked account. Keep the guard alive until the
-/// command has finished; it registers `call_id` with the broker for auditing.
-pub(crate) async fn backend_git_command(
+/// A session whose worktree was deleted can't start or resume (its checkout and
+/// uncommitted work are gone); refuse before the run is marked running.
+fn require_worktree(project_path: &str, run_cwd: &str) -> Result<(), String> {
+    if run_cwd != project_path && !Path::new(run_cwd).is_dir() {
+        return Err(format!("worktree_gone: this session's worktree no longer exists ({run_cwd})"));
+    }
+    Ok(())
+}
+
+/// Wire a backend command run on a project's behalf (worktree fetch / checkout /
+/// commit / push, the worktree setup command) like a run: the Devdy credential
+/// helper and shims, fail-closed git config, the project's commit identity — so
+/// git authenticates as the project's linked account and never through the
+/// user's own helpers. Keep the returned guard alive until the command has
+/// finished; it registers `call_id` with the broker for auditing.
+pub(crate) async fn wire_backend_command(
     app: &AppHandle,
     db: &Db,
+    cmd: &mut Command,
     project_id: &str,
     call_id: &str,
     cwd: &str,
-) -> Result<(Command, BrokerRunGuard), String> {
+) -> Result<BrokerRunGuard, String> {
     let sock_path = app
         .try_state::<BrokerHandle>()
         .ok_or_else(|| "credential broker not initialized".to_string())?
@@ -985,16 +998,15 @@ pub(crate) async fn backend_git_command(
             project_id: Some(project_id.to_string()),
         },
     );
-    let mut cmd = Command::new("git");
-    augment_command_path(&mut cmd);
+    augment_command_path(cmd);
     let shim_dir = resolve_shim_dir(app)?;
-    prepend_shim_path(&mut cmd, &shim_dir);
+    prepend_shim_path(cmd, &shim_dir);
     cmd.env("DEVDY_BROKER_SOCK", &sock_path);
     cmd.env("DEVDY_PROJECT_ID", project_id);
     cmd.env("DEVDY_RUN_ID", call_id);
-    wire_git_config(&mut cmd, &shim_dir.join("git-credential-devdy"));
-    wire_commit_identity(&mut cmd, db, project_id).await;
-    Ok((cmd, guard))
+    wire_git_config(cmd, &shim_dir.join("git-credential-devdy"));
+    wire_commit_identity(cmd, db, project_id).await;
+    Ok(guard)
 }
 
 /// Configure `git` for this run to use the Devdy credential helper via
@@ -3633,6 +3645,7 @@ pub(crate) async fn resume_run_with(
     let claude_account_id: Option<String> = row.get("claude_account_id");
     let project_path: String = row.get("project_path");
     let run_cwd: String = row.get("run_cwd");
+    require_worktree(&project_path, &run_cwd)?;
 
     // Resume uses the run-level account, else (NULL = "Default" in the UI) the
     // project → default account — the same profile a fresh start would pick and

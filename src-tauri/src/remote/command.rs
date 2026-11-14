@@ -175,7 +175,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 23] = [
+pub const READ_ONLY_ACTIONS: [&str; 22] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -201,7 +201,6 @@ pub const READ_ONLY_ACTIONS: [&str; 23] = [
     "focus_day_plan_get",
     "focus_settings_get",
     "focus_suggest_actual",
-    "batch_board",
     // Push: reading the VAPID key, and the phone saying it went to / came back
     // from the background (fires on every app switch). Subscribing, removing
     // and test sends stay on the command budget.
@@ -526,7 +525,7 @@ mod tests {
 
     #[test]
     fn focus_reads_and_writes_use_the_right_budget() {
-        for a in ["focus_board", "focus_day_plan_get", "focus_settings_get", "focus_suggest_actual", "batch_board"] {
+        for a in ["focus_board", "focus_day_plan_get", "focus_settings_get", "focus_suggest_actual"] {
             assert!(is_read_only_action(a), "{a} only reads");
         }
         for a in [
@@ -538,6 +537,8 @@ mod tests {
             "todo_start_ai",
             "focus_settings_set",
             "focus_calendar_refresh",
+            // Runs git in every worktree of the batch.
+            "batch_board",
         ] {
             assert!(!is_read_only_action(a), "{a} is on the command budget");
         }

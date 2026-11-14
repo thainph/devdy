@@ -234,6 +234,12 @@ async fn session_spawn(
     };
 
     if let Err(e) = start_run_inner(state.app.clone(), db.clone(), registry(state), payload).await {
+        // start_run_inner may already have marked it running: it never will be,
+        // and a "running" row would hold the cap slot and block the worktree's removal.
+        let _ = sqlx::query("UPDATE runs SET status = 'failed' WHERE id = ? AND status = 'running'")
+            .bind(&worker_id)
+            .execute(&db)
+            .await;
         drop_worktree(db.clone(), worktree).await;
         return Err(e);
     }
@@ -264,7 +270,7 @@ async fn session_list(state: &HttpState, conductor_run_id: &str) -> Result<Value
     let db = db(state);
     let rows = sqlx::query(
         "SELECT r.id, r.title, r.status, r.engine, r.role, p.name AS project, w.branch AS worktree_branch,
-                (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id LIMIT 1) AS todo_id
+                (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id AND ir.source = 'created_from_item' ORDER BY ir.linked_at LIMIT 1) AS todo_id
          FROM runs r JOIN projects p ON p.id = r.project_id
          LEFT JOIN worktrees w ON w.path = r.worktree_path
          WHERE r.conductor_run_id = ? ORDER BY r.created_at",
