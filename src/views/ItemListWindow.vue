@@ -322,10 +322,10 @@ function openBatch(projectId?: string | null) {
 
 // "Start with AI" (todos): a session working on the todo, like the old Focus board.
 const ai = useFocusAiActions()
-function startWithAi(worktree: boolean) {
+function startWithAi() {
   const it = item.value
   const focusTodo = it ? focus.items.find((x) => x.todo.id === it.id)?.todo : null
-  if (focusTodo) void ai.startWithAi(focusTodo, { worktree })
+  if (focusTodo) void ai.startWithAi(focusTodo)
 }
 
 async function toggleDone(id: string) {

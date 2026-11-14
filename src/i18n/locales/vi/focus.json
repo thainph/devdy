@@ -277,9 +277,7 @@
       "not_git_repo": "Dự án này không phải git repo (hoặc thư mục dự án không phải gốc repo) nên không tạo được bản sao.",
       "fetch_failed": "Không lấy được code mới nhất từ remote: {detail}",
       "setup_failed": "Lệnh setup của bản sao bị lỗi: {detail}"
-    },
-    "startInWorktree": "Bắt đầu với AI trong bản sao riêng (worktree): lấy code mới nhất, làm trên nhánh riêng, không đụng thư mục dự án",
-    "preparingWorktree": "Đang chuẩn bị bản sao code (fetch + setup)…"
+    }
   },
   "plan": {
     "button": "Lên kế hoạch hôm nay",

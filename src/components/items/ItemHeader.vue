@@ -14,7 +14,7 @@
 // project name truncates.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Copy, GitBranchPlus, LockKeyhole, Pencil, Rocket } from 'lucide-vue-next'
+import { Check, Copy, LockKeyhole, Pencil, Rocket } from 'lucide-vue-next'
 import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
@@ -56,8 +56,7 @@ const emit = defineEmits<{
   unlinkRun: [link: SessionLink]
   linkRun: [runId: string]
   newSession: []
-  /** `worktree`: work in a fresh worktree of the project instead of its folder. */
-  startWithAi: [worktree: boolean]
+  startWithAi: []
   copyId: []
   makeSecret: []
   delete: []
@@ -187,21 +186,10 @@ const newSessionLabel = computed(() =>
           size="sm"
           class="shrink-0"
           :title="t('focus.ai.start')"
-          @click="emit('startWithAi', false)"
+          @click="emit('startWithAi')"
         >
           <Rocket class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('focus.ai.start') }}
-        </Button>
-        <Button
-          v-if="todo && !todo.done && canStartWithAi"
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :title="t('focus.ai.startInWorktree')"
-          :aria-label="t('focus.ai.startInWorktree')"
-          @click="emit('startWithAi', true)"
-        >
-          <GitBranchPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
         <Button
           v-if="todo"
