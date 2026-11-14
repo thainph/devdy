@@ -17,6 +17,7 @@ import StatsView from '../views/StatsView.vue'
 import CalendarView from '../views/CalendarView.vue'
 import AboutView from '../views/AboutView.vue'
 import BackgroundProcessesView from '../views/BackgroundProcessesView.vue'
+import BatchBoardView from '../views/BatchBoardView.vue'
 
 // Skills / Rules / MCP / Servers edit in their list's detail pane now; the old
 // editor URLs redirect there so stale links keep working.
@@ -92,6 +93,7 @@ const router = createRouter({
     },
     { path: '/settings', name: 'settings', component: SettingsView },
     { path: '/processes', name: 'processes', component: BackgroundProcessesView },
+    { path: '/board', name: 'board', component: BatchBoardView },
     { path: '/about', name: 'about', component: AboutView },
     ...(import.meta.env.DEV
       ? [{

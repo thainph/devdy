@@ -118,5 +118,17 @@
   "warnCodexReadsClaudeMd": "{config} lists CLAUDE.md in project_doc_fallback_filenames, so Codex may read Claude's instructions.",
   "warnLinksNotIgnored": "{dir} holds Devdy symlinks that git does not ignore. Committed, they point to a path on this machine and break for everyone else — add it to .gitignore or .git/info/exclude.",
   "warnLegacyCopiesBackedUp": "Old skill/rule copies that may hold local edits were moved to {dir} ({count} batch(es)) when switching to symlinks. Check them, keep what you need, then delete that folder to clear this notice.",
-  "warnTrackedByGit": "The repo commits its own files at {paths}. Devdy leaves them alone and does not install there, so the repo's version is what Claude/Codex load."
+  "warnTrackedByGit": "The repo commits its own files at {paths}. Devdy leaves them alone and does not install there, so the repo's version is what Claude/Codex load.",
+  "worktrees": {
+    "title": "Worktrees",
+    "hint": "\"Start with AI in its own worktree\" sessions work in .devdy/worktrees/<name> on branch devdy/<name>, created from the latest remote code. Rules/skills and .env files are carried over.",
+    "baseBranch": "Base branch",
+    "baseBranchPlaceholder": "Default: the remote’s main branch",
+    "setupCmd": "Setup command",
+    "setupCmdHint": "Runs in a new worktree before the session starts (install dependencies…). Leave empty if not needed.",
+    "saved": "Worktree settings saved",
+    "from": "from {base}",
+    "removeTitle": "Delete worktree",
+    "removeMessage": "Delete the worktree and branch {branch}? Uncommitted or unpushed changes in it are lost."
+  }
 }

@@ -98,6 +98,8 @@ export interface RunRecord {
    * the History list nest workers under their conductor.
    */
   conductor_run_id?: string | null
+  /** Branch of the worktree the session works in; null/undefined in the project root. Only `list_runs` fills it. */
+  worktree_branch?: string | null
 }
 
 /**

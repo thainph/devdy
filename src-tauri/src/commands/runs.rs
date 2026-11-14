@@ -123,7 +123,7 @@ pub(crate) async fn start_run_inner(
     // Load run + project info
     let run_row = sqlx::query(
         "SELECT r.id, r.project_id, r.type, r.ref_number, r.input_path, r.output_path, r.engine, r.status, r.claude_account_id,
-                r.system_instruction, p.path as project_path
+                r.system_instruction, p.path as project_path, COALESCE(r.worktree_path, p.path) as run_cwd
          FROM runs r
          JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
@@ -139,6 +139,10 @@ pub(crate) async fn start_run_inner(
     let output_path: Option<String> = run_row.get("output_path");
     let status: String = run_row.get("status");
     let project_path: String = run_row.get("project_path");
+    // Where the session works: the project root, or its own worktree. Logs and
+    // per-run scratch files stay under the project root either way.
+    let run_cwd: String = run_row.get("run_cwd");
+    require_worktree(&project_path, &run_cwd)?;
     let existing_claude_account_id: Option<String> = run_row.get("claude_account_id");
     let stored_instruction: Option<String> = run_row.get("system_instruction");
 
@@ -383,7 +387,7 @@ pub(crate) async fn start_run_inner(
         // ---- Claude: drive the Agent-SDK sidecar (keeps subscription auth) ----
         let (node_bin, sidecar_script) = resolve_sidecar(&app, &node_path, &sidecar_path)?;
         let mut cmd = Command::new(&node_bin);
-        cmd.current_dir(&project_path).arg(&sidecar_script);
+        cmd.current_dir(&run_cwd).arg(&sidecar_script);
         augment_command_path(&mut cmd);
         apply_mcp_tool_timeout(&mut cmd);
         // GĐ3: per-run credential broker + gh/glab shim. Prepends the shim dir to
@@ -395,7 +399,7 @@ pub(crate) async fn start_run_inner(
             &mut cmd,
             &payload.run_id,
             &project_id,
-            &project_path,
+            &run_cwd,
         )
         .await?;
         // Honor a custom claude binary if the user configured one; default uses
@@ -454,7 +458,7 @@ pub(crate) async fn start_run_inner(
             )
             .await;
             let mut options = serde_json::json!({
-                "cwd": project_path,
+                "cwd": run_cwd,
                 "permissionMode": sdk_permission_mode(&permission_mode),
                 "model": model,
             });
@@ -484,7 +488,7 @@ pub(crate) async fn start_run_inner(
                 "claude",
                 &node_bin,
                 &project_id,
-                &project_path,
+                &run_cwd,
                 &payload.run_id,
                 conductor_token.is_some(),
             )
@@ -536,7 +540,7 @@ pub(crate) async fn start_run_inner(
         tokio::spawn(drain_sidecar(
             app,
             run_id,
-            project_path,
+            run_cwd,
             stdout,
             stderr,
             db_pool,
@@ -558,7 +562,7 @@ pub(crate) async fn start_run_inner(
     let _ = &extra; // codex tuning is now via sandbox/approval env, not exec args
     let (node_bin, sidecar_script) = resolve_codex_sidecar(&app, &node_path, &codex_sidecar_path)?;
     let mut cmd = Command::new(&node_bin);
-    cmd.current_dir(&project_path).arg(&sidecar_script);
+    cmd.current_dir(&run_cwd).arg(&sidecar_script);
     augment_command_path(&mut cmd);
     apply_mcp_tool_timeout(&mut cmd);
     let (broker_run, ssh_access) = wire_broker(
@@ -567,7 +571,7 @@ pub(crate) async fn start_run_inner(
         &mut cmd,
         &payload.run_id,
         &project_id,
-        &project_path,
+        &run_cwd,
     )
     .await?;
     if codex_path != "codex" && !codex_path.trim().is_empty() {
@@ -585,7 +589,7 @@ pub(crate) async fn start_run_inner(
         "codex",
         &node_bin,
         &project_id,
-        &project_path,
+        &run_cwd,
         &payload.run_id,
         conductor_token.is_some(),
     )
@@ -688,7 +692,7 @@ pub(crate) async fn start_run_inner(
     tokio::spawn(drain_sidecar(
         app,
         run_id,
-        project_path,
+        run_cwd,
         stdout,
         stderr,
         db_pool,
@@ -956,6 +960,58 @@ async fn wire_broker(
     };
 
     Ok((guard, ssh_access))
+}
+
+/// A session whose worktree was deleted can't start or resume (its checkout and
+/// uncommitted work are gone); refuse before the run is marked running.
+fn require_worktree(project_path: &str, run_cwd: &str) -> Result<(), String> {
+    if run_cwd != project_path && !Path::new(run_cwd).is_dir() {
+        return Err(format!("worktree_gone: this session's worktree no longer exists ({run_cwd})"));
+    }
+    Ok(())
+}
+
+/// Wire a backend command run on a project's behalf (worktree fetch / checkout /
+/// commit / push, the worktree setup command) like a run: the Devdy credential
+/// helper and shims, fail-closed git config, the project's commit identity — so
+/// git authenticates as the project's linked account and never through the
+/// user's own helpers. Keep the returned guard alive until the command has
+/// finished; it registers `call_id` with the broker for auditing.
+pub(crate) async fn wire_backend_command(
+    app: &AppHandle,
+    db: &Db,
+    cmd: &mut Command,
+    project_id: &str,
+    call_id: &str,
+    cwd: &str,
+) -> Result<BrokerRunGuard, String> {
+    let sock_path = app
+        .try_state::<BrokerHandle>()
+        .ok_or_else(|| "credential broker not initialized".to_string())?
+        .path
+        .clone();
+    let guard = BrokerRunGuard::register(
+        app.state::<BrokerRuns>().inner().clone(),
+        call_id.to_string(),
+        BrokerRunCtx {
+            cwd: Some(cwd.to_string()),
+            project_id: Some(project_id.to_string()),
+        },
+    );
+    augment_command_path(cmd);
+    let shim_dir = resolve_shim_dir(app)?;
+    prepend_shim_path(cmd, &shim_dir);
+    cmd.env("DEVDY_BROKER_SOCK", &sock_path);
+    cmd.env("DEVDY_PROJECT_ID", project_id);
+    cmd.env("DEVDY_RUN_ID", call_id);
+    wire_git_config(cmd, &shim_dir.join("git-credential-devdy"));
+    wire_commit_identity(cmd, db, project_id).await;
+    // Same cloud / CLI isolation as a run: no inherited AWS / Azure / gh / glab
+    // credentials reach a setup command or a git hook.
+    wire_aws_config(app, db, cmd, project_id).await;
+    wire_azure_config(app, cmd);
+    wire_git_cli_config(app, cmd);
+    Ok(guard)
 }
 
 /// Configure `git` for this run to use the Devdy credential helper via
@@ -1500,7 +1556,7 @@ pub async fn get_run_log(db: State<'_, Db>, run_id: String) -> Result<RunLog, St
     use sqlx::Row;
     let row = sqlx::query(
         "SELECT r.project_id, r.output_path, r.engine, r.session_id, r.transcript_path,
-                p.name as project_name, p.path as project_path
+                p.name as project_name, p.path as project_path, COALESCE(r.worktree_path, p.path) as run_cwd
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -1516,6 +1572,7 @@ pub async fn get_run_log(db: State<'_, Db>, run_id: String) -> Result<RunLog, St
     let transcript_path: Option<String> = row.get("transcript_path");
     let project_name: String = row.get("project_name");
     let project_path: String = row.get("project_path");
+    let run_cwd: String = row.get("run_cwd");
 
     // Conventional log file written by start_run / resume_run drain task.
     // Prefer this over output_path because output_path may still point to the
@@ -1537,6 +1594,7 @@ pub async fn get_run_log(db: State<'_, Db>, run_id: String) -> Result<RunLog, St
                 &project_id,
                 &project_name,
                 &project_path,
+                &run_cwd,
                 sid,
                 false,
             )
@@ -1670,12 +1728,14 @@ struct RunLogRow {
     session_id: Option<String>,
     transcript_path: Option<String>,
     project_path: String,
+    run_cwd: String,
 }
 
 async fn fetch_run_log_row(db: &Db, run_id: &str) -> Result<RunLogRow, String> {
     use sqlx::Row;
     let row = sqlx::query(
-        "SELECT r.output_path, r.engine, r.session_id, r.transcript_path, p.path as project_path
+        "SELECT r.output_path, r.engine, r.session_id, r.transcript_path, p.path as project_path,
+                COALESCE(r.worktree_path, p.path) as run_cwd
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -1689,6 +1749,7 @@ async fn fetch_run_log_row(db: &Db, run_id: &str) -> Result<RunLogRow, String> {
         session_id: row.get("session_id"),
         transcript_path: row.get("transcript_path"),
         project_path: row.get("project_path"),
+        run_cwd: row.get("run_cwd"),
     })
 }
 
@@ -1701,7 +1762,7 @@ fn resolve_transcript(row: &RunLogRow) -> Option<PathBuf> {
         .or_else(
             || match (row.engine.as_deref(), row.session_id.as_deref()) {
                 (Some("claude"), Some(sid)) => {
-                    crate::commands::sessions::claude_sessions_dir(&row.project_path)
+                    crate::commands::sessions::claude_sessions_dir(&row.run_cwd)
                         .map(|d| d.join(format!("{}.jsonl", sid)))
                         .filter(|p| p.is_file())
                 }
@@ -2699,6 +2760,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         protected: false,
         role: None,
         conductor_run_id: None,
+        worktree_branch: None,
     })
 }
 
@@ -2744,8 +2806,9 @@ pub async fn create_handoff_run(
     let context_path = context_path.to_string_lossy().to_string();
 
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title)
-         VALUES (?, ?, ?, ?, ?, 'fetched', ?, ?, ?, ?, ?)",
+        // The handed-off run keeps working in the same checkout (worktree or root).
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title, worktree_path)
+         VALUES (?, ?, ?, ?, ?, 'fetched', ?, ?, ?, ?, ?, (SELECT worktree_path FROM runs WHERE id = ?))",
     )
     .bind(&new_id)
     .bind(&src.project_id)
@@ -2757,6 +2820,7 @@ pub async fn create_handoff_run(
     .bind(src.input_path.as_deref())
     .bind(&now)
     .bind(src.title.as_deref())
+    .bind(&run_id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -2784,6 +2848,7 @@ pub async fn create_handoff_run(
             protected: false,
             role: None,
             conductor_run_id: None,
+            worktree_branch: None,
         },
         context_path,
     })
@@ -2849,6 +2914,7 @@ pub async fn create_session_run_inner(
         protected: false,
         role: None,
         conductor_run_id: None,
+        worktree_branch: None,
     })
 }
 
@@ -2974,7 +3040,8 @@ async fn delete_single_run(
     }
 
     let row = sqlx::query(
-        "SELECT r.status, r.input_path, r.project_id, r.session_id, r.engine, r.transcript_path, p.path as project_path
+        "SELECT r.status, r.input_path, r.project_id, r.session_id, r.engine, r.transcript_path, p.path as project_path,
+                COALESCE(r.worktree_path, p.path) as run_cwd
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -2989,6 +3056,7 @@ async fn delete_single_run(
     }
     let input_path: Option<String> = row.get("input_path");
     let project_path: String = row.get("project_path");
+    let run_cwd: String = row.get("run_cwd");
     let project_id: String = row.get("project_id");
     let session_id: Option<String> = row.get("session_id");
     let engine: String = row.get("engine");
@@ -3047,7 +3115,7 @@ async fn delete_single_run(
     let mut leftover = Vec::new();
     if let Some(sid) = session_id.as_deref() {
         let claude_dirs = if engine == "claude" {
-            crate::commands::sessions::claude_sessions_dirs(db, &project_path).await
+            crate::commands::sessions::claude_sessions_dirs(db, &run_cwd).await
         } else {
             Vec::new()
         };
@@ -3354,7 +3422,8 @@ pub async fn set_run_claude_account_inner(
     });
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id,
+                COALESCE(r.worktree_path, p.path) as run_cwd
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -3380,11 +3449,11 @@ pub async fn set_run_claude_account_inner(
 
     let session_id: Option<String> = row.get("session_id");
     let transcript_path: Option<String> = row.get("transcript_path");
-    let project_path: String = row.get("project_path");
+    let run_cwd: String = row.get("run_cwd");
     let mirrored = if let Some(sid) = session_id.as_deref() {
         mirror_claude_transcript_for_account(
             db,
-            &project_path,
+            &run_cwd,
             sid,
             transcript_path.as_deref(),
             account.as_ref().map(|a| a.config_dir.as_str()),
@@ -3563,7 +3632,8 @@ pub(crate) async fn resume_run_with(
     use sqlx::Row;
 
     let row = sqlx::query(
-        "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, r.claude_account_id, p.path as project_path
+        "SELECT r.engine, r.status, r.session_id, r.transcript_path, r.project_id, r.claude_account_id, p.path as project_path,
+                COALESCE(r.worktree_path, p.path) as run_cwd
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.id = ?",
     )
@@ -3579,6 +3649,8 @@ pub(crate) async fn resume_run_with(
     let project_id: String = row.get("project_id");
     let claude_account_id: Option<String> = row.get("claude_account_id");
     let project_path: String = row.get("project_path");
+    let run_cwd: String = row.get("run_cwd");
+    require_worktree(&project_path, &run_cwd)?;
 
     // Resume uses the run-level account, else (NULL = "Default" in the UI) the
     // project → default account — the same profile a fresh start would pick and
@@ -3692,7 +3764,7 @@ pub(crate) async fn resume_run_with(
     } else {
         let mirrored = mirror_claude_transcript_for_account(
             db.inner(),
-            &project_path,
+            &run_cwd,
             &session_id,
             transcript_path.as_deref(),
             claude_account.as_ref().map(|a| a.config_dir.as_str()),
@@ -3758,7 +3830,7 @@ pub(crate) async fn resume_run_with(
         resolve_sidecar(&app, &node_path, &sidecar_path)?
     };
     let mut cmd = Command::new(&node_bin);
-    cmd.current_dir(&project_path).arg(&sidecar_script);
+    cmd.current_dir(&run_cwd).arg(&sidecar_script);
     if transcript_available {
         // The sidecar resumes this session/thread on its first prompt.
         cmd.env("DEVDY_RESUME_SESSION", &session_id);
@@ -3773,7 +3845,7 @@ pub(crate) async fn resume_run_with(
         &mut cmd,
         &run_id,
         &project_id,
-        &project_path,
+        &run_cwd,
     )
     .await?;
     let broker_run: Option<BrokerRunGuard> = Some(broker);
@@ -3794,7 +3866,7 @@ pub(crate) async fn resume_run_with(
             "codex",
             &node_bin,
             &project_id,
-            &project_path,
+            &run_cwd,
             &run_id,
             conductor_launch.is_some(),
         )
@@ -3847,7 +3919,7 @@ pub(crate) async fn resume_run_with(
             "claude",
             &node_bin,
             &project_id,
-            &project_path,
+            &run_cwd,
             &run_id,
             conductor_launch.is_some(),
         )
@@ -3937,7 +4009,7 @@ pub(crate) async fn resume_run_with(
     tokio::spawn(drain_sidecar(
         app,
         run_id.clone(),
-        project_path,
+        run_cwd,
         stdout,
         stderr,
         db_pool,

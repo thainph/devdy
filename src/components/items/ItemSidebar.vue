@@ -25,6 +25,7 @@ import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowDownWideNarrow,
+  Bot,
   CalendarDays,
   Check,
   ChevronDown,
@@ -113,6 +114,8 @@ const emit = defineEmits<{
   togglePin: []
   reload: []
   retry: []
+  /** Todos: hand open todos to an AI conductor — a folder's (project id / null) or, with no arg, every visible one. */
+  batch: [projectId?: string | null]
 }>()
 
 const { t, locale } = useI18n()
@@ -279,6 +282,17 @@ const groups = computed(() => {
         >
           <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
+        <Button
+          v-if="kind === 'todo'"
+          variant="outline"
+          size="icon"
+          class="shrink-0"
+          :title="t('item.batchAll')"
+          :aria-label="t('item.batchAll')"
+          @click="emit('batch')"
+        >
+          <Bot class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
         <!-- Reload from the DB (the MCP sidecar writes without events). -->
         <Button
           variant="outline"
@@ -406,6 +420,17 @@ const groups = computed(() => {
               {{ g.rows.length }}
             </span>
           </button>
+          <Button
+            v-if="kind === 'todo' && g.key !== NONE"
+            variant="ghost"
+            size="icon-xs"
+            class="opacity-0 transition-opacity focus-visible:opacity-100 group-hover/folder:opacity-100"
+            :title="t('item.batchFolder')"
+            :aria-label="t('item.batchFolder')"
+            @click="emit('batch', g.key)"
+          >
+            <Bot class="h-3 w-3" :stroke-width="1.75" />
+          </Button>
           <Button
             variant="destructive-ghost"
             size="icon-xs"

@@ -109,5 +109,7 @@
   "sortTitle": "Sort",
   "sortByProject": "By project",
   "sortByUpdated": "Recently edited",
-  "sortByTitle": "Title (A–Z)"
+  "sortByTitle": "Title (A–Z)",
+  "batchAll": "Hand the todos shown to AI",
+  "batchFolder": "Hand this project’s todos to AI"
 }

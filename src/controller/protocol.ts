@@ -23,6 +23,7 @@ import type {
   TodoPriority,
   TodoStatus,
 } from '@/lib/focus'
+import type { BatchSummary, BoardData } from '@/lib/batchBoard'
 import { parseAiAnalyzeResult, parseAiSuggestion, parseDayPlan, parseFocusSettings } from '../lib/remoteFocus.ts'
 
 /** Re-exported so controller modules import wire types from one place. */
@@ -439,6 +440,15 @@ export interface FocusBoardKind {
   board: FocusBoard
 }
 
+/** The Batch Board ({@link FEATURE_FOCUS}): todo batches, the one shown and its
+ * workers + queued todos, as the desktop's `board_batches` / `board_items` return them. */
+export interface BatchBoardKind {
+  kind: 'batch_board'
+  batches: BatchSummary[]
+  batch_run_id: string | null
+  board: BoardData | null
+}
+
 /** What a Focus AI request was ({@link FocusAiResultKind.ai_kind}). */
 export type FocusAiKind = 'suggest' | 'analyze' | 'plan_today'
 
@@ -599,6 +609,7 @@ export type StreamPayload =
   | ProjectListKind
   | TodoListKind
   | FocusBoardKind
+  | BatchBoardKind
   | FocusAiResultKind
   | FocusDayPlanKind
   | FocusActualKind
@@ -818,6 +829,17 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
         : null
     case 'focus_board':
       return isFocusBoard(o.board) ? { kind: 'focus_board', board: o.board } : null
+    case 'batch_board': {
+      if (!Array.isArray(o.batches)) return null
+      const board = o.board as BoardData | null
+      if (board != null && (!Array.isArray(board.items) || !Array.isArray(board.queued))) return null
+      return {
+        kind: 'batch_board',
+        batches: o.batches as BatchSummary[],
+        batch_run_id: typeof o.batch_run_id === 'string' ? o.batch_run_id : null,
+        board: board ?? null,
+      }
+    }
     case 'focus_ai_result':
       return parseFocusAiResult(o)
     case 'focus_day_plan': {
@@ -1109,6 +1131,7 @@ export interface CmdPayload {
     | 'focus_settings_get'
     | 'focus_settings_set'
     | 'focus_calendar_refresh'
+    | 'batch_board'
     // Web Push (a Controller that advertised FEATURE_PUSH).
     | 'push_config'
     | 'push_visibility'
@@ -1527,6 +1550,11 @@ export function focusSettingsGetCmd(): CmdPayload {
 /** `focus_settings_set` — save (Host validates); answered with the normalised settings. */
 export function focusSettingsSetCmd(settings: Partial<FocusSettings>): CmdPayload {
   return { kind: 'cmd', action: 'focus_settings_set', settings }
+}
+
+/** `batch_board` — the Batch Board of `batchRunId`, else the newest batch. */
+export function batchBoardCmd(batchRunId?: string | null): CmdPayload {
+  return { kind: 'cmd', action: 'batch_board', ...(batchRunId ? { item_id: batchRunId } : {}) }
 }
 
 /** `focus_calendar_refresh` — drop the Calendar cache; answered with a fresh `focus_board`. */

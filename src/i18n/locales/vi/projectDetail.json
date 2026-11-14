@@ -118,5 +118,17 @@
   "warnCodexReadsClaudeMd": "{config} có CLAUDE.md trong project_doc_fallback_filenames nên Codex có thể đọc chỉ dẫn của Claude.",
   "warnLinksNotIgnored": "{dir} chứa symlink của Devdy nhưng chưa được git ignore. Nếu commit, link trỏ tới đường dẫn trên máy này sẽ hỏng ở máy người khác — thêm vào .gitignore hoặc .git/info/exclude.",
   "warnLegacyCopiesBackedUp": "Khi chuyển sang symlink, các bản copy skill/rule cũ có thể chứa chỉnh sửa tại dự án đã được chuyển vào {dir} ({count} lượt). Hãy xem lại, giữ phần cần thiết rồi xoá thư mục đó để tắt thông báo này.",
-  "warnTrackedByGit": "Repo đã commit file riêng tại {paths}. Devdy không đụng vào và không cài vào đó, nên Claude/Codex sẽ dùng bản trong repo."
+  "warnTrackedByGit": "Repo đã commit file riêng tại {paths}. Devdy không đụng vào và không cài vào đó, nên Claude/Codex sẽ dùng bản trong repo.",
+  "worktrees": {
+    "title": "Bản sao code (worktree)",
+    "hint": "Session \"Bắt đầu với AI trong bản sao riêng\" làm việc ở .devdy/worktrees/<tên> trên nhánh devdy/<tên>, tạo từ code mới nhất trên remote. Rules/skills và file .env được mang theo.",
+    "baseBranch": "Nhánh gốc",
+    "baseBranchPlaceholder": "Mặc định: nhánh chính của remote",
+    "setupCmd": "Lệnh setup",
+    "setupCmdHint": "Chạy trong bản sao mới trước khi session bắt đầu (cài thư viện…). Để trống nếu không cần.",
+    "saved": "Đã lưu cài đặt bản sao",
+    "from": "từ {base}",
+    "removeTitle": "Xoá bản sao",
+    "removeMessage": "Xoá bản sao và nhánh {branch}? Thay đổi chưa commit hoặc chưa push trong đó sẽ mất."
+  }
 }

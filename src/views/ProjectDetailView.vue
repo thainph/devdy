@@ -25,6 +25,7 @@ import {
 import { Button, Input, Card, Badge, AppSelect, ToggleSwitch, PageHeader, Banner } from '@/components/ui'
 import BackToRunButton from '@/components/BackToRunButton.vue'
 import ProjectGroupToggles from '@/components/ProjectGroupToggles.vue'
+import ProjectWorktreeSettings from '@/components/ProjectWorktreeSettings.vue'
 import ProjectAccountsList, { type AccountRow } from '@/components/ProjectAccountsList.vue'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -943,6 +944,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
             </div>
           </Card>
 
+          <ProjectWorktreeSettings :project-id="project.id" />
         </div>
 
         <!-- Skills tab -->

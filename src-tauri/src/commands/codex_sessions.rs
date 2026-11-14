@@ -207,7 +207,7 @@ pub(crate) fn parse_codex_rollout(file: &Path, project_path: &str) -> Option<Par
         if let Some(p) = payload {
             if !cwd_matches {
                 if let Some(c) = p.get("cwd").and_then(|x| x.as_str()) {
-                    cwd_matches = c == project_path;
+                    cwd_matches = crate::worktrees::cwd_in_project(project_path, c);
                 }
             }
             if model.is_none() {

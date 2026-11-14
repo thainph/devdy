@@ -18,6 +18,7 @@ import {
   permissionWindowLabel,
 } from '@/lib/permissionWindow'
 import { runDisplayName } from '@/lib/tray'
+import { boardOnScreen } from '@/composables/useBoardPresence'
 
 const live = useLiveRunsStore()
 
@@ -36,8 +37,10 @@ const tracked = new Map<string, Tracked>()
 const closing = new Set<string>()
 
 // runId → head request id, for every run with a pending permission request.
+// Empty while the Batch Board is on screen: it answers every prompt itself.
 const pending = computed(() => {
   const map = new Map<string, string>()
+  if (boardOnScreen()) return map
   live.sessions.forEach((s, runId) => {
     const head = s.permissionQueue[0]
     if (head) map.set(runId, head.request_id)

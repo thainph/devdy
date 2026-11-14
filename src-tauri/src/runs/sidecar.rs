@@ -539,7 +539,7 @@ fn surface_permission_request(
 pub async fn drain_sidecar(
     app: AppHandle,
     run_id: String,
-    project_path: String,
+    cwd: String,
     stdout: ChildStdout,
     stderr: ChildStderr,
     db_pool: sqlx::SqlitePool,
@@ -551,6 +551,8 @@ pub async fn drain_sidecar(
 ) {
     let mut stdout_reader = BufReader::new(stdout).lines();
     let mut stderr_reader = BufReader::new(stderr).lines();
+    // A turn of a todo's session is under way (start, resume or follow-up).
+    crate::focus::sync_todo_with_run(&app, &db_pool, &run_id, true).await;
 
     // Remote Control (C1) event tap: publish each run event onto the in-process
     // broadcast bus AS WE emit it locally (FR-004 "ưu tiên tap tại nguồn"). When
@@ -925,7 +927,7 @@ pub async fn drain_sidecar(
                                     tool_name: v.get("tool_name").and_then(|x| x.as_str()).unwrap_or("tool").to_string(),
                                     tool_input: v.get("tool_input").cloned().unwrap_or(Value::Null),
                                     session_id,
-                                    cwd: Some(project_path.clone()),
+                                    cwd: Some(cwd.clone()),
                                     title: v.get("title").and_then(|x| x.as_str()).map(str::to_string),
                                     description: v.get("description").and_then(|x| x.as_str()).map(str::to_string),
                                     display_name: v.get("display_name").and_then(|x| x.as_str()).map(str::to_string),
@@ -1388,6 +1390,8 @@ pub async fn drain_sidecar(
         serde_json::json!({ "run_id": run_id, "status": final_status }),
     );
     drop(reg);
+    // Done, failed or stopped: the outcome waits for the user either way.
+    crate::focus::sync_todo_with_run(&app, &db_pool, &run_id, false).await;
 
     // Close the conductor control loop: hand this finished run's id to the
     // conductor wake consumer (a channel send, never a direct resume). If the run
