@@ -16,9 +16,9 @@ import { useToast } from '@/composables/useToast'
 import { usePrInboxStore, PR_POLL_MINUTES_OPTIONS, type PrInboxDensity } from '@/stores/prInbox'
 import { PR_GROUP_BY_OPTIONS, type PrGroupBy } from '@/lib/prInboxGrouping'
 import { Button, SegmentedControl } from '@/components/ui'
-import { Check, EyeOff, KeyRound, SlidersHorizontal, ChevronRight } from 'lucide-vue-next'
+import { Check, EyeOff, KeyRound, SlidersHorizontal, ChevronRight, RotateCcw } from 'lucide-vue-next'
 
-const emit = defineEmits<{ 'manage-bots': [] }>()
+const emit = defineEmits<{ 'manage-bots': []; 'edit-rereview-prompt': [] }>()
 
 const { t } = useI18n()
 const store = usePrInboxStore()
@@ -70,6 +70,11 @@ async function setPoll(minutes: number) {
 function manageBots() {
   open.value = false
   emit('manage-bots')
+}
+
+function editReReviewPrompt() {
+  open.value = false
+  emit('edit-rereview-prompt')
 }
 </script>
 
@@ -138,6 +143,19 @@ function manageBots() {
           @update:model-value="setPoll"
         />
         <div class="mt-1 text-[11px] text-muted-foreground">{{ t('prInbox.poll.hint') }}</div>
+      </div>
+
+      <!-- Prompt "Re-review" sends to the existing review session -->
+      <div class="mb-3">
+        <button
+          type="button"
+          class="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left cursor-pointer hover:bg-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          @click="editReReviewPrompt"
+        >
+          <RotateCcw class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+          <span class="min-w-0 flex-1 text-sm text-foreground truncate">{{ t('prInbox.reReviewPrompt.button') }}</span>
+          <ChevronRight class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+        </button>
       </div>
 
       <!-- Bots -->

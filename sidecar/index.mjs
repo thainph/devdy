@@ -100,6 +100,12 @@ for (const k of ['DEVDY_MCP_SERVERS', 'DEVDY_ALLOWED_TOOLS', 'DEVDY_APPEND_SYSTE
   delete process.env[k]
 }
 
+// The CLI turns its built-in Artifact tools (read/publish claude.ai/artifact
+// links via the claude.ai login) off by default under the SDK ("sdk_default_off"),
+// so a pasted artifact link would only be fetched as a plain web page. Opt in like
+// the interactive CLI; an explicit CLAUDE_CODE_ARTIFACT in the environment wins.
+if (process.env.CLAUDE_CODE_ARTIFACT === undefined) process.env.CLAUDE_CODE_ARTIFACT = '1'
+
 function send(obj) {
   process.stdout.write(JSON.stringify(obj) + '\n')
 }
