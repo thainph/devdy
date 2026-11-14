@@ -91,8 +91,7 @@ pub struct HandlerCtx {
     ///
     /// [`FEATURE_DATA`]: crate::remote::protocol::FEATURE_DATA
     pub data: bool,
-    /// The Controller renders the Focus board ([`FEATURE_FOCUS`]): todo writes
-    /// are followed by a fresh board.
+    /// The Controller edits the Focus settings ([`FEATURE_FOCUS`]).
     ///
     /// [`FEATURE_FOCUS`]: crate::remote::protocol::FEATURE_FOCUS
     pub focus: bool,
@@ -103,9 +102,9 @@ pub struct HandlerCtx {
     /// Tags the push subscriptions this session makes, so ending or kicking
     /// it drops them ([`crate::remote::push::session_tag`]).
     pub push_session_tag: String,
-    /// The live Focus board of a `data` + `focus` session; dropped (unlisten
-    /// + abort) with the context ([`crate::remote::focus::start_live_board`]).
-    pub live_board: std::sync::OnceLock<crate::remote::focus::LiveBoard>,
+    /// The live todo list of a `data` + `focus` session; dropped (unlisten
+    /// + abort) with the context ([`crate::remote::focus::start_live_todos`]).
+    pub live_todos: std::sync::OnceLock<crate::remote::focus::LiveTodos>,
     /// Re-pushes the run / project lists when the desktop changes them; dropped
     /// with the context ([`crate::remote::live_lists::start_live_lists`]).
     pub live_lists: std::sync::OnceLock<crate::remote::live_lists::LiveLists>,

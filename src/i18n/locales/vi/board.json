@@ -6,7 +6,6 @@
   "conductorPlaceholder": "Nhắn AI quản lý, vd: làm dự án X trước, dừng việc Y…",
   "send": "Gửi",
   "summary": "{workers} nhân viên · {queued} todo đang chờ",
-  "otherPending": "Session khác đang chờ bạn",
   "emptyTitle": "Chưa có lô todo nào",
   "emptyBody": "Ở màn Todo, rê chuột lên todo và bấm biểu tượng board (hoặc biểu tượng trên tiêu đề dự án để thêm cả nhóm). Todo vào hàng chờ ở đây, tự nhóm theo dự án. Bấm Chạy: mỗi dự án có một conductor riêng, chỉ làm trong dự án đó, tự sinh worker cho các todo của nó. Theo dõi, duyệt quyền và review kết quả ngay tại đây; muốn chat với conductor thì mở session của nó. Session mở bằng nút 🚀 hiện ở mục \"Việc lẻ\".",
   "lanes": {
@@ -79,14 +78,6 @@
       "not_found": "{n} không tìm thấy"
     }
   },
-  "mobileLanes": {
-    "needs": "Cần bạn",
-    "running": "Đang làm",
-    "review": "Chờ review",
-    "failed": "Lỗi / dừng",
-    "closed": "Xong"
-  },
-  "mobilePending": "Đang chờ bạn",
   "discardMessageCommits": "Bỏ kết quả? Nhánh {branch} có {n} commit — nếu chưa push, chúng sẽ MẤT cùng bản sao. Muốn giữ thì bấm \"Push & tạo PR\" trước. Todo quay về trạng thái chưa làm.",
   "solo": "Việc lẻ (Bắt đầu với AI)",
   "soloHint": "{n} session mở từ nút 🚀 trong 30 ngày qua",
@@ -98,5 +89,19 @@
   "openConductorTitle": "Mở session conductor của dự án này (chat với nó ở đó)",
   "stopConductorTitle": "Dừng conductor (các worker đang chạy vẫn tiếp tục)",
   "nothingActive": "Không có việc nào đang chạy. Các batch đã xong nằm ở lịch sử bên dưới.",
-  "history": "Lịch sử ({n})"
+  "history": "Lịch sử ({n})",
+  "inbox": {
+    "title": "Đang chờ bạn",
+    "hint": "Enter cho phép · ⇧Enter luôn cho phép · Esc từ chối",
+    "permission": "Quyền",
+    "question": "Câu hỏi",
+    "plan": "Kế hoạch cần duyệt",
+    "answer": "Trả lời",
+    "answerTitle": "Mở yêu cầu này ở \"Đang chờ bạn\" để trả lời",
+    "role": {
+      "conductor": "conductor",
+      "worker": "worker",
+      "session": "session"
+    }
+  }
 }

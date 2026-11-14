@@ -6,7 +6,6 @@
   "conductorPlaceholder": "Message the conductor, e.g. do project X first, stop task Y…",
   "send": "Send",
   "summary": "{workers} workers · {queued} todos queued",
-  "otherPending": "Other sessions waiting for you",
   "emptyTitle": "No todo batch yet",
   "emptyBody": "On the todo screen, hover a todo and press the board icon (or the one on a project's header to add all its todos). They wait in the queue here, grouped by project. Press Run: each project gets its own conductor, working in that project only, that spawns workers for its todos. Follow, answer permissions and review the results here; to chat with a conductor, open its session. Sessions started with 🚀 show under \"Single tasks\".",
   "lanes": {
@@ -79,14 +78,6 @@
       "not_found": "{n} not found | {n} not found"
     }
   },
-  "mobileLanes": {
-    "needs": "Needs you",
-    "running": "In progress",
-    "review": "Ready for review",
-    "failed": "Failed / stopped",
-    "closed": "Done"
-  },
-  "mobilePending": "Waiting for you",
   "discardMessageCommits": "Discard the result? Branch {branch} has {n} commits — if they are not pushed they are LOST with the worktree. Use \"Push & open PR\" first to keep them. The todo goes back to not started.",
   "solo": "Single tasks (Start with AI)",
   "soloHint": "{n} sessions started with 🚀 in the last 30 days",
@@ -98,5 +89,19 @@
   "openConductorTitle": "Open this project's conductor session (chat with it there)",
   "stopConductorTitle": "Stop the conductor (its running workers keep going)",
   "nothingActive": "Nothing in progress. Finished batches are in the history below.",
-  "history": "History ({n})"
+  "history": "History ({n})",
+  "inbox": {
+    "title": "Waiting for you",
+    "hint": "Enter allow · ⇧Enter always · Esc deny",
+    "permission": "Permission",
+    "question": "Question",
+    "plan": "Plan to review",
+    "answer": "Answer",
+    "answerTitle": "Show this request in \"Waiting for you\" to answer it",
+    "role": {
+      "conductor": "conductor",
+      "worker": "worker",
+      "session": "session"
+    }
+  }
 }

@@ -5,38 +5,6 @@
   },
   "addTodo": "Todo",
   "addTodoHint": "New todo",
-  "nowSection": "Do now",
-  "loadError": "Couldn't load the board",
-  "retry": "Retry",
-  "empty": {
-    "title": "Nothing to do yet",
-    "hint": "Create a todo here, or click “+ Todo” on a Slack thread, issue, PR or session. Devdy shows which ones are late, per project.",
-    "filtered": "No todo matches the filters."
-  },
-  "buckets": {
-    "doing": "In progress",
-    "overdue": "Overdue",
-    "today": "Today",
-    "tomorrow": "Tomorrow",
-    "this_week": "This week",
-    "later": "Later",
-    "no_due": "No deadline",
-    "waiting": "Waiting on others",
-    "snoozed": "Snoozed",
-    "done": "Done recently"
-  },
-  "views": {
-    "label": "View",
-    "time": "By time",
-    "project": "By project",
-    "week": "Week"
-  },
-  "filters": {
-    "allProjects": "All projects",
-    "noProject": "No project",
-    "allSources": "All sources",
-    "noSource": "No source"
-  },
   "sources": {
     "slack": "Slack",
     "github": "GitHub",
@@ -44,138 +12,19 @@
     "run": "Session",
     "url": "Link"
   },
-  "capacity": {
-    "summary": "Today: {need} of work · {free} free",
-    "overloaded": "Overloaded by {over}",
-    "busy": "{n} busy block | {n} busy blocks",
-    "connect": "Connect Google Calendar (Settings → Google) to see today's free time.",
-    "error": "Couldn't load today's calendar",
-    "refresh": "Refresh calendar"
-  },
-  "calibration": {
-    "slower": "You usually take {factor}× longer than estimated",
-    "faster": "You usually finish in {factor}× of the estimated time"
-  },
-  "due": {
-    "overdue": "Overdue {span}",
-    "startBy": "Start before {time}",
-    "startByLate": "Should have started at {time}",
-    "today": "Today",
-    "todayAt": "{time} today",
-    "tomorrow": "Tomorrow",
-    "tomorrowAt": "Tomorrow {time}",
-    "dateAt": "{date} {time}"
-  },
-  "span": {
-    "m": "{n}m",
-    "h": "{n}h",
-    "d": "{n} day | {n} days"
-  },
-  "estimate": {
-    "missing": "Not estimated yet — counted as {estimate}",
-    "ai": "Estimated by AI"
-  },
   "priority": {
     "label": "Priority",
     "1": "P1 · High",
     "2": "P2 · Normal",
     "3": "P3 · Low"
   },
-  "status": {
-    "label": "Status",
-    "todo": "To do",
-    "doing": "In progress",
-    "waiting": "Waiting on others"
-  },
-  "whyHere": "Why here",
-  "reasons": {
-    "doing": "in progress",
-    "waiting": "waiting on others",
-    "no_due": "no deadline",
-    "done": "done",
-    "snoozed": "snoozed until {when}",
-    "snoozedNoTime": "snoozed",
-    "due": "due {when}",
-    "overdue": "overdue by {span}",
-    "work_left": "{span} of work time left",
-    "late_by": "{span} short of time",
-    "estimate": "needs ~{estimate}",
-    "estimate_missing": "not estimated (counted as {estimate})",
-    "priority": "P{n}",
-    "age_days": "open for {n} days",
-    "unknown": "{kind}: {value}"
-  },
-  "actions": {
-    "done": "Done",
-    "undone": "Mark not done",
-    "start": "Start",
-    "backToTodo": "Back to to-do",
-    "snooze": "Snooze",
-    "waiting": "Waiting on others",
-    "edit": "Edit",
-    "delete": "Delete",
-    "openSource": "Open source",
-    "sessions": "{n} linked session | {n} linked sessions"
-  },
-  "snooze": {
-    "hour": "For 1 hour",
-    "afternoon": "This afternoon (14:00)",
-    "tomorrow": "Tomorrow {time}",
-    "nextWeek": "Next week (Mon {time})",
-    "custom": "Pick a time…",
-    "wake": "Wake up now",
-    "customTitle": "Snooze until",
-    "until": "Snoozed until {time}",
-    "apply": "Snooze"
-  },
-  "confirmDelete": {
-    "title": "Delete todo?",
-    "message": "“{text}” will be deleted. This can't be undone.",
-    "button": "Delete"
-  },
   "toast": {
-    "added": "Todo added",
-    "saved": "Saved",
-    "deleted": "Todo deleted",
-    "snoozed": "Snoozed until {time}"
-  },
-  "actual": {
-    "title": "How long did it take?",
-    "hint": "Estimated {estimate}. Logging the real time helps calibrate future estimates.",
-    "placeholder": "e.g. 1h30",
-    "skip": "Skip",
-    "save": "Save"
+    "added": "Todo added"
   },
   "drawer": {
-    "text": "Title",
-    "project": "Project",
-    "dueTime": "Time (optional)",
     "clearDue": "Clear deadline",
-    "estimate": "Estimate",
     "estimatePlaceholder": "30m, 2h, 1h30",
-    "estimateInvalid": "Use 30m, 2h, 1h30 or minutes (5 min – 40h)",
-    "effectiveEstimate": "Counted as {estimate} on the board",
-    "snoozedUntil": "Snoozed until",
-    "remindAt": "Remind me at",
-    "clear": "Clear",
-    "source": "Source",
-    "actual": "Actual time",
-    "aiPlan": "AI plan",
-    "aiAnalyzedAt": "Analyzed {time}",
-    "created": "Created {time}",
-    "started": "Started {time}",
-    "completed": "Completed {time}",
-    "save": "Save",
-    "cancel": "Cancel",
-    "unsaved": "Discard your changes?",
-    "discard": "Discard",
-    "description": "Details",
-    "editText": "Edit text",
-    "doneEditing": "Done",
-    "textHint": "The first line is the title, the rest is the description (markdown supported).",
-    "addDescription": "Add a description…",
-    "properties": "Properties",
-    "schedule": "Snooze, reminder & actual time"
+    "estimateInvalid": "Use 30m, 2h, 1h30 or minutes (5 min – 40h)"
   },
   "capture": {
     "title": "New todo",
@@ -190,14 +39,6 @@
     "save": "Add todo",
     "reviewPr": "Review {title} (#{number})",
     "suggest": "Suggest"
-  },
-  "columns": {
-    "noProject": "No project",
-    "overdue": "{n} overdue"
-  },
-  "week": {
-    "overloaded": "Over capacity",
-    "estimateHint": "Total estimate of the todos due this day"
   },
   "settings": {
     "title": "Working hours & reminders",
@@ -244,18 +85,8 @@
     }
   },
   "ai": {
-    "analyze": "Analyze",
-    "reanalyze": "Analyze again",
-    "analyzing": "Analyzing…",
     "cancel": "Cancel",
     "start": "Start with AI",
-    "apply": "Apply",
-    "estimate": "AI estimates {low}–{high} (~{likely})",
-    "suggestedPriority": "AI suggests P{p}",
-    "suggestedDue": "AI suggests the deadline {due}",
-    "editPlan": "Edit the plan",
-    "noPlan": "No AI plan yet — Analyze breaks the todo into steps, risks and an estimate.",
-    "analyzed": "Analysis ready — open the todo to see it",
     "started": "Session started",
     "suggested": "Suggestion filled in",
     "suggestedWhy": "Suggestion filled in: {reason}",
@@ -266,46 +97,14 @@
     "errors": {
       "busy": "An AI request for this is already running.",
       "project_required": "Pick a project for this todo first.",
-      "no_free_time": "No working time is left today.",
-      "nothing_to_plan": "There is no open todo to plan.",
-      "no_google_account": "Connect a Google account (Settings → Google) to add blocks to Calendar.",
-      "no_plan": "There is no plan for this day.",
-      "calendar_failed": "Some blocks could not be added to Google Calendar.",
       "ai_invalid_answer": "The AI answer could not be used. Try again.",
       "unknown": "AI request failed: {detail}",
-      "calendar_unavailable": "Couldn't read today's Google Calendar, so the plan could miss your meetings. Try again in a moment (or refresh the calendar).",
       "not_git_repo": "This project is not a git repository (or its folder is not the repository root), so a worktree can’t be created.",
       "fetch_failed": "Couldn’t fetch the latest code from the remote: {detail}",
       "setup_failed": "The worktree setup command failed: {detail}"
     }
   },
-  "plan": {
-    "button": "Plan today",
-    "hint": "Let AI fit today's todos into your free working time",
-    "title": "Today's plan",
-    "planning": "Planning your day…",
-    "empty": "No plan for today yet.",
-    "make": "Plan today",
-    "replan": "Plan again",
-    "missingTodo": "(todo removed)",
-    "pushOne": "Add this block to Google Calendar",
-    "pushAll": "Add all to Calendar",
-    "onCalendar": "On Google Calendar",
-    "pushed": "Added to Google Calendar",
-    "noBlocks": "Nothing could be scheduled today.",
-    "dropped": "{n} block was dropped (outside free time or unknown todo) | {n} blocks were dropped (outside free time or unknown todo)",
-    "deferred": "Not today",
-    "createdAt": "Planned {time}"
-  },
   "radar": {
-    "status": {
-      "overdue": "Overdue",
-      "today": "Due today",
-      "due-soon": "Due ≤{days} days",
-      "waiting": "Waiting",
-      "no-due": "No deadline",
-      "later": "Later"
-    },
     "hint": {
       "overdue": "Past the deadline and still open",
       "today": "Deadline is later today",
@@ -313,18 +112,6 @@
       "waiting": "Waiting on someone else — not counted as late",
       "no-due": "No deadline set",
       "later": "Deadline is further out"
-    },
-    "searchPlaceholder": "Search todos…",
-    "colProject": "Project",
-    "colOpen": "Open",
-    "colWorst": "Most late",
-    "noProject": "No project",
-    "lateDays": "{n}d late",
-    "lateToday": "late today {time}",
-    "today": "today",
-    "dueToday": "due today",
-    "dueTodayAt": "due today {time}",
-    "daysLeft": "{n}d left",
-    "noDeadline": "no deadline"
+    }
   }
 }

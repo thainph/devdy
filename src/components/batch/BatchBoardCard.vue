@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // One worker of a todo batch on the Batch Board: its todo, branch and diff, what
 // it did last, and the actions of its lane. A pending permission prompt /
-// question is answered right on the card; to chat with it, open its session.
+// question shows as one line; "Answer" opens it in the board's "Waiting for
+// you" panel. To chat with it, open its session.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
@@ -15,9 +16,8 @@ import {
   Upload,
 } from 'lucide-vue-next'
 import { Badge, Button, Card } from '@/components/ui'
-import PermissionPrompt from '@/components/PermissionPrompt.vue'
+import BatchPendingChip from '@/components/batch/BatchPendingChip.vue'
 import { useLiveRunsStore } from '@/stores/liveRuns'
-import { useMarkdown } from '@/lib/markdown'
 import { diffParts, lastActivity, roleLabel, type BoardItem, type Lane } from '@/lib/batchBoard'
 
 const props = defineProps<{
@@ -36,13 +36,12 @@ const emit = defineEmits<{
   push: []
   finish: []
   discard: []
+  /** Show its pending prompt in the board's "Waiting for you" panel. */
+  answer: []
 }>()
 
 const { t } = useI18n()
 const live = useLiveRunsStore()
-const { renderText, loadMarkdown } = useMarkdown()
-// Renders an ExitPlanMode plan inside the prompt; cached after the first load.
-void loadMarkdown()
 
 const session = computed(() => live.get(props.item.runId))
 const head = computed(() => session.value?.permissionQueue[0] ?? null)
@@ -59,23 +58,10 @@ const hasWorktree = computed(() => !!props.item.worktree && !props.item.worktree
 const canPush = computed(() => hasWorktree.value && (props.item.diff?.commits ?? 0) > 0)
 const canCommit = computed(() => hasWorktree.value && (props.item.diff?.uncommitted ?? 0) > 0)
 
-// Same answer path as the permission windows (PermissionWindowManager).
-function decide(decision: 'allow' | 'deny', remember: boolean) {
-  const req = head.value
-  if (!req) return
-  if (remember && decision === 'allow') live.rememberAllowedTool(props.item.runId, req.tool_name, req.request_id)
-  else if (remember && decision === 'deny') live.rememberDeniedTool(props.item.runId, req.tool_name, req.request_id)
-  void live.respondPermission(props.item.runId, req, decision, { remember })
-}
-
-function answer(answers: Record<string, string>) {
-  const req = head.value
-  if (req) void live.respondPermission(props.item.runId, req, 'allow', { answers })
-}
 </script>
 
 <template>
-  <Card body-class="p-3 space-y-2" :class="lane === 'needs' ? 'ring-1 ring-primary/50' : ''">
+  <Card body-class="p-3 space-y-2" :class="lane === 'needs' ? 'ring-1 ring-warning/50' : ''">
     <div v-if="showProject || role || item.costUsd > 0" class="flex items-center gap-1.5 min-w-0">
       <Badge v-if="showProject" size="xs" tone="neutral" class="shrink-0 max-w-[45%] truncate" :title="item.projectName">{{ item.projectName }}</Badge>
       <span v-if="role" class="truncate text-[10px] text-muted-foreground">{{ role }}</span>
@@ -111,18 +97,8 @@ function answer(answers: Record<string, string>) {
       <span>{{ attention.message }}</span>
     </div>
 
-    <!-- The session is blocked on the user: answer here. -->
-    <div v-if="head" class="-mx-3 border-y border-border/60 bg-muted/30">
-      <PermissionPrompt
-        :key="head.request_id"
-        :request="head"
-        :allowed-tools="session?.allowedTools ?? []"
-        :render-text="renderText"
-        @decide="decide"
-        @answer="answer"
-      />
-      <p v-if="morePending" class="px-3 pb-2 text-[11px] text-muted-foreground">{{ t('board.morePending', { n: morePending }) }}</p>
-    </div>
+    <!-- The session is blocked on the user. -->
+    <BatchPendingChip v-if="head" :request="head" :more="morePending" @answer="emit('answer')" />
 
     <div class="flex flex-wrap items-center gap-1 pt-0.5">
       <Button variant="outline" size="xs" @click="emit('open')">

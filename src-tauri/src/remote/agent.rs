@@ -1400,10 +1400,10 @@ async fn try_authenticate_first_frame(
         focus,
         push,
         push_session_tag: crate::remote::push::session_tag(&session_secret),
-        live_board: Default::default(),
+        live_todos: Default::default(),
         live_lists: Default::default(),
     });
-    crate::remote::focus::start_live_board(&ctx);
+    crate::remote::focus::start_live_todos(&ctx);
     crate::remote::live_lists::start_live_lists(&ctx);
     *room_ctx = Some(ctx.clone());
 

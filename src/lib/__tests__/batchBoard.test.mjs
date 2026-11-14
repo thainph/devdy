@@ -2,7 +2,7 @@
 // Run: node --test src/lib/__tests__/batchBoard.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { commitMessageFor, diffParts, groupByLane, groupQueueByProject, laneOf, lastActivity, roleLabel } from '../batchBoard.ts'
+import { commitMessageFor, diffParts, groupByLane, groupQueueByProject, laneOf, lastActivity, pendingSummary, roleLabel } from '../batchBoard.ts'
 
 const item = (over = {}) => ({
   runId: 'r1',
@@ -94,4 +94,20 @@ test('laneOf: a discarded result (todo back to "todo") is closed, not waiting fo
   // A failed / not yet started run keeps its own lane.
   assert.equal(laneOf(item({ status: 'failed', todo: { id: 't', text: 'x', status: 'todo', done: false } }), undefined), 'failed')
   assert.equal(laneOf(item({ status: 'fetched', todo: { id: 't', text: 'x', status: 'todo', done: false } }), undefined), 'running')
+})
+
+test('pendingSummary: one line per kind of prompt', () => {
+  const req = (tool_name, tool_input, display_name) => ({ request_id: 'q', tool_name, tool_input, display_name })
+  assert.deepEqual(pendingSummary(req('Bash', { command: 'npm   test\n --watch', description: 'Run tests' })), {
+    kind: 'permission', tool: 'Bash', detail: 'npm test --watch', extra: 0,
+  })
+  assert.equal(pendingSummary(req('Edit', { file_path: '/a/b.ts' }, 'Edit file')).tool, 'Edit file')
+  assert.equal(pendingSummary(req('Edit', { file_path: '/a/b.ts' })).detail, '/a/b.ts')
+  assert.equal(pendingSummary(req('mcp__pms-stg__worklog_list', {})).tool, 'pms-stg · worklog_list')
+  assert.equal(pendingSummary(req('MCP', null)).detail, '')
+  assert.deepEqual(pendingSummary(req('AskUserQuestion', { questions: [{ question: 'Which DB?' }, { question: 'Port?' }] })), {
+    kind: 'question', tool: '', detail: 'Which DB?', extra: 1,
+  })
+  assert.equal(pendingSummary(req('ExitPlanMode', { plan: '\n## Plan: migrate users\n- step' })).detail, 'Plan: migrate users')
+  assert.equal(pendingSummary(req('Bash', { command: 'x'.repeat(50) }), 10).detail, `${'x'.repeat(9)}…`)
 })

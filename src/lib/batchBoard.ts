@@ -214,6 +214,48 @@ export function lastActivity(
   return null
 }
 
+/** A pending prompt as the liveRuns store holds it (PermissionRequest). */
+export interface PendingLike {
+  request_id: string
+  tool_name: string
+  tool_input: unknown
+  display_name?: string | null
+}
+
+/** One line for a pending prompt: what kind, which tool, on what. */
+export interface PendingSummary {
+  kind: 'permission' | 'question' | 'plan'
+  /** Tool shown to the user (`Bash`, `devdy · todos_add`); empty for a question / plan. */
+  tool: string
+  /** The command / file / question / plan heading, flattened to one line. */
+  detail: string
+  /** More questions after the first (AskUserQuestion). */
+  extra: number
+}
+
+const oneLine = (s: string, max: number) => {
+  const flat = s.replace(/\s+/g, ' ').trim()
+  return flat.length > max ? `${flat.slice(0, max - 1)}…` : flat
+}
+
+export function pendingSummary(req: PendingLike, max = 160): PendingSummary {
+  const inp = req.tool_input && typeof req.tool_input === 'object' ? (req.tool_input as Record<string, unknown>) : {}
+  const str = (k: string) => (typeof inp[k] === 'string' ? (inp[k] as string) : '')
+  if (req.tool_name === 'AskUserQuestion') {
+    const qs = Array.isArray(inp.questions) ? (inp.questions as Record<string, unknown>[]) : []
+    const first = qs[0] && typeof qs[0].question === 'string' ? (qs[0].question as string) : ''
+    return { kind: 'question', tool: '', detail: oneLine(first, max), extra: Math.max(0, qs.length - 1) }
+  }
+  if (req.tool_name === 'ExitPlanMode') {
+    const line = str('plan').split('\n').map((l) => l.replace(/^[#>*\-\s]+/, '').trim()).find(Boolean) ?? ''
+    return { kind: 'plan', tool: '', detail: oneLine(line, max), extra: 0 }
+  }
+  const mcp = /^mcp__(.+?)__(.+)$/.exec(req.tool_name)
+  const tool = req.display_name || (mcp ? `${mcp[1]} · ${mcp[2]}` : req.tool_name)
+  const detail = ['command', 'file_path', 'path', 'url', 'pattern', 'query', 'description'].map(str).find(Boolean) ?? ''
+  return { kind: 'permission', tool, detail: oneLine(detail, max), extra: 0 }
+}
+
 /** `+12 −3 · 4 files · 2 commits · 1 uncommitted` parts, empty ones dropped. */
 export function diffParts(d: DiffStat | null): DiffStat | null {
   if (!d) return null

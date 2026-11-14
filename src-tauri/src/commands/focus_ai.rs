@@ -2,32 +2,24 @@
 //! ever run when the user presses a button:
 //!
 //! - `focus_ai_suggest` — a todo proposal for a source ("✨ Suggest" of the form)
-//! - `focus_ai_analyze` — plan + estimate of a todo, stored as `ai_plan`
-//! - `focus_ai_plan_today` / `focus_day_plan_get` — today's timeline (`focus_day_plans`)
-//! - `focus_plan_to_calendar` — push plan blocks to Google Calendar
 //! - `focus_ai_cancel` — abort a request (it then fails with `cancelled`)
 //! - `focus_start_with_ai` — a new session working on the todo
-//! - `focus_suggest_actual` — BR-11 "how long did it take"
 //!
-//! The prompts and validation are pure (`focus::ai`). BR-09: the AI only ever
-//! writes `ai_plan` / `ai_analyzed_at` and day plans; the board fields change
-//! when the user applies a suggestion (`update_todo_fields`). One request per
-//! todo (and one day plan) at a time; a failure changes nothing.
+//! The prompts and validation are pure (`focus::ai`). BR-09: the AI never
+//! writes a todo; the form's fields change when the user applies a suggestion.
+//! One request per source at a time; a failure changes nothing.
 
-use crate::commands::focus::{build_board, BoardItem};
-use crate::commands::todos::{get_todo, load_todos, Todo};
+use crate::commands::todos::get_todo;
 use crate::commands::translate::{submit_prompt_as, TranslateState, TurnEvent};
 use crate::db::Db;
-use crate::focus::ai::{self, DayPlan, PlanTodo, Reference, SourceCtx};
+use crate::focus::ai::{self, SourceCtx};
 use crate::focus::ai_util::AiEngine;
 use crate::focus::github::{GithubFetch, OctoGithub};
-use crate::focus::score::{self, Bucket};
 use crate::focus::settings::{self as focus_settings, FocusSettings};
 use crate::focus::source_content::{github_content, slack_content, SlackMsg};
 use crate::runs::RunRegistry;
 use async_trait::async_trait;
-use chrono::{DateTime, Local, NaiveDateTime};
-use serde::Serialize;
+use chrono::{DateTime, Local};
 use std::collections::HashMap;
 use std::sync::{Arc, Mutex};
 use std::time::Duration;
@@ -376,46 +368,6 @@ async fn source_ctx(
     Ok(ctx)
 }
 
-/// `(actual_min, estimate_min)` samples → the factor "analyze" mentions.
-async fn calibration_factor(db: &Db, enabled: bool) -> f64 {
-    if !enabled {
-        return 1.0;
-    }
-    let samples: Vec<(i64, i64)> = sqlx::query_as(
-        "SELECT actual_min, estimate_min FROM todos \
-         WHERE done = 1 AND actual_min > 0 AND estimate_min > 0 \
-         ORDER BY completed_at DESC LIMIT 20",
-    )
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
-    score::calibration(&samples).factor
-}
-
-async fn references(db: &Db, project_id: Option<&str>, except: &str) -> Vec<Reference> {
-    let Some(pid) = project_id else {
-        return Vec::new();
-    };
-    let rows: Vec<(String, Option<i64>, i64)> = sqlx::query_as(
-        "SELECT text, estimate_min, actual_min FROM todos \
-         WHERE project_id = ? AND id != ? AND done = 1 AND actual_min > 0 \
-         ORDER BY completed_at DESC LIMIT ?",
-    )
-    .bind(pid)
-    .bind(except)
-    .bind(ai::REFERENCE_MAX as i64)
-    .fetch_all(db)
-    .await
-    .unwrap_or_default();
-    rows.into_iter()
-        .map(|(text, estimate_min, actual_min)| Reference {
-            title: text.lines().next().unwrap_or("").to_string(),
-            estimate_min,
-            actual_min,
-        })
-        .collect()
-}
-
 fn first_line(text: &str) -> String {
     text.lines()
         .find(|l| !l.trim().is_empty())
@@ -439,7 +391,7 @@ pub async fn focus_ai_suggest(
     suggest_inner(&app, db.inner(), state.inner(), source_url, project_id, title, request_id).await
 }
 
-/// `focus_ai_suggest`, shared with Remote Control.
+/// `focus_ai_suggest`.
 pub async fn suggest_inner(
     app: &AppHandle,
     db: &Db,
@@ -476,398 +428,6 @@ pub async fn suggest_inner(
     .await
 }
 
-// ── b. Analyze ──────────────────────────────────────────────────────────────
-
-#[derive(Debug, Serialize)]
-pub struct AnalyzeResult {
-    pub analysis: ai::Analysis,
-    /// The todo with its new `ai_plan` / `ai_analyzed_at`.
-    pub todo: Todo,
-}
-
-#[tauri::command]
-pub async fn focus_ai_analyze(
-    app: AppHandle,
-    db: State<'_, Db>,
-    state: State<'_, FocusAiState>,
-    todo_id: String,
-    request_id: Option<String>,
-) -> Result<AnalyzeResult, String> {
-    analyze_inner(&app, db.inner(), state.inner(), todo_id, request_id).await
-}
-
-/// `focus_ai_analyze`, shared with Remote Control.
-pub async fn analyze_inner(
-    app: &AppHandle,
-    db: &Db,
-    state: &FocusAiState,
-    todo_id: String,
-    request_id: Option<String>,
-) -> Result<AnalyzeResult, String> {
-    let db = db.clone();
-    let settings = focus_settings::load(&db).await?;
-    let engine = engine_for(app, &db, state, &settings);
-    let key = format!("todo:{todo_id}");
-    let app2 = app.clone();
-    let id = todo_id.clone();
-    let turn = engine.turn.clone();
-    run_request(
-        state,
-        key,
-        request_id,
-        turn,
-        async move {
-            let todo = get_todo(&db, &id).await?;
-            let source = match todo.source_url.as_deref() {
-                Some(u) => Some(
-                    source_ctx(&db, u, &first_line(&todo.text), todo.project_id.as_deref()).await?,
-                ),
-                None => None,
-            };
-            let lang = app_language(&db).await;
-            let project = project_name(&db, todo.project_id.as_deref()).await;
-            let refs = references(&db, todo.project_id.as_deref(), &id).await;
-            let calibration = calibration_factor(&db, settings.calibration_enabled).await;
-            let due = todo.due_date.as_ref().map(|d| {
-                format!(
-                    "{d}{}",
-                    todo.due_time
-                        .as_ref()
-                        .map(|t| format!(" {t}"))
-                        .unwrap_or_default()
-                )
-            });
-            let prompt = ai::analyze_prompt(&ai::AnalyzeCtx {
-                now: local_now().naive_local(),
-                lang: &lang,
-                todo_text: &todo.text,
-                project: project.as_deref(),
-                due,
-                priority: todo.priority,
-                estimate_min: todo.estimate_min,
-                calibration,
-                references: &refs,
-                source: source.as_ref(),
-            });
-            let analysis = ask(&engine, prompt, ai::parse_analysis).await?;
-            let plan = ai::render_markdown(&analysis, &lang);
-            let now = chrono::Utc::now().to_rfc3339();
-            // BR-09: only the plan; a todo deleted meanwhile is left alone.
-            let done = sqlx::query(
-                "UPDATE todos SET ai_plan = ?, ai_analyzed_at = ?, updated_at = ? WHERE id = ?",
-            )
-            .bind(&plan)
-            .bind(&now)
-            .bind(&now)
-            .bind(&id)
-            .execute(&db)
-            .await
-            .map_err(|e| e.to_string())?;
-            if done.rows_affected() == 0 {
-                return Err(format!("todo not found: {id}"));
-            }
-            crate::focus::emit_todos_changed(&app2);
-            let todo = get_todo(&db, &id).await?;
-            Ok(AnalyzeResult { analysis, todo })
-        },
-    )
-    .await
-}
-
-// ── c. Plan today ───────────────────────────────────────────────────────────
-
-/// Today's busy Calendar intervals (local), the same events `focus_board`'s
-/// capacity uses (BR-08), waiting up to 15 s for a fetch in flight. No
-/// account linked → working hours only; a fetch that fails or is still
-/// running → `calendar_unavailable` (planning over meetings is worse).
-async fn busy_today(db: &Db, settings: &FocusSettings) -> Result<Vec<(NaiveDateTime, NaiveDateTime)>, String> {
-    use crate::focus::calendar::{self, ERR_NO_ACCOUNT, PLAN_WAIT};
-    let events = match calendar::today_events(db, settings, None, PLAN_WAIT).await {
-        Ok(events) => events,
-        Err(e) if e == ERR_NO_ACCOUNT => return Ok(Vec::new()),
-        Err(e) => return Err(format!("calendar_unavailable: {e}")),
-    };
-    let events = calendar::to_local(&events);
-    Ok(crate::focus::capacity::busy_on(&events, Local::now().date_naive())
-        .into_iter()
-        .map(|b| (b.start, b.end))
-        .collect())
-}
-
-fn plan_todos(items: &[BoardItem], limit: usize) -> Vec<PlanTodo> {
-    items
-        .iter()
-        .filter(|i| !matches!(i.bucket, Bucket::Done | Bucket::Snoozed | Bucket::Waiting))
-        .take(limit)
-        .map(|i| PlanTodo {
-            id: i.todo.id.clone(),
-            title: first_line(&i.todo.text),
-            project: None,
-            due: i
-                .effective_due
-                .as_deref()
-                .and_then(|d| DateTime::parse_from_rfc3339(d).ok())
-                .map(|d| d.with_timezone(&Local).format("%Y-%m-%d %H:%M").to_string()),
-            estimate_min: i.effective_estimate_min,
-            estimate_missing: i.estimate_missing,
-            priority: i.todo.priority,
-            status: i.todo.status.clone(),
-        })
-        .collect()
-}
-
-async fn save_plan(db: &Db, plan: &DayPlan) -> Result<(), String> {
-    let json = serde_json::to_string(plan).map_err(|e| e.to_string())?;
-    sqlx::query(
-        "INSERT INTO focus_day_plans (date, plan_json, created_at) VALUES (?, ?, ?) \
-         ON CONFLICT(date) DO UPDATE SET plan_json = excluded.plan_json, created_at = excluded.created_at",
-    )
-    .bind(&plan.date)
-    .bind(json)
-    .bind(&plan.created_at)
-    .execute(db)
-    .await
-    .map_err(|e| e.to_string())?;
-    Ok(())
-}
-
-async fn load_plan(db: &Db, date: &str) -> Result<Option<DayPlan>, String> {
-    let json: Option<String> =
-        sqlx::query_scalar("SELECT plan_json FROM focus_day_plans WHERE date = ?")
-            .bind(date)
-            .fetch_optional(db)
-            .await
-            .map_err(|e| e.to_string())?;
-    Ok(json.and_then(|j| serde_json::from_str(&j).ok()))
-}
-
-#[tauri::command]
-pub async fn focus_ai_plan_today(
-    app: AppHandle,
-    db: State<'_, Db>,
-    state: State<'_, FocusAiState>,
-    request_id: Option<String>,
-) -> Result<DayPlan, String> {
-    plan_today_inner(&app, db.inner(), state.inner(), request_id).await
-}
-
-/// `focus_ai_plan_today`, shared with Remote Control.
-pub async fn plan_today_inner(
-    app: &AppHandle,
-    db: &Db,
-    state: &FocusAiState,
-    request_id: Option<String>,
-) -> Result<DayPlan, String> {
-    let db = db.clone();
-    let settings = focus_settings::load(&db).await?;
-    let engine = engine_for(app, &db, state, &settings);
-    let turn = engine.turn.clone();
-    run_request(
-        state,
-        "plan".into(),
-        request_id,
-        turn,
-        async move {
-            let now = local_now();
-            let wh = settings.work_hours();
-            let todos = load_todos(&db).await?;
-            let samples: Vec<(i64, i64)> = sqlx::query_as(
-                "SELECT actual_min, estimate_min FROM todos \
-             WHERE done = 1 AND actual_min > 0 AND estimate_min > 0 \
-             ORDER BY completed_at DESC LIMIT 20",
-            )
-            .fetch_all(&db)
-            .await
-            .map_err(|e| e.to_string())?;
-            let board = build_board(todos, now, &wh, settings.calibration_enabled, &samples);
-            let mut todos = plan_todos(&board.items, ai::PLAN_MAX_TODOS);
-            if todos.is_empty() {
-                return Err("nothing_to_plan: no open todo".into());
-            }
-            for t in &mut todos {
-                let pid = board
-                    .items
-                    .iter()
-                    .find(|i| i.todo.id == t.id)
-                    .and_then(|i| i.todo.project_id.clone());
-                t.project = project_name(&db, pid.as_deref()).await;
-            }
-            let busy = busy_today(&db, &settings).await?;
-            let free = ai::free_slots(now.naive_local(), &wh, &busy);
-            if free.is_empty() {
-                return Err("no_free_time: no working time left today".into());
-            }
-            let lang = app_language(&db).await;
-            let prompt = ai::plan_prompt(&ai::PlanCtx {
-                now: now.naive_local(),
-                lang: &lang,
-                todos: &todos,
-                free: &free,
-            });
-            let today = now.date_naive();
-            let mut plan = ask(&engine, prompt, |raw| {
-                ai::parse_plan(raw, today, &todos, &free)
-            })
-            .await?;
-            plan.created_at = chrono::Utc::now().to_rfc3339();
-            save_plan(&db, &plan).await?;
-            Ok(plan)
-        },
-    )
-    .await
-}
-
-/// The stored plan of `date` (today when omitted), if any.
-#[tauri::command]
-pub async fn focus_day_plan_get(
-    db: State<'_, Db>,
-    date: Option<String>,
-) -> Result<Option<DayPlan>, String> {
-    day_plan_get_inner(db.inner(), date).await.map(|(_, plan)| plan)
-}
-
-/// `focus_day_plan_get`, shared with Remote Control: the date it read (today
-/// when omitted) and its plan.
-pub async fn day_plan_get_inner(db: &Db, date: Option<String>) -> Result<(String, Option<DayPlan>), String> {
-    let date = date.unwrap_or_else(|| local_now().format("%Y-%m-%d").to_string());
-    let plan = load_plan(db, &date).await?;
-    Ok((date, plan))
-}
-
-/// Create a Google Calendar event `[Devdy] <todo>` per block of `date` (all,
-/// or `block_ids`) not pushed yet, on the primary calendar of the Focus
-/// account (Settings → Focus) or else the default Google account.
-/// Dates whose plan is being pushed to Calendar.
-fn pushing_dates() -> &'static Mutex<std::collections::HashSet<String>> {
-    static S: std::sync::OnceLock<Mutex<std::collections::HashSet<String>>> = std::sync::OnceLock::new();
-    S.get_or_init(Default::default)
-}
-
-/// Holds a date in `pushing_dates` until dropped.
-#[derive(Debug)]
-struct PlanPushGuard(String);
-
-impl PlanPushGuard {
-    fn take(date: &str) -> Result<Self, String> {
-        let mut set = pushing_dates().lock().map_err(|e| e.to_string())?;
-        if !set.insert(date.to_string()) {
-            return Err("busy: this plan is already being added to Calendar".into());
-        }
-        Ok(PlanPushGuard(date.to_string()))
-    }
-}
-
-impl Drop for PlanPushGuard {
-    fn drop(&mut self) {
-        if let Ok(mut set) = pushing_dates().lock() {
-            set.remove(&self.0);
-        }
-    }
-}
-
-#[tauri::command]
-pub async fn focus_plan_to_calendar(
-    db: State<'_, Db>,
-    date: String,
-    block_ids: Option<Vec<String>>,
-) -> Result<DayPlan, String> {
-    plan_to_calendar_inner(db.inner(), date, block_ids).await
-}
-
-/// `focus_plan_to_calendar`, shared with Remote Control.
-pub async fn plan_to_calendar_inner(
-    db: &Db,
-    date: String,
-    block_ids: Option<Vec<String>>,
-) -> Result<DayPlan, String> {
-    // One push per day at a time: a double click must not create every
-    // event twice.
-    let _guard = PlanPushGuard::take(&date)?;
-    let pool = db.clone();
-    let mut plan = load_plan(&pool, &date)
-        .await?
-        .ok_or("no_plan: no plan for this day")?;
-    let settings = focus_settings::load(&pool).await?;
-    let account: Option<String> = match settings
-        .calendar_account_id
-        .filter(|a| !a.trim().is_empty())
-    {
-        Some(a) => Some(a),
-        None => sqlx::query_scalar(
-            "SELECT id FROM google_accounts ORDER BY is_default DESC, label LIMIT 1",
-        )
-        .fetch_optional(&pool)
-        .await
-        .map_err(|e| e.to_string())?,
-    };
-    let account =
-        account.ok_or("no_google_account: connect a Google account in Settings → Google")?;
-    let day = chrono::NaiveDate::parse_from_str(&date, "%Y-%m-%d").map_err(|e| e.to_string())?;
-    let titles: HashMap<String, String> = load_todos(&pool)
-        .await?
-        .into_iter()
-        .map(|t| (t.id.clone(), first_line(&t.text)))
-        .collect();
-    let rfc = |hm: &str| -> Result<String, String> {
-        let t = chrono::NaiveTime::parse_from_str(hm, "%H:%M").map_err(|e| e.to_string())?;
-        day.and_time(t)
-            .and_local_timezone(Local)
-            .earliest()
-            .map(|d| d.to_rfc3339())
-            .ok_or_else(|| "invalid local time".to_string())
-    };
-    let mut errors = Vec::new();
-    for b in plan.blocks.iter_mut() {
-        let wanted = block_ids.as_ref().is_none_or(|ids| ids.contains(&b.id));
-        if !wanted || b.calendar_event_id.is_some() {
-            continue;
-        }
-        let title = titles
-            .get(&b.todo_id)
-            .cloned()
-            .unwrap_or_else(|| b.todo_id.clone());
-        // A bad block is reported, never aborts the loop: events already
-        // created above must still be saved with the plan.
-        let (start, end) = match (rfc(&b.start), rfc(&b.end)) {
-            (Ok(s), Ok(e)) => (s, e),
-            (Err(e), _) | (_, Err(e)) => {
-                errors.push(format!("block {}: {e}", b.id));
-                continue;
-            }
-        };
-        let payload = crate::commands::gcalendar::EventPayload {
-            summary: Some(format!("[Devdy] {title}")),
-            description: (!b.note.is_empty()).then(|| b.note.clone()),
-            start: Some(crate::commands::gcalendar::EventDateTimePayload {
-                date_time: Some(start),
-                ..Default::default()
-            }),
-            end: Some(crate::commands::gcalendar::EventDateTimePayload {
-                date_time: Some(end),
-                ..Default::default()
-            }),
-            ..Default::default()
-        };
-        match crate::commands::gcalendar::create_event_inner(
-            &pool,
-            account.clone(),
-            "primary".into(),
-            payload,
-        )
-        .await
-        {
-            Ok(ev) => b.calendar_event_id = Some(ev.id),
-            Err(e) => errors.push(e),
-        }
-    }
-    save_plan(&pool, &plan).await?;
-    match errors.into_iter().next() {
-        // Partial success is saved (no duplicates on retry); the first error is reported.
-        Some(e) => Err(format!("calendar_failed: {e}")),
-        None => Ok(plan),
-    }
-}
-
 // ── Cancel ──────────────────────────────────────────────────────────────────
 
 /// Abort a running request; false when it is not running (any more).
@@ -895,7 +455,7 @@ pub async fn focus_start_with_ai(
     start_with_ai_inner(&app, db.inner(), registry.inner(), todo_id, worktree.unwrap_or(false)).await
 }
 
-/// `focus_start_with_ai`, shared with Remote Control.
+/// `focus_start_with_ai`.
 pub async fn start_with_ai_inner(
     app: &AppHandle,
     db: &Db,
@@ -985,53 +545,6 @@ async fn discard_run(db: &Db, run_id: &str) {
     }
 }
 
-// ── BR-11 ───────────────────────────────────────────────────────────────────
-
-fn to_local(s: Option<&str>) -> Option<NaiveDateTime> {
-    DateTime::parse_from_rfc3339(s?.trim())
-        .ok()
-        .map(|d| d.with_timezone(&Local).naive_local())
-}
-
-/// Suggested `actual_min` of a todo (BR-11): its linked sessions' total time,
-/// else working minutes from start to completion (now if not done yet); none
-/// when above 3× the estimate.
-#[tauri::command]
-pub async fn focus_suggest_actual(
-    db: State<'_, Db>,
-    todo_id: String,
-) -> Result<Option<i64>, String> {
-    suggest_actual_inner(db.inner(), &todo_id).await
-}
-
-/// `focus_suggest_actual`, shared with Remote Control.
-pub async fn suggest_actual_inner(db: &Db, todo_id: &str) -> Result<Option<i64>, String> {
-    let todo = get_todo(db, todo_id).await?;
-    let runs: Vec<(Option<String>, Option<String>)> = sqlx::query_as(
-        "SELECT r.started_at, COALESCE(r.finished_at, r.last_activity_at) FROM todo_runs l \
-         JOIN runs r ON r.id = l.run_id WHERE l.todo_id = ?",
-    )
-    .bind(todo_id)
-    .fetch_all(db)
-    .await
-    .map_err(|e| e.to_string())?;
-    let run_minutes: i64 = runs
-        .iter()
-        .filter_map(|(s, e)| Some((to_local(s.as_deref())?, to_local(e.as_deref())?)))
-        .map(|(s, e)| (e - s).num_minutes().max(0))
-        .sum();
-    let settings = focus_settings::load(db).await?;
-    let completed =
-        to_local(todo.completed_at.as_deref()).or_else(|| Some(local_now().naive_local()));
-    Ok(ai::suggest_actual(
-        Some(run_minutes),
-        to_local(todo.started_at.as_deref()),
-        completed,
-        todo.estimate_min,
-        &settings.work_hours(),
-    ))
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1075,15 +588,5 @@ mod tests {
         discard_run(&db, "r").await;
         let n: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM runs").fetch_one(&db).await.unwrap();
         assert_eq!(n, 0);
-    }
-
-    #[test]
-    fn one_calendar_push_per_date() {
-        let a = PlanPushGuard::take("2026-10-28").unwrap();
-        assert!(PlanPushGuard::take("2026-10-28").unwrap_err().starts_with("busy:"));
-        let b = PlanPushGuard::take("2026-10-29").unwrap();
-        drop(a);
-        assert!(PlanPushGuard::take("2026-10-28").is_ok());
-        drop(b);
     }
 }
