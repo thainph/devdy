@@ -109,5 +109,7 @@
   "sortTitle": "Sắp xếp",
   "sortByProject": "Theo dự án",
   "sortByUpdated": "Mới sửa gần đây",
-  "sortByTitle": "Tiêu đề (A–Z)"
+  "sortByTitle": "Tiêu đề (A–Z)",
+  "batchAll": "Giao các todo đang hiện cho AI",
+  "batchFolder": "Giao todo của dự án này cho AI"
 }

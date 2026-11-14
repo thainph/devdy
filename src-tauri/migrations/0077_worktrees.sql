@@ -19,6 +19,14 @@ CREATE INDEX IF NOT EXISTS idx_worktrees_project ON worktrees(project_id);
 ALTER TABLE runs ADD COLUMN worktree_path TEXT;
 -- 1 = a conductor session the user started on a batch of todos (Batch Board).
 ALTER TABLE runs ADD COLUMN todo_batch INTEGER NOT NULL DEFAULT 0;
+-- The todos handed to a batch, in order (no FK on todo_id: todos can be cleared).
+CREATE TABLE IF NOT EXISTS todo_batch_items (
+    batch_run_id TEXT NOT NULL,
+    todo_id TEXT NOT NULL,
+    position INTEGER NOT NULL,
+    PRIMARY KEY (batch_run_id, todo_id),
+    FOREIGN KEY (batch_run_id) REFERENCES runs(id) ON DELETE CASCADE
+);
 
 -- Per-project worktree setup.
 -- worktree_base_branch: branch new worktrees start from (NULL = the remote's default branch).

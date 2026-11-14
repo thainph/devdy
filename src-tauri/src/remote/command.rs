@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 47] = [
+pub const ALLOW_LIST: [&str; 48] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -72,6 +72,7 @@ pub const ALLOW_LIST: [&str; 47] = [
     "focus_settings_get",
     "focus_settings_set",
     "focus_calendar_refresh",
+    "batch_board",
     // Web Push; refused unless the client advertised `push` (see PUSH_ACTIONS).
     "push_config",
     "push_visibility",
@@ -113,7 +114,7 @@ pub fn data_action_permitted(action: &str, data_enabled: bool) -> bool {
 /// The Focus actions: allow-listed, but only for a Controller that advertised
 /// both [`crate::remote::protocol::FEATURE_DATA`] and
 /// [`crate::remote::protocol::FEATURE_FOCUS`].
-pub const FOCUS_ACTIONS: [&str; 12] = [
+pub const FOCUS_ACTIONS: [&str; 13] = [
     "focus_board",
     "focus_ai_suggest",
     "focus_ai_analyze",
@@ -126,6 +127,8 @@ pub const FOCUS_ACTIONS: [&str; 12] = [
     "focus_settings_get",
     "focus_settings_set",
     "focus_calendar_refresh",
+    // The Batch Board (todo batches run by a conductor).
+    "batch_board",
 ];
 
 /// Whether `action` is one of the [`FOCUS_ACTIONS`].
@@ -172,7 +175,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 22] = [
+pub const READ_ONLY_ACTIONS: [&str; 23] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -198,6 +201,7 @@ pub const READ_ONLY_ACTIONS: [&str; 22] = [
     "focus_day_plan_get",
     "focus_settings_get",
     "focus_suggest_actual",
+    "batch_board",
     // Push: reading the VAPID key, and the phone saying it went to / came back
     // from the background (fires on every app switch). Subscribing, removing
     // and test sends stay on the command budget.
@@ -522,7 +526,7 @@ mod tests {
 
     #[test]
     fn focus_reads_and_writes_use_the_right_budget() {
-        for a in ["focus_board", "focus_day_plan_get", "focus_settings_get", "focus_suggest_actual"] {
+        for a in ["focus_board", "focus_day_plan_get", "focus_settings_get", "focus_suggest_actual", "batch_board"] {
             assert!(is_read_only_action(a), "{a} only reads");
         }
         for a in [

@@ -102,8 +102,18 @@ pub async fn todo_batch_start(
         append_system_prompt: None,
         conductor_token: None,
     };
+    for (i, t) in todos.iter().enumerate() {
+        sqlx::query("INSERT OR IGNORE INTO todo_batch_items (batch_run_id, todo_id, position) VALUES (?, ?, ?)")
+            .bind(&run.id)
+            .bind(&t.id)
+            .bind(i as i64)
+            .execute(&db)
+            .await
+            .map_err(|e| e.to_string())?;
+    }
     if let Err(e) = start_run_inner(app.clone(), db.clone(), registry.inner().clone(), payload).await {
         let _ = sqlx::query("DELETE FROM conductor_sessions WHERE id = ?").bind(&run.id).execute(&db).await;
+        let _ = sqlx::query("DELETE FROM todo_batch_items WHERE batch_run_id = ?").bind(&run.id).execute(&db).await;
         let _ = sqlx::query("DELETE FROM runs WHERE id = ?").bind(&run.id).execute(&db).await;
         return Err(e);
     }
@@ -147,13 +157,18 @@ pub struct BatchSummary {
 /// Todo batches, newest first.
 #[tauri::command]
 pub async fn board_batches(db: State<'_, Db>) -> Result<Vec<BatchSummary>, String> {
+    load_batches(db.inner()).await
+}
+
+/// `board_batches`, shared with Remote Control.
+pub async fn load_batches(db: &Db) -> Result<Vec<BatchSummary>, String> {
     let rows = sqlx::query(
         "SELECT r.id, r.title, r.project_id, p.name AS project_name, r.status, r.created_at,
                 (SELECT COUNT(*) FROM runs w WHERE w.conductor_run_id = r.id) AS worker_count
          FROM runs r JOIN projects p ON p.id = r.project_id
          WHERE r.todo_batch = 1 ORDER BY r.created_at DESC LIMIT 30",
     )
-    .fetch_all(db.inner())
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
     Ok(rows
@@ -212,11 +227,33 @@ pub struct BoardItem {
     pub diff: Option<DiffStat>,
 }
 
-/// The batch's conductor and every worker it spawned, with todo, worktree and
-/// diff. Live state (permission prompts, streaming) comes from the run events.
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardData {
+    pub items: Vec<BoardItem>,
+    /// Todos of the batch no worker has picked up yet, in batch order.
+    pub queued: Vec<BoardQueuedTodo>,
+}
+
+#[derive(Debug, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct BoardQueuedTodo {
+    pub todo: BoardTodo,
+    pub project_id: Option<String>,
+    pub project_name: Option<String>,
+}
+
+/// The batch's conductor and every worker it spawned (with todo, worktree and
+/// diff), plus the todos still queued. Live state (permission prompts,
+/// streaming) comes from the run events.
 #[tauri::command]
-pub async fn board_items(db: State<'_, Db>, batch_run_id: String) -> Result<Vec<BoardItem>, String> {
-    let db = db.inner();
+pub async fn board_items(db: State<'_, Db>, batch_run_id: String) -> Result<BoardData, String> {
+    load_board(db.inner(), &batch_run_id).await
+}
+
+/// `board_items`, shared with Remote Control.
+pub async fn load_board(db: &Db, batch_run_id: &str) -> Result<BoardData, String> {
+    let batch_run_id = batch_run_id.to_string();
     let rows = sqlx::query(
         "SELECT r.id, r.title, r.role, r.project_id, p.name AS project_name, r.engine, r.status,
                 r.created_at, r.started_at, r.finished_at, r.worktree_path,
@@ -268,7 +305,34 @@ pub async fn board_items(db: State<'_, Db>, batch_run_id: String) -> Result<Vec<
             diff,
         });
     }
-    Ok(items)
+
+    let picked: std::collections::HashSet<String> =
+        items.iter().filter_map(|i| i.todo.as_ref().map(|t| t.id.clone())).collect();
+    let rows = sqlx::query(
+        "SELECT t.id, t.text, t.status, t.done, t.project_id, p.name AS project_name
+         FROM todo_batch_items b JOIN todos t ON t.id = b.todo_id
+         LEFT JOIN projects p ON p.id = t.project_id
+         WHERE b.batch_run_id = ? ORDER BY b.position",
+    )
+    .bind(&batch_run_id)
+    .fetch_all(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    let queued = rows
+        .iter()
+        .filter(|r| !picked.contains(&r.get::<String, _>("id")))
+        .map(|r| BoardQueuedTodo {
+            todo: BoardTodo {
+                id: r.get("id"),
+                text: r.get("text"),
+                status: r.get("status"),
+                done: r.get::<i64, _>("done") != 0,
+            },
+            project_id: r.get("project_id"),
+            project_name: r.get("project_name"),
+        })
+        .collect();
+    Ok(BoardData { items, queued })
 }
 
 async fn worktree_by_path(db: &Db, path: &str) -> Option<worktrees::Worktree> {

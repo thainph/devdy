@@ -60,6 +60,8 @@ import { useFocusStore } from '@/stores/focus'
 import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
 import { useFocusAiActions } from '@/components/focus/useFocusAiActions'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
+import BatchStartDialog from '@/components/batch/BatchStartDialog.vue'
+import type { BatchCandidate } from '@/lib/batchBoard'
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -306,6 +308,16 @@ async function setDueDate(next: string | null) {
   if (kind !== 'todo' || !it || next === it.due_date) return
   await todos.setDueDate(it.id, next)
   announce()
+}
+
+// "Hand to AI" (todos): the open todos shown (or one folder's) go to a Todo Conductor.
+const batchOpen = ref(false)
+const batchCandidates = ref<BatchCandidate[]>([])
+function openBatch(projectId?: string | null) {
+  batchCandidates.value = visibleRows.value
+    .filter((r) => !r.done && (projectId === undefined || (r.projectId ?? null) === projectId))
+    .map((r) => ({ id: r.id, title: r.title, projectId: r.projectId }))
+  batchOpen.value = true
 }
 
 // "Start with AI" (todos): a session working on the todo, like the old Focus board.
@@ -619,6 +631,14 @@ onBeforeUnmount(() => {
       @toggle-pin="togglePin"
       @reload="reloadAll"
       @retry="reloadAll"
+      @batch="openBatch"
+    />
+    <BatchStartDialog
+      v-if="kind === 'todo'"
+      :open="batchOpen"
+      :candidates="batchCandidates"
+      :project-names="projectNames"
+      @close="batchOpen = false"
     />
 
     <section v-if="item" class="flex min-w-0 flex-1 flex-col">

@@ -221,6 +221,7 @@ pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: &CmdPayload) {
         "focus_settings_get" => settings_get(ctx).await,
         "focus_settings_set" => settings_set(ctx, cmd).await,
         "focus_calendar_refresh" => calendar_refresh(ctx).await,
+        "batch_board" => batch_board(ctx, cmd).await,
         _ => Err(Failure::Rejected(RejectReason::NotAllowed)),
     };
     match result {
@@ -256,6 +257,24 @@ fn ai_state(ctx: &HandlerCtx) -> Result<FocusAiState, Failure> {
         .try_state::<FocusAiState>()
         .map(|s| s.inner().clone())
         .ok_or_else(|| failed("no Focus AI state".into()))
+}
+
+/// The Batch Board for `item_id` (a batch run id), else the newest batch.
+async fn batch_board(ctx: &HandlerCtx, cmd: &CmdPayload) -> FocusResult {
+    use crate::commands::todo_batch;
+    let wanted = optional_id(cmd.item_id.as_deref())?;
+    let batches = todo_batch::load_batches(&ctx.db).await.map_err(failed)?;
+    let batch_run_id = wanted
+        .filter(|id| batches.iter().any(|b| &b.run_id == id))
+        .or_else(|| batches.first().map(|b| b.run_id.clone()));
+    let board = match &batch_run_id {
+        Some(id) => serde_json::to_value(todo_batch::load_board(&ctx.db, id).await.map_err(failed)?),
+        None => Ok(Value::Null),
+    }
+    .map_err(|e| failed(e.to_string()))?;
+    let batches = serde_json::to_value(&batches).map_err(|e| failed(e.to_string()))?;
+    send_payload(ctx, StreamPayload::BatchBoard { batches, batch_run_id, board }).await;
+    Ok(Outcome::default())
 }
 
 async fn focus_board(ctx: &HandlerCtx) -> FocusResult {

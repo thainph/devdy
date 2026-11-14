@@ -428,6 +428,14 @@ pub enum StreamPayload {
     /// `focus_board` command returns it: buckets, scores, reasons, "do now" ids
     /// and today's Calendar load. Ranking stays on the Host (BR-05).
     FocusBoard { board: serde_json::Value },
+    /// The Batch Board: todo batches (newest first), the one shown
+    /// (`batch_run_id`, `None` when there is none) and its workers + queued todos,
+    /// exactly as the desktop's `board_batches` / `board_items` return them.
+    BatchBoard {
+        batches: serde_json::Value,
+        batch_run_id: Option<String>,
+        board: serde_json::Value,
+    },
     /// The outcome of a `focus_ai_*` request, echoing the Controller's
     /// `request_id`. `ai_kind` is `suggest` | `analyze` | `plan_today`; `result`
     /// is exactly what the desktop command returns. A failure carries only a

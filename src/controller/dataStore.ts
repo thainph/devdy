@@ -41,6 +41,7 @@ import {
   focusAiCancelCmd,
   focusAiPlanTodayCmd,
   focusAiSuggestCmd,
+  batchBoardCmd,
   focusBoardCmd,
   focusCalendarRefreshCmd,
   focusDayPlanGetCmd,
@@ -54,6 +55,7 @@ import {
   todoListCmd,
   todoToggleCmd,
   todoUpdateCmd,
+  type BatchBoardKind,
   type CmdPayload,
   type FocusAiResultKind,
   type NoteInfo,
@@ -114,6 +116,7 @@ export interface NoteSave {
 export interface LoadFailures {
   todos: boolean
   board: boolean
+  batch: boolean
   notes: boolean
   toggles: boolean
   note: boolean
@@ -139,6 +142,8 @@ export interface DataState {
   todos: TodoInfo[] | null
   /** The ranked Focus board; null until the first `focus_board` arrives. */
   board: FocusBoard | null
+  /** The Batch Board; null until the first `batch_board` arrives. */
+  batch: Omit<BatchBoardKind, 'kind'> | null
   notes: NoteSummary[] | null
   /** The full note the editor asked for (`note_get`); null while loading. */
   note: NoteInfo | null
@@ -180,13 +185,14 @@ function without<T>(map: Record<string, T>, key: string): Record<string, T> {
 }
 
 function emptyFailures(): LoadFailures {
-  return { todos: false, board: false, notes: false, toggles: false, note: false, plan: false, settings: false }
+  return { todos: false, board: false, batch: false, notes: false, toggles: false, note: false, plan: false, settings: false }
 }
 
 export function createDataStore(send: SendCommand, describeError: (reason: string | null) => string) {
   const state = reactive<DataState>({
     todos: null,
     board: null,
+    batch: null,
     notes: null,
     note: null,
     noteId: null,
@@ -217,6 +223,9 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
         break
       case 'focus_board':
         state.board = p.board
+        break
+      case 'batch_board':
+        state.batch = { batches: p.batches, batch_run_id: p.batch_run_id, board: p.board }
         break
       case 'focus_ai_result': {
         const pending = aiPending.get(p.request_id)
@@ -303,6 +312,11 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
 
   function loadBoard(): void {
     read(focusBoardCmd(), 'board')
+  }
+
+  /** The Batch Board of `batchRunId`, else the newest batch. */
+  function loadBatch(batchRunId?: string | null): void {
+    read(batchBoardCmd(batchRunId), 'batch')
   }
 
   async function saveTodo(input: TodoSave): Promise<boolean> {
@@ -646,6 +660,7 @@ export function createDataStore(send: SendCommand, describeError: (reason: strin
     apply,
     loadTodos,
     loadBoard,
+    loadBatch,
     saveTodo,
     toggleTodo,
     deleteTodo,

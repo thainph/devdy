@@ -31,6 +31,7 @@ import ItemListWindow from '@/views/ItemListWindow.vue'
 import SecretNotesWindow from '@/views/SecretNotesWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import PrInboxWindow from '@/views/PrInboxWindow.vue'
+import { BOARD_OPEN_ROUTE } from '@/lib/batchBoard'
 import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, openPrInboxWindow, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
@@ -359,6 +360,7 @@ let unlistenSlackRoute: UnlistenFn | null = null
 // Listener for the PR Inbox window asking to navigate (e.g. "Add to devdy").
 let unlistenPrInboxRoute: UnlistenFn | null = null
 let unlistenCalendarRoute: UnlistenFn | null = null
+let unlistenBoardRoute: UnlistenFn | null = null
 let unlistenRadarRoute: UnlistenFn | null = null
 
 // Listeners for the Slack / Notes / Todos windows opening a linked session or
@@ -502,6 +504,8 @@ onBeforeUnmount(() => {
   unlistenPrInboxRoute = null
   unlistenCalendarRoute?.()
   unlistenCalendarRoute = null
+  unlistenBoardRoute?.()
+  unlistenBoardRoute = null
   unlistenRadarRoute?.()
   unlistenRadarRoute = null
   unlistenWindowRun?.()
@@ -741,6 +745,15 @@ onMounted(async () => {
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
+  }
+
+  // A todo batch started from the todo list window opens on the Batch Board here.
+  try {
+    unlistenBoardRoute = await listen<{ path?: string }>(BOARD_OPEN_ROUTE, (e) => {
+      void openRouteFromWindow(e.payload?.path)
+    })
+  } catch {
+    // Ignore (outside the Tauri shell).
   }
 
   // Same for the Calendar window (e.g. "Reconnect" → the Settings screen).

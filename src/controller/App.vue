@@ -24,6 +24,7 @@ import TodoView from './components/TodoView.vue'
 import FocusView from './components/FocusView.vue'
 import TodoEditorView from './components/TodoEditorView.vue'
 import FocusPlanView from './components/FocusPlanView.vue'
+import BatchBoardView from './components/BatchBoardView.vue'
 import FocusSettingsView from './components/FocusSettingsView.vue'
 import NoteListView from './components/NoteListView.vue'
 import NoteEditorView from './components/NoteEditorView.vue'
@@ -34,7 +35,7 @@ import ConnectionBadge from './components/ConnectionBadge.vue'
 import SettingsMenuView from './components/SettingsMenuView.vue'
 import PushSettingsView from './components/PushSettingsView.vue'
 import ThemeSettingsView from './components/ThemeSettingsView.vue'
-import { ChevronLeft } from 'lucide-vue-next'
+import { ChevronLeft, Layers } from 'lucide-vue-next'
 import { isToggleGroup, type SettingsPage } from './settingsMenu'
 import ProjectPickerSheet from './components/ProjectPickerSheet.vue'
 import { concreteProject, rememberProject, validScope } from '@/lib/controllerProjectScope'
@@ -101,6 +102,8 @@ const noteEditorOpen = ref(false)
 const todoEditor = ref<{ todo: TodoInfo | null; focus: FocusTodo | null; today: string } | null>(null)
 // The "Plan today" screen, over the Focus tab.
 const planOpen = ref(false)
+// The Batch Board, over the Inbox.
+const batchOpen = ref(false)
 // A todo to start a session on once it has a project (the project picker).
 const aiProjectFor = ref<FocusTodo | null>(null)
 // ── shared project scope ─────────────────────────────────────────────────────
@@ -1084,6 +1087,18 @@ function onRequestSavedPrompts(): void {
     @clear-error="data.clearError(); data.clearAiError(PLAN_KEY)"
   />
 
+  <!-- Batch Board: full height; a row opens its session (back lands here). -->
+  <BatchBoardView
+    v-else-if="!runId && !draftProjectId && tab === 'inbox' && batchOpen && hasFocus"
+    :batch="data.state.batch"
+    :failed="data.state.failed.batch"
+    :runs="store.state.runList"
+    :pending-by-run="store.state.pendingByRun"
+    @back="batchOpen = false"
+    @load="(id) => data.loadBatch(id)"
+    @open="openRun"
+  />
+
   <div v-else-if="!runId && !draftProjectId" class="app-shell flex h-dvh min-h-0 flex-col bg-background text-foreground">
     <ControllerHeader :title="tabTitle" :scope="headerScope" @pick-scope="pickerOpen = true">
       <template v-if="onSettingsPage" #leading>
@@ -1091,6 +1106,9 @@ function onRequestSavedPrompts(): void {
           <ChevronLeft class="h-4 w-4" :stroke-width="2" />
         </HeaderButton>
       </template>
+      <HeaderButton v-if="tab === 'inbox' && hasFocus" :label="t('board.title')" @click="batchOpen = true">
+        <Layers class="h-4 w-4" :stroke-width="2" />
+      </HeaderButton>
       <template #badge>
         <ConnectionBadge :status="status" :live="live" :status-label="browserStatusLabel" :host-fingerprint="hostFp" />
       </template>
