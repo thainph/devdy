@@ -3,8 +3,8 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  DEFAULT_CATEGORY_ORDER, fitGroups, healthReasons, moveTo, moveToFront, normalizeOrder, prCardGroups, prLevel, prSize,
-  projectCard, projectRows, projectSignals, sessionActivity, slackCard, todoCardGroups, todoLevel,
+  compareCardPrs, DEFAULT_CATEGORY_ORDER, fitGroups, healthReasons, moveTo, moveToFront, normalizeOrder, prCardGroups, prLevel, prSize,
+  projectCard, projectRows, projectSignals, sessionActivity, slackCard, todoCardGroups, todoLevel, unknownByReason,
 } from '../dashboardLayout.ts'
 import { currentMilestoneProgress } from '../projectHealth.ts'
 
@@ -95,9 +95,25 @@ test('todo card groups and level', () => {
 function ranked(number, extra = {}) {
   return {
     pr: { number, draft: extra.draft ?? false, additions: extra.additions ?? null, deletions: extra.deletions ?? null, project_id: extra.projectId ?? null },
-    ai: extra.ai ?? 'none', waitLevel: extra.waitLevel ?? 'ok',
+    ai: extra.ai ?? 'none', waitLevel: extra.waitLevel ?? 'ok', waitDays: extra.waitDays ?? null,
+    ci: extra.ci ?? null, small: extra.small ?? false, soleReviewer: extra.sole ?? false,
   }
 }
+
+test('dashboard PR order: quick reviews first, failing CI and drafts last, wait only breaks ties', () => {
+  const list = [
+    ranked(1, { waitDays: 9, waitLevel: 'late' }), // long wait, nothing quick about it
+    ranked(2, { small: true, ci: 'success', sole: true, waitDays: 0.1 }),
+    ranked(3, { small: true, ci: 'failure', sole: true, waitDays: 5 }),
+    ranked(4, { small: true, ci: 'success', waitDays: 2 }),
+    ranked(5, { small: true, ci: 'success', waitDays: 4 }),
+    ranked(6, { small: true, ci: 'success', sole: true, draft: true }),
+  ]
+  assert.deepEqual([...list].sort(compareCardPrs).map((r) => r.pr.number), [2, 5, 4, 1, 3, 6])
+  const groups = prCardGroups({ rows: list, bots: [] })
+  assert.deepEqual(groups[1].items.map((r) => r.pr.number), [2, 5, 4, 1, 3, 6])
+  assert.deepEqual(list.map((r) => r.pr.number), [1, 2, 3, 4, 5, 6], 'input left untouched')
+})
 
 test('PR groups: re-review → to review (drafts kept) → bots; level; size words', () => {
   const r = {
@@ -148,7 +164,18 @@ test('project card buckets and level', () => {
   assert.deepEqual([c.risk.length, c.attention.length, c.ok.length, c.unknown.length], [1, 1, 1, 1])
   assert.equal(c.level, 'bad')
   assert.equal(projectCard([health('green')]).level, 'ok')
+  assert.equal(projectCard([health('green'), health('gray')]).level, 'ok')
+  assert.equal(projectCard([health('gray'), health('gray', { id: 'g2' })]).level, 'none', 'nothing judged is no verdict')
   assert.equal(projectCard([]).level, 'none')
+})
+
+test('unknown projects grouped by reason', () => {
+  const g = (id, reason) => ({ ...health('gray', { id, name: id }), reason })
+  assert.deepEqual(
+    unknownByReason([g('a', 'no-board'), g('b', 'error'), g('c', 'no-board'), g('d', null)])
+      .map((x) => [x.reason, x.projects.map((p) => p.projectId)]),
+    [['no-board', ['a', 'c']], ['error', ['b']], ['loading', ['d']]],
+  )
 })
 
 test('per-project signals and the traffic-light order (gray last)', () => {

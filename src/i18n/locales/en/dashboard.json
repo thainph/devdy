@@ -135,7 +135,8 @@
       "milestoneOverdue": "milestone {title} is past due by {n} day | milestone {title} is past due by {n} days",
       "milestoneLag": "milestone {title} is about {n}% behind",
       "riskyIssues": "{n} more issue at risk | {n} more issues at risk"
-    }
+    },
+    "answerUnknown": "{n} could not be judged"
   },
   "runs": {
     "title": "Running sessions",
@@ -200,7 +201,8 @@
       "some": "{risk} at risk · {attention} need attention",
       "ok": "all on track",
       "unknown": "not enough data",
-      "none": "no projects yet"
+      "none": "no projects yet",
+      "okUnknown": "on track · {n} not judged"
     }
   },
   "byProject": {

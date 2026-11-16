@@ -214,9 +214,11 @@ const summary = computed<SummaryTile[]>(() => {
       const c = projectCard(dash.healths.value)
       const text = c.risk.length || c.attention.length
         ? t('dashboard.summary.projects.some', { risk: c.risk.length, attention: c.attention.length })
-        : c.ok.length
-          ? t('dashboard.summary.projects.ok')
-          : c.unknown.length ? t('dashboard.summary.projects.unknown') : t('dashboard.summary.projects.none')
+        : c.ok.length && c.unknown.length
+          ? t('dashboard.summary.projects.okUnknown', { n: c.unknown.length })
+          : c.ok.length
+            ? t('dashboard.summary.projects.ok')
+            : c.unknown.length ? t('dashboard.summary.projects.unknown') : t('dashboard.summary.projects.none')
       return { key: 'projects', label: t('dashboard.health.title'), text, level: c.level }
     })(),
   }

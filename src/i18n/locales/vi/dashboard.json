@@ -135,7 +135,8 @@
       "milestoneOverdue": "milestone {title} quá hạn {n} ngày",
       "milestoneLag": "milestone {title} chậm khoảng {n}%",
       "riskyIssues": "thêm {n} issue có rủi ro"
-    }
+    },
+    "answerUnknown": "{n} chưa đánh giá được"
   },
   "runs": {
     "title": "Session đang chạy",
@@ -200,7 +201,8 @@
       "some": "{risk} rủi ro · {attention} cần chú ý",
       "ok": "tất cả ổn",
       "unknown": "chưa đủ dữ liệu",
-      "none": "chưa có dự án"
+      "none": "chưa có dự án",
+      "okUnknown": "ổn · {n} chưa đánh giá được"
     }
   },
   "byProject": {

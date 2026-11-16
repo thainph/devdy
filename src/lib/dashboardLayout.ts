@@ -139,15 +139,37 @@ export function prSize(pr: PrLite): PrSize | null {
   return lines >= LARGE_PR_LINES ? 'large' : 'medium'
 }
 
+/** How quick a review looks: small, CI passing, the user is the last reviewer (when known). */
+export function quickReviewScore(r: RankedPr): number {
+  return Number(r.small) + Number(r.ci === 'success') + Number(r.soleReviewer)
+}
+
 /**
- * New commits after the AI review → still to review (drafts last, as ranked)
- * → bots. Each group keeps the `rankPrs` order.
+ * Order inside a dashboard PR group — deliberately not by date (the PR Inbox
+ * keeps `rankPrs`): drafts last, failing CI after the rest (it waits on its
+ * author), then the quickest reviews first (`quickReviewScore`). The wait only
+ * breaks ties, the longest first, then the PR number.
+ */
+export function compareCardPrs(a: RankedPr, b: RankedPr): number {
+  return (
+    Number(a.pr.draft) - Number(b.pr.draft) ||
+    Number(a.ci === 'failure') - Number(b.ci === 'failure') ||
+    quickReviewScore(b) - quickReviewScore(a) ||
+    (b.waitDays ?? -1) - (a.waitDays ?? -1) ||
+    a.pr.number - b.pr.number
+  )
+}
+
+/**
+ * New commits after the AI review → still to review (drafts last) → bots,
+ * each group ordered by `compareCardPrs`.
  */
 export function prCardGroups<T extends PrLite>(ranked: PrPriorityResult<T>): Group<PrGroupKey, RankedPr<T>>[] {
+  const sorted = (list: RankedPr<T>[]) => [...list].sort(compareCardPrs)
   return [
-    { key: 'reReview', items: ranked.rows.filter((r) => r.ai === 'updated' && !r.pr.draft) },
-    { key: 'toReview', items: ranked.rows.filter((r) => !(r.ai === 'updated' && !r.pr.draft)) },
-    { key: 'bots', items: ranked.bots },
+    { key: 'reReview', items: sorted(ranked.rows.filter((r) => r.ai === 'updated' && !r.pr.draft)) },
+    { key: 'toReview', items: sorted(ranked.rows.filter((r) => !(r.ai === 'updated' && !r.pr.draft))) },
+    { key: 'bots', items: sorted(ranked.bots) },
   ]
 }
 
@@ -203,8 +225,21 @@ export function projectCard(healths: ProjectHealth[]): ProjectCard {
     attention,
     unknown: by('gray'),
     ok: by('green'),
-    level: risk.length ? 'bad' : attention.length ? 'warn' : healths.length ? 'ok' : 'none',
+    // On track only when something was actually judged on track: all gray is "no verdict".
+    level: risk.length ? 'bad' : attention.length ? 'warn' : healths.some((h) => h.level === 'green') ? 'ok' : 'none',
   }
+}
+
+/** Projects that could not be judged, one entry per reason (in first-seen order). */
+export function unknownByReason(unknown: ProjectHealth[]): { reason: string, projects: ProjectHealth[] }[] {
+  const map = new Map<string, ProjectHealth[]>()
+  for (const h of unknown) {
+    const key = h.reason ?? 'loading'
+    const list = map.get(key)
+    if (list) list.push(h)
+    else map.set(key, [h])
+  }
+  return [...map].map(([reason, projects]) => ({ reason, projects }))
 }
 
 // ── "By project" view ───────────────────────────────────────────────────────
