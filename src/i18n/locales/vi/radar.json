@@ -1,11 +1,23 @@
 {
   "windowTitle": "Delivery Radar — Devdy",
   "title": "Delivery Radar",
-  "projectsLabel": "Dự án:",
-  "allProjects": "Tất cả",
-  "dueSoonLabel": "Sắp hạn ≤",
-  "staleLabel": "Đứng im >",
-  "milestoneLagLabel": "Milestone lệch >",
+  "projectPicker": {
+    "all": "Tất cả dự án ({n})",
+    "more": "{names} +{n}",
+    "search": "Tìm dự án…",
+    "selected": "Đã chọn {n}/{total}",
+    "selectAll": "Chọn tất cả",
+    "only": "Chỉ",
+    "onlyHint": "Chỉ xem {project}",
+    "noMatch": "Không có dự án phù hợp."
+  },
+  "settings": {
+    "title": "Cài đặt Radar",
+    "thresholdsTitle": "Ngưỡng",
+    "dueSoonHint": "Deadline còn trong số ngày này",
+    "staleHint": "Issue không có cập nhật quá số ngày này",
+    "milestoneLag": "Milestone lệch"
+  },
   "milestoneLagHint": "Work Dashboard: milestone bị coi là chậm tiến độ khi % thời gian đã trôi vượt % issue đã đóng quá số điểm này.",
   "days": "ngày",
   "searchPlaceholder": "Tìm issue, #số, người làm…",
