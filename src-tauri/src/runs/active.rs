@@ -1,0 +1,157 @@
+//! The runs whose sidecar is alive, with the metadata the Work Dashboard shows
+//! (`list_active_runs`): name, project, engine / model, start time, status and
+//! whether the run is blocked on a permission prompt. Spans every project,
+//! unlike the per-project run lists.
+
+use crate::db::Db;
+use serde::Serialize;
+use sqlx::Row;
+use std::collections::HashMap;
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+pub struct ActiveRun {
+    pub run_id: String,
+    pub project_id: String,
+    pub project_name: String,
+    pub title: Option<String>,
+    pub run_type: String,
+    pub ref_number: Option<i64>,
+    pub engine: Option<String>,
+    pub model: Option<String>,
+    pub status: String,
+    /// Start of the current turn (falls back to the creation time).
+    pub started_at: Option<String>,
+    pub created_at: String,
+    pub role: Option<String>,
+    pub conductor_run_id: Option<String>,
+    /// Open permission prompts the run is waiting on.
+    pub pending_permissions: usize,
+    /// When the oldest open prompt arrived (RFC3339).
+    pub waiting_since: Option<String>,
+}
+
+/// Open permission prompts of a run: (count, oldest arrival).
+pub type PendingInfo = (usize, Option<String>);
+
+/// Rows of `run_ids` (live ids missing from the DB are skipped), with their
+/// pending prompts. Ordered like the dashboard lists them: awaiting a
+/// permission first (longest waiting first), then the longest running.
+pub async fn active_runs(
+    db: &Db,
+    run_ids: &[String],
+    pending: &HashMap<String, PendingInfo>,
+) -> Result<Vec<ActiveRun>, sqlx::Error> {
+    if run_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; run_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT r.id, r.project_id, p.name AS project_name, r.title, r.type, r.ref_number, r.engine, \
+                r.model, r.status, COALESCE(r.started_at, r.created_at) AS started_at, r.created_at, \
+                r.role, r.conductor_run_id \
+         FROM runs r JOIN projects p ON p.id = r.project_id \
+         WHERE r.id IN ({placeholders})"
+    );
+    let mut q = sqlx::query(&sql);
+    for id in run_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(db).await?;
+    let mut out: Vec<ActiveRun> = rows
+        .iter()
+        .map(|row| {
+            let run_id: String = row.get("id");
+            let (pending_permissions, waiting_since) =
+                pending.get(&run_id).cloned().unwrap_or_default();
+            ActiveRun {
+                project_id: row.get("project_id"),
+                project_name: row.get("project_name"),
+                title: row.get("title"),
+                run_type: row.get("type"),
+                ref_number: row.get("ref_number"),
+                engine: row.get("engine"),
+                model: row.get("model"),
+                status: row.get("status"),
+                started_at: row.get("started_at"),
+                created_at: row.get("created_at"),
+                role: row.get("role"),
+                conductor_run_id: row.get("conductor_run_id"),
+                pending_permissions,
+                waiting_since,
+                run_id,
+            }
+        })
+        .collect();
+    out.sort_by(|a, b| {
+        (b.pending_permissions > 0)
+            .cmp(&(a.pending_permissions > 0))
+            .then_with(|| a.waiting_since.cmp(&b.waiting_since))
+            .then_with(|| a.started_at.cmp(&b.started_at))
+            .then_with(|| a.run_id.cmp(&b.run_id))
+    });
+    Ok(out)
+}
+
+/// Pending prompts of every run, from the permission store.
+pub fn pending_by_run() -> HashMap<String, PendingInfo> {
+    let mut out: HashMap<String, PendingInfo> = HashMap::new();
+    for p in super::permission::all_pending() {
+        let entry = out.entry(p.event.run_id.clone()).or_insert((0, None));
+        entry.0 += 1;
+        let at = p.requested_at.to_rfc3339();
+        if entry.1.as_ref().is_none_or(|cur| at < *cur) {
+            entry.1 = Some(at);
+        }
+    }
+    out
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::slack_threads::tests::memory_db;
+
+    async fn run(db: &Db, id: &str, project: &str, started: &str) {
+        sqlx::query(
+            "INSERT INTO runs (id, project_id, type, status, engine, model, created_at, started_at, title) \
+             VALUES (?, ?, 'session', 'running', 'claude', 'opus', '2026-01-01T00:00:00Z', ?, ?)",
+        )
+        .bind(id)
+        .bind(project)
+        .bind(started)
+        .bind(format!("Run {id}"))
+        .execute(db)
+        .await
+        .unwrap();
+    }
+
+    #[tokio::test]
+    async fn lists_live_runs_across_projects_waiting_first() {
+        let db = memory_db().await;
+        run(&db, "a", "p1", "2026-01-02T10:00:00Z").await;
+        run(&db, "b", "p2", "2026-01-02T08:00:00Z").await;
+        run(&db, "c", "p1", "2026-01-02T09:00:00Z").await;
+        run(&db, "dead", "p1", "2026-01-01T00:00:00Z").await;
+
+        let mut pending = HashMap::new();
+        pending.insert(
+            "a".to_string(),
+            (2, Some("2026-01-02T10:05:00Z".to_string())),
+        );
+        let ids: Vec<String> = ["a", "b", "c", "ghost"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+
+        let rows = active_runs(&db, &ids, &pending).await.unwrap();
+        let order: Vec<&str> = rows.iter().map(|r| r.run_id.as_str()).collect();
+        assert_eq!(order, ["a", "b", "c"]);
+        assert_eq!(rows[0].pending_permissions, 2);
+        assert_eq!(rows[0].project_name, "proj");
+        assert_eq!(rows[1].project_name, "proj2");
+        assert_eq!(rows[1].engine.as_deref(), Some("claude"));
+        assert_eq!(rows[1].title.as_deref(), Some("Run b"));
+
+        assert!(active_runs(&db, &[], &pending).await.unwrap().is_empty());
+    }
+}

@@ -1,3 +1,4 @@
+pub mod active;
 pub mod broker;
 pub mod liveness;
 pub mod model_usage;

@@ -1575,6 +1575,20 @@ pub async fn list_live_runs(registry: State<'_, RunRegistry>) -> Result<Vec<Stri
     Ok(registry.lock().await.keys().cloned().collect())
 }
 
+/// Every live run (any project) with its metadata and pending permission
+/// prompts — the Work Dashboard's "running sessions" strip.
+#[tauri::command]
+pub async fn list_active_runs(
+    db: State<'_, Db>,
+    registry: State<'_, RunRegistry>,
+) -> Result<Vec<crate::runs::active::ActiveRun>, String> {
+    let ids: Vec<String> = registry.lock().await.keys().cloned().collect();
+    let pending = crate::runs::active::pending_by_run();
+    crate::runs::active::active_runs(db.inner(), &ids, &pending)
+        .await
+        .map_err(|e| e.to_string())
+}
+
 #[derive(Debug, Serialize)]
 pub struct RunLog {
     pub content: String,
