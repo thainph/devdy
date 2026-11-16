@@ -117,8 +117,44 @@ pub async fn refresh(app: &AppHandle, db: &Db, notify: bool) -> Result<PrInboxRe
     Ok(result)
 }
 
-fn pr_key(item: &PrInboxItem) -> String {
+/// `owner/repo#number`, lowercased: one PR across accounts and fetches.
+pub fn pr_key(item: &PrInboxItem) -> String {
     format!("{}/{}#{}", item.owner.to_lowercase(), item.repo.to_lowercase(), item.number)
+}
+
+/// The cached PR with this `pr_key` (case-insensitive), if the inbox lists it.
+pub fn cached_item(key: &str) -> Option<PrInboxItem> {
+    let key = key.trim().to_lowercase();
+    cached()?.result.items.into_iter().find(|i| pr_key(i) == key)
+}
+
+/// Whether a fetch is running right now (the user's, a window's or the poller's).
+pub fn is_refreshing() -> bool {
+    state().refresh_lock.try_lock().is_err()
+}
+
+/// How old the cached inbox is, if there is one.
+pub fn cache_age() -> Option<Duration> {
+    cached_at().map(|at| at.elapsed())
+}
+
+/// Point the cached PR at the review run just started (or resumed) for it
+/// and tell every window, so no surface offers to start a second one before
+/// the next fetch. A no-op when the PR is no longer cached.
+pub fn link_run(app: &AppHandle, key: &str, run_id: &str) {
+    let key = key.trim().to_lowercase();
+    let inbox = {
+        let Ok(mut cache) = state().cache.lock() else { return };
+        let Some(c) = cache.as_mut() else { return };
+        let Some(item) = c.inbox.result.items.iter_mut().find(|i| pr_key(i) == key) else {
+            return;
+        };
+        item.existing_run_id = Some(run_id.to_string());
+        item.existing_run_status = Some("running".to_string());
+        item.updated_since_review = false;
+        c.inbox.clone()
+    };
+    let _ = app.emit(UPDATED_EVENT, &inbox);
 }
 
 /// What the notifier remembers between fetches (`pr_inbox.seen`).
@@ -291,9 +327,14 @@ pub async fn get_pr_inbox_poll_minutes(db: tauri::State<'_, Db>) -> Result<u64, 
 /// The re-review follow-up prompt: the user's saved one, else the default.
 #[tauri::command]
 pub async fn get_pr_inbox_rereview_prompt(db: tauri::State<'_, Db>) -> Result<String, String> {
+    rereview_prompt(db.inner()).await
+}
+
+/// [`get_pr_inbox_rereview_prompt`] for callers without a Tauri `State`.
+pub async fn rereview_prompt(db: &Db) -> Result<String, String> {
     let saved: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
         .bind(REREVIEW_PROMPT_KEY)
-        .fetch_optional(db.inner())
+        .fetch_optional(db)
         .await
         .map_err(|e| e.to_string())?;
     Ok(saved.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| DEFAULT_REREVIEW_PROMPT.to_string()))

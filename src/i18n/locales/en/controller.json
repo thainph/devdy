@@ -110,7 +110,8 @@
     "runs": "Sessions",
     "todo": "Todo",
     "note": "Notes",
-    "project": "Setting"
+    "project": "Setting",
+    "pr": "PRs"
   },
   "inbox": {
     "title": "Inbox",
@@ -316,6 +317,42 @@
       "failed": "The AI request failed — try again.",
       "invalid": "The host refused these settings (invalid values).",
       "no_source": "This link can't be read — check it and try again."
+    }
+  },
+  "prs": {
+    "title": "PR reviews",
+    "searchPlaceholder": "Search PRs (number, repo, title, author)",
+    "clearSearch": "Clear search",
+    "hideBots": "Hide bots ({count})",
+    "refresh": "Fetch from GitHub",
+    "refreshing": "Fetching…",
+    "fetchedAt": "Updated {age}",
+    "empty": "No PRs waiting for your review.",
+    "noResults": "No PRs match.",
+    "draft": "Draft",
+    "openOnGitHub": "Open on GitHub",
+    "unmappedHint": "This repo is not in a Devdy project — add it on the desktop to review here.",
+    "fetchFailed": "Could not fetch from GitHub — showing the last list.",
+    "accountsFailed": "Could not fetch for: {accounts}. Some PRs may be missing.",
+    "state": {
+      "unmapped": "Not in Devdy",
+      "not_reviewed": "Not reviewed",
+      "running": "Reviewing",
+      "reviewed": "Reviewed",
+      "updated": "Updated since review"
+    },
+    "action": {
+      "review": "Review",
+      "starting": "Starting…",
+      "view": "View review",
+      "review_again": "Re-review"
+    },
+    "errors": {
+      "busy": "A review of this PR is already starting or running.",
+      "not_mapped": "This repo is not in a Devdy project.",
+      "not_reviewed": "This PR has no review session yet.",
+      "not_found": "This PR is no longer in the inbox — refresh the list.",
+      "host_ack_timeout": "The desktop is still working on it — the list updates when it is done."
     }
   }
 }

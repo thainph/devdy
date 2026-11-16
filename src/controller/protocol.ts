@@ -528,6 +528,47 @@ export interface PushConfigKind {
   device_events: PushEventsWire | null
 }
 
+/** One PR waiting for the user's review (the desktop PR Inbox). `key`
+ * (`owner/repo#number`) is what `pr_review_*` send back. */
+export interface PrInboxInfo {
+  key: string
+  owner: string
+  repo: string
+  number: number
+  title: string
+  html_url: string
+  author_login: string
+  author_avatar_url: string | null
+  author_is_bot: boolean
+  draft: boolean
+  labels: string[]
+  updated_at: string
+  /** A Devdy project has the repo: the PR can be reviewed. */
+  mapped: boolean
+  project_id: string | null
+  project_name: string | null
+  /** The account asked to review (the one the review runs as). */
+  account_label: string
+  existing_run_id: string | null
+  existing_run_status: string | null
+  /** New commits landed after the review fetched the PR. */
+  updated_since_review: boolean
+}
+
+/** The PR inbox ({@link FEATURE_PR}): pushed on `pr_inbox_list` and after every fetch. */
+export interface PrInboxKind {
+  kind: 'pr_inbox'
+  items: PrInboxInfo[]
+  /** null before the Host's first fetch. */
+  fetched_at: string | null
+  /** A fetch is running; a fresh `pr_inbox` follows. */
+  refreshing: boolean
+  /** Accounts whose fetch failed (their PRs may be missing). */
+  failed_accounts: string[]
+  /** The last fetch failed (a short code). */
+  error: string | null
+}
+
 /** Everything the Host can send the Controller inside a sealed `stream` frame. */
 export type StreamPayload =
   | StreamKind
@@ -556,6 +597,7 @@ export type StreamPayload =
   | NoteKind
   | PushConfigKind
   | AppearanceKind
+  | PrInboxKind
 
 /**
  * Narrow a decoded stream payload. Returns `null` for anything with an
@@ -831,8 +873,62 @@ export function parseStreamPayload(json: unknown): StreamPayload | null {
       return typeof o.theme === 'string' && typeof o.color_theme === 'string'
         ? { kind: 'appearance', theme: o.theme, color_theme: o.color_theme }
         : null
+    case 'pr_inbox':
+      return Array.isArray(o.items)
+        ? {
+            kind: 'pr_inbox',
+            items: (o.items as unknown[]).flatMap((i) => {
+              const pr = toPrInboxInfo(i)
+              return pr ? [pr] : []
+            }),
+            fetched_at: typeof o.fetched_at === 'string' ? o.fetched_at : null,
+            refreshing: o.refreshing === true,
+            failed_accounts: Array.isArray(o.failed_accounts)
+              ? o.failed_accounts.filter((a): a is string => typeof a === 'string')
+              : [],
+            error: typeof o.error === 'string' ? o.error : null,
+          }
+        : null
     default:
       return null
+  }
+}
+
+/** One PR row with every optional field defaulted, or null when malformed. */
+function toPrInboxInfo(v: unknown): PrInboxInfo | null {
+  if (!v || typeof v !== 'object') return null
+  const o = v as Record<string, unknown>
+  if (
+    typeof o.key !== 'string' ||
+    typeof o.owner !== 'string' ||
+    typeof o.repo !== 'string' ||
+    typeof o.number !== 'number' ||
+    typeof o.title !== 'string'
+  ) {
+    return null
+  }
+  const str = (x: unknown): string => (typeof x === 'string' ? x : '')
+  const opt = (x: unknown): string | null => (typeof x === 'string' && x ? x : null)
+  return {
+    key: o.key,
+    owner: o.owner,
+    repo: o.repo,
+    number: o.number,
+    title: o.title,
+    html_url: str(o.html_url),
+    author_login: str(o.author_login),
+    author_avatar_url: opt(o.author_avatar_url),
+    author_is_bot: o.author_is_bot === true,
+    draft: o.draft === true,
+    labels: Array.isArray(o.labels) ? o.labels.filter((l): l is string => typeof l === 'string') : [],
+    updated_at: str(o.updated_at),
+    mapped: o.mapped === true,
+    project_id: opt(o.project_id),
+    project_name: opt(o.project_name),
+    account_label: str(o.account_label),
+    existing_run_id: opt(o.existing_run_id),
+    existing_run_status: opt(o.existing_run_status),
+    updated_since_review: o.updated_since_review === true,
   }
 }
 
@@ -996,6 +1092,11 @@ export interface CmdPayload {
     | 'push_unsubscribe'
     | 'push_test'
     | 'push_events_set'
+    // PR inbox (a Controller that advertised FEATURE_PR).
+    | 'pr_inbox_list'
+    | 'pr_inbox_refresh'
+    | 'pr_review_start'
+    | 'pr_review_again'
   /** Per-send correlation id used for Host delivery acknowledgement. */
   command_id?: string
   run_id?: string
@@ -1131,9 +1232,12 @@ export const FEATURE_PUSH = 'push'
 /** Advertise Focus: the working hours & reminders settings (`focus_settings_*`). */
 export const FEATURE_FOCUS = 'focus'
 
+/** Advertise the PR inbox and starting reviews (`pr_*`). */
+export const FEATURE_PR = 'pr'
+
 /** What a Host can advertise in `session_token.host_features`. An older Host
  * sends none: the Controller then hides what it would only be refused. */
-export type HostFeature = 'data' | 'inbox' | 'remember' | 'push' | 'focus'
+export type HostFeature = 'data' | 'inbox' | 'remember' | 'push' | 'focus' | 'pr'
 
 /** Whether the Host advertised `feature`. */
 export function hostHas(features: readonly string[] | null | undefined, feature: HostFeature): boolean {
@@ -1147,6 +1251,7 @@ export const CLIENT_FEATURES: string[] = [
   FEATURE_DATA,
   FEATURE_PUSH,
   FEATURE_FOCUS,
+  FEATURE_PR,
 ]
 
 /**
@@ -1415,6 +1520,31 @@ export function projectToggleSetCmd(
   }
   if (itemId && toggleKind !== 'builtin_mcp') cmd.item_id = itemId
   return cmd
+}
+
+// ---- PR inbox commands ({@link FEATURE_PR}) ----
+
+/** `pr_inbox_list` — the Host's cached inbox ({@link PrInboxKind}), re-fetched
+ * behind it when stale. */
+export function prInboxListCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'pr_inbox_list' }
+}
+
+/** `pr_inbox_refresh` — fetch from GitHub now; the result is pushed. */
+export function prInboxRefreshCmd(): CmdPayload {
+  return { kind: 'cmd', action: 'pr_inbox_refresh' }
+}
+
+/** `pr_review_start` — review the PR in a new session (or get its existing
+ * one); the ack carries the run id. */
+export function prReviewStartCmd(key: string): CmdPayload {
+  return { kind: 'cmd', action: 'pr_review_start', item_id: key }
+}
+
+/** `pr_review_again` — re-fetch the PR and continue its finished review
+ * session with the re-review prompt; the ack carries the run id. */
+export function prReviewAgainCmd(key: string): CmdPayload {
+  return { kind: 'cmd', action: 'pr_review_again', item_id: key }
 }
 
 // ---- Web Push commands ({@link FEATURE_PUSH}) ----

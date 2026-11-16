@@ -1301,6 +1301,7 @@ async fn try_authenticate_first_frame(
     let data = has_feature(crate::remote::protocol::FEATURE_DATA);
     let push = has_feature(crate::remote::protocol::FEATURE_PUSH);
     let focus = has_feature(crate::remote::protocol::FEATURE_FOCUS);
+    let pr = has_feature(crate::remote::protocol::FEATURE_PR);
     tracing::info!(
         event = "remote_client_features",
         room_id = %room_id,
@@ -1309,6 +1310,7 @@ async fn try_authenticate_first_frame(
         data = data,
         push = push,
         focus = focus,
+        pr = pr,
     );
     // A phone that just authenticated is on screen (it reports otherwise with
     // `push_visibility`).
@@ -1399,12 +1401,15 @@ async fn try_authenticate_first_frame(
         data,
         focus,
         push,
+        pr,
         push_session_tag: crate::remote::push::session_tag(&session_secret),
         live_todos: Default::default(),
         live_lists: Default::default(),
+        live_pr: Default::default(),
     });
     crate::remote::focus::start_live_todos(&ctx);
     crate::remote::live_lists::start_live_lists(&ctx);
+    crate::remote::pr::start_live_pr_inbox(&ctx);
     *room_ctx = Some(ctx.clone());
 
     // Dispatch the first (already-decrypted) frame as a normal command.

@@ -23,6 +23,7 @@ import InboxView from './components/InboxView.vue'
 import TodoView from './components/TodoView.vue'
 import TodoEditorView from './components/TodoEditorView.vue'
 import FocusSettingsView from './components/FocusSettingsView.vue'
+import PrInboxView from './components/PrInboxView.vue'
 import NoteListView from './components/NoteListView.vue'
 import NoteEditorView from './components/NoteEditorView.vue'
 import ProjectTogglesView from './components/ProjectTogglesView.vue'
@@ -40,6 +41,7 @@ import { createDataStore } from './dataStore'
 import { useControllerErrors } from './focusErrors'
 import { setAppearance } from './appearance'
 import { createPushStore } from './pushStore'
+import { createPrStore } from './prStore'
 import { focusOpenFromMessage, focusOpenFromSearch, withoutFocusOpen, type FocusOpen } from '@/lib/remotePush'
 import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
@@ -79,7 +81,7 @@ import {
 import { localYmd } from '@/lib/todoDue'
 import type { TodoTab } from '@/lib/remoteTodos'
 
-const { t } = useI18n()
+const { t, te } = useI18n()
 const { renderText, loadMarkdown } = useMarkdown()
 
 const store = createRunStore()
@@ -87,9 +89,16 @@ const conn = shallowRef<ControllerConnection | null>(null)
 
 // Todo / Note / project-switch screens (FEATURE_DATA).
 const errors = useControllerErrors()
+/** A PR action's refusal: the PR tab's own codes, else the shared wording. */
+function describePrError(reason: string | null): string {
+  if (reason && te(`controller.prs.errors.${reason}`)) return t(`controller.prs.errors.${reason}`)
+  return errors.describe(reason)
+}
 const data = createDataStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false, errors.describe)
 // Web Push (host feature `push`): this phone's notification switch.
 const push = createPushStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false)
+// PR tab (host feature `pr`): the desktop PR Inbox and its review actions.
+const prs = createPrStore((cmd, onAck) => conn.value?.sendCommand(cmd, onAck) ?? false, describePrError)
 const noteEditorOpen = ref(false)
 // The todo editor: closed (null), a new todo (`todo: null`) or an existing one.
 const todoEditor = ref<{ todo: TodoInfo | null; today: string } | null>(null)
@@ -145,12 +154,17 @@ const hasRemember = computed(() => hostHas(hostFeatures.value, 'remember'))
 const hasPush = computed(() => hostHas(hostFeatures.value, 'push'))
 // The Host has the working hours & reminders settings (Setting → Focus).
 const hasFocus = computed(() => hostHas(hostFeatures.value, 'focus'))
+// The Host serves the PR inbox (the PR tab).
+const hasPr = computed(() => hostHas(hostFeatures.value, 'pr'))
 // Setting stays: it also holds this phone's look, notifications and Disconnect.
 const DATA_TABS: ControllerTab[] = ['todo', 'note']
 // Unknown until the token arrives: show the long-standing tabs rather than flicker.
-const hiddenTabs = computed<ControllerTab[]>(() =>
-  hostFeatures.value === null || hasData.value ? [] : [...DATA_TABS],
-)
+const hiddenTabs = computed<ControllerTab[]>(() => {
+  // A tab that is new to the Host stays hidden until it says it has it.
+  const hidden: ControllerTab[] = hasPr.value ? [] : ['pr']
+  if (hostFeatures.value !== null && !hasData.value) hidden.push(...DATA_TABS)
+  return hidden
+})
 watch(hiddenTabs, (hidden) => {
   if (hidden.includes(tab.value)) tab.value = 'inbox'
 })
@@ -395,12 +409,14 @@ function startConnection(secret: SecretSource | null): void {
   conn.value?.close()
   store.reset()
   data.reset()
+  prs.reset()
   running.value = false
   sending.value = false
   const c = new ControllerConnection(link.value, secret, (p) => {
     store.apply(p)
     data.apply(p)
     push.apply(p)
+    prs.apply(p)
     if (p.kind === 'appearance') setAppearance(p)
   })
   conn.value = c
@@ -413,6 +429,7 @@ function disconnect(): void {
   conn.value = null
   store.reset()
   data.reset()
+  prs.reset()
   noteEditorOpen.value = false
   todoEditor.value = null
   link.value = null
@@ -589,7 +606,10 @@ watch(
 )
 
 function onTab(next: ControllerTab): void {
-  if (next !== tab.value) data.clearError()
+  if (next !== tab.value) {
+    data.clearError()
+    prs.clearError()
+  }
   // Leaving the tab, or tapping Setting again, lands back on its menu.
   settingsPage.value = null
   tab.value = next
@@ -599,6 +619,11 @@ function onTab(next: ControllerTab): void {
   closeNoteEditor()
   if (next === 'inbox') syncInbox()
   else if (next === 'runs') refreshRuns()
+  else if (next === 'pr') {
+    // Live statuses of the review sessions come from the run list.
+    refreshRuns()
+    prs.load()
+  }
 }
 
 // ── tab header ──────────────────────────────────────────────────────────────
@@ -608,6 +633,7 @@ function onTab(next: ControllerTab): void {
 const TAB_TITLES: Record<ControllerTab, string> = {
   inbox: 'controller.inbox.title',
   runs: 'controller.browser.title',
+  pr: 'controller.prs.title',
   todo: 'controller.todo.title',
   note: 'controller.notes.title',
   project: 'controller.projectToggles.title',
@@ -669,7 +695,7 @@ const headerProjectId = computed<string | null>(() => {
 /** The header's project label, or undefined where the screen has no project. */
 const headerScope = computed<string | undefined>(() => {
   if (tab.value === 'inbox') return undefined
-  if (tab.value !== 'runs' && !hasData.value) return undefined
+  if (tab.value !== 'runs' && tab.value !== 'pr' && !hasData.value) return undefined
   if (tab.value === 'project' && !isToggleGroup(settingsPage.value)) return undefined
   const id = headerProjectId.value
   return (id && store.state.projectList.find((p) => p.id === id)?.name) || t('controller.data.allProjects')
@@ -679,6 +705,7 @@ const headerScope = computed<string | undefined>(() => {
 function refreshAll(): void {
   syncInbox()
   refreshRuns()
+  if (hasPr.value) prs.reload()
   if (hasData.value) {
     loadTodoTab()
     data.loadNotes()
@@ -725,6 +752,7 @@ watch(
     if (!ready) return
     syncInbox()
     if (hasData.value) data.reload()
+    if (hasPr.value) prs.reload()
     if (hasPush.value) {
       void push.refresh()
       // A "back on screen" sent while the socket was dying never arrived.
@@ -929,6 +957,21 @@ function onRequestFiles(): void {
   if (id) conn.value?.sendCommand(listProjectFilesCmd(id))
 }
 
+// ── PR tab ───────────────────────────────────────────────────────────────────
+/** Review / re-review a PR. Stays on the list (several can be started in a
+ * row, like the desktop); the row turns into "Reviewing" and opens the session. */
+async function onPrReview(key: string, again: boolean): Promise<void> {
+  const pr = prs.state.items?.find((p) => p.key === key)
+  const runId = again ? await prs.reviewAgain(key) : await prs.review(key)
+  if (!runId) return
+  // An existing session answered a plain Review: open it.
+  if (!again && pr?.existing_run_id === runId) {
+    openRun(runId)
+    return
+  }
+  refreshRuns()
+}
+
 /** Re-pull the saved prompt library (it is edited on the desktop). */
 function onRequestSavedPrompts(): void {
   conn.value?.sendCommand(listSavedPromptsCmd())
@@ -1015,6 +1058,25 @@ function onRequestSavedPrompts(): void {
         @update:selected-project-id="setScope"
         @open="openRun"
         @new-session="startNewSession"
+      />
+      <PrInboxView
+        v-else-if="tab === 'pr'"
+        :items="prs.state.items"
+        :runs="store.state.runList"
+        :project-id="projectScope"
+        :refreshing="prs.state.refreshing"
+        :fetched-at="prs.state.fetchedAt"
+        :failed-accounts="prs.state.failedAccounts"
+        :fetch-error="prs.state.fetchError"
+        :failed="prs.state.loadFailed"
+        :busy="prs.state.busy"
+        :error="prs.state.error"
+        @refresh="prs.refresh()"
+        @retry="prs.load()"
+        @review="(key) => onPrReview(key, false)"
+        @review-again="(key) => onPrReview(key, true)"
+        @open="openRun"
+        @clear-error="prs.clearError()"
       />
       <TodoView
         v-else-if="tab === 'todo'"

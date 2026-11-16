@@ -30,6 +30,7 @@ pub mod live_lists;
 pub mod login;
 pub mod meta;
 pub mod outbound;
+pub mod pr;
 pub mod protocol;
 pub mod push;
 pub mod session;

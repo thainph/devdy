@@ -110,7 +110,8 @@
     "runs": "Sessions",
     "todo": "Todo",
     "note": "Note",
-    "project": "Setting"
+    "project": "Setting",
+    "pr": "PR"
   },
   "inbox": {
     "title": "Cần xử lý",
@@ -316,6 +317,42 @@
       "failed": "Yêu cầu AI thất bại — hãy thử lại.",
       "invalid": "Host từ chối cài đặt này (giá trị không hợp lệ).",
       "no_source": "Không đọc được link này — kiểm tra lại rồi thử lại."
+    }
+  },
+  "prs": {
+    "title": "Review PR",
+    "searchPlaceholder": "Tìm PR (số, repo, tiêu đề, tác giả)",
+    "clearSearch": "Xoá tìm kiếm",
+    "hideBots": "Ẩn bot ({count})",
+    "refresh": "Lấy lại từ GitHub",
+    "refreshing": "Đang lấy…",
+    "fetchedAt": "Cập nhật {age}",
+    "empty": "Không có PR nào đang chờ bạn review.",
+    "noResults": "Không có PR nào khớp.",
+    "draft": "Nháp",
+    "openOnGitHub": "Mở trên GitHub",
+    "unmappedHint": "Repo này chưa có trong project Devdy nào — thêm trên desktop để review ở đây.",
+    "fetchFailed": "Không lấy được từ GitHub — đang hiện danh sách lần trước.",
+    "accountsFailed": "Không lấy được cho: {accounts}. Có thể thiếu vài PR.",
+    "state": {
+      "unmapped": "Chưa có trong Devdy",
+      "not_reviewed": "Chưa review",
+      "running": "Đang review",
+      "reviewed": "Đã review",
+      "updated": "Có cập nhật mới"
+    },
+    "action": {
+      "review": "Review",
+      "starting": "Đang bắt đầu…",
+      "view": "Xem review",
+      "review_again": "Review lại"
+    },
+    "errors": {
+      "busy": "PR này đang được bắt đầu review hoặc đang review.",
+      "not_mapped": "Repo này chưa có trong project Devdy nào.",
+      "not_reviewed": "PR này chưa có session review.",
+      "not_found": "PR này không còn trong danh sách — hãy làm mới.",
+      "host_ack_timeout": "Desktop vẫn đang xử lý — danh sách sẽ cập nhật khi xong."
     }
   }
 }
