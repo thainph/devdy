@@ -203,7 +203,11 @@ export function useWorkDashboard(projectFilter: Ref<string | null>, now: Ref<num
   }
 
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
+  // Set on unmount: no more debounced loads, and a listener whose registration
+  // resolves afterwards is removed at once instead of outliving the screen.
+  let disposed = false
   function debounced(key: string, fn: () => unknown) {
+    if (disposed) return
     const prev = timers.get(key)
     if (prev) clearTimeout(prev)
     timers.set(key, setTimeout(() => {
@@ -222,17 +226,25 @@ export function useWorkDashboard(projectFilter: Ref<string | null>, now: Ref<num
   watch(liveSignature, () => debounced('runs', loadRuns))
 
   let unlisten: UnlistenFn[] = []
+  async function follow(event: string, handler: () => void) {
+    const off = await listen(event, handler)
+    if (disposed) off()
+    else unlisten.push(off)
+  }
   onMounted(async () => {
     void refresh()
     try {
-      unlisten.push(await listen(SLACK_THREADS_CHANGED, () => debounced('slack', loadSlack)))
-      unlisten.push(await listen(SLACK_CUSTOMERS_CHANGED, () => debounced('slack', loadSlack)))
-      unlisten.push(await listen('runs:list_changed', () => debounced('runs', loadRuns)))
+      await Promise.all([
+        follow(SLACK_THREADS_CHANGED, () => debounced('slack', loadSlack)),
+        follow(SLACK_CUSTOMERS_CHANGED, () => debounced('slack', loadSlack)),
+        follow('runs:list_changed', () => debounced('runs', loadRuns)),
+      ])
     } catch {
       /* outside the Tauri shell */
     }
   })
   onBeforeUnmount(() => {
+    disposed = true
     for (const u of unlisten) u()
     unlisten = []
     for (const t of timers.values()) clearTimeout(t)
