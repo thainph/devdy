@@ -210,8 +210,8 @@ function openRadar(projectId?: string) {
 
 // ── Session actions ──────────────────────────────────────────────────────────
 const stopping = ref<Set<string>>(new Set())
-function openSession(row: DashboardRun) {
-  openRun(row.run.project_id, row.run.run_id)
+function openSession(projectId: string, runId: string) {
+  openRun(projectId, runId)
 }
 async function stopSession(row: DashboardRun) {
   const ok = await confirm({

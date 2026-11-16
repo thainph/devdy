@@ -134,6 +134,8 @@
     "open": "Mở",
     "stop": "Dừng",
     "stopTitle": "Dừng session này?",
-    "stopMessage": "“{name}” sẽ bị huỷ. Bạn có thể tiếp tục lại sau."
+    "stopMessage": "“{name}” sẽ bị huỷ. Bạn có thể tiếp tục lại sau.",
+    "waitingItem": "{name} — {n} yêu cầu",
+    "worker": "worker"
   }
 }

@@ -134,6 +134,8 @@
     "open": "Open",
     "stop": "Stop",
     "stopTitle": "Stop this session?",
-    "stopMessage": "“{name}” will be cancelled. You can resume it later."
+    "stopMessage": "“{name}” will be cancelled. You can resume it later.",
+    "waitingItem": "{name} — {n} request | {name} — {n} requests",
+    "worker": "worker"
   }
 }

@@ -68,9 +68,24 @@ test('sessions: awaiting permission first, then the longest running; workers fol
   ], NOW)
   assert.deepEqual(rows.map((r) => r.run.run_id), ['cond', 'long', 'short', 'orphan'])
   assert.equal(rows[0].pending, 1)
+  // The prompt belongs to the worker: "Review" must open the worker, not the conductor.
+  assert.deepEqual(rows[0].waiting.map((w) => [w.runId, w.worker]), [['worker', true]])
+  assert.deepEqual(rows[1].waiting, [])
   assert.equal(rows[0].workerCount, 1)
   assert.equal(rows[0].sinceMs, 30_000)
   assert.equal(rows[1].sinceMs, 3_600_000)
+})
+
+test('several waiting sessions in one row are listed, longest waiting first', () => {
+  const rows = dashboardRuns([
+    run('cond', { role: 'conductor', pending_permissions: 1, waiting_since: new Date(NOW - 10_000).toISOString() }),
+    run('w1', { conductor_run_id: 'cond', pending_permissions: 2, waiting_since: new Date(NOW - 50_000).toISOString() }),
+    run('w2', { conductor_run_id: 'cond' }),
+  ], NOW)
+  assert.equal(rows.length, 1)
+  assert.equal(rows[0].pending, 3)
+  assert.deepEqual(rows[0].waiting.map((w) => [w.runId, w.pending, w.worker]), [['w1', 2, true], ['cond', 1, false]])
+  assert.equal(rows[0].sinceMs, 50_000)
 })
 
 test('project filter, ages and durations', () => {

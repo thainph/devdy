@@ -83,10 +83,26 @@ export interface ActiveRun {
   waiting_since: string | null
 }
 
+/** A session of a row that is blocked on permission prompts. */
+export interface WaitingSession {
+  runId: string
+  projectId: string
+  title: string | null
+  pending: number
+  /** It is a worker folded into the row's conductor (not the row's own run). */
+  worker: boolean
+}
+
 export interface DashboardRun {
   run: ActiveRun
   /** Own prompts + those of its workers. */
   pending: number
+  /**
+   * The sessions actually holding those prompts (the conductor itself and / or
+   * its workers), the longest waiting first: "Review" must open one of these,
+   * not the conductor when only a worker asks.
+   */
+  waiting: WaitingSession[]
   /** Live workers folded into this conductor. */
   workerCount: number
   /** Since the start (running) or since the oldest prompt (waiting). */
@@ -108,6 +124,11 @@ export function dashboardRuns(runs: ActiveRun[], now: number): DashboardRun[] {
   const ids = new Set(runs.map((r) => r.run_id))
   const rows = new Map<string, DashboardRun>()
   const waitingSince = new Map<string, number>()
+  const waitOrder = (r: ActiveRun) => ms(r.waiting_since) ?? Infinity
+  const waitingOf = (r: ActiveRun, worker: boolean): WaitingSession[] =>
+    r.pending_permissions > 0
+      ? [{ runId: r.run_id, projectId: r.project_id, title: r.title, pending: r.pending_permissions, worker }]
+      : []
   const noteWait = (id: string, r: ActiveRun) => {
     const t = ms(r.waiting_since)
     if (r.pending_permissions > 0 && t !== null) {
@@ -116,7 +137,9 @@ export function dashboardRuns(runs: ActiveRun[], now: number): DashboardRun[] {
   }
   for (const r of runs) {
     if (r.conductor_run_id && ids.has(r.conductor_run_id)) continue
-    rows.set(r.run_id, { run: r, pending: r.pending_permissions, workerCount: 0, sinceMs: null })
+    rows.set(r.run_id, {
+      run: r, pending: r.pending_permissions, waiting: waitingOf(r, false), workerCount: 0, sinceMs: null,
+    })
     noteWait(r.run_id, r)
   }
   for (const r of runs) {
@@ -124,10 +147,13 @@ export function dashboardRuns(runs: ActiveRun[], now: number): DashboardRun[] {
     if (!parent) continue
     parent.workerCount++
     parent.pending += r.pending_permissions
+    parent.waiting.push(...waitingOf(r, true))
     noteWait(parent.run.run_id, r)
   }
   const out = [...rows.values()]
+  const byId = new Map(runs.map((r) => [r.run_id, r]))
   for (const row of out) {
+    row.waiting.sort((a, b) => waitOrder(byId.get(a.runId)!) - waitOrder(byId.get(b.runId)!))
     const since = row.pending > 0 ? waitingSince.get(row.run.run_id) ?? null : ms(row.run.started_at ?? row.run.created_at)
     row.sinceMs = since === null ? null : Math.max(0, now - since)
   }
