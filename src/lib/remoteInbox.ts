@@ -1,6 +1,7 @@
 // Pure logic behind the Remote Controller's Inbox ("needs attention") screen:
 // the per-run queue of open permission prompts, the cross-run list the Inbox
-// renders, and which runs finished since the user last had the app open.
+// renders, and the sessions the user recently worked on (read state from the
+// Host, so every device shows the same).
 // No Vue / DOM here so it is unit-testable with node:test.
 
 /** The fields of a permission prompt this module needs (structural). */
@@ -18,6 +19,8 @@ export interface RunLike {
   created_at?: string | null
   /** When the last turn ended (a multi-turn session finishes every turn). */
   finished_at?: string | null
+  /** When the user last saw the result (Host read state). */
+  seen_at?: string | null
 }
 
 /** Add `req` to its run's queue (arrival order), replacing a same-id entry. */
@@ -123,82 +126,50 @@ export function finishedKind(status: string): 'success' | 'failure' | null {
   return null
 }
 
-/**
- * Runs that finished (done / failed) after `sinceMs`, newest first — including
- * a multi-turn session that finished a turn and now waits for the next message
- * (its sidecar exits per turn, so it reads `done`). Keyed on `finished_at`:
- * `updated_at` stays on the last user activity, before the turn ended. A run
- * without a usable timestamp is left out rather than guessed into the list.
- */
-export function finishedSince<T extends RunLike>(runs: T[], sinceMs: number): T[] {
-  const at = (r: T) =>
-    parseHostTime(r.finished_at) ?? parseHostTime(r.updated_at) ?? parseHostTime(r.created_at)
-  return runs
-    .filter((r) => finishedKind(r.status) !== null)
-    .filter((r) => {
-      const t = at(r)
-      return t !== null && t > sinceMs
-    })
-    .sort((a, b) => (at(b) ?? 0) - (at(a) ?? 0))
-}
-
-/** How far back the very first visit looks when nothing is stored yet. */
-export const FIRST_VISIT_LOOKBACK_MS = 24 * 60 * 60 * 1000
-
-/** Away for less than this (an app switch, a reload) is the same visit. */
-export const VISIT_GAP_MS = 5 * 60 * 1000
-
-/** What the Inbox remembers between visits (persisted by the caller). */
-export interface VisitState {
-  /** "Since last visit" anchor of the current visit (ms). */
-  anchor: number | null
-  /** When the user last left the app (ms). */
-  lastLeftAt: number | null
-  /** Finished runs opened since they finished (no unread dot). */
-  read: string[]
-}
-
-const EMPTY_VISIT: VisitState = { anchor: null, lastLeftAt: null, read: [] }
-
-/** Parse a stored {@link VisitState}; anything malformed reads as empty. */
-export function parseVisitState(raw: string | null): VisitState {
-  try {
-    const o = raw ? JSON.parse(raw) : null
-    if (!o || typeof o !== 'object') return { ...EMPTY_VISIT }
-    const num = (v: unknown) => (typeof v === 'number' && Number.isFinite(v) ? v : null)
-    return {
-      anchor: num(o.anchor),
-      lastLeftAt: num(o.lastLeftAt),
-      read: Array.isArray(o.read) ? o.read.filter((x: unknown) => typeof x === 'string') : [],
-    }
-  } catch {
-    return { ...EMPTY_VISIT }
-  }
+/** The run's last finish (its newest turn), or null while it has none. */
+export function finishedAt(run: RunLike): number | null {
+  return finishedKind(run.status) ? parseHostTime(run.finished_at) : null
 }
 
 /**
- * The app came to the foreground at `now` (load or un-hide). Away long enough
- * → a new visit anchored at when the user left; otherwise the current visit
- * (and its anchor) carries on. A first-ever visit looks back a day.
+ * Finished after the user last saw it — on any device or at the desktop (the
+ * Host's `seen_at`, so every phone agrees). Without read state (an older Host)
+ * nothing is unread.
  */
-export function startVisit(state: VisitState, now: number): VisitState {
-  const left = state.lastLeftAt
-  if (left !== null && now - left >= VISIT_GAP_MS) return { ...state, anchor: left }
-  return { ...state, anchor: state.anchor ?? left ?? now - FIRST_VISIT_LOOKBACK_MS }
+export function isUnread(run: RunLike, hasSeenState: boolean): boolean {
+  if (!hasSeenState) return false
+  const done = finishedAt(run)
+  if (done === null) return false
+  const seen = parseHostTime(run.seen_at)
+  return seen === null || done > seen
 }
 
-/** The app went to the background at `now`. */
-export function leaveVisit(state: VisitState, now: number): VisitState {
-  return { ...state, lastLeftAt: now }
-}
+/** "Recent" covers sessions the user touched in this window. */
+export const RECENT_WINDOW_MS = 3 * 24 * 60 * 60 * 1000
+/** At most this many rows (unread ones always make it in). */
+export const RECENT_MAX = 15
 
-/** Cap on remembered read ids so storage cannot grow without bound. */
-export const READ_MAX = 200
-
-/** Mark `runId` read (newest last, capped). */
-export function markRead(state: VisitState, runId: string): VisitState {
-  if (state.read.includes(runId)) return state
-  return { ...state, read: [...state.read, runId].slice(-READ_MAX) }
+/**
+ * The sessions the user recently worked on, most recent first: ordered by the
+ * Host's last USER activity (`updated_at` = start, message, resume — not a
+ * turn ending or an agent waking itself), within {@link RECENT_WINDOW_MS}.
+ * An unread result is kept whatever its age, so nothing finished goes unseen.
+ * The same Host data on every device gives the same list.
+ */
+export function recentRuns<T extends RunLike>(
+  runs: readonly T[],
+  nowMs: number,
+  hasSeenState: boolean,
+  max: number = RECENT_MAX,
+): T[] {
+  const activity = (r: T) => parseHostTime(r.updated_at) ?? parseHostTime(r.created_at) ?? 0
+  const sorted = runs
+    .filter((r) => isUnread(r, hasSeenState) || nowMs - activity(r) <= RECENT_WINDOW_MS)
+    .sort((a, b) => activity(b) - activity(a))
+  const unread = sorted.filter((r) => isUnread(r, hasSeenState))
+  const room = Math.max(0, max - unread.length)
+  const keep = new Set([...unread, ...sorted.filter((r) => !isUnread(r, hasSeenState)).slice(0, room)])
+  return sorted.filter((r) => keep.has(r))
 }
 
 /** `then` relative to `now` as the largest whole unit, for

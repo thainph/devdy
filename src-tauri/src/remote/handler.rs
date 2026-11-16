@@ -438,6 +438,7 @@ pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: CmdPayload) {
         "open_run" => handle_open_run(ctx, &cmd).await,
         "close_run" => handle_close_run(ctx, &cmd).await,
         "list_pending" => handle_list_pending(ctx, &cmd).await,
+        "run_seen" => handle_run_seen(ctx, &cmd).await,
         // Unreachable: allow-list already gated. Defensive audit.
         _ => reject(ctx, action, run_id.as_deref(), RejectReason::NotAllowed).await,
     }
@@ -1038,6 +1039,8 @@ async fn handle_open_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
     ctx.subscriptions.lock().await.insert(run_id.clone());
     *ctx.focus_run_id.lock().await = Some(run_id.clone());
     accept(ctx, action, Some(&run_id), None).await;
+    // Opening a finished run reads its result, wherever it is opened.
+    mark_seen(ctx, &run_id).await;
 
     // Replay first so the live stream that follows lands on top of real context.
     if let Some(path) = resolve_run_log(&ctx.db, &run_id).await {
@@ -1054,6 +1057,27 @@ async fn handle_open_run(ctx: &HandlerCtx, cmd: &CmdPayload) {
         &run_id,
     )
     .await;
+}
+
+/// Stamp `run_id` seen; every device's run list follows (its unread dot clears).
+async fn mark_seen(ctx: &HandlerCtx, run_id: &str) {
+    match crate::commands::runs::mark_run_seen_inner(&ctx.db, run_id).await {
+        Ok(true) => crate::remote::live_lists::emit_runs_changed(&ctx.app),
+        Ok(false) => {}
+        Err(e) => tracing::debug!(event = "remote_run_seen_failed", error = %e),
+    }
+}
+
+/// The Controller showed a run's result (it finished while on screen there).
+async fn handle_run_seen(ctx: &HandlerCtx, cmd: &CmdPayload) {
+    let action = "run_seen";
+    let Some(run_id) = cmd.run_id.clone().filter(|r| !r.trim().is_empty()) else {
+        reject(ctx, action, None, RejectReason::Malformed).await;
+        return;
+    };
+    // Gate 0 already proved the run exists and is in scope.
+    mark_seen(ctx, &run_id).await;
+    accept(ctx, action, Some(&run_id), None).await;
 }
 
 /// Close a run: stop streaming its transcript to save the phone's bandwidth.

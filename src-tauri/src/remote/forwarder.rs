@@ -432,7 +432,8 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
         "SELECT r.id AS id, r.project_id AS project_id, p.name AS project_name,
                 r.title AS title, r.type AS run_type, r.ref_number AS ref_number,
                 r.status AS status, r.engine AS engine, r.created_at AS created_at,
-                {ACTIVITY} AS updated_at, r.finished_at AS finished_at, r.pinned AS pinned
+                {ACTIVITY} AS updated_at, r.finished_at AS finished_at, r.pinned AS pinned,
+                r.seen_at AS seen_at
          FROM runs r JOIN projects p ON p.id = r.project_id"
     );
     let rows = match only_run_id {
@@ -469,6 +470,7 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
             updated_at: r.get("updated_at"),
             finished_at: r.get("finished_at"),
             pinned: r.get::<i64, _>("pinned") != 0,
+            seen_at: r.get("seen_at"),
         })
         .collect()
 }

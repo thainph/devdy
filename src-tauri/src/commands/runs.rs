@@ -1181,6 +1181,36 @@ async fn wire_commit_identity(cmd: &mut Command, db: &Db, project_id: &str) {
     }
 }
 
+/// Mark a finished run's result as seen (`runs.seen_at`), which clears its
+/// unread dot on every Remote Control device. A run still going, or already
+/// seen since it last finished, is left alone. Returns whether it changed.
+pub async fn mark_run_seen_inner(db: &Db, run_id: &str) -> Result<bool, String> {
+    let done = sqlx::query(
+        "UPDATE runs SET seen_at = ? WHERE id = ? AND status != 'running' \
+         AND finished_at IS NOT NULL AND (seen_at IS NULL OR seen_at < finished_at)",
+    )
+    .bind(chrono::Utc::now().to_rfc3339())
+    .bind(run_id)
+    .execute(db)
+    .await
+    .map_err(|e| e.to_string())?;
+    Ok(done.rows_affected() > 0)
+}
+
+/// The desktop shows a finished run. It only counts as seen while the user is
+/// actually at the desktop (a run finishing on an unattended screen stays
+/// unread on the phone).
+#[tauri::command]
+pub async fn mark_run_seen(app: AppHandle, db: State<'_, Db>, run_id: String) -> Result<(), String> {
+    if !crate::remote::push::presence::desktop_in_use() {
+        return Ok(());
+    }
+    if mark_run_seen_inner(db.inner(), &run_id).await? {
+        crate::remote::live_lists::emit_runs_changed(&app);
+    }
+    Ok(())
+}
+
 #[tauri::command]
 pub async fn cancel_run(
     registry: State<'_, RunRegistry>,
@@ -4530,6 +4560,52 @@ mod startup_input_tests {
             !crate::runs::sidecar::kill_process_group(pgid),
             "the sidecar group was killed"
         );
+    }
+}
+
+#[cfg(test)]
+mod run_seen_tests {
+    use super::*;
+
+    async fn seen_at(db: &Db, id: &str) -> Option<String> {
+        sqlx::query_scalar("SELECT seen_at FROM runs WHERE id = ?").bind(id).fetch_one(db).await.unwrap()
+    }
+
+    #[tokio::test]
+    async fn only_a_result_not_seen_since_it_finished_is_stamped() {
+        let db = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::query("CREATE TABLE runs (id TEXT PRIMARY KEY, status TEXT, finished_at TEXT, seen_at TEXT)")
+            .execute(&db)
+            .await
+            .unwrap();
+        for (id, status, finished, seen) in [
+            ("new", "done", Some("2026-11-16T10:00:00+00:00"), None),
+            ("later_turn", "failed", Some("2026-11-16T10:00:00+00:00"), Some("2026-11-16T09:00:00+00:00")),
+            ("seen", "done", Some("2026-11-16T10:00:00+00:00"), Some("2026-11-16T10:00:00+00:00")),
+            ("running", "running", None, None),
+        ] {
+            sqlx::query("INSERT INTO runs (id, status, finished_at, seen_at) VALUES (?, ?, ?, ?)")
+                .bind(id)
+                .bind(status)
+                .bind(finished)
+                .bind(seen)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        assert!(mark_run_seen_inner(&db, "new").await.unwrap());
+        assert!(seen_at(&db, "new").await.is_some());
+        assert!(mark_run_seen_inner(&db, "later_turn").await.unwrap());
+        assert_ne!(seen_at(&db, "later_turn").await.as_deref(), Some("2026-11-16T09:00:00+00:00"));
+        // Nothing to do: already seen, or no result yet (no event, no list push).
+        assert!(!mark_run_seen_inner(&db, "seen").await.unwrap());
+        assert!(!mark_run_seen_inner(&db, "running").await.unwrap());
+        assert_eq!(seen_at(&db, "running").await, None);
+        assert!(!mark_run_seen_inner(&db, "missing").await.unwrap());
     }
 }
 

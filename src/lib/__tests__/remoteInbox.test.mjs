@@ -1,5 +1,5 @@
 // Unit tests for lib/remoteInbox.ts (Remote Controller Inbox: pending queues,
-// cross-run aggregation, "since last visit").
+// cross-run aggregation, recent sessions).
 // Run: node --test src/lib/__tests__/remoteInbox.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -8,21 +8,18 @@ import {
   dequeuePending,
   dropRun,
   enqueuePending,
-  FIRST_VISIT_LOOKBACK_MS,
   agoParts,
+  finishedAt,
   finishedKind,
   createSyncGate,
-  finishedSince,
   headOf,
-  leaveVisit,
-  markRead,
+  isUnread,
   parseHostTime,
-  parseVisitState,
   pendingCount,
-  READ_MAX,
+  RECENT_MAX,
+  RECENT_WINDOW_MS,
+  recentRuns,
   retainPending,
-  startVisit,
-  VISIT_GAP_MS,
 } from '../remoteInbox.ts'
 
 const req = (run_id, request_id, tool_name = 'Bash') => ({ run_id, request_id, tool_name })
@@ -94,75 +91,61 @@ test('finishedKind splits success / failure and ignores the rest', () => {
   assert.equal(finishedKind('cancelled'), null)
 })
 
-test('finishedSince lists runs finished after the anchor, newest first', () => {
-  const since = Date.UTC(2026, 9, 31, 9)
+const HOUR = 60 * 60 * 1000
+const NOW = Date.parse('2026-11-16T12:00:00Z')
+const iso = (ms) => new Date(ms).toISOString()
+const run = (id, over = {}) => ({
+  id,
+  status: 'done',
+  created_at: iso(NOW - 100 * HOUR),
+  updated_at: iso(NOW - HOUR),
+  finished_at: iso(NOW - HOUR),
+  seen_at: iso(NOW - HOUR),
+  ...over,
+})
+
+test('finishedAt only for a finished run', () => {
+  assert.equal(finishedAt(run('a')), NOW - HOUR)
+  assert.equal(finishedAt(run('a', { status: 'running', finished_at: null })), null)
+  assert.equal(finishedAt(run('a', { status: 'cancelled' })), null)
+})
+
+test('isUnread: finished after the Host last saw it', () => {
+  assert.equal(isUnread(run('a'), true), false, 'seen at its finish')
+  assert.equal(isUnread(run('a', { seen_at: iso(NOW - 2 * HOUR) }), true), true, 'a later turn finished')
+  assert.equal(isUnread(run('a', { seen_at: null }), true), true, 'never seen')
+  assert.equal(isUnread(run('a', { status: 'failed', seen_at: null }), true), true)
+  assert.equal(isUnread(run('a', { status: 'running', finished_at: null, seen_at: null }), true), false)
+  // An older Host has no read state: no dots rather than every run lit.
+  assert.equal(isUnread(run('a', { seen_at: undefined }), false), false)
+})
+
+test('recentRuns: last user activity first, within the window', () => {
   const runs = [
-    { id: 'old', status: 'done', updated_at: '2026-10-31T08:00:00Z' },
-    { id: 'a', status: 'done', updated_at: '2026-10-31T09:30:00Z' },
-    { id: 'b', status: 'failed', updated_at: '2026-10-31 10:00:00' },
-    { id: 'live', status: 'running', updated_at: '2026-10-31T10:30:00Z' },
-    { id: 'nots', status: 'done', updated_at: null },
-    { id: 'created', status: 'error', updated_at: null, created_at: '2026-10-31T09:10:00Z' },
+    run('old', { updated_at: iso(NOW - RECENT_WINDOW_MS - HOUR) }),
+    run('mid', { updated_at: iso(NOW - 5 * HOUR) }),
+    run('new', { updated_at: iso(NOW - HOUR), status: 'running', finished_at: null }),
+    // An agent turn finished just now, but the user touched it 2h ago: by activity.
+    run('agent', { updated_at: iso(NOW - 2 * HOUR), finished_at: iso(NOW - 60_000), seen_at: iso(NOW - 60_000) }),
   ]
-  assert.deepEqual(finishedSince(runs, since).map((r) => r.id), ['b', 'a', 'created'])
+  assert.deepEqual(recentRuns(runs, NOW, true).map((r) => r.id), ['new', 'agent', 'mid'])
 })
 
-test('finishedSince counts a session whose later turn ended after the anchor', () => {
-  const since = Date.UTC(2026, 9, 31, 9)
-  // Follow-up sent before the visit (updated_at), turn finished during it.
-  const runs = [
-    { id: 'turn', status: 'done', updated_at: '2026-10-31T08:50:00Z', finished_at: '2026-10-31T09:20:00Z' },
-    { id: 'stale', status: 'done', updated_at: '2026-10-31T09:40:00Z', finished_at: '2026-10-31T08:00:00Z' },
-  ]
-  assert.deepEqual(finishedSince(runs, since).map((r) => r.id), ['turn'])
-})
-
-test('parseVisitState tolerates junk', () => {
-  const empty = { anchor: null, lastLeftAt: null, read: [] }
-  assert.deepEqual(parseVisitState(null), empty)
-  assert.deepEqual(parseVisitState('{bad'), empty)
-  assert.deepEqual(parseVisitState('[]'), { ...empty })
-  assert.deepEqual(parseVisitState('{"anchor":3,"lastLeftAt":5,"read":["x",1]}'), {
-    anchor: 3,
-    lastLeftAt: 5,
-    read: ['x'],
+test('recentRuns keeps an unread result whatever its age, and caps the rest', () => {
+  const stale = run('stale', {
+    updated_at: iso(NOW - RECENT_WINDOW_MS - 10 * HOUR),
+    finished_at: iso(NOW - 30 * 60_000),
+    seen_at: null,
   })
-})
-
-test('startVisit: first visit looks back a day', () => {
-  const now = 100 * FIRST_VISIT_LOOKBACK_MS
-  const v = startVisit(parseVisitState(null), now)
-  assert.equal(v.anchor, now - FIRST_VISIT_LOOKBACK_MS)
-})
-
-test('startVisit: a long absence anchors at when the user left', () => {
-  const left = 1_000_000
-  const v = startVisit({ anchor: 10, lastLeftAt: left, read: [] }, left + VISIT_GAP_MS)
-  assert.equal(v.anchor, left)
-})
-
-test('startVisit: a quick switch or reload keeps the current anchor', () => {
-  const left = 1_000_000
-  const v = startVisit({ anchor: 10, lastLeftAt: left, read: [] }, left + 1000)
-  assert.equal(v.anchor, 10)
-  // No anchor yet but a recent leave: fall back to the leave time.
-  assert.equal(startVisit({ anchor: null, lastLeftAt: left, read: [] }, left + 1000).anchor, left)
-})
-
-test('leaveVisit stamps the leave time and keeps the rest', () => {
-  assert.deepEqual(leaveVisit({ anchor: 1, lastLeftAt: null, read: ['a'] }, 9), {
-    anchor: 1,
-    lastLeftAt: 9,
-    read: ['a'],
-  })
-})
-
-test('markRead dedupes and caps', () => {
-  let s = markRead({ anchor: null, lastLeftAt: null, read: [] }, 'r1')
-  assert.equal(markRead(s, 'r1'), s)
-  for (let i = 0; i < READ_MAX + 5; i++) s = markRead(s, `x${i}`)
-  assert.equal(s.read.length, READ_MAX)
-  assert.equal(s.read.at(-1), `x${READ_MAX + 4}`)
+  const many = Array.from({ length: RECENT_MAX + 5 }, (_, i) => run(`r${i}`, { updated_at: iso(NOW - (i + 1) * 60_000) }))
+  const got = recentRuns([...many, stale], NOW, true)
+  assert.equal(got.length, RECENT_MAX)
+  assert.ok(got.some((r) => r.id === 'stale'), 'unread is never dropped')
+  assert.equal(got[got.length - 1].id, 'stale', 'still ordered by activity')
+  // Without read state it ages out like any other.
+  assert.ok(!recentRuns([...many, stale], NOW, false).some((r) => r.id === 'stale'))
+  // The input is left as it was.
+  assert.equal(many[0].id, 'r0')
 })
 
 test('agoParts picks the largest whole unit', () => {

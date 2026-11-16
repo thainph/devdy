@@ -379,6 +379,9 @@ export interface RunInfo {
   finished_at?: string | null
   /** Pinned to the top of the desktop History (an older Host omits it). */
   pinned?: boolean
+  /** When the user last saw the run's result, on any device or the desktop
+   * (host feature `seen`; an older Host omits it). Finished after = unread. */
+  seen_at?: string | null
 }
 
 /** A snapshot of every run the Controller may browse/control (FR-004+). */
@@ -1068,6 +1071,8 @@ export interface CmdPayload {
     | 'close_run'
     // Inbox: re-send every open permission prompt.
     | 'list_pending'
+    // The user saw a run's result (host feature `seen`).
+    | 'run_seen'
     // Data features (a Controller that advertised FEATURE_DATA).
     | 'todo_list'
     | 'todo_add'
@@ -1237,7 +1242,7 @@ export const FEATURE_PR = 'pr'
 
 /** What a Host can advertise in `session_token.host_features`. An older Host
  * sends none: the Controller then hides what it would only be refused. */
-export type HostFeature = 'data' | 'inbox' | 'remember' | 'push' | 'focus' | 'pr'
+export type HostFeature = 'data' | 'inbox' | 'remember' | 'push' | 'focus' | 'pr' | 'seen'
 
 /** Whether the Host advertised `feature`. */
 export function hostHas(features: readonly string[] | null | undefined, feature: HostFeature): boolean {
@@ -1520,6 +1525,12 @@ export function projectToggleSetCmd(
   }
   if (itemId && toggleKind !== 'builtin_mcp') cmd.item_id = itemId
   return cmd
+}
+
+/** `run_seen` — this device showed a run's result (it finished on screen);
+ * clears its unread dot on every device. Host feature `seen`. */
+export function runSeenCmd(runId: string): CmdPayload {
+  return { kind: 'cmd', action: 'run_seen', run_id: runId }
 }
 
 // ---- PR inbox commands ({@link FEATURE_PR}) ----
