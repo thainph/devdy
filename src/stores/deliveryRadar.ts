@@ -111,6 +111,14 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   watch(thresholds, (v) => persist(THRESHOLDS_KEY, v), { deep: true })
   watch(stages, (v) => persist(STAGES_KEY, v), { deep: true })
   watch(testers, (v) => persist(TESTERS_KEY, v), { deep: true })
+  // Mirrored to the app DB so the built-in MCP radar tools classify the same way.
+  watch(
+    [thresholds, stages, testers],
+    ([t, s, l]) => {
+      invoke('set_radar_settings', { settings: { thresholds: t, stages: s, testers: l } }).catch(() => {})
+    },
+    { deep: true, immediate: true },
+  )
 
   const doneRules = computed<DoneRules>(() => ({ stages: stages.value, testers: testers.value }))
 

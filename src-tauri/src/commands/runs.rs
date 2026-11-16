@@ -849,10 +849,9 @@ async fn assemble_run_mcp(
     let map = if mcp::builtin_mcp_enabled(db, "devdy", project_id).await {
         mcp::with_builtin_devdy(
             map,
-            node_bin,
+            &launch,
             &crate::runs::sidecar::resolve_mcp_sidecar_script(app),
             &crate::runs::sidecar::resolve_db_path(app),
-            project_id,
             project_path,
         )
     } else {

@@ -10,6 +10,7 @@
 //   • Todos / project context / VPS — full CRUD on todos (deadline, priority, estimate,
 //     status, source; ranked in the app's Focus board), git, managed servers
 //   • Skills & Rules library — CRUD the reusable skill/rule definitions (source-only)
+//   • Delivery Radar (radar_*) — who is behind on their GitHub issues, read-only
 //
 // Scope: env `DEVDY_PROJECT_ID` / `DEVDY_PROJECT_PATH` pin the "current project";
 // `DEVDY_DB_PATH` points at Devdy's SQLite store. Hand-rolled protocol keeps this
@@ -22,6 +23,7 @@ import { readRunTranscript, renderTranscript, findSnippet } from './lib/transcri
 import { fileTree, gitStatus, gitDiff } from './lib/project.mjs';
 import { runOnServer } from './lib/ssh.mjs';
 import { slackThreadTools } from './lib/slack-thread-tools.mjs';
+import { radarTools } from './lib/radar-tools.mjs';
 import { formatEstimate } from './lib/todo-fields.mjs';
 
 const SERVER_INFO = { name: 'devdy', version: '0.1.0' };
@@ -245,6 +247,11 @@ const tools = {
   // Own tables (migration 0041), fetched from Slack and translated by the app;
   // read-mostly tools (see lib/slack-thread-tools.mjs).
   ...slackThreadTools({ snippetAround }),
+
+  // ---- Delivery Radar --------------------------------------------------------
+  // Read-only: board snapshots saved by the app (migration 0079), refetched
+  // through the broker when stale (see lib/radar-tools.mjs).
+  ...radarTools(),
 
   sessions_recent: {
     description:

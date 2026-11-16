@@ -30,6 +30,7 @@ pub mod notifications;
 pub mod project_git_accounts;
 pub mod project_links;
 pub mod projects;
+pub mod radar;
 pub mod rules;
 pub mod runs;
 pub mod sessions;
