@@ -1358,19 +1358,32 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
             row.get("project_name"),
         ));
     }
-    let mut latest_runs: std::collections::HashMap<(String, i64), (String, String, Option<String>)> =
+    // Keyed by project + GitHub repo + PR number: a project can track several
+    // repos, and PR numbers are only unique within one repo.
+    type RunKey = (String, String, String, i64);
+    let mut latest_runs: std::collections::HashMap<RunKey, (String, String, Option<String>)> =
         std::collections::HashMap::new();
     for row in sqlx::query(
-        "SELECT id, status, project_id, ref_number, input_path FROM runs
-         WHERE type = 'review_pr' AND ref_number IS NOT NULL
-         ORDER BY created_at DESC",
+        "SELECT ru.id AS id, ru.status AS status, ru.project_id AS project_id,
+                ru.ref_number AS ref_number, ru.input_path AS input_path,
+                re.github_owner AS owner, re.github_repo AS repo
+         FROM runs ru JOIN repos re ON re.id = ru.repo_id
+         WHERE ru.type = 'review_pr' AND ru.ref_number IS NOT NULL
+           AND re.github_owner IS NOT NULL AND re.github_repo IS NOT NULL
+         ORDER BY ru.created_at DESC",
     )
     .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?
     {
+        let key = (
+            row.get::<String, _>("project_id"),
+            row.get::<String, _>("owner").to_lowercase(),
+            row.get::<String, _>("repo").to_lowercase(),
+            row.get::<i64, _>("ref_number"),
+        );
         latest_runs
-            .entry((row.get("project_id"), row.get("ref_number")))
+            .entry(key)
             .or_insert((row.get("id"), row.get("status"), row.get("input_path")));
     }
 
@@ -1430,10 +1443,13 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
             };
 
             // Link the latest existing review run for this PR (same project +
-            // ref_number) so the UI can resume it instead of duplicating.
+            // repo + number) so the UI can resume it instead of duplicating.
             let (existing_run_id, existing_run_status, run_input) = project_id
                 .as_ref()
-                .and_then(|pid| latest_runs.get(&(pid.clone(), number as i64)).cloned())
+                .and_then(|pid| {
+                    let key = (pid.clone(), owner.to_lowercase(), repo.to_lowercase(), number as i64);
+                    latest_runs.get(&key).cloned()
+                })
                 .map_or((None, None, None), |(id, status, input)| (Some(id), Some(status), input));
             if let Some(input) = run_input {
                 run_inputs.push((items.len(), input));
