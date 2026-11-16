@@ -27,6 +27,17 @@ test('move to front and drop onto another card', () => {
   assert.notEqual(moveTo(o, 'slack', 'slack'), o, 'returns a copy')
 })
 
+test('moveTo by index lands the card on the drop slot (useDragSort onDrop(from, to))', () => {
+  const o = ['slack', 'todos', 'prs', 'projects']
+  for (let from = 0; from < o.length; from++) {
+    for (let to = 0; to < o.length; to++) {
+      const next = moveTo(o, o[from], o[to])
+      assert.equal(next.indexOf(o[from]), to, `${from}→${to}`)
+      assert.equal(next.length, o.length)
+    }
+  }
+})
+
 test('fitGroups fills groups in order and folds the rest', () => {
   const fitted = fitGroups([
     { key: 'a', items: [1, 2, 3] },

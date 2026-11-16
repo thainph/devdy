@@ -25,6 +25,7 @@ import { useWorkDashboard } from '@/composables/useWorkDashboard'
 import { usePrReviewActions } from '@/composables/usePrReviewActions'
 import { useToast } from '@/composables/useToast'
 import { useConfirm } from '@/composables/useConfirm'
+import { useDragSort } from '@/composables/useDragSort'
 import { useProjectsStore } from '@/stores/projects'
 import { useFocusStore } from '@/stores/focus'
 import { useLiveRunsStore } from '@/stores/liveRuns'
@@ -153,41 +154,31 @@ function bringToFront(key: CategoryKey) {
   highlight(key)
 }
 
-// Drag & drop on the card headers' handle; drop onto another card to take its place.
-const dragging = ref<CategoryKey | null>(null)
-const dropTarget = ref<CategoryKey | null>(null)
-function onDragStart(key: CategoryKey, e: DragEvent) {
-  dragging.value = key
-  if (e.dataTransfer) {
-    e.dataTransfer.effectAllowed = 'move'
-    e.dataTransfer.setData('text/plain', key)
-    const card = document.getElementById(cardId(key))
-    if (card) e.dataTransfer.setDragImage(card, 24, 16)
-  }
-}
-function onDragOver(key: CategoryKey, e: DragEvent) {
-  if (!dragging.value) return
-  e.preventDefault()
-  if (e.dataTransfer) e.dataTransfer.dropEffect = 'move'
-  dropTarget.value = key
-}
-function onDrop(key: CategoryKey) {
-  if (dragging.value && dragging.value !== key) {
-    order.value = moveTo(order.value, dragging.value, key)
-    highlight(dragging.value)
-  }
-  onDragEnd()
-}
-function onDragEnd() {
-  dragging.value = null
-  dropTarget.value = null
+// Drag the card headers' handle to reorder (pointer events via `useDragSort`:
+// the Tauri webview swallows HTML5 drag & drop). The others slide aside while
+// dragging; the order changes once, on drop.
+const cardGrid = ref<HTMLElement | null>(null)
+const drag = useDragSort({
+  container: cardGrid,
+  onDrop: (from, to) => {
+    const key = order.value[from]
+    const target = order.value[to]
+    if (!key || !target) return
+    order.value = moveTo(order.value, key, target)
+    highlight(key)
+  },
+})
+function dropTargetKey(): CategoryKey | null {
+  const from = drag.dragFrom.value
+  const to = drag.dragTo.value
+  return from !== null && to !== null && to !== from ? order.value[to] ?? null : null
 }
 // An outline (not a ring) on the Card itself: it follows each theme's corner
 // radius, and themes that restyle the card's box-shadow do not hide it.
 function cardRing(key: CategoryKey) {
   const out = ['h-full']
-  if ((dropTarget.value === key && dragging.value !== key) || flash.value === key) out.push('outline-2 outline-offset-2 outline-primary/60')
-  if (dragging.value === key) out.push('opacity-60')
+  const dragged = drag.dragFrom.value !== null && order.value[drag.dragFrom.value] === key
+  if (dragged || dropTargetKey() === key || flash.value === key) out.push('outline-2 outline-offset-2 outline-primary/60')
   return out
 }
 
@@ -398,15 +389,14 @@ async function stopSession(row: DashboardRun) {
       <div v-if="view === 'category'" class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_18.75rem]">
         <div class="@container min-w-0 space-y-4">
           <SummaryRow :tiles="summary" @jump="jumpTo" />
-          <div class="grid grid-cols-1 gap-4 @3xl:grid-cols-2">
+          <div ref="cardGrid" class="grid grid-cols-1 gap-4 @3xl:grid-cols-2">
             <div
               v-for="(key, i) in order"
               :id="cardId(key)"
               :key="key"
-              class="min-w-0 scroll-mt-4"
-              @dragover="onDragOver(key, $event)"
-              @dragleave="dropTarget === key && (dropTarget = null)"
-              @drop.prevent="onDrop(key)"
+              :data-drag-index="i"
+              class="relative min-w-0 scroll-mt-4"
+              :style="drag.itemStyle(i)"
             >
               <SlackWidget
                 v-if="key === 'slack'"
@@ -421,8 +411,7 @@ async function stopSession(row: DashboardRun) {
                 :first="i === 0"
                 :class="cardRing(key)"
                 @move-to-front="bringToFront(key)"
-                @drag-start="onDragStart(key, $event)"
-                @drag-end="onDragEnd"
+                @drag-start="drag.start(i, $event)"
                 @open="openThread"
                 @open-all="openAllThreads"
                 @add-todo="addThreadTodo"
@@ -438,8 +427,7 @@ async function stopSession(row: DashboardRun) {
                 :first="i === 0"
                 :class="cardRing(key)"
                 @move-to-front="bringToFront(key)"
-                @drag-start="onDragStart(key, $event)"
-                @drag-end="onDragEnd"
+                @drag-start="drag.start(i, $event)"
                 @open="openTodo"
                 @open-all="openAllTodos"
                 @done="markTodoDone"
@@ -455,8 +443,7 @@ async function stopSession(row: DashboardRun) {
                 :first="i === 0"
                 :class="cardRing(key)"
                 @move-to-front="bringToFront(key)"
-                @drag-start="onDragStart(key, $event)"
-                @drag-end="onDragEnd"
+                @drag-start="drag.start(i, $event)"
                 @review="review.handleReview(storeItem($event))"
                 @re-review="review.handleReReview(storeItem($event))"
                 @open-pr="openPr"
@@ -473,8 +460,7 @@ async function stopSession(row: DashboardRun) {
                 :first="i === 0"
                 :class="cardRing(key)"
                 @move-to-front="bringToFront(key)"
-                @drag-start="onDragStart(key, $event)"
-                @drag-end="onDragEnd"
+                @drag-start="drag.start(i, $event)"
                 @open-issue="openIssue"
                 @open-radar="openRadar"
               />

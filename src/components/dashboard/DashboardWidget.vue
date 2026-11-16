@@ -39,7 +39,9 @@ const props = withDefaults(defineProps<{
   first: false,
 })
 
-const emit = defineEmits<{ seeAll: []; moveToFront: []; dragStart: [e: DragEvent]; dragEnd: [] }>()
+// The handle only reports the press: the parent drives the drag with
+// `useDragSort` (pointer events — the Tauri webview swallows HTML5 drag & drop).
+const emit = defineEmits<{ seeAll: []; moveToFront: []; dragStart: [e: PointerEvent] }>()
 
 defineSlots<{
   /** The card's answer: big number + words. */
@@ -59,12 +61,10 @@ const stale = computed(() => age.value !== null && age.value > props.staleAfter)
     <template #header>
       <span
         v-if="movable"
-        class="-ml-1.5 flex h-5 w-4 shrink-0 cursor-grab items-center justify-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
-        draggable="true"
+        class="-ml-1.5 flex h-5 w-4 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
         :title="t('dashboard.order.drag')"
         aria-hidden="true"
-        @dragstart="emit('dragStart', $event)"
-        @dragend="emit('dragEnd')"
+        @pointerdown="emit('dragStart', $event)"
       >
         <GripVertical class="h-3.5 w-3.5" :stroke-width="1.75" />
       </span>
