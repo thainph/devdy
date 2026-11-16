@@ -35,6 +35,18 @@ export interface PrInboxItem {
   requested_reviewers: PrRequestedReviewer[]
   /** New commits were pushed after the linked review run fetched the PR. */
   updated_since_review: boolean
+  // Size / CI / review facts (GraphQL, best-effort — null when unknown; absent
+  // in caches from older versions).
+  created_at?: string | null
+  additions?: number | null
+  deletions?: number | null
+  changed_files?: number | null
+  /** `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`. */
+  review_decision?: string | null
+  /** Head commit's check rollup: `SUCCESS` / `FAILURE` / `ERROR` / `PENDING` / `EXPECTED`. */
+  ci_state?: string | null
+  /** Latest time one of the user's accounts was asked to review. */
+  review_requested_at?: string | null
 }
 
 /** Mirrors the Rust `PrInboxReviewerAccount`. */
