@@ -43,7 +43,6 @@ pub mod storage;
 pub mod secret_vault;
 pub mod todos;
 pub mod translate;
-pub mod todo_batch;
 pub mod tray;
 pub mod vps_servers;
 pub mod worktrees;

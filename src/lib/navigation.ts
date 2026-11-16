@@ -12,7 +12,6 @@ import {
   Cpu,
   Settings,
   Info,
-  Layers,
   LayoutDashboard,
 } from 'lucide-vue-next'
 import { openPrInboxWindow } from '@/lib/prInboxWindow'
@@ -47,7 +46,6 @@ export interface NavRoute {
 export const NAV_ROUTES: NavRoute[] = [
   { path: '/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard, group: 'work' },
   { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work' },
-  { path: '/board', labelKey: 'nav.board', icon: Layers, group: 'work' },
   { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
   { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', openWindow: () => openCalendarWindow() },
   { path: '/radar', labelKey: 'nav.radar', icon: Radar, group: 'work', openWindow: () => openDeliveryRadarWindow() },

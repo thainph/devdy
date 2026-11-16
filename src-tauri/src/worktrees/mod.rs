@@ -535,99 +535,9 @@ pub async fn remove(db: &Db, id: &str, delete_branch: bool) -> Result<(), String
     Ok(())
 }
 
-/// A local `git` call in `dir` (no network); stdout trimmed.
-pub async fn git_local(dir: &Path, args: &[&str]) -> Result<String, String> {
-    git(dir, args, local_git()).await
-}
-
-/// An active worktree whose checkout still exists.
-async fn active(db: &Db, id: &str) -> Result<Worktree, String> {
-    let wt = get(db, id).await?;
-    if wt.removed_at.is_some() || !Path::new(&wt.path).is_dir() {
-        return Err("worktree_gone: this worktree was already removed".into());
-    }
-    Ok(wt)
-}
-
-/// Stage and commit everything in the worktree, as the project's git identity.
-pub async fn commit_all(app: &AppHandle, db: &Db, id: &str, message: &str) -> Result<(), String> {
-    let wt = active(db, id).await?;
-    let dir = PathBuf::from(&wt.path);
-    let message = message.trim();
-    if message.is_empty() {
-        return Err("a commit message is required".into());
-    }
-    git(&dir, &["add", "-A"], local_git()).await?;
-    let (cmd, _guard) = backend_command(app, db, "git", &wt.project_id, &wt.path).await?;
-    git(&dir, &["commit", "-m", message], cmd).await?;
-    Ok(())
-}
-
-/// Push the worktree's branch to `origin` (project's git account) and return the
-/// web page that opens a pull / merge request for it against its base.
-pub async fn push(app: &AppHandle, db: &Db, id: &str) -> Result<String, String> {
-    let wt = active(db, id).await?;
-    let dir = PathBuf::from(&wt.path);
-    let remote = git(&dir, &["remote", "get-url", "origin"], local_git())
-        .await
-        .map_err(|_| "no_remote: this repository has no `origin` remote".to_string())?;
-    let (cmd, _guard) = backend_command(app, db, "git", &wt.project_id, &wt.path).await?;
-    git(&dir, &["push", "-u", "origin", &wt.branch], cmd)
-        .await
-        .map_err(|e| format!("push_failed: {e}"))?;
-    let base = wt.base_ref.strip_prefix("origin/").unwrap_or(&wt.base_ref);
-    review_url(&remote, base, &wt.branch).ok_or_else(|| format!("pushed {}; open a PR for it on the remote", wt.branch))
-}
-
-/// `https://host/owner/repo` for an `origin` URL (https, ssh or scp-like).
-fn web_base(remote: &str) -> Option<String> {
-    let r = remote.trim().trim_end_matches('/').trim_end_matches(".git");
-    let (host, path) = if let Some(rest) = r.strip_prefix("https://").or_else(|| r.strip_prefix("http://")) {
-        let rest = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
-        rest.split_once('/')?
-    } else if let Some(rest) = r.strip_prefix("ssh://") {
-        let rest = rest.rsplit_once('@').map(|(_, h)| h).unwrap_or(rest);
-        let (host, path) = rest.split_once('/')?;
-        (host.split(':').next()?, path)
-    } else {
-        let rest = r.rsplit_once('@').map(|(_, h)| h).unwrap_or(r);
-        rest.split_once(':')?
-    };
-    (!host.is_empty() && !path.is_empty()).then(|| format!("https://{host}/{path}"))
-}
-
-/// Page that opens a PR (GitHub) or MR (GitLab and anything else) for `branch` into `base`.
-pub fn review_url(remote: &str, base: &str, branch: &str) -> Option<String> {
-    let web = web_base(remote)?;
-    if web.starts_with("https://github.com/") {
-        Some(format!("{web}/compare/{base}...{branch}?expand=1"))
-    } else {
-        Some(format!(
-            "{web}/-/merge_requests/new?merge_request%5Bsource_branch%5D={branch}&merge_request%5Btarget_branch%5D={base}"
-        ))
-    }
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
-
-    #[test]
-    fn review_url_for_github_and_gitlab_remotes() {
-        assert_eq!(
-            review_url("git@github.com:acme/shop.git", "main", "devdy/fix").as_deref(),
-            Some("https://github.com/acme/shop/compare/main...devdy/fix?expand=1")
-        );
-        assert_eq!(
-            review_url("https://x-access-token@github.com/acme/shop", "dev", "devdy/a").as_deref(),
-            Some("https://github.com/acme/shop/compare/dev...devdy/a?expand=1")
-        );
-        assert_eq!(
-            review_url("ssh://git@gitlab.corp.io:2222/team/app.git", "main", "devdy/b").as_deref(),
-            Some("https://gitlab.corp.io/team/app/-/merge_requests/new?merge_request%5Bsource_branch%5D=devdy/b&merge_request%5Btarget_branch%5D=main")
-        );
-        assert_eq!(review_url("/local/path/repo", "main", "x"), None);
-    }
 
     #[test]
     fn slugify_drops_diacritics_and_punctuation() {
