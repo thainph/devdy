@@ -11,7 +11,7 @@
 // gray = nothing to judge by (no board, GitLab only, fetch error, or a
 // truncated board with no signal) — always with the reason.
 import {
-  classifyAll, compareMilestoneRisks, countByStatus, compareIssues, milestoneRisk,
+  classifyAll, compareMilestoneRisks, countByStatus, compareIssues, dayStart, milestoneRisk,
   type ClassifiedIssue, type DoneRules, type MilestoneRisk, type RadarCounts, type RadarIssue, type RadarMilestone,
   type RadarThresholds,
 } from './deliveryRadar.ts'
@@ -55,8 +55,46 @@ export interface ProjectHealth {
   /** The 3 latest issues, most urgent first. */
   topIssues: ClassifiedIssue[]
   milestones: MilestoneRisk[]
+  /** Progress of the current milestone (see `currentMilestoneProgress`), if any. */
+  progress: MilestoneProgress | null
   /** When the board was fetched (ISO), if any. */
   fetchedAt: string | null
+}
+
+/** Done vs elapsed time of one milestone (an estimate, like `milestoneRisk`). */
+export interface MilestoneProgress {
+  title: string
+  dueOn: string
+  /** Share of its issues closed, 0–100. */
+  closedPct: number
+  /** Share of the planned time elapsed, 0–100; null without a start date. */
+  elapsedPct: number | null
+}
+
+const DAY = 86_400_000
+
+/**
+ * The milestone being worked on now — the earliest due one with open issues
+ * and GitHub's totals — with its closed share and, when its issues carry a
+ * board Start date (the stand-in start, as in `milestoneRisk`), the share of
+ * time elapsed until the end of its due day.
+ */
+export function currentMilestoneProgress(milestones: RadarMilestone[], now: number): MilestoneProgress | null {
+  const due = (m: RadarMilestone) => dayStart(m.dueOn)
+  const current = milestones
+    .filter((m) => due(m) !== null && m.openCount > 0 && m.countsKnown !== false)
+    .sort((a, b) => due(a)! - due(b)! || a.title.localeCompare(b.title))[0]
+  if (!current) return null
+  const total = current.openCount + current.closedCount
+  const closedPct = total > 0 ? Math.round((current.closedCount / total) * 100) : 0
+  const starts = (current.issues ?? []).map((i) => dayStart(i.startDate)).filter((s): s is number => s !== null)
+  const end = due(current)! + DAY
+  let elapsedPct: number | null = null
+  if (starts.length) {
+    const start = Math.min(...starts)
+    if (start < end) elapsedPct = Math.round(Math.min(100, Math.max(0, ((now - start) / (end - start)) * 100)))
+  }
+  return { title: current.title, dueOn: current.dueOn!, closedPct, elapsedPct }
 }
 
 const RISKY = new Set(['overdue', 'due-soon', 'not-started', 'stale'])
@@ -86,6 +124,7 @@ export function projectHealth(
       : !input.hasBoardUrl ? 'no-board' : input.error ? 'error' : 'loading'
     return {
       ...base, level: 'gray', reason, counts: countByStatus([]), riskyIssueCount: 0, topIssues: [], milestones: [],
+      progress: null,
     }
   }
 
@@ -117,6 +156,7 @@ export function projectHealth(
     riskyIssueCount: risky.length,
     topIssues: risky.slice(0, 3),
     milestones,
+    progress: board.boardLinked ? currentMilestoneProgress(board.milestones, now) : null,
   }
 }
 

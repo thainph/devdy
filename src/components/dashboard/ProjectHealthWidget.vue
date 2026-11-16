@@ -1,18 +1,25 @@
 <script setup lang="ts">
-// Work Dashboard — projects at risk of slipping, from the Delivery Radar
-// boards (`projectHealth`): red / amber rows with their 3 latest issues (and
-// risky milestones, an estimate), gray rows that could not be judged (fetch
-// error, truncated board, still loading) with the reason; projects without a
-// board / GitLab-only and the on-track ones are summed up in one line.
-// Neutral wording: "at risk of slipping", never "late project".
+// Work Dashboard — Projects (Delivery Radar boards, `projectHealth`): how many
+// are at risk of slipping, need attention, are on track; one row per red /
+// amber project with its reasons in words (latest issue, milestone behind by
+// X% — an estimate; a failed last fetch or a cut board is said on the row,
+// since the verdict then rests on older / partial data) and Open issue /
+// Radar; the on-track ones fold into one line, those that cannot be judged
+// into one line per reason (no board, GitLab, fetch error…). Neutral wording: "at risk of slipping", never "late project".
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertTriangle, CircleCheck, CircleDashed, ExternalLink, Flag, OctagonAlert, Radar } from 'lucide-vue-next'
+import { AlertCircle, ExternalLink, Radar } from 'lucide-vue-next'
+import { Badge, Button } from '@/components/ui'
 import { WIDGET_ROWS } from '@/lib/workDashboard'
+import { fitGroups, healthReasons, projectCard, unknownByReason } from '@/lib/dashboardLayout'
 import type { ProjectHealth } from '@/lib/projectHealth'
-import type { ClassifiedIssue } from '@/lib/deliveryRadar'
+import type { FittedGroup } from '@/lib/dashboardLayout'
 import type { SourceState } from '@/composables/useWorkDashboard'
 import DashboardWidget from './DashboardWidget.vue'
+import DashGroup from './DashGroup.vue'
+import DashRow from './DashRow.vue'
+import { HEALTH_LEVEL, LEVEL_BADGE, LEVEL_TEXT } from './levels'
+import { useHealthWords } from './useHealthWords'
 
 const props = defineProps<{
   healths: ProjectHealth[]
@@ -23,29 +30,40 @@ const props = defineProps<{
 const emit = defineEmits<{ openIssue: [url: string]; openRadar: [projectId?: string] }>()
 
 const { t } = useI18n()
+const { reasonText, grayReason } = useHealthWords()
 
-const SUMMARY_REASONS = new Set(['no-board', 'gitlab'])
-const listed = computed(() =>
-  props.healths.filter((h) => h.level !== 'green' && !(h.level === 'gray' && SUMMARY_REASONS.has(h.reason ?? ''))),
-)
-const shown = computed(() => listed.value.slice(0, WIDGET_ROWS))
-const atRisk = computed(() => props.healths.filter((h) => h.level === 'red' || h.level === 'orange').length)
-const noBoard = computed(() => props.healths.filter((h) => h.level === 'gray' && h.reason === 'no-board').length)
-const gitlab = computed(() => props.healths.filter((h) => h.level === 'gray' && h.reason === 'gitlab').length)
-const green = computed(() => props.healths.filter((h) => h.level === 'green').length)
+const card = computed(() => projectCard(props.healths))
 
-const LEVEL = {
-  red: { icon: OctagonAlert, cls: 'text-destructive' },
-  orange: { icon: AlertTriangle, cls: 'text-warning' },
-  gray: { icon: CircleDashed, cls: 'text-muted-foreground' },
-  green: { icon: CircleCheck, cls: 'text-success' },
-} as const
+/** A folded line: every on-track project, or the projects not judged for one reason. */
+type RestRow = { kind: 'ok', reason: null, projects: ProjectHealth[] } | { kind: 'unknown', reason: string, projects: ProjectHealth[] }
+const restRows = computed<RestRow[]>(() => [
+  ...(card.value.ok.length ? [{ kind: 'ok' as const, reason: null, projects: card.value.ok }] : []),
+  ...unknownByReason(card.value.unknown).map((u) => ({ kind: 'unknown' as const, ...u })),
+])
+const groups = computed(() => fitGroups<'risky' | 'rest', ProjectHealth | RestRow>([
+  { key: 'risky', items: [...card.value.risk, ...card.value.attention] },
+  { key: 'rest', items: restRows.value },
+], WIDGET_ROWS))
+const riskyGroup = computed(() => groups.value.find((g) => g.key === 'risky') as FittedGroup<'risky', ProjectHealth> | undefined)
+const restGroup = computed(() => groups.value.find((g) => g.key === 'rest') as FittedGroup<'rest', RestRow> | undefined)
 
-function issueReason(i: ClassifiedIssue): string {
-  const key = `dashboard.health.issue.${i.radar}`
-  if (i.radar === 'overdue') return t(key, { n: -(i.daysLeft ?? 0) }, -(i.daysLeft ?? 0))
-  if (i.radar === 'due-soon') return t(key, { n: i.daysLeft ?? 0 }, i.daysLeft ?? 0)
-  return t(key)
+function names(list: ProjectHealth[]): string {
+  return list.map((h) => h.projectName).join(', ')
+}
+
+/** Reasons in words, plus the caveat when the verdict rests on old or partial data. */
+function riskySub(h: ProjectHealth): string | null {
+  const parts = healthReasons(h).map(reasonText)
+  if (h.reason) parts.push(grayReason(h))
+  return parts.join(' · ') || null
+}
+
+function restSub(row: RestRow): string {
+  return row.kind === 'ok' ? t('dashboard.health.okSub') : t(`dashboard.health.reason.${row.reason}`)
+}
+
+function topIssueUrl(h: ProjectHealth): string | null {
+  return h.topIssues[0]?.htmlUrl ?? null
 }
 </script>
 
@@ -53,69 +71,84 @@ function issueReason(i: ClassifiedIssue): string {
   <DashboardWidget
     :title="t('dashboard.health.title')"
     :icon="Radar"
-    :count="atRisk"
-    :count-title="t('dashboard.health.countTitle')"
     :scope="t('dashboard.health.scope')"
     :updated-at="state.updatedAt"
     :now="now"
     :loading="state.loading"
-    :see-all="t('dashboard.health.openRadar')"
+    :see-all="t('dashboard.health.seeAll')"
     @see-all="emit('openRadar')"
   >
-    <p v-if="healths.length === 0" class="px-4 py-6 text-center text-[11px] text-muted-foreground">
+    <template #answer>
+      <span class="text-3xl font-semibold leading-none tabular-nums" :class="LEVEL_TEXT[card.risk.length ? 'bad' : 'none']">{{ card.risk.length }}</span>
+      <span class="text-[13px] font-medium">{{ t('dashboard.health.answer', card.risk.length) }}</span>
+      <span class="text-[13px] text-muted-foreground">
+        · {{ t('dashboard.health.answerRest', { attention: card.attention.length, ok: card.ok.length }) }}<template v-if="card.unknown.length">
+          · {{ t('dashboard.health.answerUnknown', { n: card.unknown.length }) }}</template>
+      </span>
+    </template>
+
+    <p v-if="healths.length === 0" class="border-t border-border/50 px-4 py-5 text-center text-[11px] text-muted-foreground">
       {{ t('dashboard.health.noProjects') }}
     </p>
-    <ul v-else class="divide-y divide-border/40">
-      <li v-for="h in shown" :key="h.projectId" class="px-3 py-2">
-        <div class="flex min-w-0 items-center gap-1.5">
-          <component :is="LEVEL[h.level].icon" class="h-3.5 w-3.5 shrink-0" :class="LEVEL[h.level].cls" :stroke-width="2" />
-          <button
-            type="button"
-            class="min-w-0 truncate text-left text-[13px] font-medium text-foreground hover:underline"
-            :title="t('dashboard.health.openRadarAt', { name: h.projectName })"
-            @click="emit('openRadar', h.projectId)"
-          >{{ h.projectName }}</button>
-          <span class="shrink-0 text-[11px]" :class="LEVEL[h.level].cls">{{ t(`dashboard.health.level.${h.level}`) }}</span>
-          <span v-if="h.riskyIssueCount" class="shrink-0 text-[11px] text-muted-foreground">
-            · {{ t('dashboard.health.riskyIssues', { n: h.riskyIssueCount }, h.riskyIssueCount) }}
-          </span>
-          <span v-if="h.reason" class="truncate text-[11px] text-muted-foreground">· {{ t(`dashboard.health.reason.${h.reason}`) }}</span>
-        </div>
-        <ul v-if="h.topIssues.length || h.milestones.length" class="mt-1 space-y-0.5 pl-5">
-          <li v-for="m in h.milestones.slice(0, 2)" :key="`m:${m.title}`" class="flex min-w-0 items-center gap-1.5 text-[11px] text-muted-foreground">
-            <Flag class="h-3 w-3 shrink-0" :class="m.kind === 'overdue' ? 'text-destructive' : 'text-warning'" :stroke-width="1.75" />
-            <span class="truncate">{{ m.title }}</span>
-            <span class="shrink-0" :class="m.kind === 'overdue' ? 'text-destructive' : 'text-warning'">
-              {{ m.kind === 'overdue'
-                ? t('dashboard.health.milestoneOverdue', { n: m.lateDays ?? 0, open: m.openCount }, m.lateDays ?? 0)
-                : t('dashboard.health.milestoneLag', { elapsed: m.elapsedPct, closed: m.closedPct }) }}
-            </span>
-          </li>
-          <li v-for="i in h.topIssues" :key="i.key" class="group flex min-w-0 items-center gap-1.5 text-[11px]">
-            <button
-              type="button"
-              class="flex min-w-0 flex-1 cursor-pointer items-center gap-1.5 text-left text-muted-foreground hover:text-foreground"
-              @click="emit('openIssue', i.htmlUrl)"
-            >
-              <span class="shrink-0 tabular-nums">#{{ i.number }}</span>
-              <span class="truncate text-foreground/90">{{ i.title }}</span>
-              <span v-if="i.activeAssignees.length" class="shrink-0">· {{ i.activeAssignees.join(', ') }}</span>
-              <span class="shrink-0" :class="i.radar === 'overdue' ? 'text-destructive' : 'text-warning'">
-                · {{ issueReason(i) }}<template v-if="i.deadlineInherited"> {{ t('dashboard.health.inherited') }}</template>
-              </span>
-              <ExternalLink class="h-3 w-3 shrink-0 opacity-0 group-hover:opacity-100" :stroke-width="1.75" />
-            </button>
-          </li>
-        </ul>
-      </li>
-      <li
-        v-if="noBoard || gitlab || green"
-        class="flex flex-wrap items-center gap-x-2 px-3 py-2 text-[11px] text-muted-foreground"
+    <div v-else class="border-t border-border/50">
+      <DashGroup
+        v-if="riskyGroup"
+        :label="t('dashboard.health.groups.risky')"
+        :count="riskyGroup.total"
+        :hidden="riskyGroup.hidden"
+        @more="emit('openRadar')"
       >
-        <span v-if="green" class="text-success">{{ t('dashboard.health.greenCount', { n: green }, green) }}</span>
-        <span v-if="noBoard">{{ t('dashboard.health.noBoardCount', { n: noBoard }, noBoard) }}</span>
-        <span v-if="gitlab">{{ t('dashboard.health.gitlabCount', { n: gitlab }, gitlab) }}</span>
-      </li>
-    </ul>
+        <DashRow
+          v-for="h in riskyGroup.shown"
+          :key="h.projectId"
+          :title="h.projectName"
+          :sub="riskySub(h)"
+          :hint="t('dashboard.health.openRadarAt', { name: h.projectName })"
+          @open="emit('openRadar', h.projectId)"
+        >
+          <template #lead>
+            <AlertCircle
+              v-if="h.reason === 'error' || h.reason === 'truncated'"
+              class="h-3 w-3 shrink-0 text-warning"
+              :stroke-width="2"
+              :aria-label="grayReason(h)"
+            />
+          </template>
+          <template #aside>
+            <Badge :tone="LEVEL_BADGE[HEALTH_LEVEL[h.level]]" size="xs">{{ t(`dashboard.byProject.level.${h.level}`) }}</Badge>
+            <Button
+              v-if="topIssueUrl(h)"
+              variant="outline"
+              size="xs"
+              @click="emit('openIssue', topIssueUrl(h)!)"
+            >
+              <ExternalLink class="h-3 w-3" :stroke-width="1.75" />{{ t('dashboard.health.openIssue') }}
+            </Button>
+            <Button variant="ghost" size="xs" @click="emit('openRadar', h.projectId)">{{ t('dashboard.health.radar') }}</Button>
+          </template>
+        </DashRow>
+      </DashGroup>
+
+      <DashGroup
+        v-if="restGroup"
+        :label="t('dashboard.health.groups.rest')"
+        :hidden="restGroup.hidden"
+        @more="emit('openRadar')"
+      >
+        <DashRow
+          v-for="row in restGroup.shown"
+          :key="row.reason ?? 'ok'"
+          :title="names(row.projects)"
+          :sub="restSub(row)"
+          @open="emit('openRadar', row.projects.length === 1 ? row.projects[0].projectId : undefined)"
+        >
+          <template #aside>
+            <Badge :tone="row.kind === 'ok' ? 'success' : 'neutral'" size="xs">
+              {{ t(`dashboard.byProject.level.${row.kind === 'ok' ? 'green' : 'gray'}`) }}
+            </Badge>
+          </template>
+        </DashRow>
+      </DashGroup>
+    </div>
   </DashboardWidget>
 </template>

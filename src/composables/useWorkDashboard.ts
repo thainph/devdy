@@ -9,11 +9,12 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { SLACK_THREADS_CHANGED, type SlackThreadSummary } from '@/stores/slackThreads'
 import { SLACK_CUSTOMERS_CHANGED } from '@/stores/slackCustomers'
 import { makeBotPredicate } from '@/lib/prInboxFilters'
-import { buildSlackRows, needsAttention, type SlackThreadActivity } from '@/lib/dashboardSlack'
-import { compareHealth, isAtRisk, projectHealth, type HealthBoard, type ProjectHealth } from '@/lib/projectHealth'
-import { actionableCount, rankPrs } from '@/lib/prPriority'
+import { buildSlackRows, type SlackThreadActivity } from '@/lib/dashboardSlack'
+import { compareHealth, projectHealth, type HealthBoard, type ProjectHealth } from '@/lib/projectHealth'
+import { rankPrs } from '@/lib/prPriority'
+import { projectRows, projectSignals } from '@/lib/dashboardLayout'
 import {
-  attentionItems, dashboardRuns, dashboardTodos, inProject, type ActiveRun, type AttentionKey,
+  dashboardRuns, dashboardTodos, inProject, type ActiveRun, type AttentionKey,
 } from '@/lib/workDashboard'
 
 /** One widget's data source state, for its header (updated / error / loading). */
@@ -85,8 +86,6 @@ export function useWorkDashboard(projectFilter: Ref<string | null>, now: Ref<num
       now.value,
     ),
   )
-  const slackAttention = computed(() => slackRows.value.filter(needsAttention).length)
-  const slackWaiting = computed(() => slackRows.value.filter((r) => r.label === 'waitingOnMe').length)
   const slackErrors = computed(() =>
     slackThreads.value.filter((t) => inProject(t.projectId, projectFilter.value) && t.fetchStatus === 'error').length,
   )
@@ -175,17 +174,11 @@ export function useWorkDashboard(projectFilter: Ref<string | null>, now: Ref<num
     dashboardRuns(activeRuns.value.filter((r) => inProject(r.project_id, projectFilter.value)), now.value),
   )
 
-  // ── "Needs you now" ──────────────────────────────────────────────────────
-  const attention = computed(() => {
-    const counts: Record<AttentionKey, number> = {
-      todos: todos.value.filter((t) => t.group === 'overdue').length,
-      prs: actionableCount(prs.value),
-      runs: runs.value.filter((r) => r.pending > 0).length,
-      slack: slackWaiting.value,
-      projects: healths.value.filter(isAtRisk).length,
-    }
-    return attentionItems(counts)
-  })
+  // ── By project ───────────────────────────────────────────────────────────
+  /** Traffic-light rows: each project's health + what the other sources say about it. */
+  const byProject = computed(() =>
+    projectRows(healths.value, projectSignals({ slack: slackRows.value, todos: todos.value, prs: prs.value, runs: runs.value })),
+  )
 
   // ── Loading + live updates ───────────────────────────────────────────────
   const refreshing = ref(false)
@@ -273,12 +266,11 @@ export function useWorkDashboard(projectFilter: Ref<string | null>, now: Ref<num
   })
 
   return {
-    slackRows, slackAttention, slackErrors, slackState, slackThreadCount: computed(() => slackThreads.value.length),
+    slackRows, slackErrors, slackState, slackThreadCount: computed(() => slackThreads.value.length),
     todos, todoState,
     prs, prState,
-    healths, healthState,
+    healths, healthState, byProject,
     runs, runState,
-    attention,
     slackThreadById: (id: string) => slackThreads.value.find((t) => t.id === id) ?? null,
     refresh, refreshing, lastRefreshAt, failedSources, loadSlack, loadRuns,
   }

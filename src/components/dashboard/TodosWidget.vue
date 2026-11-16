@@ -1,15 +1,19 @@
 <script setup lang="ts">
-// Work Dashboard — todos that need attention: overdue (red, "N days late") →
-// due today (amber) → due within 3 days → in progress / waiting. Each row shows
-// its status, project and priority; actions: open it in the Todos window,
-// mark it done.
+// Work Dashboard — Todos: how many are overdue (and due today), then the
+// groups "Overdue" (red, "N days late") → "Today" → "Coming up" (due within
+// 3 days / in progress / waiting); what does not fit folds into "+N more".
+// Every row: status, project, priority; Done / Open.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, ListTodo } from 'lucide-vue-next'
-import { Banner, Button } from '@/components/ui'
+import { Badge, Banner, Button } from '@/components/ui'
 import { WIDGET_ROWS, type DashboardTodo } from '@/lib/workDashboard'
+import { fitGroups, todoCardGroups, todoLevel } from '@/lib/dashboardLayout'
 import type { SourceState } from '@/composables/useWorkDashboard'
 import DashboardWidget from './DashboardWidget.vue'
+import DashGroup from './DashGroup.vue'
+import DashRow from './DashRow.vue'
+import { LEVEL_TEXT } from './levels'
 
 const props = defineProps<{
   todos: DashboardTodo[]
@@ -22,24 +26,31 @@ const emit = defineEmits<{ open: [id: string]; openAll: []; done: [id: string] }
 
 const { t } = useI18n()
 
-const shown = computed(() => props.todos.slice(0, WIDGET_ROWS))
+const groups = computed(() => fitGroups(todoCardGroups(props.todos), WIDGET_ROWS))
 const overdue = computed(() => props.todos.filter((x) => x.group === 'overdue').length)
+const today = computed(() => props.todos.filter((x) => x.group === 'today').length)
+const level = computed(() => todoLevel(props.todos))
 
-const GROUP_CLASS = {
-  overdue: 'text-destructive',
-  today: 'text-warning',
-  soon: 'text-info',
-  active: 'text-muted-foreground',
-} as const
+const TONE = { overdue: 'error', today: 'warning', soon: 'neutral', active: 'neutral' } as const
 
 function dueLabel(x: DashboardTodo): string {
   if (x.group === 'overdue') {
     const days = -(x.daysLeft ?? 0)
     return days > 0 ? t('dashboard.todos.lateDays', { n: days }, days) : t('dashboard.todos.lateToday')
   }
-  if (x.group === 'today') return t('dashboard.todos.today')
+  if (x.group === 'today') return x.item.todo.due_time ?? t('dashboard.todos.today')
   if (x.group === 'soon') return t('dashboard.todos.inDays', { n: x.daysLeft ?? 0 }, x.daysLeft ?? 0)
   return t(`dashboard.todos.status.${x.status}`)
+}
+
+function sub(x: DashboardTodo): string {
+  const parts: string[] = []
+  if (x.group !== 'active') parts.push(t(`dashboard.todos.status.${x.status}`))
+  if (x.item.todo.priority === 1) parts.push(t('dashboard.todos.priorityHigh'))
+  else if (x.item.todo.priority === 3) parts.push(t('dashboard.todos.priorityLow'))
+  const project = props.projectName(x.item.todo.project_id)
+  if (project) parts.push(project)
+  return parts.join(' · ')
 }
 </script>
 
@@ -47,45 +58,46 @@ function dueLabel(x: DashboardTodo): string {
   <DashboardWidget
     :title="t('dashboard.todos.title')"
     :icon="ListTodo"
-    :count="overdue"
-    :count-title="t('dashboard.todos.countTitle')"
     :updated-at="state.updatedAt"
     :now="now"
     :loading="state.loading"
-    :see-all="t('dashboard.seeAll', { n: todos.length })"
+    :see-all="t('dashboard.todos.seeAll')"
     @see-all="emit('openAll')"
   >
-    <Banner v-if="state.error" tone="destructive" class="m-3">{{ t('dashboard.loadError', { error: state.error }) }}</Banner>
-    <p v-if="!state.error && shown.length === 0" class="px-4 py-6 text-center text-[11px] text-muted-foreground">
+    <template #answer>
+      <span class="text-3xl font-semibold leading-none tabular-nums" :class="LEVEL_TEXT[overdue ? 'bad' : 'none']">{{ overdue }}</span>
+      <span class="text-[13px] font-medium">{{ t('dashboard.todos.answer') }}</span>
+      <span class="text-[13px]" :class="today ? 'text-warning' : 'text-muted-foreground'">· {{ t('dashboard.todos.answerToday', { n: today }) }}</span>
+    </template>
+
+    <Banner v-if="state.error" tone="destructive" class="mx-4 my-2">{{ t('dashboard.loadError', { error: state.error }) }}</Banner>
+    <p v-if="!state.error && level === 'none'" class="border-t border-border/50 px-4 py-5 text-center text-[11px] text-muted-foreground">
       {{ t('dashboard.todos.empty') }}
     </p>
-    <ul v-else class="divide-y divide-border/40">
-      <li
-        v-for="x in shown"
-        :key="x.item.todo.id"
-        class="group flex items-center gap-2 px-3 py-2 hover:bg-accent/50"
+    <div v-else class="border-t border-border/50">
+      <DashGroup
+        v-for="g in groups"
+        :key="g.key"
+        :label="t(`dashboard.todos.groups.${g.key}`)"
+        :count="g.total"
+        :hidden="g.hidden"
+        @more="emit('openAll')"
       >
-        <button type="button" class="min-w-0 flex-1 cursor-pointer text-left" @click="emit('open', x.item.todo.id)">
-          <p class="truncate text-[13px] text-foreground">{{ x.item.todo.text }}</p>
-          <div class="mt-0.5 flex min-w-0 flex-wrap items-center gap-x-1.5 text-[11px] text-muted-foreground">
-            <span class="font-medium" :class="GROUP_CLASS[x.group]">{{ dueLabel(x) }}</span>
-            <span v-if="x.group !== 'active' && x.status !== 'todo'">· {{ t(`dashboard.todos.status.${x.status}`) }}</span>
-            <span v-if="x.item.todo.priority === 1" class="text-destructive">· {{ t('dashboard.todos.priorityHigh') }}</span>
-            <span v-else-if="x.item.todo.priority === 3">· {{ t('dashboard.todos.priorityLow') }}</span>
-            <span v-if="projectName(x.item.todo.project_id)">· {{ projectName(x.item.todo.project_id) }}</span>
-          </div>
-        </button>
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          class="shrink-0 opacity-0 transition-opacity group-hover:opacity-100 focus-visible:opacity-100"
-          :title="t('dashboard.todos.markDone')"
-          :aria-label="t('dashboard.todos.markDone')"
-          @click="emit('done', x.item.todo.id)"
+        <DashRow
+          v-for="x in g.shown"
+          :key="x.item.todo.id"
+          :title="x.item.todo.text"
+          :sub="sub(x)"
+          @open="emit('open', x.item.todo.id)"
         >
-          <Check class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-      </li>
-    </ul>
+          <template #aside>
+            <Badge :tone="TONE[x.group]" size="xs">{{ dueLabel(x) }}</Badge>
+            <Button variant="outline" size="xs" @click="emit('done', x.item.todo.id)">
+              <Check class="h-3 w-3" :stroke-width="2" />{{ t('dashboard.todos.markDone') }}
+            </Button>
+          </template>
+        </DashRow>
+      </DashGroup>
+    </div>
   </DashboardWidget>
 </template>
