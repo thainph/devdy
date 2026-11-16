@@ -11,7 +11,9 @@ export const RADAR_STATUSES = ['overdue', 'due-soon', 'not-started', 'stale', 'n
 
 const SEVERITY = { overdue: 0, 'due-soon': 1, 'not-started': 2, stale: 3, 'no-deadline': 4, 'on-track': 5 };
 
-export const DEFAULT_THRESHOLDS = { dueSoonDays: 3, staleDays: 5 };
+// milestoneLagPct: a milestone is behind schedule when its share of elapsed
+// time exceeds its share of closed issues by more than this many points.
+export const DEFAULT_THRESHOLDS = { dueSoonDays: 3, staleDays: 5, milestoneLagPct: 20 };
 
 const DAY = 86_400_000;
 const NOT_STARTED = new Set(['', 'todo', 'to do', 'backlog', 'triage', 'ready', 'new', 'no status', 'chưa bắt đầu']);
@@ -226,4 +228,41 @@ export function filterIssues(issues, opts) {
       i.assignees.some((a) => a.toLowerCase().includes(q))
     );
   });
+}
+
+// ── Milestones (estimate) ───────────────────────────────────────────────────
+
+/**
+ * An estimated risk of a milestone, if any: overdue (due date passed, issues
+ * still open) wins over lag (time elapsed % − issues closed % above `lagPct`).
+ * GitHub milestones have no start date, so the earliest board Start date of
+ * their issues stands in for one; without it only the due-date check applies.
+ */
+export function milestoneRisk(m, now, lagPct) {
+  const due = dayStart(m.dueOn);
+  if (due === null || m.openCount <= 0) return null;
+  const base = { title: m.title, dueOn: m.dueOn, openCount: m.openCount };
+  const left = daysUntil(m.dueOn, now);
+  if (left !== null && left < 0) {
+    return { ...base, kind: 'overdue', lateDays: -left, elapsedPct: null, closedPct: null };
+  }
+  const starts = (m.issues ?? []).map((i) => dayStart(i.startDate)).filter((s) => s !== null);
+  if (!starts.length) return null;
+  const start = Math.min(...starts);
+  // The due date is the last working day: plan until its end.
+  const end = due + DAY;
+  if (start >= end || today(now) < start) return null;
+  const elapsedPct = Math.min(100, ((now - start) / (end - start)) * 100);
+  const total = m.openCount + m.closedCount;
+  const closedPct = total > 0 ? (m.closedCount / total) * 100 : 0;
+  if (elapsedPct - closedPct <= lagPct) return null;
+  return {
+    ...base, kind: 'lag', lateDays: null, elapsedPct: Math.round(elapsedPct), closedPct: Math.round(closedPct),
+  };
+}
+
+/** Overdue before lag; the most overdue first. */
+export function compareMilestoneRisks(a, b) {
+  if (a.kind !== b.kind) return a.kind === 'overdue' ? -1 : 1;
+  return (b.lateDays ?? 0) - (a.lateDays ?? 0) || a.title.localeCompare(b.title);
 }
