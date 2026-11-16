@@ -202,6 +202,8 @@
   "push": {
     "title": "Thông báo đẩy",
     "intro": "Điện thoại đã ghép cặp và bật thông báo (nút chuông ở tab Cần xử lý) sẽ được báo khi Remote Control đang bật và điện thoại không mở app. Thông báo về phiên chạy chỉ chứa số lượng; nhắc việc Focus có nội dung việc, được mã hoá đầu-cuối tới điện thoại.",
+    "awayOnly": "Chỉ khi tôi rời khỏi desktop",
+    "awayOnlyHint": "Không báo lên điện thoại khi bạn đang dùng máy Mac này (có thao tác trong 2 phút gần nhất, màn hình chưa khoá) — desktop đã tự hiện thông báo. Yêu cầu duyệt còn mở khi bạn rời máy sẽ được báo lúc đó.",
     "kinds": {
       "pending": "Cần duyệt",
       "done": "Phiên chạy xong",

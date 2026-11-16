@@ -13,6 +13,8 @@ use tauri::State;
 pub struct PushOverview {
     pub devices: Vec<DeviceInfo>,
     pub events: PushEvents,
+    /// Only notify while the user is away from the desktop.
+    pub away_only: bool,
 }
 
 #[tauri::command]
@@ -21,6 +23,7 @@ pub async fn remote_push_overview(db: State<'_, Db>) -> Result<PushOverview, Str
     Ok(PushOverview {
         devices: devices.iter().map(DeviceInfo::from).collect(),
         events: store::events(db.inner()).await,
+        away_only: store::away_only(db.inner()).await,
     })
 }
 
@@ -34,6 +37,17 @@ pub async fn remote_push_remove(db: State<'_, Db>, id: String) -> Result<bool, S
 #[tauri::command]
 pub async fn remote_push_set_events(db: State<'_, Db>, events: PushEvents) -> Result<(), String> {
     store::set_events(db.inner(), events).await
+}
+
+#[tauri::command]
+pub async fn remote_push_set_away_only(
+    db: State<'_, Db>,
+    state: State<'_, RemoteState>,
+    on: bool,
+) -> Result<(), String> {
+    store::set_away_only(db.inner(), on).await?;
+    state.push.set_away_only(on);
+    Ok(())
 }
 
 /// Send the test notification to one device. `Err` carries a short reason

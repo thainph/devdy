@@ -188,6 +188,45 @@ impl Holder {
     }
 }
 
+/// What came due while the user was at the desktop (`presence`): the desktop
+/// showed its own notifications, so finished / failed runs are dropped. A new
+/// prompt is only remembered: if the user leaves while prompts are still open,
+/// the phone hears about them then (the count is taken at send time, so
+/// prompts answered at the desktop send nothing).
+#[derive(Debug, Default)]
+pub struct DeskGate {
+    prompt_waiting: bool,
+}
+
+impl DeskGate {
+    /// A burst is ready: send it (with a remembered prompt) unless `in_use`.
+    pub fn pass(&mut self, counts: BurstCounts, in_use: bool) -> Option<BurstCounts> {
+        if in_use {
+            self.prompt_waiting |= counts.new_pending > 0;
+            return None;
+        }
+        Some(self.release(false).map_or(counts, |w| w.merge(counts)))
+    }
+
+    /// The user may have left: hand out the remembered prompt unless `in_use`.
+    pub fn release(&mut self, in_use: bool) -> Option<BurstCounts> {
+        if in_use || !self.prompt_waiting {
+            return None;
+        }
+        self.prompt_waiting = false;
+        Some(BurstCounts::one(PushKind::Pending))
+    }
+
+    /// Nothing is open any more (or the switch went off).
+    pub fn forget(&mut self) {
+        self.prompt_waiting = false;
+    }
+
+    pub fn is_waiting(&self) -> bool {
+        self.prompt_waiting
+    }
+}
+
 /// Collapses events into bursts: the first event opens a window, later ones
 /// join it, and the burst is handed out once the window has elapsed.
 #[derive(Debug)]
@@ -405,6 +444,31 @@ mod tests {
             PushEvents::from_list(" done ,bogus"),
             PushEvents { pending: false, done: true, failed: false, focus: true }
         );
+    }
+
+    #[test]
+    fn at_the_desktop_runs_are_dropped_but_prompts_wait_for_the_user_to_leave() {
+        let mut g = DeskGate::default();
+        assert_eq!(g.pass(BurstCounts { new_pending: 0, done: 2, failed: 1 }, true), None);
+        assert!(!g.is_waiting(), "finished runs were seen on the desktop");
+        assert_eq!(g.pass(BurstCounts { new_pending: 1, done: 1, failed: 0 }, true), None);
+        assert!(g.is_waiting());
+        assert_eq!(g.release(true), None, "still at the desktop");
+        assert_eq!(g.release(false), Some(BurstCounts::one(PushKind::Pending)));
+        assert_eq!(g.release(false), None, "handed out once");
+    }
+
+    #[test]
+    fn away_from_the_desktop_a_burst_goes_out_with_the_waiting_prompt() {
+        let mut g = DeskGate::default();
+        let done = BurstCounts { new_pending: 0, done: 1, failed: 0 };
+        assert_eq!(g.pass(done, false), Some(done));
+        g.pass(BurstCounts::one(PushKind::Pending), true);
+        assert_eq!(g.pass(done, false), Some(BurstCounts { new_pending: 1, done: 1, failed: 0 }));
+        assert!(!g.is_waiting());
+        g.pass(BurstCounts::one(PushKind::Pending), true);
+        g.forget();
+        assert_eq!(g.release(false), None, "answered at the desktop");
     }
 
     #[test]
