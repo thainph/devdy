@@ -29,6 +29,8 @@ import SlackMessage from './SlackMessage.vue'
 import SlackMessageFiles from './SlackMessageFiles.vue'
 import SlackImageLightbox from './SlackImageLightbox.vue'
 import SlackReplyComposer from './SlackReplyComposer.vue'
+import { useSlackCustomersStore } from '@/stores/slackCustomers'
+import { useToast } from '@/composables/useToast'
 import type { SessionLink } from '@/lib/sessionLinks'
 
 const props = defineProps<{
@@ -65,6 +67,9 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
+const { toast } = useToast()
+const customers = useSlackCustomersStore()
+void customers.start()
 const { renderText, loadMarkdown } = useMarkdown()
 loadMarkdown()
 
@@ -85,6 +90,33 @@ const firstNewIndex = computed(() => {
   if (props.newCount <= 0 || props.newCount > replyCount.value) return -1
   return rows.value.length - props.newCount
 })
+
+// ── Customers (Work Dashboard) ───────────────────────────────────────────────
+
+/** Whether the sender is a marked customer; null when it cannot be marked. */
+function customerOf(userId: string | null, botId: string | null): boolean | null {
+  const team = props.view.teamId
+  if (!team || !userId || botId || props.view.users[userId]?.isBot) return null
+  return customers.isCustomer(team, userId)
+}
+
+async function toggleCustomer(userId: string | null) {
+  const team = props.view.teamId
+  if (!team || !userId) return
+  const name = props.view.users[userId]?.displayName ?? userId
+  try {
+    if (customers.isCustomer(team, userId)) {
+      await customers.unmark(team, userId)
+      toast.success(t('slackThread.customer.unmarked', { name }))
+    } else {
+      // Default the customer's project to the thread's.
+      await customers.mark(team, userId, props.view.projectId)
+      toast.success(t('slackThread.customer.marked', { name }))
+    }
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
 
 const filesById = computed(() => new Map(props.view.files.map((f) => [f.id, f])))
 
@@ -279,7 +311,9 @@ watch(
           :files="filesOf(row.message.fileIds)"
           :show-original="showOriginalFor(row.message.ts)"
           :translating="translating"
+          :customer="customerOf(row.message.userId, row.message.botId)"
           @toggle-original="toggleMessage(row.message.ts)"
+          @toggle-customer="toggleCustomer(row.message.userId)"
           @open-image="lightboxId = $event"
         />
         <div

@@ -17,7 +17,8 @@
     "prompts": "Mẫu Prompt",
     "inbox": "Inbox API",
     "azure": "Tài khoản Azure",
-    "focus": "Giờ làm việc & nhắc việc"
+    "focus": "Giờ làm việc & nhắc việc",
+    "slackCustomers": "Khách hàng Slack"
   },
   "general": {
     "theme": "Giao diện",
@@ -482,5 +483,11 @@
       "projects": "Project"
     },
     "syncInstead": "Hai máy đều đang online? Dùng {link} thay vì file."
+  },
+  "slackCustomers": {
+    "title": "Khách hàng Slack",
+    "help": "Các người dùng Slack đã được đánh dấu là khách trong cửa sổ Slack threads. Thread có tin nhắn cuối (không tính bot) do khách gửi sẽ hiện là “khách chờ bạn” trên trang Tổng quan công việc.",
+    "empty": "Chưa có khách nào. Trong cửa sổ Slack threads, rê chuột vào một tin nhắn và chọn “Đánh dấu là khách”.",
+    "refresh": "Tải lại"
   }
 }

@@ -17,7 +17,8 @@
     "prompts": "Prompt Templates",
     "inbox": "Inbox API",
     "azure": "Azure Accounts",
-    "focus": "Working hours & reminders"
+    "focus": "Working hours & reminders",
+    "slackCustomers": "Slack customers"
   },
   "general": {
     "theme": "Theme",
@@ -482,5 +483,11 @@
       "projects": "Projects"
     },
     "syncInstead": "Both machines online? Use {link} instead of a file."
+  },
+  "slackCustomers": {
+    "title": "Slack customers",
+    "help": "Slack users marked as customers from the Slack threads window. A thread whose latest message (bots aside) comes from a customer shows as “waiting on you” on the Work Dashboard.",
+    "empty": "No customers yet. In the Slack threads window, hover a message and choose “Mark as customer”.",
+    "refresh": "Reload"
   }
 }

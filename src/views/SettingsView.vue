@@ -7,7 +7,7 @@ import {
   Cpu, Palette, FileText, ShieldAlert, Sparkles, Github, Gitlab, Cloud, CloudCog,
   CheckCircle2, AlertTriangle, Trash2, Plus, Pencil, Gauge, Radio,
   RefreshCw, Loader2, BadgeCheck, HardDrive, Bot, RotateCcw, UserCircle,
-  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, Target, ArchiveRestore,
+  LogIn, Star, ChevronDown, ArrowRightLeft, Inbox, GripVertical, Target, ArchiveRestore, UserCheck,
 } from 'lucide-vue-next'
 import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
@@ -19,6 +19,7 @@ import MascotBubble from '@/components/MascotBubble.vue'
 import DevicesSettings from '@/components/DevicesSettings.vue'
 import SettingsBackup from '@/components/SettingsBackup.vue'
 import InboxApiSettings from '@/components/InboxApiSettings.vue'
+import SlackCustomersSettings from '@/components/SlackCustomersSettings.vue'
 import FocusSettings from '@/components/FocusSettings.vue'
 import GithubAccountBoards from '@/components/GithubAccountBoards.vue'
 import { useConfirm } from '@/composables/useConfirm'
@@ -496,6 +497,7 @@ const SECTIONS = [
   { id: 'devices', labelKey: 'settings.sections.devices', icon: Radio },
   { id: 'backup', labelKey: 'settings.sections.backup', icon: ArchiveRestore },
   { id: 'inbox', labelKey: 'settings.sections.inbox', icon: Inbox },
+  { id: 'slackCustomers', labelKey: 'settings.sections.slackCustomers', icon: UserCheck },
   { id: 'prompts', labelKey: 'settings.sections.prompts', icon: FileText },
 ] as const
 const activeSection = ref<(typeof SECTIONS)[number]['id']>('general')
@@ -3011,6 +3013,11 @@ watch(() => settings.value.language, (v) => {
              shown, so opening the section always reads the live port / status. -->
         <div v-if="!loading && activeSection === 'inbox'" class="max-w-lg">
           <InboxApiSettings />
+        </div>
+
+        <!-- Slack users marked as customers (Work Dashboard). Mounted only while shown. -->
+        <div v-if="!loading && activeSection === 'slackCustomers'" class="max-w-2xl">
+          <SlackCustomersSettings />
         </div>
       </div>
     </div>
