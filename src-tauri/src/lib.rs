@@ -618,6 +618,7 @@ pub fn run() {
             set_project_github_board,
             list_milestone_board,
             commands::radar::set_radar_settings,
+            commands::radar::list_radar_snapshots,
             list_runs,
             start_run,
             cancel_run,
