@@ -122,6 +122,7 @@ export async function loadRadar({ project, scope = 'all', refresh = false, now =
       truncated: !!snap?.board?.truncated,
       boardLinked: !!snap?.board?.boardLinked,
       skippedNonGithub: !!snap?.board?.skippedNonGithub,
+      milestones: snap?.board?.milestones ?? [],
     });
     for (const g of snap?.board?.milestones ?? []) {
       for (const issue of g.issues ?? []) issues.push({ ...issue, projectId: p.id, projectName: p.name });
