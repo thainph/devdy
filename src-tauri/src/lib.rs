@@ -131,11 +131,6 @@ use commands::focus::{
     focus_board, focus_settings_get, focus_settings_set, focus_take_open_todo,
 };
 use commands::focus_ai::{focus_ai_cancel, focus_ai_suggest, focus_start_with_ai};
-use commands::todo_batch::{
-    board_batches, board_close_item, board_items, board_queue_add, board_queue_list, board_queue_remove,
-    board_overview, board_run, list_all_pending_permissions,
-    worktree_commit_all, worktree_push,
-};
 use commands::worktrees::{
     get_project_worktree_settings, set_project_worktree_settings, worktree_remove, worktrees_list,
 };
@@ -704,17 +699,6 @@ pub fn run() {
             worktree_remove,
             get_project_worktree_settings,
             set_project_worktree_settings,
-            board_run,
-            board_overview,
-            board_queue_add,
-            board_queue_remove,
-            board_queue_list,
-            board_batches,
-            board_items,
-            board_close_item,
-            worktree_commit_all,
-            worktree_push,
-            list_all_pending_permissions,
             delete_todo,
             delete_todos,
             clear_completed_todos,

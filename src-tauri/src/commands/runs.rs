@@ -2870,14 +2870,9 @@ pub async fn create_handoff_run(
     .execute(&mut *tx)
     .await
     .map_err(|e| e.to_string())?;
-    // It carries on the same work: a todo batch's conductor stays one (same
-    // project-bound todos, so its `session_spawn` keeps refusing other projects /
-    // todos), and a todo session stays linked to its todo (so the project checks
-    // on resume still apply).
+    // It carries on the same work: a todo session stays linked to its todo (so
+    // the project checks on resume still apply).
     for sql in [
-        "UPDATE runs SET todo_batch = (SELECT todo_batch FROM runs WHERE id = ?2) WHERE id = ?1",
-        "INSERT OR IGNORE INTO todo_batch_items (batch_run_id, todo_id, position)
-         SELECT ?1, todo_id, position FROM todo_batch_items WHERE batch_run_id = ?2",
         "INSERT OR IGNORE INTO todo_runs (todo_id, run_id, project_id, source, linked_at)
          SELECT todo_id, ?1, project_id, source, linked_at FROM todo_runs WHERE run_id = ?2 AND source = 'created_from_item'",
     ] {

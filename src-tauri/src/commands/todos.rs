@@ -232,12 +232,20 @@ pub async fn set_todo_project(
     Ok(())
 }
 
+/// SQL (todo id = `?1`): a session is working on the todo right now. Such a
+/// todo can't move to another project (`set_todo_project`, and the MCP
+/// `todos_set_project` mirrors it): its session runs in the current one.
+pub const TODO_BUSY_SQL: &str = "EXISTS (
+            SELECT 1 FROM todo_runs ir JOIN runs r ON r.id = ir.run_id
+            WHERE ir.todo_id = ?1 AND ir.source = 'created_from_item' AND r.status IN ('running', 'fetched')
+         )";
+
 pub async fn set_todo_project_inner(db: &Db, id: &str, project_id: Option<&str>) -> Result<(), String> {
     // One statement: the busy check and the move can't be split by a worker start.
     let sql = format!(
         "UPDATE todos SET project_id = ?2, updated_at = ?3
          WHERE id = ?1 AND (project_id IS ?2 OR NOT ({}))",
-        crate::commands::todo_batch::TODO_BUSY_SQL
+        TODO_BUSY_SQL
     );
     let moved = sqlx::query(&sql)
         .bind(id)
