@@ -38,6 +38,7 @@ import { openItemListWindow } from '@/lib/itemListWindow'
 import { openPrInboxWindow } from '@/lib/prInboxWindow'
 import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
 import { invoke } from '@/lib/tauri'
+import { projectOptions } from '@/lib/projectOptions'
 import { actionableCount } from '@/lib/prPriority'
 import type { SlackDashboardRow } from '@/lib/dashboardSlack'
 import type { DashboardRun } from '@/lib/workDashboard'
@@ -78,7 +79,7 @@ watch(() => projects.projects, (list) => {
 })
 const filterOptions = computed(() => [
   { value: ALL, label: t('dashboard.allProjects') },
-  ...projects.projects.map((p) => ({ value: p.id, label: p.name })),
+  ...projectOptions(projects.projects),
 ])
 
 // ── View + card order (remembered) ───────────────────────────────────────────

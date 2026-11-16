@@ -17,6 +17,7 @@ import { useProjectsStore } from '@/stores/projects'
 import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
 import TodoMetaFields from '@/components/focus/TodoMetaFields.vue'
 import { draftToInput } from '@/lib/focus'
+import { projectOptions as toProjectOptions } from '@/lib/projectOptions'
 
 const props = withDefaults(defineProps<{ autofocus?: boolean }>(), { autofocus: true })
 
@@ -52,7 +53,7 @@ const noteBodyRef = ref<InstanceType<typeof Textarea> | null>(null)
 
 const projectOptions = computed(() => [
   { value: NO_PROJECT, label: t('item.noProject') },
-  ...projects.projects.map((p) => ({ value: p.id, label: p.name })),
+  ...toProjectOptions(projects.projects),
 ])
 
 // The run backlink only survives while the capture stays on the project it came

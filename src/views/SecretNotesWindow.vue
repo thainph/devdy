@@ -36,6 +36,7 @@ import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { useProjectsStore } from '@/stores/projects'
 import { refreshTray } from '@/lib/tray'
+import { projectOptionsForIds } from '@/lib/projectOptions'
 import { SECRET_NOTES_WINDOW_SELECT, type SecretNotesWindowSelect } from '@/lib/secretNotesWindow'
 import {
   MAX_SECRET_CONTENT,
@@ -145,9 +146,7 @@ const projectOptions = computed(() => {
   const ids = new Set<string>()
   for (const n of notes.value) if (n.project_id) ids.add(n.project_id)
   if (projectFilter.value && projectFilter.value !== NO_PROJECT) ids.add(projectFilter.value)
-  const named = [...ids]
-    .map((id) => ({ value: id, label: projectNames.value[id] ?? id }))
-    .sort((a, b) => a.label.localeCompare(b.label))
+  const named = projectOptionsForIds(ids, (id) => projectNames.value[id])
   return [
     { value: '', label: t('item.allProjects') },
     ...named,

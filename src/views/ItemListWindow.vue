@@ -53,6 +53,7 @@ import {
   type WindowOpenRun,
 } from '@/lib/sessionLinks'
 import { firstLine } from '@/lib/itemText'
+import { projectOptionsForIds } from '@/lib/projectOptions'
 import { refreshTray } from '@/lib/tray'
 import { secretNoteFromNote, vaultError } from '@/lib/secretVault'
 import { countFocus, latenessById, type FocusRadarStatus } from '@/lib/focusRadar'
@@ -149,9 +150,7 @@ const projectOptions = computed(() => {
   const ids = new Set<string>()
   for (const row of allRows.value) if (row.projectId) ids.add(row.projectId)
   if (projectFilter.value && projectFilter.value !== NO_PROJECT) ids.add(projectFilter.value)
-  const named = [...ids]
-    .map((id) => ({ value: id, label: projectNames.value[id] ?? id }))
-    .sort((a, b) => a.label.localeCompare(b.label))
+  const named = projectOptionsForIds(ids, (id) => projectNames.value[id])
   return [
     { value: '', label: t('item.allProjects') },
     ...named,

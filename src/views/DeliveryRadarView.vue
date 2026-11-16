@@ -17,6 +17,7 @@ import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/de
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
 import DoneStatusesModal from '@/components/radar/DoneStatusesModal.vue'
 import type { TodoPrefill } from '@/lib/focus'
+import { sortProjectsByName } from '@/lib/projectOptions'
 import {
   buildGroups,
   classifyAll,
@@ -39,7 +40,7 @@ const GROUP_KEY = 'devdy:radarGroupMode'
 
 // ── Project scope ────────────────────────────────────────────────────────────
 // Only projects with a linked GitHub Project board carry the Deadline field.
-const boardProjects = computed(() => projectsStore.projects.filter((p) => !!p.github_project_board_url))
+const boardProjects = computed(() => sortProjectsByName(projectsStore.projects.filter((p) => !!p.github_project_board_url)))
 // Empty = all board projects.
 const selectedProjects = ref<Set<string>>(new Set())
 const scopeProjects = computed(() =>

@@ -7,6 +7,7 @@ import { useI18n } from 'vue-i18n'
 import { FolderOpen } from 'lucide-vue-next'
 import { AppSelect } from '@/components/ui'
 import { useProjectsStore } from '@/stores/projects'
+import { projectOptions } from '@/lib/projectOptions'
 
 const props = withDefaults(
   defineProps<{
@@ -27,7 +28,7 @@ const NO_PROJECT = ''
 
 const options = computed(() => [
   { value: NO_PROJECT, label: t('item.noProject') },
-  ...projects.projects.map((p) => ({ value: p.id, label: p.name })),
+  ...projectOptions(projects.projects),
 ])
 </script>
 
