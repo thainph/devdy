@@ -109,6 +109,17 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const testers = ref<string[]>(readTesters())
 
   watch(thresholds, (v) => persist(THRESHOLDS_KEY, v), { deep: true })
+  // The radar window and the Work Dashboard (main window) share these settings
+  // through localStorage; follow the other window's edits.
+  try {
+    window.addEventListener('storage', (e) => {
+      if (e.key === THRESHOLDS_KEY) thresholds.value = readThresholds()
+      else if (e.key === STAGES_KEY) stages.value = readStages()
+      else if (e.key === TESTERS_KEY) testers.value = readTesters()
+    })
+  } catch {
+    /* no window (tests) */
+  }
   watch(stages, (v) => persist(STAGES_KEY, v), { deep: true })
   watch(testers, (v) => persist(TESTERS_KEY, v), { deep: true })
   // Mirrored to the app DB so the built-in MCP radar tools classify the same way.
@@ -225,10 +236,36 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   }
 
   /** Load every project (cache first); `force` (Refresh button) always refetches. */
+  /**
+   * Take the app DB's snapshot (`radar_snapshots`) of each project when it is
+   * newer than this window's cache: boards fetched by another window or by an
+   * MCP refresh then show here without a GitHub call.
+   */
+  async function hydrateFromDb(projectIds: string[]) {
+    if (!projectIds.length) return
+    let snaps: { projectId: string, board: MilestoneBoard, savedAt: number }[]
+    try {
+      snaps = await invoke('list_radar_snapshots', { projectIds })
+    } catch {
+      return // outside the Tauri shell / old backend: localStorage only
+    }
+    let next: Record<string, ProjectBoardState> | null = null
+    for (const snap of snaps) {
+      if (!snap.board?.milestones) continue
+      const cur = (next ?? boards.value)[snap.projectId]
+      if (cur && cur.savedAt >= snap.savedAt) continue
+      const state = { board: snap.board, savedAt: snap.savedAt }
+      ;(next ??= { ...boards.value })[snap.projectId] = state
+      writePersisted(snap.projectId, state)
+    }
+    if (next) boards.value = next
+  }
+
   async function refresh(projectIds: string[], opts: { force?: boolean } = {}) {
     // Every cached project shows at once — not only when its turn in the
     // (concurrency-capped) fetch queue comes.
     hydrate(projectIds)
+    if (!opts.force) await hydrateFromDb(projectIds)
     const queue = projectIds.filter((id) => opts.force || !isFresh(id))
     const worker = async () => {
       for (let id = queue.shift(); id; id = queue.shift()) await refreshOne(id)

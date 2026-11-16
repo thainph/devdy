@@ -90,3 +90,73 @@ pub async fn set_radar_settings(
     .map_err(|e| e.to_string())?;
     Ok(())
 }
+
+/// A saved board, as the radar store keeps it (`board` is the camelCase
+/// `MilestoneBoard` JSON, `saved_at` epoch ms).
+#[derive(Debug, serde::Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RadarSnapshot {
+    pub project_id: String,
+    pub board: serde_json::Value,
+    pub saved_at: i64,
+}
+
+/// The saved boards of `project_ids` (missing / corrupt ones are skipped).
+pub async fn load_snapshots(db: &Db, project_ids: &[String]) -> Result<Vec<RadarSnapshot>, String> {
+    if project_ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = vec!["?"; project_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT project_id, board, saved_at FROM radar_snapshots WHERE project_id IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, (String, String, i64)>(&sql);
+    for id in project_ids {
+        q = q.bind(id);
+    }
+    let rows = q.fetch_all(db).await.map_err(|e| e.to_string())?;
+    Ok(rows
+        .into_iter()
+        .filter_map(|(project_id, board, saved_at)| {
+            let board = serde_json::from_str(&board).ok()?;
+            Some(RadarSnapshot { project_id, board, saved_at })
+        })
+        .collect())
+}
+
+/// Saved boards for windows whose own cache is empty or older (e.g. the Work
+/// Dashboard in the main window, or boards refreshed by an MCP tool).
+#[tauri::command]
+pub async fn list_radar_snapshots(
+    db: tauri::State<'_, Db>,
+    project_ids: Vec<String>,
+) -> Result<Vec<RadarSnapshot>, String> {
+    load_snapshots(db.inner(), &project_ids).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::slack_threads::tests::memory_db;
+
+    #[tokio::test]
+    async fn load_snapshots_returns_saved_boards_only() {
+        let db = memory_db().await;
+        for (id, board, at) in [("p1", r#"{"milestones":[],"boardLinked":true}"#, 5), ("p2", "not json", 6)] {
+            sqlx::query("INSERT INTO radar_snapshots (project_id, board, saved_at) VALUES (?, ?, ?)")
+                .bind(id)
+                .bind(board)
+                .bind(at)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let ids: Vec<String> = ["p1", "p2", "nope"].iter().map(|s| s.to_string()).collect();
+        let snaps = load_snapshots(&db, &ids).await.unwrap();
+        assert_eq!(snaps.len(), 1);
+        assert_eq!(snaps[0].project_id, "p1");
+        assert_eq!(snaps[0].saved_at, 5);
+        assert_eq!(snaps[0].board["boardLinked"], true);
+        assert!(load_snapshots(&db, &[]).await.unwrap().is_empty());
+    }
+}

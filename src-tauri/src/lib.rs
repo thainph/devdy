@@ -99,7 +99,7 @@ use commands::rules::{
 };
 use commands::runs::{
     cancel_run, mark_run_seen, create_handoff_run, create_session_run, delete_all_runs, delete_run, end_run_input,
-    get_run_log, get_run_log_forward, get_run_log_page, get_run_log_path, get_run_log_revision, get_run_tool_records, get_run_user_records, list_live_runs, list_pending_permissions, read_run_input, rename_run, rerun_run, respond_permission,
+    get_run_log, get_run_log_forward, get_run_log_page, get_run_log_path, get_run_log_revision, get_run_tool_records, get_run_user_records, list_active_runs, list_live_runs, list_pending_permissions, read_run_input, rename_run, rerun_run, respond_permission,
     resume_run, send_user_message, set_run_claude_account, set_run_pinned, set_run_protected, start_run,
 };
 use commands::sessions::reconcile_claude_sessions;
@@ -124,7 +124,8 @@ use commands::slack_threads::{
     get_slack_token_status, link_slack_thread_run, list_run_slack_threads, list_slack_thread_runs,
     list_slack_threads, mark_slack_thread_seen, post_slack_thread_reply, refresh_slack_thread,
     rename_slack_thread, reorder_slack_threads, retranslate_slack_thread, set_slack_thread_project,
-    translate_slack_reply, unlink_slack_thread_run,
+    translate_slack_reply, unlink_slack_thread_run, list_slack_customers, set_slack_customer,
+    remove_slack_customer, list_slack_thread_activity,
 };
 use commands::focus::{
     focus_board, focus_settings_get, focus_settings_set, focus_take_open_todo,
@@ -617,6 +618,7 @@ pub fn run() {
             set_project_github_board,
             list_milestone_board,
             commands::radar::set_radar_settings,
+            commands::radar::list_radar_snapshots,
             list_runs,
             start_run,
             cancel_run,
@@ -632,6 +634,7 @@ pub fn run() {
             respond_permission,
             list_pending_permissions,
             list_live_runs,
+            list_active_runs,
             send_user_message,
             end_run_input,
             read_run_input,
@@ -763,6 +766,10 @@ pub fn run() {
             unlink_slack_thread_run,
             list_slack_thread_runs,
             list_run_slack_threads,
+            list_slack_customers,
+            set_slack_customer,
+            remove_slack_customer,
+            list_slack_thread_activity,
             link_item_run,
             unlink_item_run,
             list_item_runs,

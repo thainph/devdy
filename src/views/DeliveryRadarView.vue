@@ -298,6 +298,11 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
           <Input v-model.number="store.thresholds.staleDays" type="number" size="sm" class="w-14" />
           {{ t('radar.days') }}
         </label>
+        <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground" :title="t('radar.milestoneLagHint')">
+          {{ t('radar.milestoneLagLabel') }}
+          <Input v-model.number="store.thresholds.milestoneLagPct" type="number" size="sm" class="w-14" />
+          %
+        </label>
         <Button
           variant="outline"
           :disabled="scopeIds.length === 0"

@@ -394,6 +394,7 @@ mod tests {
             }],
             requested_reviewers: vec![],
             updated_since_review: false,
+            stats: Default::default(),
         }
     }
 

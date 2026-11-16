@@ -395,6 +395,7 @@ mod tests {
             reviewer_accounts: Vec::new(),
             requested_reviewers: Vec::new(),
             updated_since_review: false,
+            stats: Default::default(),
         }
     }
 

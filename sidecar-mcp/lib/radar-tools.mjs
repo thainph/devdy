@@ -9,7 +9,8 @@
 
 import { loadRadar, statusNames, REVALIDATE_MS } from './radar-store.mjs';
 import {
-  RADAR_STATUSES, buildGroups, classifyAll, compareIssues, countByStatus, defaultStage, filterIssues, nestIssues,
+  RADAR_STATUSES, buildGroups, classifyAll, compareIssues, compareMilestoneRisks, countByStatus, defaultStage,
+  filterIssues, milestoneRisk, nestIssues,
 } from './radar.mjs';
 
 const SCOPE = {
@@ -77,6 +78,26 @@ function footer(radar, now) {
   return lines.length ? `\n\nNotes:\n${lines.map((l) => `- ${l}`).join('\n')}` : '';
 }
 
+/** Milestones at risk (estimate) of the projects in scope, one line each. */
+function milestoneLines(radar, now) {
+  const lag = radar.settings.thresholds.milestoneLagPct;
+  const out = [];
+  for (const p of radar.projects) {
+    const risks = (p.milestones ?? [])
+      .map((m) => milestoneRisk(m, now, lag))
+      .filter((m) => m !== null)
+      .sort(compareMilestoneRisks);
+    for (const m of risks) {
+      out.push(
+        m.kind === 'overdue'
+          ? `- ${p.name} · ${m.title}: past due ${m.dueOn?.slice(0, 10)} by ${m.lateDays}d, ${m.openCount} issue(s) open`
+          : `- ${p.name} · ${m.title}: behind schedule — ${m.elapsedPct}% of the time used, ${m.closedPct}% of issues closed (due ${m.dueOn?.slice(0, 10)})`,
+      );
+    }
+  }
+  return out;
+}
+
 function header(radar, open, now) {
   const loaded = radar.projects.filter((p) => p.savedAt !== null);
   const oldest = loaded.length ? Math.min(...loaded.map((p) => p.savedAt)) : null;
@@ -85,6 +106,7 @@ function header(radar, open, now) {
     `Delivery Radar — ${radar.projects.length} project(s) · ${open.length} open issue(s)${oldest ? ` · updated ${ago(oldest, now)}` : ''}`,
     `Totals: ${countsLine(countByStatus(open))}`,
     `Rules: due-soon = deadline within ${th.dueSoonDays}d · stale = no update for more than ${th.staleDays}d · ` +
+      `milestone behind = time used − issues closed > ${th.milestoneLagPct} points · ` +
       `testers: ${radar.settings.testers.join(', ') || 'none'}`,
   ].join('\n');
 }
@@ -134,7 +156,9 @@ export function radarTools() {
           return [`## ${name} — ${g.total} issue(s): ${countsLine(g.counts)}${late}${related}`, ...urgent].join('\n');
         });
         const more = groups.length > limit ? `\n\n… ${groups.length - limit} more group(s).` : '';
-        return `${header(radar, open, now)}\n\n${body.join('\n\n') || 'No open work.'}${more}${footer(radar, now)}`;
+        const ms = milestoneLines(radar, now);
+        const milestones = ms.length ? `\n\nMilestones at risk (estimate):\n${ms.join('\n')}` : '';
+        return `${header(radar, open, now)}\n\n${body.join('\n\n') || 'No open work.'}${more}${milestones}${footer(radar, now)}`;
       },
     },
 
@@ -180,7 +204,7 @@ export function radarTools() {
 
     radar_settings: {
       description:
-        'Delivery Radar settings as set in the app: the due-soon / stale thresholds, the stage (dev → qa → done) of each ' +
+        'Delivery Radar settings as set in the app: the due-soon / stale / milestone-lag thresholds, the stage (dev → qa → done) of each ' +
         'board status, the testers, and how fresh each project\'s board is.',
       inputSchema: { type: 'object', properties: { ...SCOPE } },
       handler: async (a) => {
@@ -202,6 +226,7 @@ export function radarTools() {
           `Settings ${saved ? 'from the radar window' : '(defaults — never saved in the app)'}:`,
           `- due-soon: deadline today or within ${thresholds.dueSoonDays} day(s)`,
           `- stale: no update for more than ${thresholds.staleDays} day(s)`,
+          `- milestone behind schedule (estimate): time used % − issues closed % above ${thresholds.milestoneLagPct} points`,
           `- testers: ${testers.join(', ') || 'none (everyone counts as a developer)'}`,
           '',
           'Stage per board status (developer is done from qa on, tester only at done):',

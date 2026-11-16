@@ -7,12 +7,13 @@
 // The body is the Vietnamese text or the original, per the window's toggle or
 // this message's own override; without a translation the original shows with a
 // "Not translated / Translating… / Translation failed" tag. Hover actions:
-// show original / translation (this message only) and copy (plain text, mentions
-// as @Name).
+// show original / translation (this message only), copy (plain text, mentions
+// as @Name) and mark / unmark the sender as a customer (Work Dashboard), whose
+// badge then shows next to the name.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Check, Copy, Languages } from 'lucide-vue-next'
+import { Check, Copy, Languages, UserCheck, UserX } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { emojiFor } from '@/lib/slackEmoji'
@@ -33,9 +34,11 @@ const props = defineProps<{
   showOriginal: boolean
   /** The thread's job is translating right now. */
   translating: boolean
+  /** Sender is a marked customer; null = cannot be marked (bot, unknown user). */
+  customer?: boolean | null
 }>()
 
-const emit = defineEmits<{ toggleOriginal: []; openImage: [fileId: string] }>()
+const emit = defineEmits<{ toggleOriginal: []; openImage: [fileId: string]; toggleCustomer: [] }>()
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -124,6 +127,14 @@ function onBodyClick(e: MouseEvent) {
           {{ t('slackThread.message.app') }}
         </span>
         <span
+          v-if="customer"
+          class="inline-flex shrink-0 items-center gap-0.5 self-center rounded bg-info/15 px-1 text-[9px] font-semibold uppercase leading-4 tracking-wide text-info"
+          :title="t('slackThread.customer.badgeTitle')"
+        >
+          <UserCheck class="h-2.5 w-2.5" :stroke-width="2" />
+          {{ t('slackThread.customer.badge') }}
+        </span>
+        <span
           class="shrink-0 text-[11px] tabular-nums text-muted-foreground hover:underline"
           :title="formatFullDate(message.postedAt)"
         >
@@ -182,6 +193,16 @@ function onBodyClick(e: MouseEvent) {
       <Button v-if="hasTranslation" variant="ghost" size="xs" @click="emit('toggleOriginal')">
         <Languages class="h-3 w-3" :stroke-width="1.75" />
         {{ showOriginal ? t('slackThread.message.showTranslation') : t('slackThread.message.showOriginal') }}
+      </Button>
+      <Button
+        v-if="customer !== null && customer !== undefined && !isBot"
+        variant="ghost"
+        size="xs"
+        :title="customer ? t('slackThread.customer.unmarkTitle', { name }) : t('slackThread.customer.markTitle', { name })"
+        @click="emit('toggleCustomer')"
+      >
+        <component :is="customer ? UserX : UserCheck" class="h-3 w-3" :stroke-width="1.75" />
+        {{ customer ? t('slackThread.customer.unmark') : t('slackThread.customer.mark') }}
       </Button>
       <Button
         variant="ghost"

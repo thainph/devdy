@@ -6,12 +6,8 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { usePrInboxStore, prKey, type PrInboxItem } from '@/stores/prInbox'
-import { useRunsStore } from '@/stores/runs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
-import { useConductorStore } from '@/stores/conductor'
-import { useAppSettingsStore } from '@/stores/appSettings'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
-import { resolvePermissionMode } from '@/lib/engineOptions'
 import {
   Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, Banner,
 } from '@/components/ui'
@@ -44,6 +40,7 @@ import {
   type PrFilterOption,
 } from '@/lib/prInboxFilters'
 import { useToast } from '@/composables/useToast'
+import { usePrReviewActions } from '@/composables/usePrReviewActions'
 import { useConfirm } from '@/composables/useConfirm'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { useRunStatusEvents } from '@/composables/useRunStatusEvents'
@@ -68,10 +65,7 @@ const props = withDefaults(defineProps<{
 const { t } = useI18n()
 const router = useRouter()
 const store = usePrInboxStore()
-const runsStore = useRunsStore()
 const live = useLiveRunsStore()
-const conductorStore = useConductorStore()
-const appSettings = useAppSettingsStore()
 const githubAccounts = useGithubAccountsStore()
 const { toast } = useToast()
 const { confirm } = useConfirm()
@@ -276,87 +270,7 @@ function openProjects() {
   router.push('/projects')
 }
 
-// Create + launch a review run for a mapped PR with no linked run. Throws on
-// failure; returns false when there was nothing to start (unmapped, already
-// linked, or already being started).
-async function startReview(item: PrInboxItem): Promise<boolean> {
-  if (!item.mapped || !item.project_id || !item.repo_id || item.existing_run_id) return false
-  const key = prKey(item)
-  if (store.reviewingKeys.has(key)) return false
-  store.setReviewing(key, true)
-  try {
-    // Allow reviewing a PR even when no linked issue can be resolved — the PR
-    // inbox should run the review regardless of issue linkage.
-    // Title the session with the PR's author and original title so inbox reviews
-    // are told apart at a glance.
-    const title = [`PR #${item.number}`, item.author_login && `@${item.author_login}`, item.title?.trim()]
-      .filter(Boolean)
-      .join(' · ')
-    const run = await runsStore.fetchPr(
-      item.project_id,
-      item.repo_id,
-      item.number,
-      undefined,
-      true,
-      title,
-      // Review as the account that was asked to review, not the project default.
-      item.account_id,
-    )
-    // Every session is a conductor: launch it like RunView's Issue/PR Run button
-    // — empty goal (default review prompt, labelled "PR #N"), default worker cap,
-    // and the effective permission mode (this screen has no per-run pick).
-    await conductorStore.start(run.id, '', {
-      permissionModeOverride: resolvePermissionMode(null, appSettings.settings?.default_permission_mode),
-    })
-    // Link immediately so a second click resumes instead of duplicating. The run
-    // streams in the background (liveRuns / ActiveRunsDock) — stay on this screen.
-    store.linkRun(key, run.id, 'running')
-    return true
-  } finally {
-    store.setReviewing(key, false)
-  }
-}
-
-// Start a review, or resume the linked one. A PR that already has a review run
-// (in DB or just created) never spawns a second session — we navigate to it.
-async function handleReview(item: PrInboxItem) {
-  if (item.existing_run_id) { openRun(item); return }
-  try {
-    if (await startReview(item)) {
-      // Stay on this screen (no focus jump — the window is for multitasking):
-      // the button turns into "Reviewing" / "View review", which opens it.
-      toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
-    }
-  } catch (e) {
-    toast.error(String(e))
-  }
-}
-
-// Review a PR again IN its existing session — offered once the linked review
-// has finished, highlighted when new commits landed after it. Re-fetches the
-// run's task file (latest diff, comments, reviews; also moves its head_sha so
-// the "updated" flag clears), resumes the session and sends the configured
-// re-review prompt — the same resume → send path as Remote Control. The
-// backend's `run:activated` makes the main window's liveRuns / dock (and this
-// window's status feed) pick the turn up.
-async function handleReReview(item: PrInboxItem) {
-  const key = prKey(item)
-  const runId = item.existing_run_id
-  if (!runId || !canReReview(item, runStatus(item), store.reviewingKeys.has(key))) return
-  store.setReviewing(key, true)
-  try {
-    const prompt = await store.loadReReviewPrompt()
-    await runsStore.refetchRun(runId)
-    await runsStore.resumeRun(runId, resolvePermissionMode(null, appSettings.settings?.default_permission_mode))
-    await runsStore.sendUserMessage(runId, prompt)
-    store.linkRun(key, runId, 'running')
-    toast.success(t('prInbox.reviewing', { repo: item.repo, number: item.number }))
-  } catch (e) {
-    toast.error(t('prInbox.reReviewFailed', { error: String(e) }))
-  } finally {
-    store.setReviewing(key, false)
-  }
-}
+const { startReview, handleReview, handleReReview } = usePrReviewActions({ openRun, runStatus })
 
 // "AI review all" on a group header: confirm, then start the group's eligible
 // PRs one at a time (sequential keeps the conductor + GitHub load sane), capped

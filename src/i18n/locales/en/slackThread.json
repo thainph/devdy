@@ -164,5 +164,15 @@
     "send": "Send",
     "sent": "Reply posted to Slack",
     "sendFailed": "Could not post the reply: {error}"
+  },
+  "customer": {
+    "badge": "Customer",
+    "badgeTitle": "Marked as a customer (Work Dashboard)",
+    "mark": "Mark as customer",
+    "unmark": "Unmark customer",
+    "markTitle": "Mark {name} as a customer: their messages count as “waiting on you” on the dashboard",
+    "unmarkTitle": "Stop treating {name} as a customer",
+    "marked": "{name} marked as a customer",
+    "unmarked": "{name} is no longer a customer"
   }
 }

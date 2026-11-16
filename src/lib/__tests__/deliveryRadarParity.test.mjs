@@ -72,3 +72,22 @@ test('stage defaults and thresholds match', () => {
   assert.deepEqual(js.DEFAULT_THRESHOLDS, ts.DEFAULT_THRESHOLDS)
   assert.deepEqual(js.RADAR_STATUSES, ts.RADAR_STATUSES)
 })
+
+test('milestoneRisk matches the TypeScript radar', () => {
+  const milestones = [
+    { title: 'late', dueOn: `${ymd(-3)}T00:00:00Z`, openCount: 2, closedCount: 1, issues: [] },
+    { title: 'closed out', dueOn: ymd(-3), openCount: 0, closedCount: 4, issues: [] },
+    { title: 'behind', dueOn: ymd(10), openCount: 8, closedCount: 1, issues: [issue({ startDate: ymd(-20) })] },
+    { title: 'on pace', dueOn: ymd(10), openCount: 2, closedCount: 8, issues: [issue({ startDate: ymd(-20) })] },
+    { title: 'no start', dueOn: ymd(10), openCount: 8, closedCount: 0, issues: [issue()] },
+    { title: 'no due', dueOn: null, openCount: 8, closedCount: 0, issues: [] },
+    { title: 'counts unknown, late', dueOn: ymd(-2), openCount: 1, closedCount: 0, countsKnown: false, issues: [] },
+    { title: 'counts unknown, lag', dueOn: ymd(10), openCount: 8, closedCount: 0, countsKnown: false, issues: [issue({ startDate: ymd(-20) })] },
+  ]
+  for (const lag of [0, 20, 60]) {
+    const a = milestones.map((m) => ts.milestoneRisk(m, NOW, lag))
+    assert.deepEqual(milestones.map((m) => js.milestoneRisk(m, NOW, lag)), a)
+    const risks = a.filter(Boolean)
+    assert.deepEqual([...risks].sort(js.compareMilestoneRisks), [...risks].sort(ts.compareMilestoneRisks))
+  }
+})

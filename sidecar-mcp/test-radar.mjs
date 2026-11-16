@@ -79,7 +79,14 @@ const qa = issue({ title: 'Cart totals', deadline: ymd(1), status: 'Ready for QA
 const todo = issue({ title: 'Coupons', startDate: ymd(-2), status: 'Todo', assignees: ['bob'] });
 const done = issue({ title: 'Shipped thing', status: 'Done', assignees: ['bob'] });
 const snap = db.prepare('INSERT OR REPLACE INTO radar_snapshots (project_id, board, saved_at) VALUES (?, ?, ?)');
-snap.run('p1', board([epic, late, qa, todo, done]), Date.now());
+const p1Issues = [epic, late, qa, todo, done];
+// A milestone past its due date with issues still open (milestone risk, estimate).
+snap.run('p1', board(p1Issues, {
+  milestones: [
+    { title: 'No milestone', dueOn: null, repos: ['web'], openCount: p1Issues.length, closedCount: 0, issues: p1Issues },
+    { title: 'v1.0', dueOn: `${ymd(-3)}T00:00:00Z`, repos: ['web'], openCount: 2, closedCount: 5, issues: [] },
+  ],
+}), Date.now());
 // Beta's snapshot is an hour old: stale.
 const betaOld = issue({ title: 'Beta old', deadline: ymd(30), assignees: ['dave'] });
 snap.run('p2', board([betaOld]), Date.now() - 3_600_000);
@@ -156,6 +163,9 @@ check(s.includes('## @carol (tester) — 1 issue(s): due-soon 1'), 'summary: tes
 check(s.includes('## @bob — 1 issue(s): not-started 1'), 'summary: start date passed, still Todo → not-started');
 check(s.includes('## (unassigned)'), 'summary: unassigned bucket');
 check(s.includes('Could not refresh from GitHub') && s.includes('Beta: data from 1h ago'), 'summary: stale board kept, flagged', s);
+check(s.includes('Milestones at risk (estimate):') && s.includes('- Alpha · v1.0: past due') && s.includes('by 3d, 2 issue(s) open'),
+  'summary: overdue milestone listed as an estimate', s);
+check(s.includes('milestone behind = time used − issues closed > 20 points'), 'summary: default milestone lag threshold');
 check(out['by-project'].includes('## Alpha — 4 issue(s)') && out['by-project'].includes('## Beta — 1 issue(s)'), 'summary: per project', out['by-project']);
 check(out.alice.includes('Matching: 1') && out.alice.includes('[overdue 4d late] web#2 Pay button broken') && out.alice.includes('parent web#1 Checkout epic'),
   'issues: by assignee, parent shown', out.alice);
@@ -166,6 +176,7 @@ check(out['unknown-project'].startsWith('Error: no project matches'), 'issues: u
 const st = out.settings;
 check(st.includes('from the radar window') && st.includes('- In progress: dev ·') && st.includes('- Ready for QA: qa (default)'),
   'settings: picked vs default stages', st);
+check(st.includes('issues closed % above 20 points'), 'settings: milestone lag threshold (default)', st);
 check(st.includes('Alpha (p1): updated just now') && st.includes('Beta (p2): updated 1h ago'), 'settings: freshness per project');
 
 // Through the broker: only the stale board is refetched; errors are surfaced.
