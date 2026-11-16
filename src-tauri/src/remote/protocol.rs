@@ -485,6 +485,60 @@ pub enum StreamPayload {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         device_events: Option<crate::remote::push::coalesce::PushEvents>,
     },
+    // ---- PR inbox ([`FEATURE_PR`]) ----
+    /// The PRs waiting for the user's review (the desktop PR Inbox), from the
+    /// Host's inbox cache. Pushed on `pr_inbox_list` and after every fetch.
+    PrInbox {
+        items: Vec<PrInboxInfo>,
+        /// When the list was fetched from GitHub; None before the first fetch.
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        fetched_at: Option<String>,
+        /// A fetch is running; a fresh `pr_inbox` follows when it ends.
+        #[serde(default)]
+        refreshing: bool,
+        /// Labels of the accounts whose fetch failed (their PRs may be missing).
+        #[serde(default, skip_serializing_if = "Vec::is_empty")]
+        failed_accounts: Vec<String>,
+        /// The last fetch failed (a short code, never the error text).
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        error: Option<String>,
+    },
+}
+
+/// One PR of the inbox as the Controller sees it. No account ids or repo ids:
+/// the phone names a PR by `key` and the Host resolves the rest from its own
+/// cache, so it can only review what the inbox actually lists.
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
+pub struct PrInboxInfo {
+    /// `owner/repo#number` — what `pr_review_*` send back as `item_id`.
+    pub key: String,
+    pub owner: String,
+    pub repo: String,
+    pub number: u64,
+    pub title: String,
+    pub html_url: String,
+    pub author_login: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub author_avatar_url: Option<String>,
+    pub author_is_bot: bool,
+    pub draft: bool,
+    pub labels: Vec<String>,
+    pub updated_at: String,
+    /// A Devdy project has this repo: the PR can be reviewed.
+    pub mapped: bool,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub project_name: Option<String>,
+    /// The account asked to review (the one the review runs as).
+    pub account_label: String,
+    /// The PR's review session, if one exists.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_run_id: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub existing_run_status: Option<String>,
+    /// New commits landed after that review fetched the PR.
+    pub updated_since_review: bool,
 }
 
 /// One todo as the Controller sees it — no Focus fields (priority, estimate,
@@ -630,10 +684,15 @@ pub const FEATURE_FOCUS: &str = "focus";
 /// it those actions are refused.
 pub const FEATURE_PUSH: &str = "push";
 
+/// Feature flag a Controller advertises to browse the PR inbox and start
+/// reviews (`pr_*`). Without it those actions are refused.
+pub const FEATURE_PR: &str = "pr";
+
 /// What this Host advertises in `session_token.host_features`: the data
 /// screens, the Inbox's `list_pending`, Always (`allow_always` /
-/// `deny_always`) from a Controller, Web Push and the Focus settings.
-pub const HOST_FEATURES: [&str; 5] = ["data", "inbox", "remember", "push", "focus"];
+/// `deny_always`) from a Controller, Web Push, the Focus settings and the PR
+/// inbox.
+pub const HOST_FEATURES: [&str; 6] = ["data", "inbox", "remember", "push", "focus", "pr"];
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -906,7 +965,7 @@ mod tests {
             host_features: HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
         })
         .unwrap();
-        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push", "focus"]));
+        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push", "focus", "pr"]));
     }
 
     #[test]

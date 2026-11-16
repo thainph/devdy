@@ -18,8 +18,8 @@ use crate::remote::agent::{now_unix, IdleClock, IDLE_TTL_SECS};
 use crate::remote::audit;
 use crate::remote::command::{
     data_action_permitted, focus_action_permitted, is_allowed_action, is_data_action, is_focus_action,
-    is_push_action, map_remote_decision, push_action_permitted, CommandRateLimiter, IdempotencyGuard,
-    RejectReason,
+    is_pr_action, is_push_action, map_remote_decision, pr_action_permitted, push_action_permitted,
+    CommandRateLimiter, IdempotencyGuard, RejectReason,
 };
 use crate::remote::forwarder::{
     replay_history, run_log_path, send_engine_model_options, send_plan_usage,
@@ -99,6 +99,10 @@ pub struct HandlerCtx {
     ///
     /// [`FEATURE_PUSH`]: crate::remote::protocol::FEATURE_PUSH
     pub push: bool,
+    /// The Controller browses the PR inbox and starts reviews ([`FEATURE_PR`]).
+    ///
+    /// [`FEATURE_PR`]: crate::remote::protocol::FEATURE_PR
+    pub pr: bool,
     /// Tags the push subscriptions this session makes, so ending or kicking
     /// it drops them ([`crate::remote::push::session_tag`]).
     pub push_session_tag: String,
@@ -108,6 +112,9 @@ pub struct HandlerCtx {
     /// Re-pushes the run / project lists when the desktop changes them; dropped
     /// with the context ([`crate::remote::live_lists::start_live_lists`]).
     pub live_lists: std::sync::OnceLock<crate::remote::live_lists::LiveLists>,
+    /// Re-pushes the PR inbox after every fetch; dropped with the context
+    /// ([`crate::remote::pr::start_live_pr_inbox`]).
+    pub live_pr: std::sync::OnceLock<crate::remote::pr::LivePrInbox>,
 }
 
 impl HandlerCtx {
@@ -384,6 +391,13 @@ pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: CmdPayload) {
         return;
     }
 
+    // Gate 3c: PR inbox actions only for a Controller that negotiated them.
+    if !pr_action_permitted(action, ctx.pr) {
+        reject(ctx, action, None, RejectReason::NotAllowed).await;
+        command_ack(ctx, &cmd, false, Some(RejectReason::NotAllowed.as_str())).await;
+        return;
+    }
+
     // An accepted inbound command slides the idle window forward (never output).
     // A visibility report is the app switching in or out, not user activity.
     if action != "push_visibility" {
@@ -400,6 +414,10 @@ pub async fn handle(ctx: &Arc<HandlerCtx>, cmd: CmdPayload) {
     }
     if is_push_action(action) {
         crate::remote::push::actions::handle(ctx, &cmd).await;
+        return;
+    }
+    if is_pr_action(action) {
+        crate::remote::pr::handle(ctx, &cmd).await;
         return;
     }
 

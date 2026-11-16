@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 37] = [
+pub const ALLOW_LIST: [&str; 41] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -69,6 +69,11 @@ pub const ALLOW_LIST: [&str; 37] = [
     "push_unsubscribe",
     "push_test",
     "push_events_set",
+    // PR inbox; refused unless the client advertised `pr` (see PR_ACTIONS).
+    "pr_inbox_list",
+    "pr_inbox_refresh",
+    "pr_review_start",
+    "pr_review_again",
 ];
 
 /// The data actions: allow-listed, but only for a Controller that advertised
@@ -138,6 +143,20 @@ pub fn push_action_permitted(action: &str, push_enabled: bool) -> bool {
     push_enabled || !is_push_action(action)
 }
 
+/// The PR inbox actions: allow-listed, but only for a Controller that
+/// advertised [`crate::remote::protocol::FEATURE_PR`].
+pub const PR_ACTIONS: [&str; 4] = ["pr_inbox_list", "pr_inbox_refresh", "pr_review_start", "pr_review_again"];
+
+/// Whether `action` is one of the [`PR_ACTIONS`].
+pub fn is_pr_action(action: &str) -> bool {
+    PR_ACTIONS.contains(&action)
+}
+
+/// Whether a session may run `action` given its negotiated `pr` flag.
+pub fn pr_action_permitted(action: &str, pr_enabled: bool) -> bool {
+    pr_enabled || !is_pr_action(action)
+}
+
 /// Whether `action` is in the frozen allow-list (AC-12).
 pub fn is_allowed_action(action: &str) -> bool {
     ALLOW_LIST.contains(&action)
@@ -149,7 +168,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 19] = [
+pub const READ_ONLY_ACTIONS: [&str; 20] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -176,6 +195,9 @@ pub const READ_ONLY_ACTIONS: [&str; 19] = [
     // and test sends stay on the command budget.
     "push_config",
     "push_visibility",
+    // The cached PR inbox. A refresh (GitHub fetches) and starting a review
+    // stay on the command budget.
+    "pr_inbox_list",
 ];
 
 /// Whether `action` only reads state (and so uses the browse budget).
@@ -517,7 +539,7 @@ mod tests {
     fn allow_list_has_no_duplicates() {
         let set: HashSet<&str> = ALLOW_LIST.iter().copied().collect();
         assert_eq!(set.len(), ALLOW_LIST.len());
-        for a in DATA_ACTIONS.iter().chain(FOCUS_ACTIONS.iter()).chain(PUSH_ACTIONS.iter()) {
+        for a in DATA_ACTIONS.iter().chain(FOCUS_ACTIONS.iter()).chain(PUSH_ACTIONS.iter()).chain(PR_ACTIONS.iter()) {
             assert!(is_allowed_action(a), "{a}");
         }
     }
@@ -536,6 +558,31 @@ mod tests {
         }
         for a in ["push_send", "push_list", "Push_test", "push_set_events"] {
             assert!(!is_allowed_action(a), "{a} must be rejected");
+        }
+    }
+
+    // ---- PR inbox ----
+    #[test]
+    fn pr_actions_are_allow_listed_and_gated() {
+        for a in PR_ACTIONS {
+            assert!(is_allowed_action(a), "{a} must be allow-listed");
+            assert!(!pr_action_permitted(a, false), "{a} needs the pr flag");
+            assert!(pr_action_permitted(a, true));
+            assert!(!is_data_action(a) && !is_focus_action(a) && !is_push_action(a));
+        }
+        for a in ["respond_permission", "todo_list", "list_runs", "push_test"] {
+            assert!(pr_action_permitted(a, false), "{a} does not depend on pr");
+        }
+        for a in ["pr_review_all", "pr_inbox_set_poll", "Pr_inbox_list", "pr_rereview_prompt_set"] {
+            assert!(!is_allowed_action(a), "{a} must be rejected");
+        }
+    }
+
+    #[test]
+    fn pr_reads_and_writes_use_the_right_budget() {
+        assert!(is_read_only_action("pr_inbox_list"), "it only reads the cache");
+        for a in ["pr_inbox_refresh", "pr_review_start", "pr_review_again"] {
+            assert!(!is_read_only_action(a), "{a} is on the command budget");
         }
     }
 
