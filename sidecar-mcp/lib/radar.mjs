@@ -246,6 +246,8 @@ export function milestoneRisk(m, now, lagPct) {
   if (left !== null && left < 0) {
     return { ...base, kind: 'overdue', lateDays: -left, elapsedPct: null, closedPct: null };
   }
+  // Progress needs the closed count: without GitHub's totals, only "overdue" can be judged.
+  if (m.countsKnown === false) return null;
   const starts = (m.issues ?? []).map((i) => dayStart(i.startDate)).filter((s) => s !== null);
   if (!starts.length) return null;
   const start = Math.min(...starts);

@@ -86,6 +86,10 @@ test('milestone lag: elapsed % − closed % above the threshold → orange', () 
   assert.equal(milestoneRisk({ ...behind, openCount: 5, closedCount: 5 }, NOW, 20), null)
   // No start date anywhere: only the due-date check applies.
   assert.equal(milestoneRisk({ ...behind, issues: [issue()] }, NOW, 20), null)
+  // Without GitHub's totals (cut milestone list) progress cannot be judged…
+  assert.equal(milestoneRisk({ ...behind, countsKnown: false }, NOW, 20), null)
+  // …but a missed due date still can.
+  assert.equal(milestoneRisk(milestone({ dueOn: '2026-11-10', openCount: 1, countsKnown: false }), NOW, 20).kind, 'overdue')
   // A bigger tolerance silences it.
   assert.equal(milestoneRisk(behind, NOW, 40), null)
   const h = projectHealth(input({ milestones: [behind] }), NOW, TH)

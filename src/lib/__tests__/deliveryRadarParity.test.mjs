@@ -81,6 +81,8 @@ test('milestoneRisk matches the TypeScript radar', () => {
     { title: 'on pace', dueOn: ymd(10), openCount: 2, closedCount: 8, issues: [issue({ startDate: ymd(-20) })] },
     { title: 'no start', dueOn: ymd(10), openCount: 8, closedCount: 0, issues: [issue()] },
     { title: 'no due', dueOn: null, openCount: 8, closedCount: 0, issues: [] },
+    { title: 'counts unknown, late', dueOn: ymd(-2), openCount: 1, closedCount: 0, countsKnown: false, issues: [] },
+    { title: 'counts unknown, lag', dueOn: ymd(10), openCount: 8, closedCount: 0, countsKnown: false, issues: [issue({ startDate: ymd(-20) })] },
   ]
   for (const lag of [0, 20, 60]) {
     const a = milestones.map((m) => ts.milestoneRisk(m, NOW, lag))
