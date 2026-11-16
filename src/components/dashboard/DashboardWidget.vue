@@ -1,6 +1,7 @@
 <script setup lang="ts">
 // Frame of one Work Dashboard card: a Card whose header carries a drag handle
-// (the cards are user-ordered), the icon and title, the data's age ("updated
+// (the cards are user-ordered), the category icon tinted by the card's level
+// (its top edge too), the title, the data's age ("updated
 // 5m ago", flagged when stale), a refresh spinner, the link to the screen that
 // owns the data and "move to the top" (the keyboard path of drag & drop).
 // The body opens with the card's answer — one big number and words (slot
@@ -11,11 +12,16 @@ import { useI18n } from 'vue-i18n'
 import { ArrowUpToLine, ChevronRight, GripVertical, Loader2 } from 'lucide-vue-next'
 import { Button, Card } from '@/components/ui'
 import { ageMs, STALE_MS } from '@/lib/workDashboard'
+import type { Level } from '@/lib/dashboardLayout'
+import StatusIcon from './StatusIcon.vue'
+import { LEVEL_STRIPE } from './levels'
 import { useDurationLabel } from './useDurationLabel'
 
 const props = withDefaults(defineProps<{
   title: string
   icon: Component
+  /** Severity of the card: tints the icon box and the top edge. */
+  level?: Level
   /** Short scope note after the title (e.g. "GitHub PRs"). */
   scope?: string
   updatedAt?: number | null
@@ -31,6 +37,7 @@ const props = withDefaults(defineProps<{
   first?: boolean
 }>(), {
   scope: undefined,
+  level: 'none',
   updatedAt: null,
   loading: false,
   seeAll: '',
@@ -57,8 +64,10 @@ const stale = computed(() => age.value !== null && age.value > props.staleAfter)
 </script>
 
 <template>
-  <Card class="@container/card flex min-w-0 flex-col" body-class="flex min-h-0 flex-1 flex-col">
+  <Card class="@container/card relative flex min-w-0 flex-col" body-class="flex min-h-0 flex-1 flex-col">
     <template #header>
+      <!-- Top edge in the card's level: a fill, not a border colour, which some themes repaint. -->
+      <span class="absolute inset-x-0 top-0 h-0.5" :class="LEVEL_STRIPE[level]" aria-hidden="true" />
       <span
         v-if="movable"
         class="-ml-1.5 flex h-5 w-4 shrink-0 cursor-grab touch-none items-center justify-center text-muted-foreground/60 hover:text-foreground active:cursor-grabbing"
@@ -68,7 +77,7 @@ const stale = computed(() => age.value !== null && age.value > props.staleAfter)
       >
         <GripVertical class="h-3.5 w-3.5" :stroke-width="1.75" />
       </span>
-      <component :is="icon" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+      <StatusIcon :icon="icon" :tone="level" size="sm" />
       <h2 class="truncate text-xs font-semibold">{{ title }}</h2>
       <span v-if="scope" class="hidden truncate text-[11px] text-muted-foreground @xl/card:inline">· {{ scope }}</span>
       <span class="ml-auto flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground">

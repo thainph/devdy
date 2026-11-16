@@ -5,12 +5,13 @@
 // worker folded into its conductor included; a menu picks one when several
 // wait — where the full prompt is shown, never approved blind from here),
 // then the longest running. Each tile: engine (Claude / Codex icons as in the
-// run view, pulsing while it streams), name, project · workers · duration,
+// run view, in a box tinted amber while it waits; a green pulsing dot while it
+// streams; a spinner next to what it is doing), name, project · workers · duration,
 // what it is doing when the app already knows it, Open / Stop. At the bottom,
 // sessions that finished and were not opened yet (the sidebar dock's "done").
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Activity, CheckCircle2, ChevronDown, Cpu, ShieldAlert, Square, Terminal, Users, XCircle } from 'lucide-vue-next'
+import { CheckCircle2, ChevronDown, Cpu, LoaderCircle, ShieldAlert, Square, Terminal, Users, XCircle } from 'lucide-vue-next'
 import { Badge, Banner, Button, DropdownItem, DropdownMenu } from '@/components/ui'
 import { sessionActivity } from '@/lib/dashboardLayout'
 import type { DashboardRun, WaitingSession } from '@/lib/workDashboard'
@@ -19,6 +20,8 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
 import { useProjectsStore } from '@/stores/projects'
 import DashboardWidget from './DashboardWidget.vue'
+import StatusIcon from './StatusIcon.vue'
+import { CATEGORY_ICON } from './levels'
 import { useDurationLabel } from './useDurationLabel'
 
 const props = defineProps<{
@@ -40,6 +43,7 @@ const runsStore = useRunsStore()
 const projects = useProjectsStore()
 
 const waitingCount = computed(() => props.runs.filter((r) => r.pending > 0).length)
+const level = computed(() => (waitingCount.value ? 'warn' : props.runs.length ? 'ok' : 'none'))
 
 function label(row: DashboardRun): string {
   const r = row.run
@@ -106,7 +110,8 @@ const recentDone = computed<DoneRow[]>(() => {
 <template>
   <DashboardWidget
     :title="t('dashboard.runs.title')"
-    :icon="Activity"
+    :icon="CATEGORY_ICON.runs"
+    :level="level"
     :updated-at="state.updatedAt"
     :now="now"
     :loading="state.loading"
@@ -115,7 +120,8 @@ const recentDone = computed<DoneRow[]>(() => {
     <template #answer>
       <span class="text-3xl font-semibold leading-none tabular-nums" :class="runs.length ? 'text-foreground' : 'text-muted-foreground'">{{ runs.length }}</span>
       <span class="text-[13px] font-medium">{{ t('dashboard.runs.answer') }}</span>
-      <Badge v-if="waitingCount" tone="warning" size="xs">{{ t('dashboard.runs.answerWaiting', { n: waitingCount }) }}</Badge>
+      <Badge v-if="waitingCount" tone="warning" size="xs">
+        <ShieldAlert class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />{{ t('dashboard.runs.answerWaiting', { n: waitingCount }) }}</Badge>
     </template>
 
     <Banner v-if="state.error" tone="destructive" class="mx-3 my-2">{{ t('dashboard.loadError', { error: state.error }) }}</Banner>
@@ -130,20 +136,26 @@ const recentDone = computed<DoneRow[]>(() => {
         :class="row.pending > 0 ? 'border-warning/40 bg-warning/10' : 'border-border/60 bg-muted/20'"
       >
         <button type="button" class="flex min-w-0 cursor-pointer items-center gap-2 text-left" @click="openRow(row)">
-          <span
-            class="relative flex h-6 w-6 shrink-0 items-center justify-center rounded-md"
-            :class="row.pending > 0 ? 'bg-warning/15 text-warning' : 'bg-muted text-foreground'"
-            :title="isCodex(row) ? 'Codex' : 'Claude'"
-          >
-            <component :is="isCodex(row) ? Terminal : Cpu" class="h-3.5 w-3.5" :stroke-width="1.75" />
-            <span v-if="row.run.status === 'running' && row.pending === 0" class="absolute -right-0.5 -top-0.5 flex h-2 w-2">
-              <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-primary opacity-60 motion-reduce:animate-none" />
-              <span class="relative inline-flex h-2 w-2 rounded-full bg-primary" />
-            </span>
+          <span class="contents" :title="isCodex(row) ? 'Codex' : 'Claude'">
+            <StatusIcon
+              :icon="isCodex(row) ? Terminal : Cpu"
+              :tone="row.pending > 0 ? 'warn' : isCodex(row) ? 'info' : 'primary'"
+              size="sm"
+            />
             <span class="sr-only">{{ isCodex(row) ? 'Codex' : 'Claude' }}</span>
           </span>
           <span class="min-w-0 flex-1">
-            <span class="block truncate text-xs font-medium text-foreground" :title="label(row)">{{ label(row) }}</span>
+            <span class="flex min-w-0 items-center gap-1.5">
+              <span class="truncate text-xs font-medium text-foreground" :title="label(row)">{{ label(row) }}</span>
+              <span
+                v-if="row.run.status === 'running' && row.pending === 0"
+                class="relative flex h-2 w-2 shrink-0"
+                :title="t('dashboard.runs.runningNow')"
+              >
+                <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none" />
+                <span class="relative inline-flex h-2 w-2 rounded-full bg-success" />
+              </span>
+            </span>
             <span class="flex min-w-0 items-center gap-1 truncate text-[11px] text-muted-foreground">
               <Users v-if="row.workerCount" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
               <span class="truncate">{{ meta(row) }}</span>
@@ -155,7 +167,10 @@ const recentDone = computed<DoneRow[]>(() => {
           <span class="truncate">{{ activity(row) ?? t('dashboard.runs.waitingPermission', { n: row.pending }, row.pending) }}</span>
         </p>
         <p v-else-if="row.run.status !== 'running'" class="text-[11px] text-muted-foreground">{{ t('dashboard.runs.idle') }}</p>
-        <p v-else-if="activity(row)" class="truncate text-[11px] text-foreground/80">{{ activity(row) }}</p>
+        <p v-else-if="activity(row)" class="flex min-w-0 items-center gap-1 text-[11px] text-foreground/80">
+          <LoaderCircle class="h-3 w-3 shrink-0 animate-spin text-primary motion-reduce:animate-none" :stroke-width="2" aria-hidden="true" />
+          <span class="truncate">{{ activity(row) }}</span>
+        </p>
         <div class="flex items-center gap-1">
           <DropdownMenu v-if="row.waiting.length > 1" align="left">
             <template #trigger>

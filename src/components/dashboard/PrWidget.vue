@@ -1,14 +1,17 @@
 <script setup lang="ts">
 // Work Dashboard — GitHub PRs where the user was asked to review directly:
 // how many wait on them, then "Review again" (new commits after the AI
-// review) → "To review" (ranked by `prPriority`, drafts last) → "Bots". Each
-// row says it in words: #n title, repo · small / large · CI state, and acts:
-// Review again / AI review / Open session, Open the PR, todo "Review PR #n";
-// failing CI is tagged "waiting for the author to fix CI"; an unmapped repo
-// offers "Map repo". No time axis: the wait is not the main signal here.
-import { computed } from 'vue'
+// review) → "To review" (quick reviews first, drafts last) → "Bots". Each row
+// leads with a status icon and says it in words: #n title, repo · size S/M/L,
+// CI as icon + words (passing / failing / running), and acts: Review again /
+// AI review (Sparkles) / Open session, Open the PR, todo "Review PR #n"; failing
+// CI says "waiting for the author to fix CI"; an unmapped repo offers "Map
+// repo". No time axis: the wait is not the main signal here.
+import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ExternalLink, FolderPlus, GitPullRequest, ListPlus, RotateCcw, Sparkles } from 'lucide-vue-next'
+import {
+  Bot, CircleCheck, CircleX, ExternalLink, FolderPlus, GitPullRequest, ListPlus, LoaderCircle, RefreshCw, Sparkles,
+} from 'lucide-vue-next'
 import { Badge, Banner, Button } from '@/components/ui'
 import { WIDGET_ROWS } from '@/lib/workDashboard'
 import { fitGroups, prCardGroups, prLevel, prSize } from '@/lib/dashboardLayout'
@@ -18,7 +21,7 @@ import type { SourceState } from '@/composables/useWorkDashboard'
 import DashboardWidget from './DashboardWidget.vue'
 import DashGroup from './DashGroup.vue'
 import DashRow from './DashRow.vue'
-import { LEVEL_TEXT } from './levels'
+import { CATEGORY_ICON, LEVEL_TEXT, type Tone } from './levels'
 
 const props = defineProps<{
   ranked: PrPriorityResult<PrInboxItem>
@@ -43,11 +46,34 @@ const { t } = useI18n()
 const groups = computed(() => fitGroups(prCardGroups(props.ranked), WIDGET_ROWS))
 const level = computed(() => prLevel(props.ranked))
 
+const SIZE_LETTER = { small: 'S', medium: 'M', large: 'L' } as const
+const CI = {
+  success: { icon: CircleCheck, cls: 'text-success' },
+  failure: { icon: CircleX, cls: 'text-destructive' },
+  pending: { icon: LoaderCircle, cls: 'text-warning' },
+} as const
+
+function rowIcon(key: string, r: RankedPr<PrInboxItem>): { icon: Component, tone: Tone } {
+  if (key === 'reReview') return { icon: RefreshCw, tone: 'warn' }
+  if (key === 'bots') return { icon: Bot, tone: 'none' }
+  return { icon: GitPullRequest, tone: r.ci === 'failure' ? 'bad' : r.pr.draft ? 'none' : 'primary' }
+}
+
+/** The words after the size chip (the full line is the tooltip, `sub`). */
+function details(r: RankedPr<PrInboxItem>): string {
+  const parts: string[] = []
+  if (r.ai !== 'none') parts.push(t(`dashboard.prs.ai.${r.ai}`))
+  if (r.soleReviewer) parts.push(t('dashboard.prs.soleReviewer'))
+  if (r.pr.author_login) parts.push(r.pr.author_login)
+  return parts.join(' · ')
+}
+
 function sub(r: RankedPr<PrInboxItem>): string {
   const parts = [r.pr.repo]
   const size = prSize(r.pr)
   if (size) parts.push(t(`dashboard.prs.size.${size}`))
   if (r.ci) parts.push(t(`dashboard.prs.ci.${r.ci}`))
+  if (r.ci === 'failure') parts.push(t('dashboard.prs.ciWaitAuthor'))
   if (r.ai !== 'none') parts.push(t(`dashboard.prs.ai.${r.ai}`))
   if (r.soleReviewer) parts.push(t('dashboard.prs.soleReviewer'))
   if (r.pr.author_login) parts.push(r.pr.author_login)
@@ -58,7 +84,8 @@ function sub(r: RankedPr<PrInboxItem>): string {
 <template>
   <DashboardWidget
     :title="t('dashboard.prs.title')"
-    :icon="GitPullRequest"
+    :icon="CATEGORY_ICON.prs"
+    :level="level"
     :scope="t('dashboard.prs.scope')"
     :updated-at="state.updatedAt"
     :now="now"
@@ -90,11 +117,37 @@ function sub(r: RankedPr<PrInboxItem>): string {
           :title="`#${r.pr.number} ${r.pr.title}`"
           :sub="sub(r)"
           :hint="t('dashboard.prs.openPr')"
+          :icon="rowIcon(g.key, r).icon"
+          :tone="rowIcon(g.key, r).tone"
           @open="emit('openPr', r.pr)"
         >
+          <template #line>
+            <span class="max-w-[50%] shrink-0 truncate">{{ r.pr.repo }}</span>
+            <span
+              v-if="prSize(r.pr)"
+              class="shrink-0 rounded bg-muted px-1 text-[10px] font-semibold leading-4 text-muted-foreground"
+              :title="t(`dashboard.prs.size.${prSize(r.pr)}`)"
+            >{{ SIZE_LETTER[prSize(r.pr)!] }}<span class="sr-only"> {{ t(`dashboard.prs.size.${prSize(r.pr)}`) }}</span></span>
+            <span v-if="r.ci === 'failure'" class="shrink-0 font-medium text-destructive">· {{ t('dashboard.prs.ciWaitAuthor') }}</span>
+            <span v-if="details(r)" class="min-w-0 truncate">· {{ details(r) }}</span>
+          </template>
           <template #aside>
             <Badge v-if="r.pr.draft" tone="neutral" size="xs">{{ t('dashboard.prs.draft') }}</Badge>
-            <Badge v-if="r.ci === 'failure'" tone="error" size="xs">{{ t('dashboard.prs.ciWaitAuthor') }}</Badge>
+            <span
+              v-if="r.ci"
+              class="inline-flex shrink-0 items-center gap-0.5 text-[11px] font-medium"
+              :class="CI[r.ci!].cls"
+              :title="t(`dashboard.prs.ci.${r.ci}`)"
+            >
+              <component
+                :is="CI[r.ci!].icon"
+                class="h-3.5 w-3.5"
+                :class="r.ci === 'pending' && 'animate-spin motion-reduce:animate-none'"
+                :stroke-width="2"
+                aria-hidden="true"
+              />
+              <span class="sr-only @xl/card:not-sr-only">{{ t(`dashboard.prs.ci.${r.ci}`) }}</span>
+            </span>
             <template v-if="g.key !== 'bots'">
               <Button
                 v-if="!r.pr.mapped"
@@ -112,7 +165,7 @@ function sub(r: RankedPr<PrInboxItem>): string {
                 :disabled="busy(r.pr)"
                 @click="emit('reReview', r.pr)"
               >
-                <RotateCcw class="h-3 w-3" :stroke-width="1.75" />{{ t('dashboard.prs.reReview') }}
+                <Sparkles class="h-3 w-3" :stroke-width="1.75" />{{ t('dashboard.prs.reReview') }}
               </Button>
               <Button
                 v-else

@@ -6,7 +6,7 @@
 // one line). Customers are marked by hand in the Slack threads window.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CheckCheck, ListPlus, MessageSquare } from 'lucide-vue-next'
+import { AlarmClock, CheckCheck, Clock, Hourglass, ListPlus, MessageCircleMore, MessageCircleWarning } from 'lucide-vue-next'
 import { Badge, Banner, Button } from '@/components/ui'
 import { WIDGET_ROWS } from '@/lib/workDashboard'
 import { fitGroups, slackCard } from '@/lib/dashboardLayout'
@@ -15,7 +15,7 @@ import type { SourceState } from '@/composables/useWorkDashboard'
 import DashboardWidget from './DashboardWidget.vue'
 import DashGroup from './DashGroup.vue'
 import DashRow from './DashRow.vue'
-import { LEVEL_TEXT } from './levels'
+import { CATEGORY_ICON, LEVEL_TEXT } from './levels'
 import { useDurationLabel } from './useDurationLabel'
 
 const props = defineProps<{
@@ -49,6 +49,8 @@ const waitingGroup = computed(() => groups.value.find((g) => g.key === 'waiting'
 const laterGroup = computed(() => groups.value.find((g) => g.key === 'later') ?? null)
 
 const WAIT_TONE = { ok: 'neutral', warn: 'warning', late: 'error' } as const
+// Status icon of a customer waiting on the user, by how long.
+const WAIT_ICON_TONE = { ok: 'info', warn: 'warn', late: 'bad' } as const
 
 function who(row: SlackDashboardRow): string {
   const name = row.customer?.displayName || row.thread.title || t('slackThread.untitled')
@@ -65,7 +67,8 @@ function quote(row: SlackDashboardRow): string {
 <template>
   <DashboardWidget
     :title="t('dashboard.slack.title')"
-    :icon="MessageSquare"
+    :icon="CATEGORY_ICON.slack"
+    :level="card.level"
     :updated-at="state.updatedAt"
     :now="now"
     :loading="state.loading"
@@ -103,6 +106,8 @@ function quote(row: SlackDashboardRow): string {
           :title="who(row)"
           :sub="quote(row)"
           :hint="row.thread.title"
+          :icon="MessageCircleWarning"
+          :tone="WAIT_ICON_TONE[row.waitLevel]"
           @open="emit('open', row.thread.id)"
         >
           <template #lead>
@@ -110,6 +115,7 @@ function quote(row: SlackDashboardRow): string {
           </template>
           <template #aside>
             <Badge v-if="row.waitingMs !== null" :tone="WAIT_TONE[row.waitLevel]" size="xs">
+              <component :is="row.waitLevel === 'late' ? AlarmClock : Clock" class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />
               {{ t('dashboard.slack.waiting', { duration: duration(row.waitingMs) }) }}
             </Badge>
             <Button variant="outline" size="xs" @click="emit('open', row.thread.id)">{{ t('dashboard.slack.open') }}</Button>
@@ -148,6 +154,8 @@ function quote(row: SlackDashboardRow): string {
           :title="who(row)"
           :sub="t('dashboard.slack.youRepliedLast')"
           :hint="row.thread.title"
+          :icon="Hourglass"
+          tone="none"
           @open="emit('open', row.thread.id)"
         >
           <template #aside>
@@ -168,6 +176,8 @@ function quote(row: SlackDashboardRow): string {
           v-if="card.unassignedNew"
           :title="t('dashboard.slack.unassignedNew', { n: card.unassignedNew }, card.unassignedNew)"
           :sub="t('dashboard.slack.unassignedHint')"
+          :icon="MessageCircleMore"
+          tone="info"
           @open="emit('openAll')"
         >
           <template #aside>

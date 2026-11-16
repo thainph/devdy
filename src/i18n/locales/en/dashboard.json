@@ -160,7 +160,8 @@
     },
     "recentDone": "Finished recently",
     "done": "finished",
-    "failed": "failed or stopped"
+    "failed": "failed or stopped",
+    "runningNow": "running"
   },
   "sources": {
     "todos": "Todos",
