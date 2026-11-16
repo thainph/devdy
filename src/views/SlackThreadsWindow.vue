@@ -5,7 +5,7 @@
 //
 //   ┌ (native OS titlebar only — no custom titlebar row, to stay compact) ───┐
 //   ├ sidebar: search · pin · reload,         │ thread pane header: title /   │
-//   │ project filter + Add, link filter,      │ #channel · [project][Sessions]│
+//   │ project filter + Add, activity filter,  │ #channel · [project][Sessions]│
 //   │ workspace → #channel → threads          │                               │
 //   │                                         │ | Original · Refresh · Slack ·  │
 //   │                                         │ ⋯ (New session from this      │
@@ -41,7 +41,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { refreshTray } from '@/lib/tray'
-import { createSeenGuard } from '@/lib/slackThreadUtils'
+import { createSeenGuard, isRecent, isUnread, matchesActivity, type ActivityFilter } from '@/lib/slackThreadUtils'
 import {
   SLACK_WINDOW_ADD,
   SLACK_WINDOW_OPEN_ROUTE,
@@ -81,14 +81,14 @@ const params = new URLSearchParams(window.location.search)
 const initialId = params.get('id') || null
 const initialProject = params.get('projectId') || null
 
-// ── Sidebar: search (server-side) + project / link filters (client-side) ────
+// ── Sidebar: search (server-side) + project / activity filters (client-side) 
 
 const NO_PROJECT = '__none__'
 const search = ref('')
 /** '' = all projects, NO_PROJECT = threads without one, else a project id. */
 const projectFilter = ref<string>(initialProject ?? '')
-/** '' = all, else only threads linked / not linked to a session. */
-const linkFilter = ref<'' | 'linked' | 'unlinked'>('')
+/** '' = all, else only unread / recently updated threads. */
+const activityFilter = ref<ActivityFilter>('')
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 watch(search, (q) => {
@@ -96,23 +96,30 @@ watch(search, (q) => {
   searchTimer = setTimeout(() => void store.fetchList(q), 250)
 })
 
-const visibleThreads = computed(() =>
-  store.threads.filter((th) => {
-    if (linkFilter.value === 'linked' && th.linkedRunCount === 0) return false
-    if (linkFilter.value === 'unlinked' && th.linkedRunCount > 0) return false
-    if (projectFilter.value === NO_PROJECT) return !th.projectId
-    if (projectFilter.value) return th.projectId === projectFilter.value
-    return true
-  }),
-)
+function inProject(th: { projectId: string | null }): boolean {
+  if (projectFilter.value === NO_PROJECT) return !th.projectId
+  return !projectFilter.value || th.projectId === projectFilter.value
+}
 
-/** Link tab counts: the project in scope, before the link filter. */
-const linkCounts = computed(() => {
-  const inScope = store.threads.filter((th) =>
-    projectFilter.value === NO_PROJECT ? !th.projectId : !projectFilter.value || th.projectId === projectFilter.value,
+const visibleThreads = computed(() => {
+  const now = Date.now()
+  return store.threads.filter(
+    (th) =>
+      inProject(th) &&
+      // The open thread stays put: opening it marks it read, which would drop it from "Unread".
+      (th.id === store.selectedId || matchesActivity(th, activityFilter.value, now)),
   )
-  const linked = inScope.filter((th) => th.linkedRunCount > 0).length
-  return { all: inScope.length, linked, unlinked: inScope.length - linked }
+})
+
+/** Activity tab counts: the project in scope, before the activity filter. */
+const activityCounts = computed(() => {
+  const now = Date.now()
+  const inScope = store.threads.filter(inProject)
+  return {
+    all: inScope.length,
+    unread: inScope.filter((th) => isUnread(th)).length,
+    recent: inScope.filter((th) => isRecent(th, now)).length,
+  }
 })
 
 const projectOptions = computed(() => {
@@ -355,7 +362,7 @@ async function onAdded(res: AddSlackThreadResult) {
   const row = store.threads.find((x) => x.id === res.id)
   if (row && !visibleThreads.value.some((x) => x.id === res.id)) {
     projectFilter.value = ''
-    linkFilter.value = ''
+    activityFilter.value = ''
   }
   await select(res.id)
 }
@@ -475,9 +482,9 @@ onBeforeUnmount(() => {
       <SlackSidebar
         v-model:search="search"
         v-model:project="projectFilter"
-        v-model:link="linkFilter"
+        v-model:activity="activityFilter"
         :threads="visibleThreads"
-        :link-counts="linkCounts"
+        :activity-counts="activityCounts"
         :empty-store="emptyStore"
         :selected-id="store.selectedId"
         :progress="store.progress"

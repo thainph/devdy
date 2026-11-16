@@ -229,3 +229,28 @@ export function formatFullDate(iso: string | null): string {
   const d = new Date(iso)
   return Number.isNaN(d.getTime()) ? iso : d.toLocaleString()
 }
+
+// ── Sidebar activity filter ─────────────────────────────────────────────────
+
+/** '' = all, 'unread' = has new messages, 'recent' = activity within RECENT_WINDOW_MS. */
+export type ActivityFilter = '' | 'unread' | 'recent'
+
+/** "Recently updated": the last reply (or, without one, the row's update) is this fresh. */
+export const RECENT_WINDOW_MS = 24 * 60 * 60 * 1000
+
+type ActivityFields = Pick<SlackThreadSummary, 'newCount' | 'lastReplyAt' | 'updatedAt'>
+
+export function isUnread(th: ActivityFields): boolean {
+  return th.newCount > 0
+}
+
+export function isRecent(th: ActivityFields, now = Date.now()): boolean {
+  const at = Date.parse(th.lastReplyAt ?? th.updatedAt)
+  return !Number.isNaN(at) && now - at <= RECENT_WINDOW_MS
+}
+
+export function matchesActivity(th: ActivityFields, filter: ActivityFilter, now = Date.now()): boolean {
+  if (filter === 'unread') return isUnread(th)
+  if (filter === 'recent') return isRecent(th, now)
+  return true
+}

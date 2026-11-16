@@ -2,7 +2,7 @@
 // Left pane of the Slack threads window, laid out like Slack's sidebar: search
 // + the window's pin / reload (the window has no custom titlebar), project
 // filter + "Add thread" (as wide as pin + reload, so the select lines up with
-// the search box), All | Linked | Not linked session tabs with counts ending in
+// the search box), All | Unread | Recently updated tabs with counts ending in
 // a ⇅ sort menu, then a workspace → #channel tree (each header collapsible,
 // remembered in localStorage) of thread rows. Sorting by recent activity or
 // title instead gives one flat list, each row naming its workspace / channel;
@@ -29,7 +29,7 @@ import {
 } from 'lucide-vue-next'
 import { AppSelect, Banner, Button, DropdownItem, DropdownMenu, Input, SegmentedControl } from '@/components/ui'
 import { relativeAge } from '@/lib/itemText'
-import { formatFullDate, groupThreads } from '@/lib/slackThreadUtils'
+import { formatFullDate, groupThreads, type ActivityFilter } from '@/lib/slackThreadUtils'
 import type { SlackThreadProgress, SlackThreadSummary } from '@/stores/slackThreads'
 import { rowClass, rowListClass, rowSubClass, rowTitleClass } from '@/components/listDetail/rowStyles'
 import SlackStatusIcon from './SlackStatusIcon.vue'
@@ -48,19 +48,19 @@ const props = defineProps<{
   pinned: boolean
   /** A full reload is in flight. */
   reloading: boolean
-  /** Counts behind the link tabs: the project in scope, before the link filter. */
-  linkCounts?: { all: number; linked: number; unlinked: number } | null
+  /** Counts behind the activity tabs: the project in scope, before the activity filter. */
+  activityCounts?: { all: number; unread: number; recent: number } | null
 }>()
 
 const search = defineModel<string>('search', { required: true })
 const projectFilter = defineModel<string>('project', { required: true })
-/** '' = all, else only threads linked / not linked to a session. */
-const linkFilter = defineModel<'' | 'linked' | 'unlinked'>('link', { required: true })
+/** '' = all, else only unread / recently updated threads. */
+const activityFilter = defineModel<ActivityFilter>('activity', { required: true })
 
-const LINK_FILTERS = [
-  { value: '', label: 'slackThread.sidebar.linkAll', count: 'all' },
-  { value: 'linked', label: 'slackThread.sidebar.linked', count: 'linked' },
-  { value: 'unlinked', label: 'slackThread.sidebar.unlinked', count: 'unlinked' },
+const ACTIVITY_FILTERS = [
+  { value: '', label: 'slackThread.sidebar.filterAll', count: 'all' },
+  { value: 'unread', label: 'slackThread.sidebar.filterUnread', count: 'unread' },
+  { value: 'recent', label: 'slackThread.sidebar.filterRecent', count: 'recent' },
 ] as const
 
 const emit = defineEmits<{
@@ -72,10 +72,10 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const linkFilterOptions = computed(() =>
-  LINK_FILTERS.map((f) => ({
+const activityFilterOptions = computed(() =>
+  ACTIVITY_FILTERS.map((f) => ({
     value: f.value,
-    label: props.linkCounts ? `${t(f.label)} ${props.linkCounts[f.count]}` : t(f.label),
+    label: props.activityCounts ? `${t(f.label)} ${props.activityCounts[f.count]}` : t(f.label),
   })),
 )
 
@@ -227,10 +227,10 @@ function rowAgeTitle(th: SlackThreadSummary): string {
       </div>
       <div class="flex items-center gap-1.5">
         <SegmentedControl
-          v-model="linkFilter"
-          :options="linkFilterOptions"
+          v-model="activityFilter"
+          :options="activityFilterOptions"
           class="min-w-0 flex-1"
-          :aria-label="t('slackThread.sidebar.linkFilter')"
+          :aria-label="t('slackThread.sidebar.activityFilter')"
         />
         <!-- Sort; tinted when not on the default. -->
         <DropdownMenu align="right" class="shrink-0">
