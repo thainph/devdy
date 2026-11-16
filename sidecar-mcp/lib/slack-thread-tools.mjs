@@ -1,12 +1,17 @@
 // Tool definitions for Slack threads (docs/srs-slack-thread-translate.md §14).
 //
 // Threads are fetched from Slack and translated to Vietnamese by the Devdy app;
-// these tools only read them (Vietnamese by default, original on request),
-// search, rename, re-link and delete. There is deliberately no update / append /
-// reorder / read_attachment: content belongs to Slack, ordering to the UI, and
-// `read` already returns absolute file paths.
+// these tools read them (Vietnamese by default, original on request), search,
+// rename, re-link and delete. Adding a thread, refreshing it and replying need
+// the Slack token, which only the app holds, so they go through Devdy's broker
+// (tools `slack_add` / `slack_refresh` / `slack_reply`); a reply is always
+// confirmed by the user in the app first. There is deliberately no update /
+// append / reorder / read_attachment: content belongs to Slack, ordering to the
+// UI, and `read` already returns absolute file paths.
 
+import { setTimeout as sleep } from 'node:timers/promises';
 import * as store from './slack-store.mjs';
+import { askBroker } from './broker.mjs';
 
 const READ_MAX_DEFAULT = 20000;
 const ORIGINAL_MODES = ['none', 'both', 'only'];
@@ -157,6 +162,64 @@ function sliceBody(body, offset, maxChars) {
 
 const fold = (s) => String(s ?? '').normalize('NFC').toLowerCase();
 const lowerIncludes = (hay, needle) => fold(hay).includes(fold(needle));
+
+// ---- Broker-backed actions --------------------------------------------------------
+
+// A reply waits on the user's confirmation in the app, so it gets a long timeout.
+const REPLY_TIMEOUT_MS = 15 * 60_000;
+const WAIT_FETCH_MS = 90_000;
+const WAIT_TRANSLATE_MS = 5 * 60_000;
+const POLL_MS = 1_000;
+const FETCHING = ['pending', 'fetching'];
+
+async function askSlack(tool, argv, { text, timeoutMs } = {}) {
+  const resp = await askBroker(
+    {
+      project_id: process.env.DEVDY_PROJECT_ID,
+      run_id: process.env.DEVDY_RUN_ID || null,
+      tool,
+      argv,
+      host: null,
+      ...(text != null ? { text } : {}),
+    },
+    timeoutMs ? { timeoutMs } : undefined,
+  );
+  if (!resp || resp.decision !== 'allow') throw new Error((resp && resp.reason) || `${tool} denied`);
+  return resp.slack || {};
+}
+
+/**
+ * Wait (polling the shared DB) until the app has fetched the thread — or, with
+ * `translated`, finished translating it. `since` = the `fetched_at` before a
+ * refresh: a job already in flight then only counts once the requeued run has
+ * been seen pending/fetching (or has finished, which bumps `fetched_at`).
+ */
+async function waitFetched(id, { translated = false, since } = {}) {
+  const deadline = Date.now() + (translated ? WAIT_TRANSLATE_MS : WAIT_FETCH_MS);
+  let sawFetching = since === undefined;
+  for (;;) {
+    const t = store.threadStatus(id);
+    if (!t) return { t: null, done: true };
+    if (FETCHING.includes(t.fetch_status)) sawFetching = true;
+    const fresh = sawFetching || (t.fetched_at && t.fetched_at !== since);
+    const settled = t.fetch_status === 'error' || (fresh && (translated ? t.fetch_status === 'ready' : !FETCHING.includes(t.fetch_status)));
+    if (settled) return { t, done: true };
+    if (Date.now() >= deadline) return { t, done: false };
+    await sleep(POLL_MS);
+  }
+}
+
+function fetchOutcome(id, { t, done }) {
+  if (!t) return `Slack thread ${id} no longer exists.`;
+  if (t.fetch_status === 'error') {
+    return `Slack thread ${id}: fetch failed (${t.fetch_error_code || 'error'}${t.fetch_error ? ` — ${t.fetch_error}` : ''}).`;
+  }
+  const head = `Slack thread ${id} "${titleOf(t)}": ${t.fetch_status}, ${t.reply_count} replies.`;
+  if (!done) return `${head} Still working — call slack_threads_read later (untranslated messages show their original).`;
+  return t.fetch_status === 'ready'
+    ? `${head} Read it with slack_threads_read.`
+    : `${head} Fetched; translation in progress — slack_threads_read shows untranslated messages in the original.`;
+}
 
 // ---- Tools ------------------------------------------------------------------------
 
@@ -327,6 +390,66 @@ export function slackThreadTools({ snippetAround }) {
       handler: (a) => {
         const r = store.deleteThreads({ ids: a.ids ?? a.id });
         return `Deleted ${r.deleted}/${r.requested} Slack thread(s) (${r.dirs_removed} file folder(s) removed).`;
+      },
+    },
+
+    slack_threads_add: {
+      description:
+        'Add a Slack thread to Devdy by its link (https://<workspace>.slack.com/archives/<channel>/p<ts>, a reply link works too). The app fetches it with the user\'s Slack token and translates it to Vietnamese; this waits until the messages are fetched (translation may still be running) and returns the thread id for slack_threads_read. Linked to the current project unless scope="global". Adding a link that is already saved re-imports it.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          url: { type: 'string', description: 'Slack thread link' },
+          scope: { type: 'string', enum: ['project', 'global'] },
+          wait_translation: { type: 'boolean', description: 'Also wait for the Vietnamese translation (up to 5 min)' },
+        },
+        required: ['url'],
+      },
+      handler: async (a) => {
+        const url = String(a.url ?? '').trim();
+        if (!url) throw new Error('url is required');
+        const r = await askSlack('slack_add', a.scope === 'global' ? [url, 'global'] : [url]);
+        const outcome = fetchOutcome(r.id, await waitFetched(r.id, { translated: !!a.wait_translation }));
+        return `${r.status === 'created' ? 'Added' : 'Re-imported'} Slack thread ${r.id}. ${outcome}`;
+      },
+    },
+
+    slack_threads_refresh: {
+      description:
+        'Refetch a saved Slack thread from Slack to pick up new messages (the app re-translates only what is new). Waits until the fetch is done (translation may still be running), then read it with slack_threads_read.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          wait_translation: { type: 'boolean', description: 'Also wait for the Vietnamese translation (up to 5 min)' },
+        },
+        required: ['id'],
+      },
+      handler: async (a) => {
+        const before = store.threadStatus(a.id);
+        if (!before) throw new Error(`Slack thread not found: ${a.id}`);
+        await askSlack('slack_refresh', [before.id]);
+        return fetchOutcome(before.id, await waitFetched(before.id, { translated: !!a.wait_translation, since: before.fetched_at }));
+      },
+    },
+
+    slack_threads_reply: {
+      description:
+        'Post a reply in a saved Slack thread, AS THE USER (with their Slack token). The user must confirm the exact text in Devdy before it is sent; if they decline, this fails — do not retry unless they ask. Write `text` in Slack mrkdwn (*bold*, _italic_, `code`, <https://url|label>) and in the language the thread uses (often the original, not Vietnamese — check slack_threads_read with original="only"). Max 8000 characters. The thread is refreshed afterwards.',
+      inputSchema: {
+        type: 'object',
+        properties: {
+          id: { type: 'string' },
+          text: { type: 'string', description: 'Reply text (Slack mrkdwn)' },
+        },
+        required: ['id', 'text'],
+      },
+      handler: async (a) => {
+        const text = String(a.text ?? '').trim();
+        if (!text) throw new Error('text is required');
+        if (!store.threadStatus(a.id)) throw new Error(`Slack thread not found: ${a.id}`);
+        await askSlack('slack_reply', [String(a.id)], { text, timeoutMs: REPLY_TIMEOUT_MS });
+        return `Posted the reply to Slack thread ${a.id}; the thread is being refreshed.`;
       },
     },
 

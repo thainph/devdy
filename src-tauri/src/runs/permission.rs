@@ -38,10 +38,12 @@ pub struct PermissionRequestEvent {
 }
 
 /// Built-in `devdy` MCP tools that never need a prompt: the user's own todos,
-/// notes and saved Slack threads (Devdy-local data, nothing is posted to Slack),
-/// plus read-only lookups (accounts, skills, rules, projects, sessions, git).
-/// Anything that runs commands remotely (`vps_run`) or changes skills, rules,
-/// projects or repos still asks.
+/// notes and saved Slack threads (Devdy-local data; adding / refreshing a
+/// thread only reads from Slack), plus read-only lookups (accounts, skills,
+/// rules, projects, sessions, git). `slack_threads_reply` posts to Slack, but
+/// the broker always asks for it with the exact text (`broker::slack`), so a
+/// prompt here would only be a second one. Anything that runs commands
+/// remotely (`vps_run`) or changes skills, rules, projects or repos still asks.
 const AUTO_ALLOWED_DEVDY_TOOLS: &[&str] = &[
     "todos_add",
     "todos_clear_done",
@@ -61,10 +63,13 @@ const AUTO_ALLOWED_DEVDY_TOOLS: &[&str] = &[
     "notes_search",
     "notes_set_project",
     "notes_update",
+    "slack_threads_add",
     "slack_threads_delete",
     "slack_threads_list",
     "slack_threads_read",
+    "slack_threads_refresh",
     "slack_threads_rename",
+    "slack_threads_reply",
     "slack_threads_search",
     "slack_threads_set_project",
     "git_accounts_list",
@@ -193,6 +198,8 @@ mod tests {
         assert!(is_auto_allowed("mcp__devdy__todos_add"));
         assert!(is_auto_allowed("mcp__devdy__notes_delete"));
         assert!(is_auto_allowed("mcp__devdy__slack_threads_read"));
+        // The broker asks for every reply itself (with the text).
+        assert!(is_auto_allowed("mcp__devdy__slack_threads_reply"));
         assert!(is_auto_allowed("mcp__devdy__git_accounts_list"));
         assert!(is_auto_allowed("mcp__devdy__skills_read"));
         assert!(is_auto_allowed("mcp__devdy__rules_read"));

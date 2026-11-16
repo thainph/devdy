@@ -24,6 +24,24 @@ use tauri::{AppHandle, Emitter};
 pub trait Approver: Send + Sync {
     /// Return `true` to allow the asked operation, `false` to deny it.
     async fn approve(&self, req: &BrokerRequest, reason: &str) -> bool;
+
+    /// Like `approve`, for a request that is not a command line (e.g. a Slack
+    /// reply): the caller builds what the prompt shows. Defaults to `approve`
+    /// with the prompt's description, which is all the test approvers need.
+    async fn approve_action(&self, req: &BrokerRequest, prompt: ActionPrompt) -> bool {
+        self.approve(req, &prompt.description).await
+    }
+}
+
+/// What a non-command approval prompt shows. Built by the broker from data it
+/// resolved itself — never copied blindly from the requester.
+#[derive(Debug, Clone)]
+pub struct ActionPrompt {
+    pub title: String,
+    pub description: String,
+    pub display_name: String,
+    /// Rendered as the request's input in the modal.
+    pub input: serde_json::Value,
 }
 
 /// GĐ2 default: deny every `Ask` (fail-closed). Used when no modal is wired.
@@ -78,6 +96,27 @@ impl ModalApprover {
 #[async_trait]
 impl Approver for ModalApprover {
     async fn approve(&self, req: &BrokerRequest, reason: &str) -> bool {
+        let cmd_display = format!("{} {}", req.tool, req.argv.join(" "));
+        let cmd_display = cmd_display.trim();
+        self.prompt(
+            req,
+            ActionPrompt {
+                title: format!("Cho phép `{cmd_display}`?"),
+                description: reason.to_string(),
+                display_name: format!("{} command", req.tool),
+                input: serde_json::json!({ "command": cmd_display }),
+            },
+        )
+        .await
+    }
+
+    async fn approve_action(&self, req: &BrokerRequest, prompt: ActionPrompt) -> bool {
+        self.prompt(req, prompt).await
+    }
+}
+
+impl ModalApprover {
+    async fn prompt(&self, req: &BrokerRequest, prompt: ActionPrompt) -> bool {
         let request_id = uuid::Uuid::new_v4().to_string();
         let (tx, rx) = tokio::sync::oneshot::channel::<bool>();
 
@@ -89,17 +128,16 @@ impl Approver for ModalApprover {
 
         // 2. Emit the SAME event the sidecar permission flow uses. The frontend
         //    cannot tell the source apart; the modal renders identically.
-        let cmd_display = format!("{} {}", req.tool, req.argv.join(" "));
         let evt = PermissionRequestEvent {
             run_id: self.run_id.clone(),
             request_id: request_id.clone(),
             tool_name: req.tool.clone(),
-            tool_input: serde_json::json!({ "command": cmd_display.trim() }),
+            tool_input: prompt.input,
             session_id: None,
             cwd: self.cwd.clone(),
-            title: Some(format!("Cho phép `{}`?", cmd_display.trim())),
-            description: Some(reason.to_string()),
-            display_name: Some(format!("{} command", req.tool)),
+            title: Some(prompt.title),
+            description: Some(prompt.description),
+            display_name: Some(prompt.display_name),
             once_only: true,
         };
         let topic = format!("run:permission_request:{}", self.run_id);
