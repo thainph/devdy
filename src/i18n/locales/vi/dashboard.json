@@ -1,0 +1,139 @@
+{
+  "title": "Tổng quan công việc",
+  "allProjects": "Tất cả dự án",
+  "refresh": "Làm mới tất cả",
+  "refreshedAt": "cập nhật {time}",
+  "updated": "cập nhật {age}",
+  "staleData": "dữ liệu cũ · {age}",
+  "justNow": "vừa xong",
+  "ago": "{duration} trước",
+  "duration": {
+    "m": "{n} phút",
+    "h": "{n} giờ",
+    "d": "{n} ngày"
+  },
+  "seeAll": "Xem tất cả ({n})",
+  "loadError": "Không tải được: {error}",
+  "todoAdded": "Đã thêm todo",
+  "attention": {
+    "title": "Cần bạn ngay",
+    "none": "Hiện không có việc gấp",
+    "todos": "todo quá hạn",
+    "prs": "PR chờ review",
+    "runs": "session chờ duyệt quyền",
+    "slack": "thread khách chờ bạn",
+    "projects": "dự án có rủi ro trễ"
+  },
+  "slack": {
+    "title": "Slack: thread mới & yêu cầu khách",
+    "countTitle": "Thread có tin mới hoặc khách đang chờ bạn",
+    "waiting": "chờ {duration}",
+    "fetchErrors": "{n} thread không tải được — mở cửa sổ Slack để thử lại.",
+    "noCustomers": "Chưa đánh dấu khách nào: trong cửa sổ Slack threads, rê chuột vào một tin nhắn và chọn “Đánh dấu là khách” để biết ai đang chờ bạn.",
+    "emptyNone": "Chưa theo dõi thread Slack nào. Thêm từ cửa sổ Slack threads.",
+    "empty": "Không có thread Slack nào ở đây.",
+    "unread": "Có tin mới",
+    "waitingOnMe": "Khách chờ bạn",
+    "waitingOnCustomer": "Chờ khách",
+    "newMessages": "Có tin mới",
+    "addTodo": "Tạo todo từ thread này",
+    "markSeen": "Đánh dấu đã xem",
+    "todoText": "Trả lời Slack: {title}"
+  },
+  "todos": {
+    "title": "Todo cần xử lý",
+    "countTitle": "Todo quá hạn",
+    "empty": "Không có todo quá hạn, sắp hạn hay đang làm.",
+    "lateDays": "trễ {n} ngày",
+    "lateToday": "Quá hạn",
+    "today": "Hạn hôm nay",
+    "inDays": "Còn {n} ngày",
+    "status": {
+      "todo": "Cần làm",
+      "doing": "Đang làm",
+      "waiting": "Đang chờ"
+    },
+    "priorityHigh": "Ưu tiên cao",
+    "priorityLow": "Ưu tiên thấp",
+    "markDone": "Đánh dấu xong",
+    "doneToast": "Đã xong todo"
+  },
+  "prs": {
+    "title": "PR chờ tôi review",
+    "countTitle": "PR yêu cầu đích danh bạn (không tính draft và bot)",
+    "scope": "GitHub PR",
+    "waiting": "chờ {duration}",
+    "updated": "cập nhật {duration} trước",
+    "noRequestTime": "GitHub không trả về thời điểm yêu cầu review",
+    "draft": "Draft",
+    "ciFailed": "CI lỗi",
+    "ciPassed": "CI xanh",
+    "ciPending": "CI đang chạy",
+    "soleReviewer": "bạn là reviewer cuối",
+    "ai": {
+      "none": "chưa AI review",
+      "running": "AI đang review",
+      "done": "AI đã review",
+      "updated": "có commit mới sau AI review"
+    },
+    "mapRepo": "Gán repo",
+    "mapRepoHint": "Repo này chưa thuộc dự án nào — thêm vào một dự án để chạy review",
+    "reReview": "Review lại",
+    "review": "AI review",
+    "openSession": "Mở session",
+    "addTodo": "Tạo todo “Review PR #{n}”",
+    "openPr": "Mở PR trên GitHub",
+    "bots": "{n} PR của bot",
+    "empty": "Không có PR nào chờ bạn review.",
+    "todoText": "Review PR #{n}: {title}"
+  },
+  "health": {
+    "title": "Dự án có rủi ro trễ",
+    "countTitle": "Dự án có tín hiệu rủi ro",
+    "scope": "GitHub Project board",
+    "openRadar": "Mở Delivery Radar",
+    "openRadarAt": "Mở Delivery Radar tại {name}",
+    "noProjects": "Chưa có dự án nào.",
+    "level": {
+      "red": "rủi ro cao",
+      "orange": "có rủi ro",
+      "gray": "chưa rõ",
+      "green": "đúng tiến độ"
+    },
+    "riskyIssues": "{n} issue có rủi ro",
+    "reason": {
+      "no-board": "chưa liên kết board",
+      "gitlab": "GitLab chưa được hỗ trợ",
+      "error": "lần tải gần nhất bị lỗi",
+      "truncated": "dữ liệu board bị cắt bớt",
+      "loading": "đang tải…"
+    },
+    "issue": {
+      "overdue": "quá hạn {n} ngày",
+      "due-soon": "còn {n} ngày",
+      "not-started": "chưa bắt đầu",
+      "stale": "lâu không cập nhật"
+    },
+    "milestoneOverdue": "quá hạn {n} ngày, còn {open} issue mở",
+    "milestoneLag": "ước lượng: đã dùng {elapsed}% thời gian, mới đóng {closed}% issue",
+    "inherited": "(hạn của issue cha)",
+    "greenCount": "{n} dự án đúng tiến độ",
+    "noBoardCount": "{n} dự án chưa liên kết board",
+    "gitlabCount": "{n} dự án chỉ dùng GitLab (chưa hỗ trợ)"
+  },
+  "runs": {
+    "title": "Session đang chạy",
+    "countTitle": "Session đang sống",
+    "untitled": "Session",
+    "empty": "Không có session nào đang chạy.",
+    "waitingPermission": "{n} yêu cầu chờ duyệt",
+    "running": "đang chạy",
+    "idle": "đang mở, rảnh",
+    "workers": "{n} worker",
+    "review": "Duyệt",
+    "open": "Mở",
+    "stop": "Dừng",
+    "stopTitle": "Dừng session này?",
+    "stopMessage": "“{name}” sẽ bị huỷ. Bạn có thể tiếp tục lại sau."
+  }
+}

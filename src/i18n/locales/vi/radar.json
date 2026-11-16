@@ -5,6 +5,8 @@
   "allProjects": "Tất cả",
   "dueSoonLabel": "Sắp hạn ≤",
   "staleLabel": "Đứng im >",
+  "milestoneLagLabel": "Milestone lệch >",
+  "milestoneLagHint": "Work Dashboard: milestone bị coi là chậm tiến độ khi % thời gian đã trôi vượt % issue đã đóng quá số điểm này.",
   "days": "ngày",
   "searchPlaceholder": "Tìm issue, #số, người làm…",
   "groupPerson": "Theo người",

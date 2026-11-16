@@ -109,6 +109,17 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const testers = ref<string[]>(readTesters())
 
   watch(thresholds, (v) => persist(THRESHOLDS_KEY, v), { deep: true })
+  // The radar window and the Work Dashboard (main window) share these settings
+  // through localStorage; follow the other window's edits.
+  try {
+    window.addEventListener('storage', (e) => {
+      if (e.key === THRESHOLDS_KEY) thresholds.value = readThresholds()
+      else if (e.key === STAGES_KEY) stages.value = readStages()
+      else if (e.key === TESTERS_KEY) testers.value = readTesters()
+    })
+  } catch {
+    /* no window (tests) */
+  }
   watch(stages, (v) => persist(STAGES_KEY, v), { deep: true })
   watch(testers, (v) => persist(TESTERS_KEY, v), { deep: true })
   // Mirrored to the app DB so the built-in MCP radar tools classify the same way.

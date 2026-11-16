@@ -5,6 +5,8 @@
   "allProjects": "All",
   "dueSoonLabel": "Due soon ≤",
   "staleLabel": "Stale >",
+  "milestoneLagLabel": "Milestone lag >",
+  "milestoneLagHint": "Work Dashboard: a milestone is behind schedule when its share of elapsed time exceeds its share of closed issues by more than this many points.",
   "days": "days",
   "searchPlaceholder": "Search issue, #number, assignee…",
   "groupPerson": "By assignee",

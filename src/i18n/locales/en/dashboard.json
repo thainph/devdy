@@ -1,0 +1,139 @@
+{
+  "title": "Work Dashboard",
+  "allProjects": "All projects",
+  "refresh": "Refresh everything",
+  "refreshedAt": "refreshed {time}",
+  "updated": "updated {age}",
+  "staleData": "old data · {age}",
+  "justNow": "just now",
+  "ago": "{duration} ago",
+  "duration": {
+    "m": "{n}m",
+    "h": "{n}h",
+    "d": "{n}d"
+  },
+  "seeAll": "See all ({n})",
+  "loadError": "Could not load: {error}",
+  "todoAdded": "Todo added",
+  "attention": {
+    "title": "Needs you now",
+    "none": "Nothing urgent right now",
+    "todos": "overdue todo | overdue todos",
+    "prs": "PR waiting for review | PRs waiting for review",
+    "runs": "session awaiting permission | sessions awaiting permission",
+    "slack": "customer thread waiting on you | customer threads waiting on you",
+    "projects": "project at risk of slipping | projects at risk of slipping"
+  },
+  "slack": {
+    "title": "Slack: new threads & customer requests",
+    "countTitle": "Threads with new messages or a customer waiting on you",
+    "waiting": "waiting {duration}",
+    "fetchErrors": "{n} thread could not be fetched — open the Slack window to retry. | {n} threads could not be fetched — open the Slack window to retry.",
+    "noCustomers": "No customers marked yet: in the Slack threads window, hover a message and choose “Mark as customer” to see who is waiting on you.",
+    "emptyNone": "No Slack threads tracked yet. Add one from the Slack threads window.",
+    "empty": "No Slack threads here.",
+    "unread": "New messages",
+    "waitingOnMe": "Customer waiting on you",
+    "waitingOnCustomer": "Waiting on the customer",
+    "newMessages": "New messages",
+    "addTodo": "Create a todo from this thread",
+    "markSeen": "Mark as seen",
+    "todoText": "Reply on Slack: {title}"
+  },
+  "todos": {
+    "title": "Todos to handle",
+    "countTitle": "Overdue todos",
+    "empty": "Nothing overdue, due soon or in progress.",
+    "lateDays": "{n} day late | {n} days late",
+    "lateToday": "Overdue",
+    "today": "Due today",
+    "inDays": "Due in {n} day | Due in {n} days",
+    "status": {
+      "todo": "To do",
+      "doing": "In progress",
+      "waiting": "Waiting"
+    },
+    "priorityHigh": "High priority",
+    "priorityLow": "Low priority",
+    "markDone": "Mark done",
+    "doneToast": "Todo done"
+  },
+  "prs": {
+    "title": "PRs waiting for my review",
+    "countTitle": "PRs asked of you directly (drafts and bots aside)",
+    "scope": "GitHub PRs",
+    "waiting": "waiting {duration}",
+    "updated": "updated {duration} ago",
+    "noRequestTime": "GitHub did not report when the review was requested",
+    "draft": "Draft",
+    "ciFailed": "CI failing",
+    "ciPassed": "CI passing",
+    "ciPending": "CI running",
+    "soleReviewer": "you are the last reviewer",
+    "ai": {
+      "none": "no AI review",
+      "running": "AI review running",
+      "done": "AI review done",
+      "updated": "new commits since AI review"
+    },
+    "mapRepo": "Map repo",
+    "mapRepoHint": "This repository is not in any project yet — add it to a project to run reviews",
+    "reReview": "Review again",
+    "review": "AI review",
+    "openSession": "Open session",
+    "addTodo": "Create todo “Review PR #{n}”",
+    "openPr": "Open the PR on GitHub",
+    "bots": "{n} bot PR | {n} bot PRs",
+    "empty": "No PRs waiting for your review.",
+    "todoText": "Review PR #{n}: {title}"
+  },
+  "health": {
+    "title": "Projects at risk of slipping",
+    "countTitle": "Projects with a risk signal",
+    "scope": "GitHub Project boards",
+    "openRadar": "Open Delivery Radar",
+    "openRadarAt": "Open Delivery Radar at {name}",
+    "noProjects": "No projects yet.",
+    "level": {
+      "red": "high risk",
+      "orange": "some risk",
+      "gray": "unknown",
+      "green": "on track"
+    },
+    "riskyIssues": "{n} issue at risk | {n} issues at risk",
+    "reason": {
+      "no-board": "no board linked",
+      "gitlab": "GitLab is not supported yet",
+      "error": "last fetch failed",
+      "truncated": "board data was cut short",
+      "loading": "loading…"
+    },
+    "issue": {
+      "overdue": "overdue by {n} day | overdue by {n} days",
+      "due-soon": "due in {n} day | due in {n} days",
+      "not-started": "not started",
+      "stale": "no update for a while"
+    },
+    "milestoneOverdue": "past due by {n} day, {open} open | past due by {n} days, {open} open",
+    "milestoneLag": "estimate: {elapsed}% of the time used, {closed}% of issues closed",
+    "inherited": "(parent's deadline)",
+    "greenCount": "{n} project on track | {n} projects on track",
+    "noBoardCount": "{n} without a board | {n} without a board",
+    "gitlabCount": "{n} GitLab only (not supported) | {n} GitLab only (not supported)"
+  },
+  "runs": {
+    "title": "Running sessions",
+    "countTitle": "Live sessions",
+    "untitled": "Session",
+    "empty": "No session running.",
+    "waitingPermission": "awaiting permission | {n} awaiting permission",
+    "running": "running",
+    "idle": "open, idle",
+    "workers": "{n} worker | {n} workers",
+    "review": "Review",
+    "open": "Open",
+    "stop": "Stop",
+    "stopTitle": "Stop this session?",
+    "stopMessage": "“{name}” will be cancelled. You can resume it later."
+  }
+}

@@ -5,6 +5,7 @@ import McpServersView from '../views/McpServersView.vue'
 import ServersView from '../views/ServersView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
+import DashboardView from '../views/DashboardView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
 import { openCalendarWindow } from '../lib/calendarWindow'
 import { openDeliveryRadarWindow } from '../lib/deliveryRadarWindow'
@@ -31,7 +32,9 @@ function editorRedirects(base: string): RouteRecordRaw[] {
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    { path: '/', redirect: '/projects' },
+    // The Work Dashboard is the start screen.
+    { path: '/', redirect: '/dashboard' },
+    { path: '/dashboard', name: 'dashboard', component: DashboardView },
     { path: '/skills', name: 'skills', component: SkillsView },
     ...editorRedirects('/skills'),
     { path: '/rules', name: 'rules', component: RulesView },
@@ -51,7 +54,7 @@ const router = createRouter({
       beforeEnter: (_to, from) => {
         void openPrInboxWindow()
         // Stay where we are; on a cold start (nothing matched yet) land on the default screen.
-        return from.matched.length > 0 ? false : '/projects'
+        return from.matched.length > 0 ? false : '/dashboard'
       },
     },
     // Delivery Radar too (lib/deliveryRadarWindow). `?project=` deep links
@@ -63,7 +66,7 @@ const router = createRouter({
       component: DeliveryRadarView,
       beforeEnter: (to, from) => {
         void openDeliveryRadarWindow(typeof to.query.project === 'string' ? to.query.project : undefined)
-        return from.matched.length > 0 ? false : '/projects'
+        return from.matched.length > 0 ? false : '/dashboard'
       },
     },
     // The Focus board became the Todos window (lateness chips + ordering).
@@ -73,7 +76,7 @@ const router = createRouter({
       component: ProjectsView,
       beforeEnter: (_to, from) => {
         void openItemListWindow('todo')
-        return from.matched.length > 0 ? false : '/projects'
+        return from.matched.length > 0 ? false : '/dashboard'
       },
     },
     { path: '/projects/:projectId', name: 'project-run', component: RunView },
@@ -88,7 +91,7 @@ const router = createRouter({
       component: CalendarView,
       beforeEnter: (_to, from) => {
         void openCalendarWindow()
-        return from.matched.length > 0 ? false : '/projects'
+        return from.matched.length > 0 ? false : '/dashboard'
       },
     },
     { path: '/settings', name: 'settings', component: SettingsView },
