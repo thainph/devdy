@@ -7,6 +7,9 @@ use sqlx::Row;
 
 /// Settings key: the desktop's per-kind switches (JSON [`PushEvents`]).
 pub const KEY_PUSH_EVENTS: &str = "remote_push_events";
+/// Settings key: only notify while the user is away from the desktop
+/// (`"0"` turns it off; on until changed).
+pub const KEY_PUSH_AWAY_ONLY: &str = "remote_push_away_only";
 /// Settings key: optional VAPID contact (`mailto:` / `https:`); defaults to the
 /// relay's origin.
 pub const KEY_PUSH_CONTACT: &str = "remote_push_contact";
@@ -282,6 +285,15 @@ pub async fn set_events(db: &Db, events: PushEvents) -> Result<(), String> {
     crate::remote::set_setting(db, KEY_PUSH_EVENTS, &json).await
 }
 
+/// Whether pushes wait for the user to leave the desktop (on until changed).
+pub async fn away_only(db: &Db) -> bool {
+    crate::remote::get_setting(db, KEY_PUSH_AWAY_ONLY).await.as_deref() != Some("0")
+}
+
+pub async fn set_away_only(db: &Db, on: bool) -> Result<(), String> {
+    crate::remote::set_setting(db, KEY_PUSH_AWAY_ONLY, if on { "1" } else { "0" }).await
+}
+
 #[cfg(test)]
 pub(crate) mod tests {
     use super::*;
@@ -396,5 +408,15 @@ pub(crate) mod tests {
             .await
             .unwrap();
         assert_eq!(events(&db).await, PushEvents { pending: false, done: true, failed: true, focus: true });
+    }
+
+    #[tokio::test]
+    async fn away_only_defaults_on_and_persists() {
+        let db = mem_db().await;
+        assert!(away_only(&db).await);
+        set_away_only(&db, false).await.unwrap();
+        assert!(!away_only(&db).await);
+        set_away_only(&db, true).await.unwrap();
+        assert!(away_only(&db).await);
     }
 }

@@ -202,6 +202,8 @@
   "push": {
     "title": "Push notifications",
     "intro": "Paired phones that turned on notifications (bell in the phone's Inbox) are notified while Remote Control is on and the phone is not open. Run notifications carry counts only; Focus reminders carry the todo's text, end-to-end encrypted to the phone.",
+    "awayOnly": "Only when I'm away from the desktop",
+    "awayOnlyHint": "Skip the phone while you are using this Mac (input in the last 2 minutes, screen unlocked) — the desktop already shows its notifications. A prompt still open when you step away is pushed then.",
     "kinds": {
       "pending": "Waiting for approval",
       "done": "Run finished",

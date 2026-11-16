@@ -10,6 +10,11 @@
 //! held, dropped if the phone reports leaving (it saw it live), and sent only
 //! if it is unclear the phone ever saw it (disconnected, gone quiet).
 //!
+//! With the `away_only` switch (on by default) the phone is also left alone
+//! while the user is at the desktop ([`presence`]): finished / failed runs
+//! were shown there, and a prompt is pushed only if it is still open once the
+//! user leaves ([`coalesce::DeskGate`]). Focus reminders are skipped likewise.
+//!
 //! Focus reminders ([`focus_reminder`]) take a separate path: the scheduler
 //! hands over the notification it just showed on the desktop (already one per
 //! tick, already worded in the app language) and it goes to every device with
@@ -23,14 +28,15 @@ pub mod actions;
 pub mod coalesce;
 pub mod commands;
 pub mod crypto;
+pub mod presence;
 pub mod send;
 pub mod store;
 
 use crate::db::Db;
 use crate::remote::{RemoteBus, RemoteRunEvent};
 use coalesce::{
-    compose, compose_focus, kind_of_done, suppressed, BurstCounts, Coalescer, Holder, PushEvents, PushKind,
-    PushMessage, COALESCE_WINDOW,
+    compose, compose_focus, kind_of_done, suppressed, BurstCounts, Coalescer, DeskGate, Holder, PushEvents,
+    PushKind, PushMessage, COALESCE_WINDOW,
 };
 use p256::SecretKey;
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -57,6 +63,9 @@ pub struct PushHub {
     release: Arc<Notify>,
     /// The phone itself reported leaving the screen: what is held was seen.
     left_screen: Arc<AtomicBool>,
+    /// Only notify while the user is away from the desktop (setting, loaded
+    /// when the dispatcher starts).
+    away_only: Arc<AtomicBool>,
     client: reqwest::Client,
     task: Arc<Mutex<Option<tokio::task::JoinHandle<()>>>>,
 }
@@ -69,6 +78,7 @@ impl Default for PushHub {
             last_heard: Arc::new(Mutex::new(Instant::now())),
             release: Arc::new(Notify::new()),
             left_screen: Arc::new(AtomicBool::new(false)),
+            away_only: Arc::new(AtomicBool::new(true)),
             client: reqwest::Client::builder()
                 .timeout(SEND_TIMEOUT)
                 // A push service never redirects; following one would undo
@@ -121,6 +131,19 @@ impl PushHub {
     pub fn is_suppressed(&self) -> bool {
         let since = self.last_heard.lock().unwrap_or_else(|e| e.into_inner()).elapsed();
         suppressed(self.phone_connected.load(Ordering::SeqCst), self.visible.load(Ordering::SeqCst), since)
+    }
+
+    pub fn set_away_only(&self, on: bool) {
+        self.away_only.store(on, Ordering::SeqCst);
+        // Switched off: a prompt waiting for the user to leave goes out now.
+        if !on {
+            self.release.notify_one();
+        }
+    }
+
+    /// Whether the phone is left alone because the user is at the desktop.
+    pub fn desktop_in_use(&self) -> bool {
+        self.away_only.load(Ordering::SeqCst) && presence::desktop_in_use()
     }
 
     /// Consume a "left the screen" report.
@@ -217,34 +240,40 @@ async fn sleep_until(at: Option<Instant>) {
 /// never make this receiver lag (and lose prompts / finished runs).
 async fn dispatch(hub: PushHub, db: Db, bus: RemoteBus) {
     let mut rx = bus.subscribe();
+    hub.away_only.store(store::away_only(&db).await, Ordering::SeqCst);
     let (tx, work) = mpsc::unbounded_channel::<BurstCounts>();
     // Ends by itself once `tx` is dropped with this task.
     tokio::spawn(flush_worker(hub.clone(), db, work));
     let mut co = Coalescer::new(COALESCE_WINDOW);
     let mut holder = Holder::default();
+    let mut desk = DeskGate::default();
     // Kept across iterations: the bus is busy (every output line wakes this
     // loop), so a deadline recomputed each pass would never arrive.
     let mut recheck: Option<Instant> = None;
     loop {
         let due = co.deadline();
-        if holder.is_holding() {
+        if holder.is_holding() || desk.is_waiting() {
             recheck.get_or_insert_with(|| Instant::now() + HOLD_RECHECK);
         } else {
             recheck = None;
         }
         // Checked before every use of `holder`, so a held batch can never ride
         // out with a burst after the phone said it saw it.
-        let settle = |holder: &mut Holder| {
+        let settle = |holder: &mut Holder, desk: &mut DeskGate| {
             if hub.take_left_screen() {
                 holder.discard();
+                desk.forget();
             }
         };
+        // Whether the user may have left the desktop since (a quiet moment,
+        // not every bus event: the check asks the window server).
+        let mut look_at_desk = false;
         let ready = tokio::select! {
             ev = rx.recv() => {
                 match ev {
                     Ok(ev) => {
                         if let Some(kind) = kind_of(&ev) {
-                            settle(&mut holder);
+                            settle(&mut holder, &mut desk);
                             // On screen, the phone shows it live.
                             if hub.is_suppressed() {
                                 holder.hold(kind);
@@ -261,18 +290,30 @@ async fn dispatch(hub: PushHub, db: Db, bus: RemoteBus) {
                 None
             }
             _ = sleep_until(due) => {
-                settle(&mut holder);
+                settle(&mut holder, &mut desk);
                 co.take_due(Instant::now()).and_then(|counts| holder.on_due(counts, hub.is_suppressed()))
             }
             _ = hub.release.notified() => {
-                settle(&mut holder);
+                settle(&mut holder, &mut desk);
+                look_at_desk = true;
                 holder.release(hub.is_suppressed())
             }
             _ = sleep_until(recheck) => {
                 recheck = None;
-                settle(&mut holder);
+                settle(&mut holder, &mut desk);
+                look_at_desk = true;
                 holder.release(hub.is_suppressed())
             }
+        };
+        // A prompt answered at the desktop no longer waits for the user to leave.
+        if desk.is_waiting() && (look_at_desk || ready.is_some()) && crate::runs::permission::all_pending().is_empty()
+        {
+            desk.forget();
+        }
+        let ready = match ready {
+            Some(counts) => desk.pass(counts, hub.desktop_in_use()),
+            None if look_at_desk && desk.is_waiting() && !hub.is_suppressed() => desk.release(hub.desktop_in_use()),
+            None => None,
         };
         if let Some(counts) = ready {
             let _ = tx.send(counts);
@@ -323,6 +364,10 @@ pub fn focus_reminder(app: &tauri::AppHandle, db: &Db, title: &str, body: &str, 
         let Some(state) = app.try_state::<crate::remote::RemoteState>() else { return };
         // Like run notifications: only while Remote Control is on.
         if !state.is_running().await {
+            return;
+        }
+        // The user is at the desktop, where it was just shown.
+        if state.push.desktop_in_use() {
             return;
         }
         send_all(&state.push, &db, |events| compose_focus(&msg, events)).await;

@@ -788,6 +788,7 @@ pub fn run() {
             remote::push::commands::remote_push_overview,
             remote::push::commands::remote_push_remove,
             remote::push::commands::remote_push_set_events,
+            remote::push::commands::remote_push_set_away_only,
             remote::push::commands::remote_push_test,
             remote::meta::set_run_meta,
             procs::commands::list_background_processes,

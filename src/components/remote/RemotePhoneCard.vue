@@ -26,6 +26,7 @@ interface PushDevice {
 interface PushOverview {
   devices: PushDevice[]
   events: PushEvents
+  away_only: boolean
 }
 
 const KINDS = ['pending', 'done', 'failed', 'focus'] as const
@@ -41,6 +42,7 @@ const enabled = computed(() => !!store.status?.enabled)
 const phone = computed(() => !!store.status?.session_authenticated)
 const devices = ref<PushDevice[]>([])
 const events = ref<PushEvents>({ pending: true, done: true, failed: true, focus: true })
+const awayOnly = ref(true)
 const loaded = ref(false)
 const busyId = ref<string | null>(null)
 const kicking = ref(false)
@@ -51,6 +53,7 @@ async function load() {
     const o = await invoke<PushOverview>('remote_push_overview')
     devices.value = o.devices
     events.value = o.events
+    awayOnly.value = o.away_only
     loaded.value = true
   } catch (e) {
     toast.error(String(e))
@@ -74,6 +77,17 @@ async function toggleKind(kind: (typeof KINDS)[number]) {
     await invoke('remote_push_set_events', { events: next })
   } catch (e) {
     events.value = prev
+    toast.error(String(e))
+  }
+}
+
+async function toggleAwayOnly() {
+  const next = !awayOnly.value
+  awayOnly.value = next
+  try {
+    await invoke('remote_push_set_away_only', { on: next })
+  } catch (e) {
+    awayOnly.value = !next
     toast.error(String(e))
   }
 }
@@ -158,6 +172,19 @@ function fmtTime(ts: string | null): string {
       <div class="border-t border-border/50 pt-3">
         <p class="mb-0.5 text-xs font-medium text-foreground">{{ t('remote.push.title') }}</p>
         <p class="mb-2.5 text-[11px] text-muted-foreground">{{ t('remote.push.intro') }}</p>
+        <div class="mb-2.5 flex items-center justify-between gap-3">
+          <div class="min-w-0">
+            <p class="text-xs text-foreground">{{ t('remote.push.awayOnly') }}</p>
+            <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('remote.push.awayOnlyHint') }}</p>
+          </div>
+          <ToggleSwitch
+            size="md"
+            :checked="awayOnly"
+            :label="t('remote.push.awayOnly')"
+            :disabled="!loaded"
+            @toggle="toggleAwayOnly"
+          />
+        </div>
         <div class="grid grid-cols-2 gap-x-6 gap-y-2.5">
           <div v-for="k in KINDS" :key="k" class="flex items-center justify-between gap-3">
             <div class="min-w-0">
