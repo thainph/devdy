@@ -3,7 +3,8 @@
 // Threads are fetched from Slack by the app and stored per message (original
 // mrkdwn in `text_raw`, Vietnamese in `text_vi`), with `slack_files`,
 // `slack_users` and `slack_channels` alongside. The app owns fetching and
-// translation; the sidecar only reads, renames, re-links and deletes.
+// translation (add / refresh / reply ask it through the broker); the sidecar
+// itself only reads, renames, re-links and deletes.
 // File paths are stored RELATIVE to <app_data> and returned ABSOLUTE. The
 // sidecar connection does not enable `foreign_keys`, so deletes remove child
 // rows explicitly instead of relying on ON DELETE CASCADE. Sessions (runs)
@@ -206,4 +207,13 @@ export function deleteThreads({ ids } = {}) {
     }
   }
   return { deleted: deleted.length, requested: list.length, dirs_removed: dirsRemoved };
+}
+
+/** Fetch state of one thread (polled while the app fetches it), or null. */
+export function threadStatus(id) {
+  return (
+    db()
+      .prepare('SELECT id, title, fetch_status, fetch_error_code, fetch_error, fetched_at, reply_count FROM slack_threads WHERE id = ?')
+      .get(String(id ?? '')) ?? null
+  );
 }

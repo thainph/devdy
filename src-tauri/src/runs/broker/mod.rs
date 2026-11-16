@@ -1,7 +1,8 @@
 //! Credential broker (GĐ2).
 //!
 //! Tools served: `gh`/`glab`/`git` (tokens), `aws` (minted creds), `az` (the
-//! linked Azure account's config dir), `terraform` (AWS and/or Azure).
+//! linked Azure account's config dir), `terraform` (AWS and/or Azure), plus
+//! data requests from the built-in MCP server (`radar`, `slack_*`).
 //!
 //! A per-run Unix-socket server that receives `{project_id,tool,argv,host}`
 //! NDJSON requests from the (future GĐ3) `gh`/`glab`/git shim, applies the pure
@@ -18,6 +19,7 @@ pub mod audit;
 pub mod mcp_creds;
 pub mod policy;
 pub mod radar;
+pub mod slack;
 pub mod token;
 
 use std::path::PathBuf;
@@ -86,6 +88,9 @@ pub struct BrokerRequest {
     /// (the server got a 401).
     #[serde(default)]
     pub refresh: bool,
+    /// slack_reply only: the reply to post (not a secret; kept out of the audit).
+    #[serde(default)]
+    pub text: Option<String>,
 }
 
 /// Response returned to the shim (one NDJSON line). Secret fields are only
@@ -143,6 +148,9 @@ pub struct BrokerResponse {
     /// radar: projects whose refresh failed → the error (not secret).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub errors: Option<std::collections::HashMap<String, String>>,
+    /// slack_*: the thread the request acted on (id, fetch_status, …; not secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub slack: Option<serde_json::Value>,
 }
 
 impl BrokerResponse {
@@ -404,6 +412,10 @@ async fn process_line(
     // Delivery Radar refreshes for the built-in MCP server: data, not credentials.
     if req.tool == radar::TOOL {
         return radar::process(&req, db, resolver).await;
+    }
+    // Slack threads for the built-in MCP server: add / refresh / reply (asks).
+    if slack::handles(&req.tool) {
+        return slack::process(&req, db, resolver, app).await;
     }
 
     // Audit under the run that issued the request (falls back to "?").

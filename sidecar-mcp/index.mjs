@@ -5,7 +5,8 @@
 // are namespaced `mcp__devdy__<name>` on the AI side. Capabilities:
 //   • Quick notes  — full CRUD over Devdy's markdown scratchpad (per-project or global)
 //   • Slack threads (slack_threads_*) fetched + translated to Vietnamese by the app:
-//     list/read (Vietnamese, original on request)/search/rename/set_project/delete
+//     list/read (Vietnamese, original on request)/search/rename/set_project/delete,
+//     plus add/refresh/reply through the app's broker (a reply is confirmed by the user)
 //   • Session recall — search & read past run transcripts across sessions
 //   • Todos / project context / VPS — full CRUD on todos (deadline, priority, estimate,
 //     status, source; ranked in the app's Focus board), git, managed servers
@@ -245,7 +246,8 @@ const tools = {
 
   // ---- Slack threads ---------------------------------------------------------
   // Own tables (migration 0041), fetched from Slack and translated by the app;
-  // read-mostly tools (see lib/slack-thread-tools.mjs).
+  // read-mostly tools; add / refresh / reply go through the broker (see
+  // lib/slack-thread-tools.mjs).
   ...slackThreadTools({ snippetAround }),
 
   // ---- Delivery Radar --------------------------------------------------------

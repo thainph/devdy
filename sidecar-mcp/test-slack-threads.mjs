@@ -19,6 +19,7 @@ import { basename, dirname, join } from 'node:path';
 import { DatabaseSync } from 'node:sqlite';
 import { mkdtempSync, mkdirSync, writeFileSync, readFileSync, readdirSync, existsSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
+import net from 'node:net';
 
 const HERE = dirname(fileURLToPath(import.meta.url));
 const SERVER = join(HERE, 'index.mjs');
@@ -199,10 +200,10 @@ insLink.run('th-v2', 'r-gone', PROJECT, T0);
 
 // ---- Drive the server ---------------------------------------------------------
 
-function drive(frames) {
+function drive(frames, env = {}) {
   return new Promise((resolve, reject) => {
     const child = spawn(process.execPath, [SERVER], {
-      env: { ...process.env, DEVDY_DB_PATH: dbPath, DEVDY_PROJECT_ID: PROJECT },
+      env: { ...process.env, DEVDY_DB_PATH: dbPath, DEVDY_PROJECT_ID: PROJECT, DEVDY_BROKER_SOCK: '', DEVDY_RUN_ID: '', ...env },
       stdio: ['pipe', 'pipe', 'pipe'],
     });
     let out = '';
@@ -229,9 +230,9 @@ function drive(frames) {
 
 const tc = (name, args, id) => ({ jsonrpc: '2.0', id, method: 'tools/call', params: { name, arguments: args } });
 /** Run a labelled script in one server process; returns label → { text, isError }. */
-async function run(script, extra = []) {
+async function run(script, extra = [], env = {}) {
   const frames = script.map(([label, name, args], i) => [label, tc(name, args, i + 100)]);
-  const { parsed, noise, stderr } = await drive([...extra, ...frames.map(([, f]) => f)]);
+  const { parsed, noise, stderr } = await drive([...extra, ...frames.map(([, f]) => f)], env);
   const byId = new Map(parsed.map((m) => [m.id, m]));
   const out = Object.fromEntries(
     frames.map(([label, f]) => {
@@ -255,8 +256,8 @@ check(headById.get(1)?.result?.serverInfo?.name === 'devdy', 'initialize reports
 const names = (headById.get(2)?.result?.tools || []).map((t) => t.name);
 check(!names.some((n) => n.startsWith('web_pages_')), 'tools/list: no web_pages_* tools (feature removed)');
 const slackNames = names.filter((n) => n.startsWith('slack_threads_')).sort();
-check(slackNames.join(',') === ['delete', 'list', 'read', 'rename', 'search', 'set_project'].map((s) => `slack_threads_${s}`).join(','),
-  `tools/list: slack_threads_* = list/read/search/delete/rename/set_project (got ${slackNames.join(',')})`);
+check(slackNames.join(',') === ['add', 'delete', 'list', 'read', 'refresh', 'rename', 'reply', 'search', 'set_project'].map((s) => `slack_threads_${s}`).join(','),
+  `tools/list: slack_threads_* = add/list/read/refresh/reply/search/delete/rename/set_project (got ${slackNames.join(',')})`);
 check(!['update', 'append', 'reorder', 'read_attachment'].some((s) => names.includes(`slack_threads_${s}`)), 'tools/list: no slack update/append/reorder/read_attachment');
 
 // The generic captures core is gone.
@@ -412,6 +413,72 @@ check(/^Deleted 2\/3/.test(M['delete-bulk'].text) && !existsSync(join(appData, '
   countIn('slack_files', 'thread_id', 'lg-a') === 0, 'delete: bulk ids incl. legacy row + files dir');
 check(existsSync(join(appData, 'slack-threads/lg-dup-new')) && countIn('slack_threads', 'id', 'th-long') === 1, 'delete: other threads untouched');
 check(M['delete-none'].isError, 'delete: requires an id');
+
+// ---- add / refresh / reply through the broker ---------------------------------------
+// A fake broker plays the app: it checks the request and moves fetch_status in
+// the shared DB the way the job queue would.
+
+const sock = join(appData, 'broker.sock');
+const brokerReqs = [];
+const setStatus = db.prepare('UPDATE slack_threads SET fetch_status = ?, fetched_at = COALESCE(?, fetched_at) WHERE id = ?');
+const broker = net.createServer((c) => {
+  let buf = '';
+  c.on('data', (d) => {
+    buf += d;
+    const nl = buf.indexOf('\n');
+    if (nl < 0) return;
+    const req = JSON.parse(buf.slice(0, nl));
+    brokerReqs.push(req);
+    const answer = (o) => c.end(`${JSON.stringify(o)}\n`);
+    if (req.run_id !== 'r1') return answer({ decision: 'deny', reason: 'no live run for this request' });
+    if (req.tool === 'slack_add') {
+      setStatus.run('fetching', null, 'th-qa');
+      setTimeout(() => setStatus.run('translating', null, 'th-qa'), 300);
+      return answer({ decision: 'allow', slack: { id: 'th-qa', status: 'existing', fetch_status: 'pending' } });
+    }
+    if (req.tool === 'slack_refresh') {
+      setStatus.run('pending', null, req.argv[0]);
+      setTimeout(() => setStatus.run('ready', '2026-11-16T00:00:00Z', req.argv[0]), 300);
+      return answer({ decision: 'allow', slack: { id: req.argv[0], fetch_status: 'pending' } });
+    }
+    if (req.tool === 'slack_reply') {
+      if (req.text.includes('nope')) return answer({ decision: 'deny', reason: 'user declined the Slack reply' });
+      return answer({ decision: 'allow', slack: { id: req.argv[0], fetch_status: 'pending' } });
+    }
+    answer({ decision: 'deny', reason: 'unknown tool' });
+  });
+});
+await new Promise((r) => broker.listen(sock, r));
+const live = { DEVDY_BROKER_SOCK: sock, DEVDY_RUN_ID: 'r1' };
+
+const b1 = (await run([['add', 'slack_threads_add', { url: 'https://x.slack.com/archives/C0B8TESTAA1/p1789877000000100', scope: 'global' }]], [], live)).out;
+check(brokerReqs[0]?.tool === 'slack_add' && JSON.stringify(brokerReqs[0].argv) === '["https://x.slack.com/archives/C0B8TESTAA1/p1789877000000100","global"]' &&
+  brokerReqs[0].project_id === PROJECT, 'add: link + scope sent to the broker', JSON.stringify(brokerReqs[0]));
+check(b1.add.text.startsWith('Re-imported Slack thread th-qa.') && b1.add.text.includes('translation in progress'), 'add: waits for the fetch, not the translation', b1.add.text);
+
+const b2 = (await run([['refresh', 'slack_threads_refresh', { id: 'th-qa' }], ['refresh-missing', 'slack_threads_refresh', { id: 'nope' }]], [], live)).out;
+check(brokerReqs.at(-1).tool === 'slack_refresh' && b2.refresh.text.includes(': ready,') && b2.refresh.text.includes('slack_threads_read'),
+  'refresh: waits until the requeued fetch is done', b2.refresh.text);
+check(b2['refresh-missing'].isError && brokerReqs.filter((r) => r.argv[0] === 'nope').length === 0, 'refresh: unknown id never reaches the broker');
+
+const before = brokerReqs.length;
+const b3 = (await run([
+  ['reply', 'slack_threads_reply', { id: 'th-qa', text: '  了解です  ' }],
+  ['reply-declined', 'slack_threads_reply', { id: 'th-qa', text: 'nope' }],
+  ['reply-empty', 'slack_threads_reply', { id: 'th-qa', text: '   ' }],
+  ['reply-missing', 'slack_threads_reply', { id: 'gone', text: 'hi' }],
+], [], live)).out;
+const replies = brokerReqs.slice(before).filter((r) => r.tool === 'slack_reply');
+check(replies.length === 2 && replies.some((r) => r.text === '了解です' && JSON.stringify(r.argv) === '["th-qa"]'), 'reply: trimmed text + id sent', JSON.stringify(replies));
+check(!b3.reply.isError && b3.reply.text.startsWith('Posted the reply'), 'reply: posted', b3.reply.text);
+check(b3['reply-declined'].isError && b3['reply-declined'].text.includes('user declined'), 'reply: decline surfaces as an error', b3['reply-declined'].text);
+check(b3['reply-empty'].isError && b3['reply-missing'].isError, 'reply: empty text / unknown thread rejected locally');
+
+const b4 = (await run([['dead', 'slack_threads_refresh', { id: 'th-qa' }]], [], { DEVDY_BROKER_SOCK: sock, DEVDY_RUN_ID: 'r9' })).out;
+check(b4.dead.isError && b4.dead.text.includes('no live run'), 'refresh: broker denial surfaces', b4.dead.text);
+const b5 = (await run([['nobroker', 'slack_threads_reply', { id: 'th-qa', text: 'hi' }]])).out;
+check(b5.nobroker.isError && b5.nobroker.text.includes('broker not configured'), 'reply: no broker → error');
+broker.close();
 
 const stderrAll = [head, s, s2, m].map((r) => r.stderr || '').join('');
 check(![s, s2, m].some((r) => r.noise.length), 'stdout carries only JSON-RPC frames (all runs)');
