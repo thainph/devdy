@@ -28,6 +28,8 @@ export interface PrLite {
   deletions?: number | null
   ci_state?: string | null
   review_requested_at?: string | null
+  /** `requested_reviewers` is known (the GraphQL lookup answered for this PR). */
+  reviewers_known?: boolean
 }
 
 export type PrWaitLevel = 'ok' | 'warn' | 'late'
@@ -99,7 +101,7 @@ export interface RankedPr<T extends PrLite = PrLite> {
   ci: CiStatus
   ai: AiReviewBadge
   small: boolean
-  /** No other reviewer is still pending. */
+  /** No other reviewer is still pending (only when the reviewer list is known). */
   soleReviewer: boolean
   score: number
 }
@@ -111,7 +113,8 @@ export function rankPr<T extends PrLite>(pr: T, now: number): RankedPr<T> {
   const ci = ciStatus(pr.ci_state)
   const lines = changedLines(pr)
   const small = lines !== null && lines < SMALL_PR_LINES
-  const soleReviewer = pr.requested_reviewers.length === 0
+  // An empty list from a failed lookup means "unknown", not "nobody else".
+  const soleReviewer = pr.reviewers_known === true && pr.requested_reviewers.length === 0
   const ai = aiReviewBadge(pr)
   let score = 0
   if (ai === 'updated') score += 100

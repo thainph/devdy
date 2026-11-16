@@ -16,7 +16,7 @@ function pr(extra = {}) {
   return {
     owner: 'acme', repo: 'web', number: seq, draft: false, author_login: 'bob', author_is_bot: false,
     updated_at: '2026-11-15T00:00:00Z', existing_run_id: null, existing_run_status: null,
-    updated_since_review: false, requested_reviewers: [{ login_or_slug: 'carol' }],
+    updated_since_review: false, requested_reviewers: [{ login_or_slug: 'carol' }], reviewers_known: true,
     additions: 500, deletions: 100, ci_state: null, review_requested_at: null,
     ...extra,
   }
@@ -58,6 +58,17 @@ test('bonuses: green CI, small PR, last reviewer', () => {
   assert.ok(r.small && r.soleReviewer)
   assert.equal(r.ci, 'success')
   assert.equal(r.score, 30)
+})
+
+test('an empty reviewer list from a failed lookup earns no "last reviewer" bonus', () => {
+  const unknown = rankPr(pr({ requested_reviewers: [], reviewers_known: false }), NOW)
+  assert.equal(unknown.soleReviewer, false)
+  assert.equal(unknown.score, 0)
+  // Caches from before the flag: unknown too.
+  const legacy = pr({ requested_reviewers: [] })
+  delete legacy.reviewers_known
+  assert.equal(rankPr(legacy, NOW).soleReviewer, false)
+  assert.equal(rankPr(pr({ requested_reviewers: [] }), NOW).soleReviewer, true)
 })
 
 test('order: re-review → long wait → bonuses; drafts last; bots apart; failing CI kept', () => {

@@ -999,6 +999,9 @@ pub struct PrStats {
     pub ci_state: Option<String>,
     /// Latest time one of the user's accounts was asked to review (timeline).
     pub review_requested_at: Option<String>,
+    /// The GraphQL lookup answered for this PR, so `requested_reviewers` is
+    /// the real list (empty = nobody else is pending). False = unknown.
+    pub reviewers_known: bool,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -1175,6 +1178,7 @@ fn parse_review_requests_page(
             review_decision: text("/reviewDecision"),
             ci_state: text("/commits/nodes/0/commit/statusCheckRollup/state"),
             review_requested_at,
+            reviewers_known: true,
         };
         map.insert(pr_map_key(owner, repo, number), PrGraphInfo { reviewers, head_sha, stats });
     }
@@ -2467,6 +2471,9 @@ mod tests {
         assert_eq!(info.stats.ci_state.as_deref(), Some("SUCCESS"));
         // Only requests to the user's own logins count; the latest one wins.
         assert_eq!(info.stats.review_requested_at.as_deref(), Some("2026-01-03T00:00:00Z"));
+        assert!(info.stats.reviewers_known);
+        // A PR the lookup never answered for keeps the default: reviewers unknown.
+        assert!(!super::PrStats::default().reviewers_known);
         let reviewers = &info.reviewers;
         let names: Vec<(&str, &str)> =
             reviewers.iter().map(|r| (r.login_or_slug.as_str(), r.kind.as_str())).collect();

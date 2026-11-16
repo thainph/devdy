@@ -47,6 +47,9 @@ export interface PrInboxItem {
   ci_state?: string | null
   /** Latest time one of the user's accounts was asked to review. */
   review_requested_at?: string | null
+  /** `requested_reviewers` is the real list (the GraphQL lookup answered);
+   * false / absent = unknown, an empty list then says nothing. */
+  reviewers_known?: boolean
 }
 
 /** Mirrors the Rust `PrInboxReviewerAccount`. */
