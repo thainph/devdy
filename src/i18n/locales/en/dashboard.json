@@ -137,5 +137,14 @@
     "stopMessage": "“{name}” will be cancelled. You can resume it later.",
     "waitingItem": "{name} — {n} request | {name} — {n} requests",
     "worker": "worker"
-  }
+  },
+  "sources": {
+    "todos": "Todos",
+    "prs": "PRs",
+    "runs": "Sessions",
+    "slack": "Slack",
+    "projects": "Radar"
+  },
+  "failed": "load failed: {sources}",
+  "failedHint": "These sources could not be loaded; their widget shows the error and the last data it had."
 }

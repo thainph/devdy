@@ -10,7 +10,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { LayoutDashboard, RefreshCw } from 'lucide-vue-next'
+import { AlertCircle, LayoutDashboard, RefreshCw } from 'lucide-vue-next'
 import { AppSelect, Button, PageHeader } from '@/components/ui'
 import SlackWidget from '@/components/dashboard/SlackWidget.vue'
 import TodosWidget from '@/components/dashboard/TodosWidget.vue'
@@ -82,30 +82,28 @@ function projectName(id: string | null): string | null {
 const now = ref(Date.now())
 let clock: ReturnType<typeof setInterval> | null = null
 const dash = useWorkDashboard(projectFilter, now)
-const refreshing = ref(false)
-const lastRefresh = ref<number | null>(null)
+const refreshing = dash.refreshing
 
-async function refresh(force = false) {
-  refreshing.value = true
-  try {
-    await dash.refresh(force)
-    lastRefresh.value = Date.now()
-  } finally {
-    refreshing.value = false
-  }
+function refresh(force = false) {
+  void dash.refresh(force)
 }
 
 onMounted(() => {
   void customers.start()
-  lastRefresh.value = Date.now()
   clock = setInterval(() => { now.value = Date.now() }, 60_000)
 })
 onBeforeUnmount(() => {
   if (clock) clearInterval(clock)
 })
 
+// Set only once a refresh has finished; a source that failed is named next to it.
 const lastRefreshLabel = computed(() =>
-  lastRefresh.value ? new Date(lastRefresh.value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : '',
+  dash.lastRefreshAt.value
+    ? new Date(dash.lastRefreshAt.value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
+    : '',
+)
+const failedLabel = computed(() =>
+  dash.failedSources.value.map((k) => t(`dashboard.sources.${k}`)).join(', '),
 )
 
 // ── "Needs you now" ──────────────────────────────────────────────────────────
@@ -262,6 +260,14 @@ async function stopSession(row: DashboardRun) {
         </Button>
         <span v-if="lastRefreshLabel" class="text-[11px] text-muted-foreground">
           {{ t('dashboard.refreshedAt', { time: lastRefreshLabel }) }}
+        </span>
+        <span
+          v-if="failedLabel"
+          class="inline-flex items-center gap-1 text-[11px] text-destructive"
+          :title="t('dashboard.failedHint')"
+        >
+          <AlertCircle class="h-3 w-3" :stroke-width="2" />
+          {{ t('dashboard.failed', { sources: failedLabel }) }}
         </span>
       </template>
     </PageHeader>

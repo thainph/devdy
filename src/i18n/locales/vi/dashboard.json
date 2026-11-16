@@ -137,5 +137,14 @@
     "stopMessage": "“{name}” sẽ bị huỷ. Bạn có thể tiếp tục lại sau.",
     "waitingItem": "{name} — {n} yêu cầu",
     "worker": "worker"
-  }
+  },
+  "sources": {
+    "todos": "Todo",
+    "prs": "PR",
+    "runs": "Session",
+    "slack": "Slack",
+    "projects": "Radar"
+  },
+  "failed": "tải lỗi: {sources}",
+  "failedHint": "Các nguồn này tải không được; widget tương ứng hiện lỗi và dữ liệu gần nhất đang có."
 }

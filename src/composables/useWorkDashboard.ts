@@ -188,19 +188,40 @@ export function useWorkDashboard(projectFilter: Ref<string | null>, now: Ref<num
   })
 
   // ── Loading + live updates ───────────────────────────────────────────────
+  const refreshing = ref(false)
+  /** When the last full refresh finished (null until the first one does). */
+  const lastRefreshAt = ref<number | null>(null)
+
   async function refresh(force = false) {
+    refreshing.value = true
     now.value = Date.now()
-    if (projects.projects.length === 0) {
-      try { await projects.fetchProjects() } catch { /* shown as empty widgets */ }
+    try {
+      if (projects.projects.length === 0) {
+        try { await projects.fetchProjects() } catch { /* shown as empty widgets */ }
+      }
+      await Promise.allSettled([
+        loadSlack(),
+        loadRuns(),
+        focus.load(),
+        force ? prInbox.refresh() : prInbox.load(),
+        radar.refresh(boardProjectIds.value, { force }),
+      ])
+      lastRefreshAt.value = Date.now()
+    } finally {
+      refreshing.value = false
     }
-    await Promise.all([
-      loadSlack(),
-      loadRuns(),
-      focus.load(),
-      force ? prInbox.refresh() : prInbox.load(),
-      radar.refresh(boardProjectIds.value, { force }),
-    ])
   }
+
+  /** Sources whose last load failed (the header names them). */
+  const failedSources = computed(() => {
+    const out: AttentionKey[] = []
+    if (slackState.value.error) out.push('slack')
+    if (todoState.value.error) out.push('todos')
+    if (prState.value.error) out.push('prs')
+    if (scopeProjects.value.some((p) => p.github_project_board_url && radar.errors[p.id])) out.push('projects')
+    if (runState.value.error) out.push('runs')
+    return out
+  })
 
   const timers = new Map<string, ReturnType<typeof setTimeout>>()
   // Set on unmount: no more debounced loads, and a listener whose registration
@@ -259,6 +280,6 @@ export function useWorkDashboard(projectFilter: Ref<string | null>, now: Ref<num
     runs, runState,
     attention,
     slackThreadById: (id: string) => slackThreads.value.find((t) => t.id === id) ?? null,
-    refresh, loadSlack, loadRuns,
+    refresh, refreshing, lastRefreshAt, failedSources, loadSlack, loadRuns,
   }
 }
