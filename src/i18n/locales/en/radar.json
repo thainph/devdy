@@ -1,11 +1,23 @@
 {
   "windowTitle": "Delivery Radar — Devdy",
   "title": "Delivery Radar",
-  "projectsLabel": "Projects:",
-  "allProjects": "All",
-  "dueSoonLabel": "Due soon ≤",
-  "staleLabel": "Stale >",
-  "milestoneLagLabel": "Milestone lag >",
+  "projectPicker": {
+    "all": "All projects ({n})",
+    "more": "{names} +{n}",
+    "search": "Search projects…",
+    "selected": "{n}/{total} selected",
+    "selectAll": "Select all",
+    "only": "Only",
+    "onlyHint": "Show only {project}",
+    "noMatch": "No project matches."
+  },
+  "settings": {
+    "title": "Radar settings",
+    "thresholdsTitle": "Thresholds",
+    "dueSoonHint": "Deadline within this many days",
+    "staleHint": "No update on the issue for more than this many days",
+    "milestoneLag": "Milestone lag"
+  },
   "milestoneLagHint": "Work Dashboard: a milestone is behind schedule when its share of elapsed time exceeds its share of closed issues by more than this many points.",
   "days": "days",
   "searchPlaceholder": "Search issue, #number, assignee…",

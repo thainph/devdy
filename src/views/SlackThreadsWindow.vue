@@ -41,6 +41,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { refreshTray } from '@/lib/tray'
+import { projectOptionsForIds } from '@/lib/projectOptions'
 import { createSeenGuard, isRecent, isUnread, matchesActivity, type ActivityFilter } from '@/lib/slackThreadUtils'
 import {
   SLACK_WINDOW_ADD,
@@ -126,9 +127,7 @@ const projectOptions = computed(() => {
   const ids = new Set<string>()
   for (const th of store.threads) if (th.projectId) ids.add(th.projectId)
   if (projectFilter.value && projectFilter.value !== NO_PROJECT) ids.add(projectFilter.value)
-  const named = [...ids]
-    .map((id) => ({ value: id, label: projects.projects.find((p) => p.id === id)?.name ?? id }))
-    .sort((a, b) => a.label.localeCompare(b.label))
+  const named = projectOptionsForIds(ids, (id) => projects.projects.find((p) => p.id === id)?.name)
   return [
     { value: '', label: t('slackThread.sidebar.allProjects') },
     ...named,

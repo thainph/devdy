@@ -7,7 +7,7 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { CheckCheck, ChevronRight, CornerDownRight, ExternalLink, FolderOpen, ListPlus, Radar, RefreshCw, SearchX } from 'lucide-vue-next'
+import { ChevronRight, CornerDownRight, ExternalLink, FolderOpen, ListPlus, Radar, RefreshCw, SearchX, Settings2 } from 'lucide-vue-next'
 import { useProjectsStore, type Project } from '@/stores/projects'
 import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
 import {
@@ -16,7 +16,10 @@ import {
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
 import DoneStatusesModal from '@/components/radar/DoneStatusesModal.vue'
+import RadarProjectPicker from '@/components/radar/RadarProjectPicker.vue'
+import RadarSettingsModal from '@/components/radar/RadarSettingsModal.vue'
 import type { TodoPrefill } from '@/lib/focus'
+import { sortProjectsByName } from '@/lib/projectOptions'
 import {
   buildGroups,
   classifyAll,
@@ -39,7 +42,7 @@ const GROUP_KEY = 'devdy:radarGroupMode'
 
 // ── Project scope ────────────────────────────────────────────────────────────
 // Only projects with a linked GitHub Project board carry the Deadline field.
-const boardProjects = computed(() => projectsStore.projects.filter((p) => !!p.github_project_board_url))
+const boardProjects = computed(() => sortProjectsByName(projectsStore.projects.filter((p) => !!p.github_project_board_url)))
 // Empty = all board projects.
 const selectedProjects = ref<Set<string>>(new Set())
 const scopeProjects = computed(() =>
@@ -49,13 +52,6 @@ const scopeProjects = computed(() =>
 )
 const scopeIds = computed(() => scopeProjects.value.map((p) => p.id))
 
-function toggleProject(id: string) {
-  const next = new Set(selectedProjects.value)
-  if (next.has(id)) next.delete(id)
-  else next.add(id)
-  // Every project ticked is the same as "All".
-  selectedProjects.value = next.size === boardProjects.value.length ? new Set() : next
-}
 function onlyProject(id: string) {
   if (boardProjects.value.some((p) => p.id === id)) selectedProjects.value = new Set([id])
 }
@@ -116,6 +112,11 @@ const classified = computed(() =>
 const counts = computed(() => countByStatus(classified.value))
 
 const doneStatusesOpen = ref(false)
+const settingsOpen = ref(false)
+function openDoneRules() {
+  settingsOpen.value = false
+  doneStatusesOpen.value = true
+}
 const statusFilter = ref<RadarStatus | null>(null)
 const query = ref('')
 const groupMode = ref<RadarGroupMode>(localStorage.getItem(GROUP_KEY) === 'project' ? 'project' : 'person')
@@ -288,33 +289,24 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
         <Radar class="h-4 w-4 text-primary shrink-0" :stroke-width="2" />
       </template>
       <template #actions>
-        <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          {{ t('radar.dueSoonLabel') }}
-          <Input v-model.number="store.thresholds.dueSoonDays" type="number" size="sm" class="w-14" />
-          {{ t('radar.days') }}
-        </label>
-        <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground">
-          {{ t('radar.staleLabel') }}
-          <Input v-model.number="store.thresholds.staleDays" type="number" size="sm" class="w-14" />
-          {{ t('radar.days') }}
-        </label>
-        <label class="flex items-center gap-1.5 text-[11px] text-muted-foreground" :title="t('radar.milestoneLagHint')">
-          {{ t('radar.milestoneLagLabel') }}
-          <Input v-model.number="store.thresholds.milestoneLagPct" type="number" size="sm" class="w-14" />
-          %
-        </label>
         <Button
           variant="outline"
-          :disabled="scopeIds.length === 0"
-          :title="t('radar.doneStatuses.buttonHint')"
-          @click="doneStatusesOpen = true"
+          size="icon"
+          :disabled="store.isLoading || scopeIds.length === 0"
+          :title="t('common.refresh')"
+          :aria-label="t('common.refresh')"
+          @click="refresh(true)"
         >
-          <CheckCheck class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('radar.doneStatuses.button') }}
-        </Button>
-        <Button variant="outline" :disabled="store.isLoading || scopeIds.length === 0" @click="refresh(true)">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.isLoading }" :stroke-width="1.75" />
-          {{ t('common.refresh') }}
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          :title="t('radar.settings.title')"
+          :aria-label="t('radar.settings.title')"
+          @click="settingsOpen = true"
+        >
+          <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
       </template>
     </PageHeader>
@@ -331,29 +323,7 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
     <template v-else>
       <!-- Toolbar: project scope, grouping, search -->
       <div class="shrink-0 border-b border-border/60 px-6 py-2 flex items-center gap-x-4 gap-y-2 flex-wrap">
-        <div class="flex items-center gap-1.5 flex-wrap min-w-0">
-          <span class="text-[11px] text-muted-foreground mr-0.5">{{ t('radar.projectsLabel') }}</span>
-          <button
-            class="rounded-full border px-2.5 py-0.5 text-[11px] transition-colors"
-            :class="selectedProjects.size === 0
-              ? 'border-primary/40 bg-primary/10 text-primary'
-              : 'border-border/60 text-muted-foreground hover:text-foreground'"
-            @click="selectedProjects = new Set()"
-          >
-            {{ t('radar.allProjects') }}
-          </button>
-          <button
-            v-for="p in boardProjects" :key="p.id"
-            class="rounded-full border px-2.5 py-0.5 text-[11px] transition-colors"
-            :class="selectedProjects.has(p.id)
-              ? 'border-primary/40 bg-primary/10 text-primary'
-              : 'border-border/60 text-muted-foreground hover:text-foreground'"
-            @click="toggleProject(p.id)"
-          >
-            {{ p.name }}
-            <RefreshCw v-if="store.loading.has(p.id)" class="inline h-2.5 w-2.5 ml-0.5 animate-spin" :stroke-width="2" />
-          </button>
-        </div>
+        <RadarProjectPicker v-model:selected="selectedProjects" :projects="boardProjects" :loading="store.loading" />
         <div class="ml-auto flex items-center gap-2">
           <SegmentedControl v-model="groupMode" :options="groupModeOptions" :stretch="false" />
           <Input v-model="query" size="sm" class="w-56" :placeholder="t('radar.searchPlaceholder')" />
@@ -533,6 +503,12 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
       </DropdownItem>
     </ContextMenu>
     <TodoCaptureModal :open="!!todoPrefill" :prefill="todoPrefill" @close="todoPrefill = null" />
+    <RadarSettingsModal
+      :open="settingsOpen"
+      :can-edit-done-rules="scopeIds.length > 0"
+      @close="settingsOpen = false"
+      @done-rules="openDoneRules"
+    />
     <DoneStatusesModal :open="doneStatusesOpen" :projects="scopeProjects" @close="doneStatusesOpen = false" />
   </div>
 </template>
