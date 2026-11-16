@@ -17,6 +17,7 @@ pub mod approver;
 pub mod audit;
 pub mod mcp_creds;
 pub mod policy;
+pub mod radar;
 pub mod token;
 
 use std::path::PathBuf;
@@ -139,6 +140,9 @@ pub struct BrokerResponse {
     /// mcp: headers for an HTTP/SSE server (incl. the conductor's bearer). Secret values.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub headers: Option<std::collections::HashMap<String, String>>,
+    /// radar: projects whose refresh failed → the error (not secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub errors: Option<std::collections::HashMap<String, String>>,
 }
 
 impl BrokerResponse {
@@ -396,6 +400,10 @@ async fn process_line(
     // command invocations; they have their own fail-closed path.
     if mcp_creds::handles(&req.tool) {
         return mcp_creds::process(&req, db, resolver, app).await;
+    }
+    // Delivery Radar refreshes for the built-in MCP server: data, not credentials.
+    if req.tool == radar::TOOL {
+        return radar::process(&req, db, resolver).await;
     }
 
     // Audit under the run that issued the request (falls back to "?").

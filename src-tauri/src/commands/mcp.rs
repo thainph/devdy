@@ -1431,10 +1431,9 @@ pub async fn set_builtin_mcp_enabled(
 /// A user server literally named `devdy` takes precedence (not overwritten).
 pub fn with_builtin_devdy(
     mcp: serde_json::Value,
-    node_bin: &str,
+    launch: &McpLaunch,
     script: &std::path::Path,
     db_path: &std::path::Path,
-    project_id: &str,
     project_path: &str,
 ) -> serde_json::Value {
     if !script.exists() {
@@ -1444,16 +1443,16 @@ pub fn with_builtin_devdy(
         serde_json::Value::Object(m) => m,
         _ => serde_json::Map::new(),
     };
+    // The broker env lets the radar tools ask the app for a board refresh.
+    let mut env = launch.broker_env();
+    env.insert("DEVDY_DB_PATH".into(), db_path.to_string_lossy().into());
+    env.insert("DEVDY_PROJECT_PATH".into(), project_path.into());
     map.entry("devdy".to_string()).or_insert_with(|| {
         serde_json::json!({
             "type": "stdio",
-            "command": node_bin,
+            "command": launch.node_bin,
             "args": [script.to_string_lossy()],
-            "env": {
-                "DEVDY_DB_PATH": db_path.to_string_lossy(),
-                "DEVDY_PROJECT_ID": project_id,
-                "DEVDY_PROJECT_PATH": project_path,
-            }
+            "env": env,
         })
     });
     serde_json::Value::Object(map)

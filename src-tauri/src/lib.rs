@@ -616,6 +616,7 @@ pub fn run() {
             delete_github_board,
             set_project_github_board,
             list_milestone_board,
+            commands::radar::set_radar_settings,
             list_runs,
             start_run,
             cancel_run,

@@ -2036,32 +2036,38 @@ async fn fetch_repo_board(
 
 /// Aggregate open issues across all GitHub repos of a project, grouped by
 /// milestone and enriched with the linked board's Start/Deadline/Status fields.
-/// Feeds the Delivery Radar (one call per project).
+/// Feeds the Delivery Radar (one call per project); each result is also kept as
+/// the project's radar snapshot for the built-in MCP server.
 #[tauri::command]
 pub async fn list_milestone_board(
     db: State<'_, Db>,
     project_id: String,
 ) -> Result<MilestoneBoard, String> {
+    crate::commands::radar::fetch_and_save(db.inner(), &project_id).await
+}
+
+/// The work of `list_milestone_board`, without persisting the snapshot.
+pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<MilestoneBoard, String> {
     use sqlx::Row;
 
     // 1) Load repos for the project.
     let repo_rows = sqlx::query(
         "SELECT name, github_owner, github_repo, provider FROM repos WHERE project_id = ?",
     )
-    .bind(&project_id)
-    .fetch_all(db.inner())
+    .bind(project_id)
+    .fetch_all(db)
     .await
     .map_err(|e| e.to_string())?;
 
     // 2) Load board config (if any).
-    let board = crate::commands::github_boards::project_board(db.inner(), &project_id).await?;
+    let board = crate::commands::github_boards::project_board(db, project_id).await?;
     let mappings = board.as_ref().map(|b| parse_board_mappings(&b.field_mappings));
     let board_linked = mappings
         .as_ref()
         .map(|m| m.board_id.is_some())
         .unwrap_or(false);
 
-    let client = github::client_for_project(db.inner(), &project_id)
+    let client = github::client_for_project(db, project_id)
         .await
         .map_err(|e| e.to_string())?;
     // The board is read with the PAT of the account it was configured under,

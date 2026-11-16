@@ -11,7 +11,7 @@
 //   stderr. Zero runtime dependencies (Node 18+ global fetch).
 
 import { AsyncLocalStorage } from 'node:async_hooks';
-import net from 'node:net';
+import { askBroker } from './broker.mjs';
 
 // The broker caches minted tokens itself and may hand out one that is already
 // most of an hour old, so only hold it briefly (asking again is a local call).
@@ -53,39 +53,6 @@ function resolveAccount(label) {
 /** List connected accounts (for the `list_accounts` tool). */
 export function listAccounts() {
   return ACCOUNTS.map((a) => ({ label: a.label, email: a.email, default: !!a.default }));
-}
-
-/** One NDJSON request/response over the broker socket. */
-function askBroker(req) {
-  const sock = process.env.DEVDY_BROKER_SOCK;
-  if (!sock || !process.env.DEVDY_PROJECT_ID) {
-    return Promise.reject(new Error('Devdy credential broker not configured for this server.'));
-  }
-  return new Promise((resolve, reject) => {
-    const conn = net.createConnection(sock);
-    let buf = '';
-    let settled = false;
-    const done = (fn, arg) => {
-      if (settled) return;
-      settled = true;
-      conn.destroy();
-      fn(arg);
-    };
-    conn.setTimeout(30_000, () => done(reject, new Error('credential broker timed out')));
-    conn.on('connect', () => conn.write(`${JSON.stringify(req)}\n`));
-    conn.on('data', (d) => {
-      buf += d.toString('utf8');
-      const nl = buf.indexOf('\n');
-      if (nl < 0) return;
-      try {
-        done(resolve, JSON.parse(buf.slice(0, nl)));
-      } catch (e) {
-        done(reject, e);
-      }
-    });
-    conn.on('error', () => done(reject, new Error('credential broker unreachable')));
-    conn.on('close', () => done(reject, new Error('credential broker closed the connection')));
-  });
 }
 
 /** Access token for the current call's account; `refresh` skips every cache
