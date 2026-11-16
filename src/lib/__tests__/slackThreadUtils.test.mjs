@@ -8,6 +8,7 @@ import {
   groupMessages,
   groupThreads,
   initials,
+  matchesActivity,
 } from '../slackThreadUtils.ts'
 
 const T0 = Date.parse('2026-10-08T09:00:00Z')
@@ -129,4 +130,20 @@ test('seen guard: once per (thread, newest reply) — breaks the mark-seen → c
   // A failed request releases the pair for a retry.
   guard.release('t2', '1.000001')
   assert.equal(guard.take('t2', '1.000001'), true)
+})
+
+test('matchesActivity: all / unread / recent', () => {
+  const now = Date.parse('2026-11-16T12:00:00Z')
+  const fresh = { newCount: 0, lastReplyAt: '2026-11-16T02:00:00Z', updatedAt: '2026-11-01T00:00:00Z' }
+  const stale = { newCount: 2, lastReplyAt: '2026-11-10T00:00:00Z', updatedAt: '2026-11-16T11:00:00Z' }
+  const noReply = { newCount: 0, lastReplyAt: null, updatedAt: '2026-11-16T11:00:00Z' }
+  assert.equal(matchesActivity(fresh, '', now), true)
+  assert.equal(matchesActivity(stale, '', now), true)
+  assert.equal(matchesActivity(fresh, 'unread', now), false)
+  assert.equal(matchesActivity(stale, 'unread', now), true)
+  // The last reply wins over updatedAt; without one, updatedAt counts.
+  assert.equal(matchesActivity(fresh, 'recent', now), true)
+  assert.equal(matchesActivity(stale, 'recent', now), false)
+  assert.equal(matchesActivity(noReply, 'recent', now), true)
+  assert.equal(matchesActivity({ newCount: 0, lastReplyAt: 'bad', updatedAt: '' }, 'recent', now), false)
 })
