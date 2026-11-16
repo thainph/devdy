@@ -5,17 +5,18 @@
  *
  *  - every permission prompt / AskUserQuestion still open on the Host, across
  *    ALL runs, answerable in place (4-button grid);
- *  - below it, the runs that finished or failed since the user last had the app
- *    open, with a dot until opened.
+ *  - below it, the sessions the user recently worked on (last activity first),
+ *    with a dot on a result not seen yet. Activity and read state come from the
+ *    Host, so every device shows the same list.
  *
  * Backend-agnostic like the other controller views: state in via props, intent
- * out via events. Ordering / "since last visit" live in `@/lib/remoteInbox`.
+ * out via events. Ordering / read state live in `@/lib/remoteInbox`.
  */
 import { computed, onMounted, onUnmounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CheckCircle2, XCircle } from 'lucide-vue-next'
+import { CheckCircle2, CircleSlash, Loader2, XCircle } from 'lucide-vue-next'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
-import { agoParts, finishedKind, finishedSince, parseHostTime } from '@/lib/remoteInbox'
+import { agoParts, finishedAt, finishedKind, isUnread, parseHostTime, recentRuns } from '@/lib/remoteInbox'
 import ControllerPermissionPrompt from './ControllerPermissionPrompt.vue'
 import type { ConnStatus } from '../connection'
 import type { ProjectInfo, QuestionAnswers, RemoteDecision, RunInfo } from '../protocol'
@@ -28,10 +29,8 @@ const props = defineProps<{
   pendingSeenAt: Record<string, number>
   runs: RunInfo[]
   projects: ProjectInfo[]
-  /** "Since last visit" anchor (ms). */
-  sinceMs: number
-  /** Finished runs already opened (no unread dot). */
-  readIds: string[]
+  /** The Host keeps runs' read state (host feature `seen`); without it no dots. */
+  hasSeenState?: boolean
   /** The Host accepts Always from a Controller. */
   allowAlways?: boolean
 }>()
@@ -85,22 +84,25 @@ function contextOf(req: PermissionRequest): string {
   return parts.join(' · ')
 }
 
-const finished = computed(() => finishedSince(props.runs, props.sinceMs))
-const read = computed(() => new Set(props.readIds))
+const recent = computed(() => recentRuns(props.runs, now.value, !!props.hasSeenState))
 
-function finishedLabel(run: RunInfo): string {
-  const at = parseHostTime(run.updated_at) ?? parseHostTime(run.created_at) ?? now.value
-  const key = finishedKind(run.status) === 'failure' ? 'finishedFailed' : 'finishedOk'
-  return `${projectName(run)} · ${t(`controller.inbox.${key}`, { ago: ago(at) })}`
+/** "project · you 2 h ago · finished 5 min ago". */
+function recentLabel(run: RunInfo): string {
+  const parts = [projectName(run)]
+  const active = parseHostTime(run.updated_at) ?? parseHostTime(run.created_at)
+  if (active !== null) parts.push(t('controller.inbox.activeAgo', { ago: ago(active) }))
+  const done = finishedAt(run)
+  if (run.status === 'running') {
+    parts.push(t('controller.inbox.running'))
+  } else if (done !== null) {
+    const key = finishedKind(run.status) === 'failure' ? 'finishedFailed' : 'finishedOk'
+    parts.push(t(`controller.inbox.${key}`, { ago: ago(done) }))
+  } else if (run.status === 'cancelled') {
+    const stopped = parseHostTime(run.finished_at)
+    if (stopped !== null) parts.push(t('controller.inbox.cancelledAgo', { ago: ago(stopped) }))
+  }
+  return parts.join(' · ')
 }
-
-const sinceLabel = computed(() =>
-  new Date(props.sinceMs).toLocaleString(locale.value, {
-    weekday: 'short',
-    hour: '2-digit',
-    minute: '2-digit',
-  }),
-)
 </script>
 
 <template>
@@ -128,35 +130,42 @@ const sinceLabel = computed(() =>
         />
       </div>
 
-      <!-- ── Since last visit ────────────────────────────────────────────── -->
+      <!-- ── Recent sessions ─────────────────────────────────────────────── -->
       <h2
-        class="mt-4 px-3 pt-3 pb-1.5 flex items-baseline justify-between gap-2 text-[10px] font-medium uppercase tracking-wider text-foreground/50 border-t border-border/40"
+        class="mt-4 px-3 pt-3 pb-1.5 text-[10px] font-medium uppercase tracking-wider text-foreground/50 border-t border-border/40"
       >
-        <span>{{ t('controller.inbox.sinceLastVisit') }}</span>
-        <span class="normal-case tracking-normal font-normal">{{ sinceLabel }}</span>
+        {{ t('controller.inbox.recent') }}
       </h2>
-      <p v-if="!finished.length" class="px-3 py-4 text-center text-sm text-foreground/50">
-        {{ t('controller.inbox.noneFinished') }}
+      <p v-if="!recent.length" class="px-3 py-4 text-center text-sm text-foreground/50">
+        {{ t('controller.inbox.noneRecent') }}
       </p>
       <button
-        v-for="run in finished"
+        v-for="run in recent"
         :key="run.id"
         class="w-full flex items-center gap-2.5 px-3 py-2.5 text-left border-b border-border/40 hover:bg-accent transition-colors cursor-pointer"
         :title="t('controller.browser.openRun')"
         @click="emit('open', run.id)"
       >
+        <Loader2 v-if="run.status === 'running'" class="shrink-0 h-4 w-4 animate-spin text-warning" :stroke-width="2" />
         <XCircle
-          v-if="finishedKind(run.status) === 'failure'"
+          v-else-if="finishedKind(run.status) === 'failure'"
           class="shrink-0 h-4 w-4 text-destructive"
           :stroke-width="2"
         />
-        <CheckCircle2 v-else class="shrink-0 h-4 w-4 text-success" :stroke-width="2" />
+        <CheckCircle2
+          v-else-if="finishedKind(run.status) === 'success'"
+          class="shrink-0 h-4 w-4 text-success"
+          :stroke-width="2"
+        />
+        <CircleSlash v-else class="shrink-0 h-4 w-4 text-foreground/40" :stroke-width="2" />
         <span class="min-w-0 flex-1">
-          <span class="block text-sm truncate">{{ runTitle(run, run.id) }}</span>
-          <span class="block text-[10px] text-foreground/45 truncate">{{ finishedLabel(run) }}</span>
+          <span class="block text-sm truncate" :class="isUnread(run, !!hasSeenState) && 'font-semibold'">
+            {{ runTitle(run, run.id) }}
+          </span>
+          <span class="block text-[10px] text-foreground/45 truncate">{{ recentLabel(run) }}</span>
         </span>
         <span
-          v-if="!read.has(run.id)"
+          v-if="isUnread(run, !!hasSeenState)"
           class="shrink-0 h-2 w-2 rounded-full bg-primary"
           :title="t('controller.inbox.unread')"
         />

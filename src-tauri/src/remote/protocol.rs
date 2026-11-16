@@ -691,8 +691,8 @@ pub const FEATURE_PR: &str = "pr";
 /// What this Host advertises in `session_token.host_features`: the data
 /// screens, the Inbox's `list_pending`, Always (`allow_always` /
 /// `deny_always`) from a Controller, Web Push, the Focus settings and the PR
-/// inbox.
-pub const HOST_FEATURES: [&str; 6] = ["data", "inbox", "remember", "push", "focus", "pr"];
+/// inbox, and runs' read state (`seen_at` + `run_seen`).
+pub const HOST_FEATURES: [&str; 7] = ["data", "inbox", "remember", "push", "focus", "pr", "seen"];
 
 /// One slash command exposed to the Controller's composer palette.
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -786,6 +786,10 @@ pub struct RunInfo {
     /// desktop order; this only lets the Controller badge the row.
     #[serde(default)]
     pub pinned: bool,
+    /// When the user last saw the run's result (any device, or the desktop).
+    /// Finished after this = unread. Absent from an older Host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub seen_at: Option<String>,
 }
 
 /// A command from the Controller (SRS §5.2). `action` is validated against the
@@ -965,7 +969,7 @@ mod tests {
             host_features: HOST_FEATURES.iter().map(|f| f.to_string()).collect(),
         })
         .unwrap();
-        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push", "focus", "pr"]));
+        assert_eq!(v["host_features"], serde_json::json!(["data", "inbox", "remember", "push", "focus", "pr", "seen"]));
     }
 
     #[test]

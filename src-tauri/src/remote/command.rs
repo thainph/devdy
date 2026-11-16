@@ -23,7 +23,7 @@ pub const CMD_RATE_WINDOW: Duration = Duration::from_secs(60);
 /// The actions a Controller is allowed to invoke (FR-009). `list_runs` is a
 /// read-only browse of run metadata (added for full desktop parity — the trust
 /// boundary is device approval, not per-run share).
-pub const ALLOW_LIST: [&str; 41] = [
+pub const ALLOW_LIST: [&str; 42] = [
     "respond_permission",
     "start_run",
     "request_history",
@@ -43,6 +43,8 @@ pub const ALLOW_LIST: [&str; 41] = [
     // Re-send every still-open permission prompt (the phone's Inbox after a
     // screen lock, when the live frames went nowhere).
     "list_pending",
+    // The user saw a run's result (its unread dot clears on every device).
+    "run_seen",
     // Todos, notes and project switches; refused unless the client advertised
     // `data` (see DATA_ACTIONS).
     "todo_list",
@@ -168,7 +170,7 @@ pub fn is_allowed_action(action: &str) -> bool {
 /// Browsing costs the Controller several of these per screen (open a run: list
 /// + history + meta + usage + files). Charging them to the 30/min command
 /// budget would make normal navigation trip the abuse limiter.
-pub const READ_ONLY_ACTIONS: [&str; 20] = [
+pub const READ_ONLY_ACTIONS: [&str; 21] = [
     "request_history",
     "list_runs",
     "list_projects",
@@ -181,6 +183,8 @@ pub const READ_ONLY_ACTIONS: [&str; 20] = [
     "open_run",
     "close_run",
     "list_pending",
+    // Only stamps a run's read state.
+    "run_seen",
     // Data browsing. Their writes (add / update / toggle / delete / set) stay
     // on the 30/min command budget.
     "todo_list",
@@ -447,6 +451,7 @@ mod tests {
             "open_run",
             "close_run",
             "list_pending",
+            "run_seen",
         ] {
             assert!(is_allowed_action(a), "{a} should be allowed");
         }
@@ -576,6 +581,11 @@ mod tests {
         for a in ["pr_review_all", "pr_inbox_set_poll", "Pr_inbox_list", "pr_rereview_prompt_set"] {
             assert!(!is_allowed_action(a), "{a} must be rejected");
         }
+    }
+
+    #[test]
+    fn run_seen_is_browse_traffic() {
+        assert!(is_read_only_action("run_seen"), "opening runs must not eat the command budget");
     }
 
     #[test]

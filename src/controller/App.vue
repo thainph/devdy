@@ -7,8 +7,8 @@
  *      OtpEntryView → on success (session_token) → the link's run.
  *
  * Once paired, the device can drive EVERY run on the Host (SRS BR-005 v1.1).
- * Behind the session screen sit bottom tabs — Inbox (every prompt waiting, runs
- * finished since the last visit) · Runs · Todo · Note · Project. A fresh link
+ * Behind the session screen sit bottom tabs — Inbox (every prompt waiting, the
+ * sessions recently worked on) · Runs · PR · Todo · Note · Project. A fresh link
  * pairing lands on the link's run; re-opening the app lands on the Inbox.
  */
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
@@ -45,15 +45,7 @@ import { createPrStore } from './prStore'
 import { focusOpenFromMessage, focusOpenFromSearch, withoutFocusOpen, type FocusOpen } from '@/lib/remotePush'
 import BottomTabBar, { type ControllerTab } from './components/BottomTabBar.vue'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
-import {
-  aggregatePending,
-  leaveVisit,
-  markRead,
-  parseVisitState,
-  pendingCount,
-  startVisit,
-  type VisitState,
-} from '@/lib/remoteInbox'
+import { aggregatePending, isUnread, pendingCount } from '@/lib/remoteInbox'
 import type { ComposerTurn } from './components/SessionComposer.vue'
 import { ControllerConnection, type AuthState, type ConnStatus, type SecretSource } from './connection'
 import { createRunStore } from './runStore'
@@ -70,6 +62,7 @@ import {
   newSessionCmd,
   parseSessionLink,
   respondPermissionCmd,
+  runSeenCmd,
   sendTurnCmd,
   setRunMetaCmd,
   type NoteSummary,
@@ -156,6 +149,8 @@ const hasPush = computed(() => hostHas(hostFeatures.value, 'push'))
 const hasFocus = computed(() => hostHas(hostFeatures.value, 'focus'))
 // The Host serves the PR inbox (the PR tab).
 const hasPr = computed(() => hostHas(hostFeatures.value, 'pr'))
+// The Host keeps runs' read state (`seen_at`, `run_seen`): the Inbox's dots.
+const hasSeen = computed(() => hostHas(hostFeatures.value, 'seen'))
 // Setting stays: it also holds this phone's look, notifications and Disconnect.
 const DATA_TABS: ControllerTab[] = ['todo', 'note']
 // Unknown until the token arrives: show the long-standing tabs rather than flicker.
@@ -367,7 +362,6 @@ function parseHashLink(): SessionLinkPayload | null {
 onBeforeUnmount(() => {
   conn.value?.close()
   document.removeEventListener('visibilitychange', onVisibility)
-  window.removeEventListener('pagehide', onPageHide)
   navigator.serviceWorker?.removeEventListener('message', onWorkerMessage)
 })
 
@@ -471,7 +465,7 @@ function openRun(id: string): void {
   // Remember where this run lives so Back lands on its project, not the root.
   const info = store.state.runList.find((r) => r.id === id)
   if (info) browserProjectId.value = info.project_id
-  saveVisit(markRead(visit.value, id))
+  // Opening it marks it seen on the Host (`open_run`), for every device.
   draftProjectId.value = null
   store.setActiveRun(id)
   conn.value?.openRun(id)
@@ -494,7 +488,7 @@ function refreshRuns(): void {
 
 // ── inbox ───────────────────────────────────────────────────────────────────
 /** Re-pull every open prompt (live ones that fired while this device was away
- * went nowhere) plus the run list the "since last visit" section reads. */
+ * went nowhere) plus the run list the "recent sessions" section reads. */
 function syncInbox(): void {
   const c = conn.value
   if (!c) return
@@ -513,26 +507,24 @@ const inboxPending = computed(() =>
 )
 const inboxCount = computed(() => pendingCount(store.state.pendingQueues))
 
-// "Since last visit" bookkeeping, persisted across reloads.
-const VISIT_KEY = 'devdy.controller.inbox.v1'
-function loadVisit(): VisitState {
-  try {
-    return parseVisitState(localStorage.getItem(VISIT_KEY))
-  } catch {
-    return parseVisitState(null)
-  }
+// The open run finished while on this screen: its result was seen. The Host
+// keeps that (`run_seen`), so the dot clears on every device. Re-checked when
+// the run list changes (the Host re-sends it after every finished turn) and
+// when the app comes back on screen.
+function markActiveSeen(): void {
+  const id = runId.value
+  if (!id || !hasSeen.value || document.visibilityState !== 'visible') return
+  const info = store.state.runList.find((r) => r.id === id)
+  if (info && isUnread(info, true)) conn.value?.sendCommand(runSeenCmd(id))
 }
-const visit = ref<VisitState>(startVisit(loadVisit(), Date.now()))
-function saveVisit(next: VisitState): void {
-  visit.value = next
-  try {
-    localStorage.setItem(VISIT_KEY, JSON.stringify(next))
-  } catch {
-    // Storage unavailable: the Inbox still works for this visit.
-  }
-}
-saveVisit(visit.value)
-const sinceMs = computed(() => visit.value.anchor ?? Date.now())
+watch(
+  () => {
+    const id = runId.value
+    const info = id ? store.state.runList.find((r) => r.id === id) : undefined
+    return info ? `${id}|${info.status}|${info.finished_at ?? ''}|${info.seen_at ?? ''}` : null
+  },
+  markActiveSeen,
+)
 
 function onVisibility(): void {
   // Pushes are held back while the app is on screen; say when that changes
@@ -540,19 +532,12 @@ function onVisibility(): void {
   if (hasPush.value && auth.value === 'authenticated' && status.value === 'connected') {
     push.setVisible(document.visibilityState === 'visible')
   }
-  if (document.visibilityState === 'hidden') {
-    saveVisit(leaveVisit(visit.value, Date.now()))
-    return
-  }
-  saveVisit(startVisit(visit.value, Date.now()))
+  if (document.visibilityState === 'hidden') return
+  markActiveSeen()
   // The connection re-dials itself on wake; once live, catch up right away.
   if (auth.value === 'authenticated' && status.value === 'connected') syncInbox()
 }
-function onPageHide(): void {
-  saveVisit(leaveVisit(visit.value, Date.now()))
-}
 document.addEventListener('visibilitychange', onVisibility)
-window.addEventListener('pagehide', onPageHide)
 
 // A tapped notification (service worker → open window): show the Inbox.
 function onWorkerMessage(e: MessageEvent): void {
@@ -1041,8 +1026,7 @@ function onRequestSavedPrompts(): void {
         :pending-seen-at="store.state.pendingSeenAt"
         :runs="store.state.runList"
         :projects="store.state.projectList"
-        :since-ms="sinceMs"
-        :read-ids="visit.read"
+        :has-seen-state="hasSeen"
         :allow-always="hasRemember"
         @decide="respond"
         @answer="(req, answers) => respond(req, 'allow_once', answers)"

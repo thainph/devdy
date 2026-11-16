@@ -727,6 +727,29 @@ const contextRateLimit = computed(() => session.value?.rateLimit ?? null)
 const currentStatus = computed(() => session.value?.status ?? currentRun.value?.status ?? 'idle')
 const currentSessionId = computed(() => session.value?.sessionId ?? currentRun.value?.session_id ?? null)
 
+// A finished run on screen has been seen: the Host's read state clears its
+// unread dot on the Remote Control Inbox (every device). The backend only
+// counts it while the user is actually at the desktop. Checked when the run
+// finishes (after a beat, so its finish is stored first), when another run
+// opens, and when the window comes back to the front.
+const SEEN_DELAY_MS = 1500
+let seenTimer: ReturnType<typeof setTimeout> | null = null
+function markSeenSoon() {
+  if (seenTimer) clearTimeout(seenTimer)
+  seenTimer = setTimeout(() => {
+    seenTimer = null
+    const runId = currentRunId.value
+    if (!runId || currentStatus.value === 'running' || document.visibilityState !== 'visible') return
+    invoke('mark_run_seen', { runId }).catch(() => { /* best effort */ })
+  }, SEEN_DELAY_MS)
+}
+watch([currentRunId, currentStatus], markSeenSoon, { immediate: true })
+window.addEventListener('focus', markSeenSoon)
+onBeforeUnmount(() => {
+  window.removeEventListener('focus', markSeenSoon)
+  if (seenTimer) clearTimeout(seenTimer)
+})
+
 // ── Conductor ──────────────────────────────────────────────────────────────
 // A conductor is just this session that also drives worker runs. When the open
 // run is one, we show the worker sidebar. The conductor store tracks the worker

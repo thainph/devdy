@@ -117,15 +117,18 @@
     "title": "Inbox",
     "waiting": "Waiting for you · {count}",
     "nothingWaiting": "Nothing is waiting for you.",
-    "sinceLastVisit": "Since your last visit",
-    "noneFinished": "No run finished since then.",
     "finishedOk": "finished {ago}",
     "finishedFailed": "failed {ago}",
     "unread": "New",
     "loading": "Loading…",
     "alreadyHandled": "Already handled on the desktop.",
     "notRemembered": "Allowed this once — Always could not be saved for this tool.",
-    "onceOnly": "This prompt can only be answered once (no Always)."
+    "onceOnly": "This prompt can only be answered once (no Always).",
+    "recent": "Recent sessions",
+    "noneRecent": "No session you worked on in the last 3 days.",
+    "activeAgo": "you {ago}",
+    "running": "running",
+    "cancelledAgo": "stopped {ago}"
   },
   "data": {
     "allProjects": "All projects",

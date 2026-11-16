@@ -319,8 +319,9 @@ export function createRunStore() {
           const info = state.runList.find((r) => r.id === payload.run_id)
           if (info) {
             info.status = payload.status
-            // Stamp it so the Inbox's "since last visit" sees it finish now.
-            info.updated_at = new Date().toISOString()
+            // It finished now (the Host's fresh list follows). Not `updated_at`:
+            // that is the user's last activity, which a turn ending is not.
+            info.finished_at = new Date().toISOString()
           }
           // A finished run asks nothing any more.
           if (state.pendingQueues[payload.run_id]) {

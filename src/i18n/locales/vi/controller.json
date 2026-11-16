@@ -117,15 +117,18 @@
     "title": "Cần xử lý",
     "waiting": "Đang chờ bạn · {count}",
     "nothingWaiting": "Không có việc nào đang chờ bạn.",
-    "sinceLastVisit": "Kể từ lần mở trước",
-    "noneFinished": "Chưa có run nào xong kể từ đó.",
     "finishedOk": "xong {ago}",
     "finishedFailed": "lỗi {ago}",
     "unread": "Mới",
     "loading": "Đang tải…",
     "alreadyHandled": "Đã được xử lý trên máy tính.",
     "notRemembered": "Chỉ áp dụng lần này — không lưu được \"Luôn\" cho công cụ này.",
-    "onceOnly": "Yêu cầu này chỉ trả lời được một lần (không có \"Luôn\")."
+    "onceOnly": "Yêu cầu này chỉ trả lời được một lần (không có \"Luôn\").",
+    "recent": "Session gần đây",
+    "noneRecent": "3 ngày qua bạn chưa thao tác session nào.",
+    "activeAgo": "bạn thao tác {ago}",
+    "running": "đang chạy",
+    "cancelledAgo": "đã dừng {ago}"
   },
   "data": {
     "allProjects": "Tất cả project",
