@@ -3,6 +3,7 @@
 
 use crate::commands::translate::{submit_prompt, TranslateState, TurnEvent};
 use crate::db::Db;
+use crate::slack_threads::customers::{self, SlackCustomer, SlackThreadActivity};
 use crate::slack_threads::run_links::{self, LinkRunResult, SlackThreadRunLink};
 use crate::slack_threads::store::{
     self, AddSlackThreadResult, SlackPromptText, SlackThreadSummary, SlackThreadView,
@@ -11,7 +12,7 @@ use crate::slack_threads::token::{self, SlackTokenStatus};
 use crate::slack_threads::translate::build_reply_prompt;
 use crate::slack_threads::{CodedError, SlackThreadsState, MAX_REPLY_CHARS};
 use std::time::Duration;
-use tauri::{AppHandle, State};
+use tauri::{AppHandle, Emitter, State};
 
 const REPLY_TRANSLATE_TIMEOUT: Duration = Duration::from_secs(90);
 
@@ -260,6 +261,73 @@ pub async fn list_run_slack_threads(
     run_id: String,
 ) -> CmdResult<Vec<SlackThreadSummary>> {
     run_links::threads_of_run(&state.ctx().db, &run_id)
+        .await
+        .map_err(err)
+}
+
+// ---- Customers (Work Dashboard) ---------------------------------------------
+
+/// Tell every window the customer list changed; thread classifications depend
+/// on it, so the thread list is announced as changed too.
+fn customers_changed(app: &AppHandle) {
+    let _ = app.emit(customers::CUSTOMERS_CHANGED_EVENT, ());
+    crate::slack_threads::emit_all_changed(app);
+}
+
+#[tauri::command]
+pub async fn list_slack_customers(
+    state: State<'_, SlackThreadsState>,
+) -> CmdResult<Vec<SlackCustomer>> {
+    let ctx = state.ctx();
+    customers::list(&ctx.db, &ctx.app_data).await.map_err(err)
+}
+
+/// Mark a Slack user as a customer (or update its project / note).
+#[tauri::command]
+pub async fn set_slack_customer(
+    app: AppHandle,
+    state: State<'_, SlackThreadsState>,
+    team_id: String,
+    user_id: String,
+    project_id: Option<String>,
+    note: Option<String>,
+) -> CmdResult<()> {
+    customers::set(
+        &state.ctx().db,
+        &team_id,
+        &user_id,
+        project_id.as_deref(),
+        note.as_deref(),
+    )
+    .await
+    .map_err(err)?;
+    customers_changed(&app);
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn remove_slack_customer(
+    app: AppHandle,
+    state: State<'_, SlackThreadsState>,
+    team_id: String,
+    user_id: String,
+) -> CmdResult<()> {
+    if customers::remove(&state.ctx().db, &team_id, &user_id)
+        .await
+        .map_err(err)?
+    {
+        customers_changed(&app);
+    }
+    Ok(())
+}
+
+/// Latest human / customer message per thread, for the Work Dashboard.
+#[tauri::command]
+pub async fn list_slack_thread_activity(
+    state: State<'_, SlackThreadsState>,
+    project_id: Option<String>,
+) -> CmdResult<Vec<SlackThreadActivity>> {
+    customers::thread_activity(&state.ctx().db, project_id.as_deref())
         .await
         .map_err(err)
 }

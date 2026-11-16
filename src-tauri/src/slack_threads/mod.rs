@@ -10,6 +10,7 @@
 //! - `files`: file downloads + avatar cache
 //! - `store`: SQL for the commands
 //! - `run_links`: thread ↔ session (run) links
+//! - `customers`: Slack users marked as customers + per-thread activity (Work Dashboard)
 //! - `job`: one fetch + translate job
 //!
 //! A background worker (≤ 2 jobs in parallel, 1 per thread) drains an
@@ -17,6 +18,7 @@
 //! re-queues unfinished threads after a restart.
 
 pub mod api;
+pub mod customers;
 pub mod files;
 pub mod job;
 pub mod link;

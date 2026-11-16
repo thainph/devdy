@@ -124,7 +124,8 @@ use commands::slack_threads::{
     get_slack_token_status, link_slack_thread_run, list_run_slack_threads, list_slack_thread_runs,
     list_slack_threads, mark_slack_thread_seen, post_slack_thread_reply, refresh_slack_thread,
     rename_slack_thread, reorder_slack_threads, retranslate_slack_thread, set_slack_thread_project,
-    translate_slack_reply, unlink_slack_thread_run,
+    translate_slack_reply, unlink_slack_thread_run, list_slack_customers, set_slack_customer,
+    remove_slack_customer, list_slack_thread_activity,
 };
 use commands::focus::{
     focus_board, focus_settings_get, focus_settings_set, focus_take_open_todo,
@@ -763,6 +764,10 @@ pub fn run() {
             unlink_slack_thread_run,
             list_slack_thread_runs,
             list_run_slack_threads,
+            list_slack_customers,
+            set_slack_customer,
+            remove_slack_customer,
+            list_slack_thread_activity,
             link_item_run,
             unlink_item_run,
             list_item_runs,
