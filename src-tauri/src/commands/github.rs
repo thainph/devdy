@@ -980,6 +980,25 @@ pub struct PrInboxItem {
     /// pushes since the review) — the UI offers a re-review. False when there
     /// is no linked run or either SHA is unknown.
     pub updated_since_review: bool,
+    /// Extra PR facts from the GraphQL lookup (Work Dashboard ranking). All
+    /// best-effort: None when the lookup failed or GitHub did not report them.
+    #[serde(flatten)]
+    pub stats: PrStats,
+}
+
+/// Size, CI and review facts of a PR (GraphQL; see `fetch_requested_reviewers`).
+#[derive(Debug, Serialize, Clone, Default, PartialEq)]
+pub struct PrStats {
+    pub created_at: Option<String>,
+    pub additions: Option<u64>,
+    pub deletions: Option<u64>,
+    pub changed_files: Option<u64>,
+    /// `APPROVED` / `CHANGES_REQUESTED` / `REVIEW_REQUIRED`.
+    pub review_decision: Option<String>,
+    /// Head commit's check rollup: `SUCCESS` / `FAILURE` / `ERROR` / `PENDING` / `EXPECTED`.
+    pub ci_state: Option<String>,
+    /// Latest time one of the user's accounts was asked to review (timeline).
+    pub review_requested_at: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -1074,6 +1093,7 @@ fn pr_map_key(owner: &str, repo: &str, number: u64) -> String {
 struct PrGraphInfo {
     reviewers: Vec<PrRequestedReviewer>,
     head_sha: Option<String>,
+    stats: PrStats,
 }
 
 type PrGraphMap = std::collections::HashMap<String, PrGraphInfo>;
@@ -1132,7 +1152,31 @@ fn parse_review_requests_page(
             }
         }
         let head_sha = node.get("headRefOid").and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
-        map.insert(pr_map_key(owner, repo, number), PrGraphInfo { reviewers, head_sha });
+        let text = |ptr: &str| node.pointer(ptr).and_then(|s| s.as_str()).filter(|s| !s.is_empty()).map(str::to_string);
+        // Latest request addressed to one of the user's own accounts.
+        let review_requested_at = node
+            .pointer("/timelineItems/nodes")
+            .and_then(|n| n.as_array())
+            .into_iter()
+            .flatten()
+            .filter(|ev| {
+                ev.pointer("/requestedReviewer/login")
+                    .and_then(|l| l.as_str())
+                    .is_some_and(|l| exclude_logins.contains(&l.to_lowercase()))
+            })
+            .filter_map(|ev| ev.get("createdAt").and_then(|s| s.as_str()))
+            .max()
+            .map(str::to_string);
+        let stats = PrStats {
+            created_at: text("/createdAt"),
+            additions: node.get("additions").and_then(|n| n.as_u64()),
+            deletions: node.get("deletions").and_then(|n| n.as_u64()),
+            changed_files: node.get("changedFiles").and_then(|n| n.as_u64()),
+            review_decision: text("/reviewDecision"),
+            ci_state: text("/commits/nodes/0/commit/statusCheckRollup/state"),
+            review_requested_at,
+        };
+        map.insert(pr_map_key(owner, repo, number), PrGraphInfo { reviewers, head_sha, stats });
     }
     let has_next = search.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) == Some(true);
     let cursor = search
@@ -1151,7 +1195,7 @@ async fn fetch_requested_reviewers(
     query: &str,
     exclude_logins: &std::collections::HashSet<String>,
 ) -> PrGraphMap {
-    const GQL: &str = "query($q:String!,$cursor:String){ search(type:ISSUE, query:$q, first:100, after:$cursor){ pageInfo{ hasNextPage endCursor } nodes{ ... on PullRequest{ number headRefOid repository{ nameWithOwner } reviewRequests(first:20){ nodes{ requestedReviewer{ __typename ... on User{ login avatarUrl } ... on Bot{ login avatarUrl } ... on Mannequin{ login avatarUrl } ... on Team{ slug combinedSlug avatarUrl } ... on EnterpriseTeam{ slug combinedSlug } } } } } } } }";
+    const GQL: &str = "query($q:String!,$cursor:String){ search(type:ISSUE, query:$q, first:100, after:$cursor){ pageInfo{ hasNextPage endCursor } nodes{ ... on PullRequest{ number headRefOid createdAt additions deletions changedFiles reviewDecision commits(last:1){ nodes{ commit{ statusCheckRollup{ state } } } } timelineItems(last:20, itemTypes:[REVIEW_REQUESTED_EVENT]){ nodes{ ... on ReviewRequestedEvent{ createdAt requestedReviewer{ ... on User{ login } } } } } repository{ nameWithOwner } reviewRequests(first:20){ nodes{ requestedReviewer{ __typename ... on User{ login avatarUrl } ... on Bot{ login avatarUrl } ... on Mannequin{ login avatarUrl } ... on Team{ slug combinedSlug avatarUrl } ... on EnterpriseTeam{ slug combinedSlug } } } } } } } }";
     let mut map = std::collections::HashMap::new();
     let mut cursor: Option<String> = None;
     for _ in 0..5 {
@@ -1417,6 +1461,7 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
                 }],
                 requested_reviewers: Vec::new(),
                 updated_since_review: false,
+                stats: PrStats::default(),
             });
         }
     }
@@ -1432,6 +1477,7 @@ pub(crate) async fn fetch_review_requested_prs(db: &Db) -> Result<PrInboxResult,
     for item in &mut items {
         if let Some(info) = graph_by_pr.remove(&pr_map_key(&item.owner, &item.repo, item.number)) {
             item.requested_reviewers = info.reviewers;
+            item.stats = info.stats;
         }
     }
 
@@ -2320,6 +2366,15 @@ mod tests {
             "pageInfo": { "hasNextPage": true, "endCursor": "Y3Vyc29y" },
             "nodes": [
                 { "number": 7, "headRefOid": "abc123", "repository": { "nameWithOwner": "Acme/Web" },
+                  "createdAt": "2026-01-01T00:00:00Z", "additions": 120, "deletions": 30, "changedFiles": 4,
+                  "reviewDecision": "REVIEW_REQUIRED",
+                  "commits": { "nodes": [ { "commit": { "statusCheckRollup": { "state": "SUCCESS" } } } ] },
+                  "timelineItems": { "nodes": [
+                      { "createdAt": "2026-01-02T00:00:00Z", "requestedReviewer": { "login": "me" } },
+                      { "createdAt": "2026-01-05T00:00:00Z", "requestedReviewer": { "login": "bob" } },
+                      { "createdAt": "2026-01-03T00:00:00Z", "requestedReviewer": { "login": "ME" } },
+                      { "createdAt": "2026-01-04T00:00:00Z", "requestedReviewer": {} }
+                  ] },
                   "reviewRequests": { "nodes": [
                       { "requestedReviewer": { "__typename": "User", "login": "Me", "avatarUrl": "https://a/me" } },
                       { "requestedReviewer": { "__typename": "User", "login": "bob", "avatarUrl": "https://a/bob" } },
@@ -2338,6 +2393,12 @@ mod tests {
         assert_eq!(map.len(), 1);
         let info = &map[&pr_map_key("acme", "web", 7)];
         assert_eq!(info.head_sha.as_deref(), Some("abc123"));
+        assert_eq!(info.stats.created_at.as_deref(), Some("2026-01-01T00:00:00Z"));
+        assert_eq!((info.stats.additions, info.stats.deletions, info.stats.changed_files), (Some(120), Some(30), Some(4)));
+        assert_eq!(info.stats.review_decision.as_deref(), Some("REVIEW_REQUIRED"));
+        assert_eq!(info.stats.ci_state.as_deref(), Some("SUCCESS"));
+        // Only requests to the user's own logins count; the latest one wins.
+        assert_eq!(info.stats.review_requested_at.as_deref(), Some("2026-01-03T00:00:00Z"));
         let reviewers = &info.reviewers;
         let names: Vec<(&str, &str)> =
             reviewers.iter().map(|r| (r.login_or_slug.as_str(), r.kind.as_str())).collect();
