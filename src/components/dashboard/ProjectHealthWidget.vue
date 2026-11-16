@@ -8,7 +8,7 @@
 // into one line per reason (no board, GitLab, fetch error…). Neutral wording: "at risk of slipping", never "late project".
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { AlertCircle, ExternalLink, Radar } from 'lucide-vue-next'
+import { AlertCircle, ExternalLink } from 'lucide-vue-next'
 import { Badge, Button } from '@/components/ui'
 import { WIDGET_ROWS } from '@/lib/workDashboard'
 import { fitGroups, healthReasons, projectCard, unknownByReason } from '@/lib/dashboardLayout'
@@ -18,7 +18,7 @@ import type { SourceState } from '@/composables/useWorkDashboard'
 import DashboardWidget from './DashboardWidget.vue'
 import DashGroup from './DashGroup.vue'
 import DashRow from './DashRow.vue'
-import { HEALTH_LEVEL, LEVEL_BADGE, LEVEL_TEXT } from './levels'
+import { CATEGORY_ICON, HEALTH_ICON, HEALTH_LEVEL, LEVEL_BADGE, LEVEL_ICON, LEVEL_TEXT } from './levels'
 import { useHealthWords } from './useHealthWords'
 
 const props = defineProps<{
@@ -70,7 +70,8 @@ function topIssueUrl(h: ProjectHealth): string | null {
 <template>
   <DashboardWidget
     :title="t('dashboard.health.title')"
-    :icon="Radar"
+    :icon="CATEGORY_ICON.projects"
+    :level="card.level"
     :scope="t('dashboard.health.scope')"
     :updated-at="state.updatedAt"
     :now="now"
@@ -102,6 +103,8 @@ function topIssueUrl(h: ProjectHealth): string | null {
           v-for="h in riskyGroup.shown"
           :key="h.projectId"
           :title="h.projectName"
+          :icon="HEALTH_ICON[h.level]"
+          :tone="HEALTH_LEVEL[h.level]"
           :sub="riskySub(h)"
           :hint="t('dashboard.health.openRadarAt', { name: h.projectName })"
           @open="emit('openRadar', h.projectId)"
@@ -115,7 +118,8 @@ function topIssueUrl(h: ProjectHealth): string | null {
             />
           </template>
           <template #aside>
-            <Badge :tone="LEVEL_BADGE[HEALTH_LEVEL[h.level]]" size="xs">{{ t(`dashboard.byProject.level.${h.level}`) }}</Badge>
+            <Badge :tone="LEVEL_BADGE[HEALTH_LEVEL[h.level]]" size="xs">
+              <component :is="LEVEL_ICON[HEALTH_LEVEL[h.level]]" class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />{{ t(`dashboard.byProject.level.${h.level}`) }}</Badge>
             <Button
               v-if="topIssueUrl(h)"
               variant="outline"
@@ -139,6 +143,8 @@ function topIssueUrl(h: ProjectHealth): string | null {
           v-for="row in restGroup.shown"
           :key="row.reason ?? 'ok'"
           :title="names(row.projects)"
+          :icon="HEALTH_ICON[row.kind === 'ok' ? 'green' : 'gray']"
+          :tone="row.kind === 'ok' ? 'ok' : 'none'"
           :sub="restSub(row)"
           @open="emit('openRadar', row.projects.length === 1 ? row.projects[0].projectId : undefined)"
         >

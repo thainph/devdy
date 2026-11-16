@@ -5,7 +5,7 @@
 // Every row: status, project, priority; Done / Open.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Check, ListTodo } from 'lucide-vue-next'
+import { AlarmClock, CalendarClock, Check, Clock } from 'lucide-vue-next'
 import { Badge, Banner, Button } from '@/components/ui'
 import { WIDGET_ROWS, type DashboardTodo } from '@/lib/workDashboard'
 import { fitGroups, todoCardGroups, todoLevel } from '@/lib/dashboardLayout'
@@ -13,7 +13,7 @@ import type { SourceState } from '@/composables/useWorkDashboard'
 import DashboardWidget from './DashboardWidget.vue'
 import DashGroup from './DashGroup.vue'
 import DashRow from './DashRow.vue'
-import { LEVEL_TEXT } from './levels'
+import { CATEGORY_ICON, LEVEL_TEXT } from './levels'
 
 const props = defineProps<{
   todos: DashboardTodo[]
@@ -30,6 +30,13 @@ const groups = computed(() => fitGroups(todoCardGroups(props.todos), WIDGET_ROWS
 const overdue = computed(() => props.todos.filter((x) => x.group === 'overdue').length)
 const today = computed(() => props.todos.filter((x) => x.group === 'today').length)
 const level = computed(() => todoLevel(props.todos))
+
+// Status icon per group: late alarm, due-today clock, the rest on the calendar.
+const ROW_ICON = {
+  overdue: { icon: AlarmClock, tone: 'bad' },
+  today: { icon: Clock, tone: 'warn' },
+  upcoming: { icon: CalendarClock, tone: 'primary' },
+} as const
 
 const TONE = { overdue: 'error', today: 'warning', soon: 'neutral', active: 'neutral' } as const
 
@@ -57,7 +64,8 @@ function sub(x: DashboardTodo): string {
 <template>
   <DashboardWidget
     :title="t('dashboard.todos.title')"
-    :icon="ListTodo"
+    :icon="CATEGORY_ICON.todos"
+    :level="level"
     :updated-at="state.updatedAt"
     :now="now"
     :loading="state.loading"
@@ -87,6 +95,8 @@ function sub(x: DashboardTodo): string {
           v-for="x in g.shown"
           :key="x.item.todo.id"
           :title="x.item.todo.text"
+          :icon="ROW_ICON[g.key].icon"
+          :tone="ROW_ICON[g.key].tone"
           :sub="sub(x)"
           @open="emit('open', x.item.todo.id)"
         >

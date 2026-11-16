@@ -160,7 +160,8 @@
     },
     "recentDone": "Xong gần đây",
     "done": "đã xong",
-    "failed": "lỗi hoặc đã dừng"
+    "failed": "lỗi hoặc đã dừng",
+    "runningNow": "đang chạy"
   },
   "sources": {
     "todos": "Todo",

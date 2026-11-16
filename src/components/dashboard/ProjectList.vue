@@ -5,13 +5,15 @@
 // then what the other sources say: a customer waiting, a late todo…), the
 // current milestone as "X% done · Y% of the time used" (an estimate; without
 // a board, "Link board"), and count tags. Name / Radar open the Delivery
-// Radar at the project; the top issue opens on GitHub.
+// Radar at the project; the top issue opens on GitHub. A large level icon
+// sits by the name; the count tags carry their source's icon.
 import { useI18n } from 'vue-i18n'
-import { ExternalLink, Link2 } from 'lucide-vue-next'
+import { Activity, AlarmClock, ExternalLink, GitPullRequest, Link2, MessageCircleWarning } from 'lucide-vue-next'
 import { Badge, Button, Card } from '@/components/ui'
 import { healthReasons, type ProjectRow } from '@/lib/dashboardLayout'
 import type { SourceState } from '@/composables/useWorkDashboard'
-import { HEALTH_LEVEL, LEVEL_BADGE, LEVEL_STRIPE } from './levels'
+import StatusIcon from './StatusIcon.vue'
+import { HEALTH_ICON, HEALTH_LEVEL, LEVEL_BADGE, LEVEL_STRIPE } from './levels'
 import { useDurationLabel } from './useDurationLabel'
 import { useHealthWords } from './useHealthWords'
 
@@ -79,16 +81,19 @@ function progressLabel(row: ProjectRow): string {
       >
         <span class="absolute inset-y-0 left-0 w-1" :class="LEVEL_STRIPE[HEALTH_LEVEL[row.health.level]]" aria-hidden="true" />
 
-        <div class="min-w-0">
-          <button
-            type="button"
-            class="block max-w-full cursor-pointer truncate text-left text-sm font-semibold text-foreground hover:underline"
-            :title="t('dashboard.health.openRadarAt', { name: row.health.projectName })"
-            @click="emit('openRadar', row.health.projectId)"
-          >{{ row.health.projectName }}</button>
-          <Badge :tone="LEVEL_BADGE[HEALTH_LEVEL[row.health.level]]" size="xs" class="mt-0.5">
-            {{ t(`dashboard.byProject.level.${row.health.level}`) }}
-          </Badge>
+        <div class="flex min-w-0 items-center gap-2.5">
+          <StatusIcon :icon="HEALTH_ICON[row.health.level]" :tone="HEALTH_LEVEL[row.health.level]" size="lg" />
+          <div class="min-w-0">
+            <button
+              type="button"
+              class="block max-w-full cursor-pointer truncate text-left text-sm font-semibold text-foreground hover:underline"
+              :title="t('dashboard.health.openRadarAt', { name: row.health.projectName })"
+              @click="emit('openRadar', row.health.projectId)"
+            >{{ row.health.projectName }}</button>
+            <Badge :tone="LEVEL_BADGE[HEALTH_LEVEL[row.health.level]]" size="xs" class="mt-0.5">
+              {{ t(`dashboard.byProject.level.${row.health.level}`) }}
+            </Badge>
+          </div>
         </div>
 
         <div class="col-span-2 min-w-0 row-start-2 text-[13px] lg:col-span-1 lg:row-start-auto">
@@ -125,15 +130,19 @@ function progressLabel(row: ProjectRow): string {
 
         <div class="col-start-2 row-start-1 flex flex-wrap items-center justify-end gap-1 lg:col-start-auto lg:row-start-auto">
           <Badge v-if="row.signals.customersWaiting" tone="warning" size="xs">
+            <MessageCircleWarning class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />
             {{ t('dashboard.byProject.count.customers', { n: row.signals.customersWaiting }, row.signals.customersWaiting) }}
           </Badge>
           <Badge v-if="row.signals.prs" tone="neutral" size="xs">
+            <GitPullRequest class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />
             {{ t('dashboard.byProject.count.prs', { n: row.signals.prs }, row.signals.prs) }}
           </Badge>
           <Badge v-if="row.signals.overdueTodos" tone="error" size="xs">
+            <AlarmClock class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />
             {{ t('dashboard.byProject.count.todos', { n: row.signals.overdueTodos }, row.signals.overdueTodos) }}
           </Badge>
           <Badge v-if="row.signals.sessions" tone="neutral" size="xs">
+            <Activity class="h-2.5 w-2.5" :stroke-width="2.5" aria-hidden="true" />
             {{ t('dashboard.byProject.count.sessions', { n: row.signals.sessions }, row.signals.sessions) }}
           </Badge>
           <Button
