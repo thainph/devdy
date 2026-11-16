@@ -12,37 +12,35 @@
     "h": "{n} giờ",
     "d": "{n} ngày"
   },
-  "seeAll": "Xem tất cả ({n})",
   "loadError": "Không tải được: {error}",
   "todoAdded": "Đã thêm todo",
-  "attention": {
-    "title": "Cần bạn ngay",
-    "none": "Hiện không có việc gấp",
-    "todos": "todo quá hạn",
-    "prs": "PR chờ review",
-    "runs": "session chờ duyệt quyền",
-    "slack": "thread khách chờ bạn",
-    "projects": "dự án có rủi ro trễ"
-  },
   "slack": {
-    "title": "Slack: thread mới & yêu cầu khách",
-    "countTitle": "Thread có tin mới hoặc khách đang chờ bạn",
+    "title": "Khách hàng",
     "waiting": "chờ {duration}",
     "fetchErrors": "{n} thread không tải được — mở cửa sổ Slack để thử lại.",
     "noCustomers": "Chưa đánh dấu khách nào: trong cửa sổ Slack threads, rê chuột vào một tin nhắn và chọn “Đánh dấu là khách” để biết ai đang chờ bạn.",
     "emptyNone": "Chưa theo dõi thread Slack nào. Thêm từ cửa sổ Slack threads.",
     "empty": "Không có thread Slack nào ở đây.",
     "unread": "Có tin mới",
-    "waitingOnMe": "Khách chờ bạn",
     "waitingOnCustomer": "Chờ khách",
-    "newMessages": "Có tin mới",
     "addTodo": "Tạo todo từ thread này",
     "markSeen": "Đánh dấu đã xem",
-    "todoText": "Trả lời Slack: {title}"
+    "todoText": "Trả lời Slack: {title}",
+    "seeAll": "Slack threads",
+    "answer": "khách đang chờ bạn trả lời",
+    "groups": {
+      "waiting": "Chờ bạn",
+      "later": "Không cần trả lời ngay"
+    },
+    "open": "Mở thread",
+    "view": "Xem",
+    "youRepliedLast": "bạn trả lời cuối · đang chờ khách",
+    "unassignedNew": "{n} thread có tin mới",
+    "unassignedHint": "chưa gán khách cho các thread này",
+    "calm": "Không có khách nào đang chờ bạn."
   },
   "todos": {
-    "title": "Todo cần xử lý",
-    "countTitle": "Todo quá hạn",
+    "title": "Todo",
     "empty": "Không có todo quá hạn, sắp hạn hay đang làm.",
     "lateDays": "trễ {n} ngày",
     "lateToday": "Quá hạn",
@@ -55,20 +53,21 @@
     },
     "priorityHigh": "Ưu tiên cao",
     "priorityLow": "Ưu tiên thấp",
-    "markDone": "Đánh dấu xong",
-    "doneToast": "Đã xong todo"
+    "markDone": "Xong",
+    "doneToast": "Đã xong todo",
+    "seeAll": "Todo",
+    "answer": "trễ hạn",
+    "answerToday": "{n} hạn hôm nay",
+    "groups": {
+      "overdue": "Trễ hạn",
+      "today": "Hôm nay",
+      "upcoming": "Sắp tới & đang làm"
+    }
   },
   "prs": {
-    "title": "PR chờ tôi review",
-    "countTitle": "PR yêu cầu đích danh bạn (không tính draft và bot)",
+    "title": "PR chờ bạn review",
     "scope": "GitHub PR",
-    "waiting": "chờ {duration}",
-    "updated": "cập nhật {duration} trước",
-    "noRequestTime": "GitHub không trả về thời điểm yêu cầu review",
     "draft": "Draft",
-    "ciFailed": "CI lỗi",
-    "ciPassed": "CI xanh",
-    "ciPending": "CI đang chạy",
     "soleReviewer": "bạn là reviewer cuối",
     "ai": {
       "none": "chưa AI review",
@@ -83,24 +82,32 @@
     "openSession": "Mở session",
     "addTodo": "Tạo todo “Review PR #{n}”",
     "openPr": "Mở PR trên GitHub",
-    "bots": "{n} PR của bot",
     "empty": "Không có PR nào chờ bạn review.",
-    "todoText": "Review PR #{n}: {title}"
+    "todoText": "Review PR #{n}: {title}",
+    "seeAll": "PR Inbox",
+    "answer": "PR đang chờ bạn",
+    "groups": {
+      "reReview": "Cần review lại",
+      "toReview": "Chưa review",
+      "bots": "Bot"
+    },
+    "size": {
+      "small": "nhỏ",
+      "medium": "vừa",
+      "large": "lớn"
+    },
+    "ci": {
+      "success": "CI xanh",
+      "failure": "CI đang lỗi",
+      "pending": "CI đang chạy"
+    },
+    "ciWaitAuthor": "chờ tác giả sửa CI"
   },
   "health": {
-    "title": "Dự án có rủi ro trễ",
-    "countTitle": "Dự án có tín hiệu rủi ro",
+    "title": "Dự án",
     "scope": "GitHub Project board",
-    "openRadar": "Mở Delivery Radar",
     "openRadarAt": "Mở Delivery Radar tại {name}",
     "noProjects": "Chưa có dự án nào.",
-    "level": {
-      "red": "rủi ro cao",
-      "orange": "có rủi ro",
-      "gray": "chưa rõ",
-      "green": "đúng tiến độ"
-    },
-    "riskyIssues": "{n} issue có rủi ro",
     "reason": {
       "no-board": "chưa liên kết board",
       "gitlab": "GitLab chưa được hỗ trợ",
@@ -108,35 +115,51 @@
       "truncated": "dữ liệu board bị cắt bớt",
       "loading": "đang tải…"
     },
-    "issue": {
-      "overdue": "quá hạn {n} ngày",
-      "due-soon": "còn {n} ngày",
-      "not-started": "chưa bắt đầu",
-      "stale": "lâu không cập nhật"
+    "seeAll": "Delivery Radar",
+    "answer": "dự án có rủi ro trễ",
+    "answerRest": "{attention} cần chú ý · {ok} ổn",
+    "groups": {
+      "risky": "Cần xem",
+      "rest": "Còn lại"
     },
-    "milestoneOverdue": "quá hạn {n} ngày, còn {open} issue mở",
-    "milestoneLag": "ước lượng: đã dùng {elapsed}% thời gian, mới đóng {closed}% issue",
-    "inherited": "(hạn của issue cha)",
-    "greenCount": "{n} dự án đúng tiến độ",
-    "noBoardCount": "{n} dự án chưa liên kết board",
-    "gitlabCount": "{n} dự án chỉ dùng GitLab (chưa hỗ trợ)"
+    "okSub": "không có issue trễ",
+    "openIssue": "Mở issue",
+    "radar": "Radar",
+    "why": {
+      "issueOverdue": "{issue} trễ {n} ngày",
+      "issueDueSoon": "{issue} hạn hôm nay | {issue} còn {n} ngày | {issue} còn {n} ngày",
+      "issue": {
+        "not-started": "{issue} chưa bắt đầu",
+        "stale": "{issue} lâu không cập nhật"
+      },
+      "milestoneOverdue": "milestone {title} quá hạn {n} ngày",
+      "milestoneLag": "milestone {title} chậm khoảng {n}%",
+      "riskyIssues": "thêm {n} issue có rủi ro"
+    }
   },
   "runs": {
     "title": "Session đang chạy",
-    "countTitle": "Session đang sống",
     "untitled": "Session",
     "empty": "Không có session nào đang chạy.",
     "waitingPermission": "{n} yêu cầu chờ duyệt",
-    "running": "đang chạy",
     "idle": "đang mở, rảnh",
     "workers": "{n} worker",
-    "review": "Duyệt",
+    "review": "Xem yêu cầu",
     "open": "Mở",
     "stop": "Dừng",
     "stopTitle": "Dừng session này?",
     "stopMessage": "“{name}” sẽ bị huỷ. Bạn có thể tiếp tục lại sau.",
     "waitingItem": "{name} — {n} yêu cầu",
-    "worker": "worker"
+    "worker": "worker",
+    "answer": "đang chạy",
+    "answerWaiting": "{n} chờ duyệt",
+    "activity": {
+      "permission": "Chờ duyệt: {tool}",
+      "tool": "Đang chạy {tool}"
+    },
+    "recentDone": "Xong gần đây",
+    "done": "đã xong",
+    "failed": "lỗi hoặc đã dừng"
   },
   "sources": {
     "todos": "Todo",
@@ -146,5 +169,62 @@
     "projects": "Radar"
   },
   "failed": "tải lỗi: {sources}",
-  "failedHint": "Các nguồn này tải không được; widget tương ứng hiện lỗi và dữ liệu gần nhất đang có."
+  "failedHint": "Các nguồn này tải không được; widget tương ứng hiện lỗi và dữ liệu gần nhất đang có.",
+  "more": "+{n} mục khác",
+  "view": {
+    "label": "Góc nhìn dashboard",
+    "category": "Theo hạng mục",
+    "project": "Theo dự án"
+  },
+  "order": {
+    "drag": "Kéo để sắp lại thứ tự thẻ",
+    "moveToFront": "Đưa “{name}” lên đầu"
+  },
+  "summary": {
+    "failed": "không tải được",
+    "slack": {
+      "waiting": "{n} khách chờ bạn",
+      "new": "{n} thread có tin mới",
+      "none": "không ai đang chờ bạn"
+    },
+    "todos": {
+      "some": "{overdue} trễ · {today} hôm nay",
+      "none": "không có việc gấp"
+    },
+    "prs": {
+      "some": "{n} PR",
+      "again": "{n} PR · {again} cần review lại",
+      "none": "không có PR chờ bạn"
+    },
+    "projects": {
+      "some": "{risk} rủi ro · {attention} cần chú ý",
+      "ok": "tất cả ổn",
+      "unknown": "chưa đủ dữ liệu",
+      "none": "chưa có dự án"
+    }
+  },
+  "byProject": {
+    "level": {
+      "red": "Rủi ro trễ",
+      "orange": "Cần chú ý",
+      "green": "Ổn",
+      "gray": "Chưa đủ dữ liệu"
+    },
+    "noLateIssue": "Không có issue trễ",
+    "customerWaiting": "khách {name} chờ {duration}",
+    "customerWaitingAnon": "một khách chờ {duration}",
+    "todoLate": "todo trễ {n} ngày",
+    "todoLateToday": "có todo quá hạn",
+    "sessionsWaiting": "{n} session chờ duyệt",
+    "progress": "{title}: xong {done}% · đã qua {elapsed}% thời gian",
+    "progressNoStart": "{title}: xong {done}% (chưa có ngày bắt đầu)",
+    "linkBoard": "Liên kết board",
+    "noMilestone": "Không có milestone có hạn",
+    "count": {
+      "customers": "{n} khách chờ",
+      "prs": "{n} PR",
+      "todos": "{n} todo trễ",
+      "sessions": "{n} session"
+    }
+  }
 }
