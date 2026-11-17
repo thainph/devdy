@@ -632,6 +632,7 @@ pub fn run() {
             list_pending_permissions,
             list_live_runs,
             list_active_runs,
+            runs::runtime_snapshot::get_runtime_snapshot,
             send_user_message,
             end_run_input,
             read_run_input,
