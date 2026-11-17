@@ -41,6 +41,8 @@ export interface ConductorWorker {
   engine: string
   model: string | null
   claude_account_id: string | null
+  /** May differ from the conductor's project (spawned with `project` / `todo_id`). */
+  project_id: string
 }
 export interface ConductorEvent {
   ts: string

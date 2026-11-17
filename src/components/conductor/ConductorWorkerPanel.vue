@@ -21,6 +21,7 @@ import { ChevronLeft, ChevronRight, ShieldQuestion } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
+import { useProjectsStore } from '@/stores/projects'
 import { useRunsStore, runActivityAt, type RunRecord } from '@/stores/runs'
 import { useUILayoutStore, TIMELINE_MIN_HEIGHT } from '@/stores/uiLayout'
 import {
@@ -61,18 +62,36 @@ const { t } = useI18n()
 const live = useLiveRunsStore()
 const claudeStore = useClaudeAccountsStore()
 const runsStore = useRunsStore()
+const projectsStore = useProjectsStore()
 const uiLayout = useUILayoutStore()
 const density = computed(() => uiLayout.listDensity)
 
 // Ticks so a running worker's elapsed time and the relative ages stay fresh.
 const now = useNow({ interval: 30_000 })
 
-// Worker run rows (for started/last-activity times), keyed by run id.
+// Worker run rows (for started/last-activity times), keyed by run id. A worker
+// in another project isn't in the on-screen `runs` list — read the meta cache.
 const runById = computed(() => {
   const map = new Map<string, RunRecord>()
   for (const r of runsStore.runs) map.set(r.id, r)
+  for (const w of props.workers) {
+    const meta = runsStore.runMeta.get(w.worker_id)
+    if (meta && !map.has(w.worker_id)) map.set(w.worker_id, meta)
+  }
   return map
 })
+
+// The project each worker runs in. Highlighted when it isn't the session's own
+// project, since such a worker never shows up in this project's History.
+const conductorProjectId = computed(() =>
+  props.conductorRunId ? runsStore.runMeta.get(props.conductorRunId)?.project_id ?? null : null,
+)
+function workerProjectName(w: ConductorWorker): string {
+  return projectsStore.projects.find((p) => p.id === w.project_id)?.name ?? ''
+}
+function isOtherProject(w: ConductorWorker): boolean {
+  return !!conductorProjectId.value && w.project_id !== conductorProjectId.value
+}
 
 // Same rules as RunView's runClaudeAccountLabel: only Claude workers with a
 // known account get a badge; Codex / legacy runs show nothing.
@@ -134,6 +153,8 @@ function workerTitle(w: ConductorWorker): string {
 // shortened), the id and the full time into the tooltip.
 function workerTooltip(w: ConductorWorker): string {
   const parts = [workerTitle(w), workerAccountModel(w, false)]
+  const project = workerProjectName(w)
+  if (project) parts.push(project)
   parts.push(shortId(w.worker_id))
   const time = workerTimeTitle(w)
   if (time) parts.push(time)
@@ -315,24 +336,40 @@ onBeforeUnmount(onDragEnd)
               <span class="absolute inset-0 animate-ping rounded-full bg-primary/30" />
               <ShieldQuestion class="relative h-3 w-3" :stroke-width="2" />
             </span>
+            <!-- Dense has no meta line: flag a worker running in another project. -->
+            <span
+              v-if="density === 'dense' && isOtherProject(w) && workerProjectName(w)"
+              class="shrink truncate max-w-[6rem] text-[10px] font-medium text-info"
+            >{{ workerProjectName(w) }}</span>
             <span
               v-if="density !== 'comfortable'"
               class="shrink-0 font-mono text-[10px]"
               :class="isRunning(w) ? 'text-info/80' : 'text-muted-foreground/70'"
             >{{ workerTime(w) }}</span>
           </div>
-          <!-- Compact: "account · model" (model without "claude-"). -->
+          <!-- Compact: "project · account · model" (model without "claude-"). -->
           <p
             v-if="density === 'compact'"
             class="mt-0.5 pl-5 truncate text-[10px] leading-tight text-muted-foreground/70"
           >
-            {{ workerAccountModel(w) }}
+            <span
+              v-if="workerProjectName(w)"
+              :class="isOtherProject(w) ? 'font-medium text-info' : undefined"
+            >{{ workerProjectName(w) }} · </span>{{ workerAccountModel(w) }}
           </p>
           <!-- Comfortable meta: account + model badges + short id. -->
           <div
             v-else-if="density === 'comfortable'"
             class="mt-2 pl-6 pr-3 flex items-center gap-1.5 text-[10px] text-muted-foreground/70"
           >
+            <span
+              v-if="workerProjectName(w)"
+              class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded text-[9px] font-medium tracking-wide"
+              :class="isOtherProject(w) ? 'bg-info/10 text-info' : 'bg-muted/60 text-muted-foreground'"
+              :title="workerProjectName(w)"
+            >
+              {{ workerProjectName(w) }}
+            </span>
             <span
               v-if="workerAccountLabel(w)"
               class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-medium tracking-wide text-primary"
