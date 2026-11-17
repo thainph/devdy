@@ -176,6 +176,9 @@ function loadCollapsed(): Record<string, boolean> {
   return {}
 }
 
+/** The two configurable PR review prompts: first review, and "Re-review". */
+export type PrPromptKind = 'review' | 'rereview'
+
 export const usePrInboxStore = defineStore('prInbox', () => {
   const items = ref<PrInboxItem[]>([])
   const loading = ref(false)
@@ -267,19 +270,19 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     return invoke<string>('get_pr_inbox_rereview_prompt')
   }
 
-  /** Save the re-review prompt; blank restores the default. */
-  async function saveReReviewPrompt(prompt: string): Promise<void> {
-    await invoke('set_pr_inbox_rereview_prompt', { prompt })
+  /** The editor's view of a review prompt: linked saved prompt id (if any) + custom text (else the default). */
+  async function loadPromptConfig(kind: PrPromptKind): Promise<{ saved_prompt_id: string | null; prompt: string }> {
+    return invoke('get_pr_inbox_prompt_config', { kind })
   }
 
-  /** The editor's view: linked saved prompt id (if any) + custom text (else the default). */
-  async function loadReReviewConfig(): Promise<{ saved_prompt_id: string | null; prompt: string }> {
-    return invoke('get_pr_inbox_rereview_config')
+  /** Save a review prompt's custom text; blank restores the default. */
+  async function savePrompt(kind: PrPromptKind, prompt: string): Promise<void> {
+    await invoke('set_pr_inbox_prompt', { kind, prompt })
   }
 
-  /** Use a Settings → Saved prompts entry for re-review; null goes back to the custom text. */
-  async function saveReReviewPromptId(savedPromptId: string | null): Promise<void> {
-    await invoke('set_pr_inbox_rereview_prompt_id', { savedPromptId })
+  /** Use a Settings → Prompt Templates entry; null goes back to the custom text. */
+  async function savePromptId(kind: PrPromptKind, savedPromptId: string | null): Promise<void> {
+    await invoke('set_pr_inbox_prompt_id', { kind, savedPromptId })
   }
 
   async function refresh() {
@@ -375,7 +378,7 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     items, loading, error, warnings, lastRefreshedAt, lastAttemptAt, reviewingKeys,
     groupBy, hideBots, collapsedGroups, filters, density, botLogins,
     pollMinutes,
-    load, refresh, loadPollMinutes, setPollMinutes, loadReReviewPrompt, saveReReviewPrompt, loadReReviewConfig, saveReReviewPromptId, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
+    load, refresh, loadPollMinutes, setPollMinutes, loadReReviewPrompt, loadPromptConfig, savePrompt, savePromptId, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
     setFilters, clearFilters, setDensity, setBotLogins, addBotLogin, removeBotLogin,
   }
 })

@@ -13,12 +13,17 @@ import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
 import { useToast } from '@/composables/useToast'
-import { usePrInboxStore, PR_POLL_MINUTES_OPTIONS, type PrInboxDensity } from '@/stores/prInbox'
+import { usePrInboxStore, PR_POLL_MINUTES_OPTIONS, type PrInboxDensity, type PrPromptKind } from '@/stores/prInbox'
 import { PR_GROUP_BY_OPTIONS, type PrGroupBy } from '@/lib/prInboxGrouping'
 import { Button, SegmentedControl } from '@/components/ui'
-import { Check, EyeOff, KeyRound, SlidersHorizontal, ChevronRight, RotateCcw } from 'lucide-vue-next'
+import { Check, EyeOff, KeyRound, SlidersHorizontal, ChevronRight, RotateCcw, Sparkles } from 'lucide-vue-next'
 
-const emit = defineEmits<{ 'manage-bots': []; 'edit-rereview-prompt': [] }>()
+const PROMPT_ITEMS: { kind: PrPromptKind; icon: typeof Sparkles }[] = [
+  { kind: 'review', icon: Sparkles },
+  { kind: 'rereview', icon: RotateCcw },
+]
+
+const emit = defineEmits<{ 'manage-bots': []; 'edit-prompt': [kind: PrPromptKind] }>()
 
 const { t } = useI18n()
 const store = usePrInboxStore()
@@ -72,9 +77,9 @@ function manageBots() {
   emit('manage-bots')
 }
 
-function editReReviewPrompt() {
+function editPrompt(kind: PrPromptKind) {
   open.value = false
-  emit('edit-rereview-prompt')
+  emit('edit-prompt', kind)
 }
 </script>
 
@@ -145,15 +150,17 @@ function editReReviewPrompt() {
         <div class="mt-1 text-[11px] text-muted-foreground">{{ t('prInbox.poll.hint') }}</div>
       </div>
 
-      <!-- Prompt "Re-review" sends to the existing review session -->
-      <div class="mb-3">
+      <!-- Prompts a review starts with / "Re-review" sends to the same session -->
+      <div class="mb-3 flex flex-col gap-0.5">
         <button
+          v-for="p in PROMPT_ITEMS"
+          :key="p.kind"
           type="button"
           class="flex w-full items-center gap-2 rounded-md px-1 py-1 text-left cursor-pointer hover:bg-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
-          @click="editReReviewPrompt"
+          @click="editPrompt(p.kind)"
         >
-          <RotateCcw class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-          <span class="min-w-0 flex-1 text-sm text-foreground truncate">{{ t('prInbox.reReviewPrompt.button') }}</span>
+          <component :is="p.icon" class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+          <span class="min-w-0 flex-1 text-sm text-foreground truncate">{{ t(`prInbox.prompt.${p.kind}.button`) }}</span>
           <ChevronRight class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
         </button>
       </div>

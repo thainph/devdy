@@ -29,6 +29,11 @@ pub const POLL_MINUTES_KEY: &str = "pr_inbox.poll_minutes";
 const SEEN_KEY: &str = "pr_inbox.seen";
 pub const DEFAULT_POLL_MINUTES: u64 = 5;
 /// Follow-up prompt sent when the inbox re-reviews a PR in its existing session.
+/// Instruction a PR review run starts with (custom text / saved prompt id).
+pub const REVIEW_PROMPT_KEY: &str = "pr_inbox.review_prompt";
+pub const REVIEW_PROMPT_ID_KEY: &str = "pr_inbox.review_prompt_id";
+/// Used while the user hasn't set their own review prompt.
+const DEFAULT_REVIEW_PROMPT: &str = "Hãy review pull request này theo các skill đã được cấu hình. Viết kết quả bằng tiếng Việt.";
 pub const REREVIEW_PROMPT_KEY: &str = "pr_inbox.rereview_prompt";
 /// Id of a Settings → Saved prompts entry to use as the re-review prompt. Takes
 /// precedence over [`REREVIEW_PROMPT_KEY`] while that entry still exists.
@@ -334,10 +339,40 @@ pub async fn get_pr_inbox_rereview_prompt(db: tauri::State<'_, Db>) -> Result<St
 }
 
 /// [`get_pr_inbox_rereview_prompt`] for callers without a Tauri `State`.
-/// Resolution: the linked saved prompt (if it still exists and isn't blank),
-/// else the custom text, else the built-in default.
 pub async fn rereview_prompt(db: &Db) -> Result<String, String> {
-    if let Some(id) = setting(db, REREVIEW_PROMPT_ID_KEY).await? {
+    resolve_prompt(db, PromptKind::Rereview).await
+}
+
+/// The instruction a PR review run starts with (before the "PR details are in"
+/// line), used whenever the run has no per-run prompt of its own.
+pub async fn review_prompt(db: &Db) -> Result<String, String> {
+    resolve_prompt(db, PromptKind::Review).await
+}
+
+/// The two configurable PR review prompts: the first review, and the follow-up
+/// "Re-review" sends to the same session.
+#[derive(Debug, Clone, Copy, serde::Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum PromptKind {
+    Review,
+    Rereview,
+}
+
+impl PromptKind {
+    /// (custom text key, saved prompt id key, built-in default)
+    fn keys(self) -> (&'static str, &'static str, &'static str) {
+        match self {
+            PromptKind::Review => (REVIEW_PROMPT_KEY, REVIEW_PROMPT_ID_KEY, DEFAULT_REVIEW_PROMPT),
+            PromptKind::Rereview => (REREVIEW_PROMPT_KEY, REREVIEW_PROMPT_ID_KEY, DEFAULT_REREVIEW_PROMPT),
+        }
+    }
+}
+
+/// The linked saved prompt (if it still exists and isn't blank), else the
+/// custom text, else the built-in default.
+async fn resolve_prompt(db: &Db, kind: PromptKind) -> Result<String, String> {
+    let (text_key, id_key, default) = kind.keys();
+    if let Some(id) = setting(db, id_key).await? {
         let library = setting(db, "saved_prompts").await?.unwrap_or_default();
         let body = crate::remote::forwarder::parse_saved_prompts(&library)
             .into_iter()
@@ -348,7 +383,7 @@ pub async fn rereview_prompt(db: &Db) -> Result<String, String> {
             return Ok(body);
         }
     }
-    Ok(custom_rereview_prompt(db).await?.unwrap_or_else(|| DEFAULT_REREVIEW_PROMPT.to_string()))
+    Ok(setting(db, text_key).await?.unwrap_or_else(|| default.to_string()))
 }
 
 async fn setting(db: &Db, key: &str) -> Result<Option<String>, String> {
@@ -360,62 +395,57 @@ async fn setting(db: &Db, key: &str) -> Result<Option<String>, String> {
     Ok(v.filter(|v| !v.trim().is_empty()))
 }
 
-async fn custom_rereview_prompt(db: &Db) -> Result<Option<String>, String> {
-    setting(db, REREVIEW_PROMPT_KEY).await
+async fn delete_setting(db: &Db, key: &str) -> Result<(), String> {
+    sqlx::query("DELETE FROM settings WHERE key = ?")
+        .bind(key)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(())
 }
 
-/// What the re-review prompt editor shows: the linked saved prompt (if any) and
-/// the custom text (the default when none is saved).
+/// What a prompt editor shows: the linked saved prompt (if any) and the custom
+/// text (the default when none is saved).
 #[derive(Debug, Serialize)]
-pub struct ReReviewPromptConfig {
+pub struct PrPromptConfig {
     pub saved_prompt_id: Option<String>,
     pub prompt: String,
 }
 
 #[tauri::command]
-pub async fn get_pr_inbox_rereview_config(db: tauri::State<'_, Db>) -> Result<ReReviewPromptConfig, String> {
-    Ok(ReReviewPromptConfig {
-        saved_prompt_id: setting(db.inner(), REREVIEW_PROMPT_ID_KEY).await?,
-        prompt: custom_rereview_prompt(db.inner())
-            .await?
-            .unwrap_or_else(|| DEFAULT_REREVIEW_PROMPT.to_string()),
+pub async fn get_pr_inbox_prompt_config(db: tauri::State<'_, Db>, kind: PromptKind) -> Result<PrPromptConfig, String> {
+    let (text_key, id_key, default) = kind.keys();
+    Ok(PrPromptConfig {
+        saved_prompt_id: setting(db.inner(), id_key).await?,
+        prompt: setting(db.inner(), text_key).await?.unwrap_or_else(|| default.to_string()),
     })
 }
 
-/// Link the re-review prompt to a saved prompt (Settings → Saved prompts), or
-/// unlink it (`None`) so the custom text / default applies again.
+/// Link a prompt to a saved prompt (Settings → Prompt Templates), or unlink it
+/// (`None`) so the custom text / default applies again.
 #[tauri::command]
-pub async fn set_pr_inbox_rereview_prompt_id(
+pub async fn set_pr_inbox_prompt_id(
     db: tauri::State<'_, Db>,
+    kind: PromptKind,
     saved_prompt_id: Option<String>,
 ) -> Result<(), String> {
+    let (_, id_key, _) = kind.keys();
     match saved_prompt_id.filter(|id| !id.trim().is_empty()) {
-        Some(id) => crate::commands::settings::set_setting(db.inner(), REREVIEW_PROMPT_ID_KEY, &id).await,
-        None => {
-            sqlx::query("DELETE FROM settings WHERE key = ?")
-                .bind(REREVIEW_PROMPT_ID_KEY)
-                .execute(db.inner())
-                .await
-                .map_err(|e| e.to_string())?;
-            Ok(())
-        }
+        Some(id) => crate::commands::settings::set_setting(db.inner(), id_key, &id).await,
+        None => delete_setting(db.inner(), id_key).await,
     }
 }
 
-/// Save the re-review prompt. A blank one (or the default itself) clears the
+/// Save a prompt's custom text. A blank one (or the default itself) clears the
 /// setting, so the built-in default applies again.
 #[tauri::command]
-pub async fn set_pr_inbox_rereview_prompt(db: tauri::State<'_, Db>, prompt: String) -> Result<(), String> {
+pub async fn set_pr_inbox_prompt(db: tauri::State<'_, Db>, kind: PromptKind, prompt: String) -> Result<(), String> {
+    let (text_key, _, default) = kind.keys();
     let prompt = prompt.trim();
-    if prompt.is_empty() || prompt == DEFAULT_REREVIEW_PROMPT {
-        sqlx::query("DELETE FROM settings WHERE key = ?")
-            .bind(REREVIEW_PROMPT_KEY)
-            .execute(db.inner())
-            .await
-            .map_err(|e| e.to_string())?;
-        return Ok(());
+    if prompt.is_empty() || prompt == default {
+        return delete_setting(db.inner(), text_key).await;
     }
-    crate::commands::settings::set_setting(db.inner(), REREVIEW_PROMPT_KEY, prompt).await
+    crate::commands::settings::set_setting(db.inner(), text_key, prompt).await
 }
 
 #[tauri::command]

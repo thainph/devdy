@@ -148,6 +148,8 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "quit_background_policy",
     // PR Inbox poller (pr_inbox).
     "pr_inbox.poll_minutes",
+    "pr_inbox.review_prompt",
+    "pr_inbox.review_prompt_id",
     "pr_inbox.rereview_prompt",
     "pr_inbox.rereview_prompt_id",
     // Focus (focus::settings); the calendar choice stays per machine.

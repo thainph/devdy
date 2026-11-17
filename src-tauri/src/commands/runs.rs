@@ -181,12 +181,16 @@ pub(crate) async fn start_run_inner(
     let mut claude_model = String::new();
     let mut codex_model = String::new();
     let mut extra_args = String::new();
-    // Fixed prompts for the GitHub "Analyze issue" / "Review PR" actions. No longer
-    // user-configurable; a per-run `custom_prompt` from the payload still overrides them.
+    // Fixed prompt for "Analyze issue"; the "Review PR" one is set in the PR
+    // Inbox (custom text or a saved prompt). A per-run `custom_prompt` from the
+    // payload still overrides both.
     let analyze_prompt =
         "Please analyze this GitHub issue and create a detailed implementation plan.".to_string();
-    let review_prompt =
-        "Please review this pull request according to the configured skills.".to_string();
+    let review_prompt = if run_type == "review_pr" {
+        crate::pr_inbox::review_prompt(db).await?
+    } else {
+        String::new()
+    };
     let mut default_permission_mode = "default".to_string();
     let mut default_engine = "claude".to_string();
 

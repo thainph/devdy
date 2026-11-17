@@ -108,15 +108,22 @@
     "title": "PR Inbox"
   },
   "reReviewFailed": "Could not re-review: {error}",
-  "reReviewPrompt": {
-    "button": "Re-review prompt",
-    "title": "Re-review prompt",
-    "hint": "Re-review continues the PR’s existing review session: it re-fetches the PR (latest diff, comments and reviews), then sends this prompt.",
-    "reset": "Reset to default",
-    "saveFailed": "Could not save: {error}",
+  "prompt": {
+    "review": {
+      "button": "First review prompt",
+      "title": "First review prompt",
+      "hint": "The instruction a PR review starts with (from the PR Inbox, Dashboard, phone or a PR's Run button). The path to the PR details file is always appended."
+    },
+    "rereview": {
+      "button": "Re-review prompt",
+      "title": "Re-review prompt",
+      "hint": "Re-review continues the PR’s existing review session: it re-fetches the PR (latest diff, comments and reviews), then sends this prompt."
+    },
     "source": "Prompt source",
     "custom": "Custom (default when blank)",
     "noSaved": "No prompts in Settings → Prompt Templates yet. Add one there to pick it here.",
-    "savedReadonly": "Using a saved prompt — edit its text in Settings → Prompt Templates."
+    "savedReadonly": "Using a saved prompt — edit its text in Settings → Prompt Templates.",
+    "reset": "Reset to default",
+    "saveFailed": "Could not save: {error}"
   }
 }

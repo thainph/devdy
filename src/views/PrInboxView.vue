@@ -5,7 +5,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { usePrInboxStore, prKey, type PrInboxItem } from '@/stores/prInbox'
+import { usePrInboxStore, prKey, type PrInboxItem, type PrPromptKind } from '@/stores/prInbox'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import {
@@ -15,7 +15,7 @@ import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
 import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
 import PrInboxDisplayPopover from '@/components/prInbox/PrInboxDisplayPopover.vue'
 import PrInboxBotAccountsModal from '@/components/prInbox/PrInboxBotAccountsModal.vue'
-import PrInboxReReviewPromptModal from '@/components/prInbox/PrInboxReReviewPromptModal.vue'
+import PrInboxPromptModal from '@/components/prInbox/PrInboxPromptModal.vue'
 import {
   groupPrInbox,
   isGroupCollapsedByDefault,
@@ -219,7 +219,13 @@ function groupLabel(group: PrGroup): string {
 // --- Bots ---------------------------------------------------------------------
 
 const botAccountsOpen = ref(false)
-const reReviewPromptOpen = ref(false)
+// The review prompt editor; the kind outlives `open` so the closing modal keeps its title.
+const promptEditorOpen = ref(false)
+const promptEditorKind = ref<PrPromptKind>('review')
+function editPrompt(kind: PrPromptKind) {
+  promptEditorKind.value = kind
+  promptEditorOpen.value = true
+}
 
 function isCustomBot(login: string): boolean {
   return store.botLogins.includes(normalizeLogin(login))
@@ -401,7 +407,7 @@ async function reviewAll(group: PrGroup) {
             @update="setFilter"
             @clear="store.clearFilters()"
           />
-          <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" @edit-rereview-prompt="reReviewPromptOpen = true" />
+          <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" @edit-prompt="editPrompt" />
         </div>
       </div>
     </div>
@@ -693,6 +699,6 @@ async function reviewAll(group: PrGroup) {
     </ContextMenu>
 
     <PrInboxBotAccountsModal :open="botAccountsOpen" @close="botAccountsOpen = false" />
-    <PrInboxReReviewPromptModal :open="reReviewPromptOpen" @close="reReviewPromptOpen = false" />
+    <PrInboxPromptModal :open="promptEditorOpen" :kind="promptEditorKind" @close="promptEditorOpen = false" />
   </div>
 </template>
