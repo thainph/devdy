@@ -119,6 +119,10 @@ function collapseAll() {
 function toggleFilter(f: QuickFilter) {
   filter.value = filter.value === f ? null : f
 }
+// The "waiting for you" chip hides at 0: drop its filter then, or nothing could clear it.
+watch(() => counts.value.wait, (n) => {
+  if (!n && filter.value === 'wait') filter.value = null
+})
 
 // ── Selection ────────────────────────────────────────────────────────────────
 const selectedId = ref<string | null>(null)
