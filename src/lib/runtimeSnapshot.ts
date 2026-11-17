@@ -100,6 +100,8 @@ export interface ExternalSession {
   lastActivityAt: string
   /** For "Open transcript"; read-only. */
   transcriptPath: string
+  /** The Devdy run this session is mirrored into, if any (optional: older backends omit it). */
+  runId?: string | null
 }
 
 /** Number of per-minute activity buckets in {@link RuntimeRun.eventsPerMinute}. */

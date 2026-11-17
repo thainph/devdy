@@ -54,6 +54,8 @@ const runId = computed(() => s.value?.runId ?? null)
 const mirroredRunId = computed(() => {
   const e = props.external
   if (!e) return null
+  if (e.runId) return e.runId
+  // Fallback for a backend that does not send `runId`: match the session id.
   for (const r of runsStore.runMeta.values()) if (r.session_id === e.id) return r.id
   return null
 })
