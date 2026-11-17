@@ -26,17 +26,17 @@ function when(iso: string): string {
       <span class="grid h-6 w-6 place-items-center rounded-md bg-muted text-muted-foreground">
         <CircleCheckBig class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
       </span>
-      {{ t('dashboard.stat.today.title') }}
-      <Button variant="ghost" size="xs" class="ml-auto text-primary" :title="t('dashboard.stat.today.allTitle')" @click="emit('all')">
+      <span class="min-w-0 truncate">{{ t('dashboard.stat.today.title') }}</span>
+      <Button variant="ghost" size="xs" class="ml-auto shrink-0 text-primary" :title="t('dashboard.stat.today.allTitle')" @click="emit('all')">
         {{ t('dashboard.stat.today.all') }}
       </Button>
     </div>
     <p v-if="!today" class="text-[11px] text-muted-foreground">{{ t('dashboard.stat.today.noData') }}</p>
     <template v-else>
-      <div class="flex flex-wrap items-baseline gap-2">
-        <span class="text-3xl leading-none font-bold tabular-nums">{{ today.finished }}</span>
-        <span class="text-[13px] font-semibold">{{ t('dashboard.stat.today.finished') }}</span>
-        <span v-if="today.failed" class="rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-semibold text-destructive">{{ t('dashboard.stat.today.failed', { n: today.failed }) }}</span>
+      <div class="flex min-w-0 items-baseline gap-2">
+        <span class="shrink-0 text-3xl leading-none font-bold whitespace-nowrap tabular-nums">{{ today.finished }}</span>
+        <span class="shrink-0 text-[13px] font-semibold whitespace-nowrap">{{ t('dashboard.stat.today.finished') }}</span>
+        <span v-if="today.failed" class="shrink-0 whitespace-nowrap rounded-full bg-destructive/15 px-2 py-0.5 text-[10px] font-semibold text-destructive">{{ t('dashboard.stat.today.failed', { n: today.failed }) }}</span>
       </div>
       <p v-if="!today.recent.length" class="text-[11px] text-muted-foreground">{{ t('dashboard.stat.today.empty') }}</p>
       <ul v-else class="flex flex-col gap-0.5">

@@ -38,12 +38,12 @@ function tip(s: RtSession): string {
       <span class="grid h-6 w-6 place-items-center rounded-md bg-primary/15 text-primary">
         <Activity class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
       </span>
-      {{ t('dashboard.stat.sessions.title') }}
+      <span class="min-w-0 truncate">{{ t('dashboard.stat.sessions.title') }}</span>
     </div>
-    <div class="flex flex-wrap items-baseline gap-2">
-      <span class="text-3xl leading-none font-bold tabular-nums">{{ sessions.length }}</span>
-      <span class="text-[13px] font-semibold">{{ t('dashboard.stat.sessions.unit', sessions.length) }}</span>
-      <span class="text-xs text-muted-foreground">· {{ t('dashboard.stat.sessions.meta', { conductors, external }, conductors) }}</span>
+    <div class="flex min-w-0 items-baseline gap-2">
+      <span class="shrink-0 text-3xl leading-none font-bold whitespace-nowrap tabular-nums">{{ sessions.length }}</span>
+      <span class="shrink-0 text-[13px] font-semibold whitespace-nowrap">{{ t('dashboard.stat.sessions.unit', sessions.length) }}</span>
+      <span class="min-w-0 truncate text-xs text-muted-foreground" :title="t('dashboard.stat.sessions.meta', { conductors, external }, conductors)">· {{ t('dashboard.stat.sessions.meta', { conductors, external }, conductors) }}</span>
     </div>
     <div v-if="sessions.length" class="flex flex-wrap gap-1" role="group" :aria-label="t('dashboard.stat.sessions.mapLabel')">
       <button

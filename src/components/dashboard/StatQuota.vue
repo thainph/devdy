@@ -37,13 +37,13 @@ function note(q: QuotaView): string {
       <span class="grid h-6 w-6 place-items-center rounded-md bg-warning/15 text-warning">
         <Clock class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
       </span>
-      {{ t('dashboard.stat.quota.title') }}
+      <span class="min-w-0 truncate">{{ t('dashboard.stat.quota.title') }}</span>
     </div>
     <div v-for="q in quotas" :key="q.engine" class="flex min-w-0 flex-col gap-1">
-      <div class="flex items-baseline gap-2">
-        <EngineMark :engine="q.engine" size="sm" />
-        <span class="flex-1 text-[13px] font-semibold">{{ t(`dashboard.engine.${q.engine}`) }}</span>
-        <span class="text-xl leading-tight font-bold tabular-nums" :class="tone(q.pct).text">{{ q.pct !== null ? `${Math.round(q.pct)}%` : '–' }}</span>
+      <div class="flex min-w-0 items-baseline gap-2">
+        <EngineMark :engine="q.engine" size="sm" class="shrink-0" />
+        <span class="min-w-0 flex-1 truncate text-[13px] font-semibold">{{ t(`dashboard.engine.${q.engine}`) }}</span>
+        <span class="shrink-0 text-xl leading-tight font-bold whitespace-nowrap tabular-nums" :class="tone(q.pct).text">{{ q.pct !== null ? `${Math.round(q.pct)}%` : '–' }}</span>
       </div>
       <div class="h-1.5 overflow-hidden rounded-full bg-muted">
         <div class="h-full rounded-full" :class="tone(q.pct).bar" :style="{ width: `${Math.min(100, q.pct ?? 0)}%` }" />

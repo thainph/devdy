@@ -302,7 +302,7 @@ const SHORTCUTS = [
         <p v-else-if="dash.loaded.value && !dash.hasSnapshot.value" class="text-[11px] text-muted-foreground">{{ t('dashboard.fallbackHint') }}</p>
         <p v-else-if="dash.snapshotStale.value" class="text-[11px] text-warning">{{ t('dashboard.staleHint') }}</p>
 
-        <div class="grid grid-cols-[repeat(auto-fit,minmax(270px,1fr))] gap-3">
+        <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,270px),1fr))] gap-3">
           <StatSessions
             :sessions="mapList"
             :counts="counts"
