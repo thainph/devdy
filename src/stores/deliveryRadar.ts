@@ -109,7 +109,7 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const testers = ref<string[]>(readTesters())
 
   watch(thresholds, (v) => persist(THRESHOLDS_KEY, v), { deep: true })
-  // The radar window and the Work Dashboard (main window) share these settings
+  // The radar window and the main window share these settings
   // through localStorage; follow the other window's edits.
   try {
     window.addEventListener('storage', (e) => {

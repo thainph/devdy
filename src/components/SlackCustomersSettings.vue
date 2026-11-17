@@ -1,7 +1,6 @@
 <script setup lang="ts">
 // Settings → "Slack customers": the Slack users marked as customers from the
-// Slack threads window (a thread whose latest human message comes from one of
-// them is "waiting on you" on the Work Dashboard). Lists them with their
+// Slack threads window (their messages carry a "Customer" badge there). Lists them with their
 // workspace, lets the user change the project they belong to, or unmark them.
 import { onMounted } from 'vue'
 import { useI18n } from 'vue-i18n'

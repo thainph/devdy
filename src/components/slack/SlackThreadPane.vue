@@ -91,7 +91,7 @@ const firstNewIndex = computed(() => {
   return rows.value.length - props.newCount
 })
 
-// ── Customers (Work Dashboard) ───────────────────────────────────────────────
+// ── Customers (badge on their messages) ───────────────────────────────────────────────
 
 /** Whether the sender is a marked customer; null when it cannot be marked. */
 function customerOf(userId: string | null, botId: string | null): boolean | null {

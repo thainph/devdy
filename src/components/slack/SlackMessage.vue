@@ -8,7 +8,7 @@
 // this message's own override; without a translation the original shows with a
 // "Not translated / Translating… / Translation failed" tag. Hover actions:
 // show original / translation (this message only), copy (plain text, mentions
-// as @Name) and mark / unmark the sender as a customer (Work Dashboard), whose
+// as @Name) and mark / unmark the sender as a customer, whose
 // badge then shows next to the name.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'

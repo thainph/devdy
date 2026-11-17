@@ -167,10 +167,10 @@
   },
   "customer": {
     "badge": "Customer",
-    "badgeTitle": "Marked as a customer (Work Dashboard)",
+    "badgeTitle": "Marked as a customer",
     "mark": "Mark as customer",
     "unmark": "Unmark customer",
-    "markTitle": "Mark {name} as a customer: their messages count as “waiting on you” on the dashboard",
+    "markTitle": "Mark {name} as a customer: their messages get a Customer badge in this window",
     "unmarkTitle": "Stop treating {name} as a customer",
     "marked": "{name} marked as a customer",
     "unmarked": "{name} is no longer a customer"
