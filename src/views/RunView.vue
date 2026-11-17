@@ -64,6 +64,7 @@ import {
   runStatusIcon,
   shortModelId,
 } from '@/lib/runDisplay'
+import { repoShortName, runRefLine } from '@/lib/runRef'
 import FileTree from '@/components/FileTree.vue'
 import { nativeDropPoint, treeDropTargetAt } from '@/lib/fileTreeDnd'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
@@ -902,11 +903,30 @@ watch(conductorWorkers, (ws) => {
 }, { immediate: true })
 
 // Sidebar/label text for a run: its title when set (sessions, or a PR inbox
-// review titled with its author); otherwise issue/PR show "#N".
+// review titled with its author); otherwise the issue/PR's own title, else "#N".
 function runLabel(run: RunRecord): string {
   if (run.title?.trim()) return run.title.trim()
   if (run.run_type === 'session') return t('run.labelSession')
+  if (run.ref_title?.trim()) return run.ref_title.trim()
   return `${run.run_type === 'analyze_issue' ? t('run.labelIssue') : t('run.labelPr')} #${run.ref_number}`
+}
+
+// "owner/repo" of an issue/PR run's repository, or null when unknown.
+function runRepoSlug(run: RunRecord): string | null {
+  const repo = run.repo_id ? repos.value.find(r => r.id === run.repo_id) : undefined
+  return repo ? repoSlug(repo) : null
+}
+
+// Identity line "owner/repo #N · @author" for issue/PR runs (null for sessions),
+// so reviews across many repos are told apart at a glance.
+function runRefText(run: RunRecord): string | null {
+  return runRefLine(run, runRepoSlug(run), runLabel(run))
+}
+
+// One-line rows only have room for the repo's short name.
+function runRepoShort(run: RunRecord): string | null {
+  const slug = runRepoSlug(run)
+  return slug ? repoShortName(slug) : null
 }
 
 // A run is "running" for display when it is streaming itself, or when any of
@@ -976,6 +996,8 @@ function runRelativeTime(iso: string): string {
 // Dense rows fold everything not on the single line into the row tooltip.
 function runDenseTooltip(run: RunRecord): string {
   const parts = [runLabel(run)]
+  const ref = runRefText(run)
+  if (ref) parts.push(ref)
   const meta = runAccountModelLine(run, false)
   if (meta) parts.push(meta)
   parts.push(runTimestamp(runActivityAt(run)))
@@ -1040,6 +1062,8 @@ const filteredRuns = computed(() => {
     const haystack = [
       runLabel(run),
       run.title ?? '',
+      runRefText(run) ?? '',
+      run.ref_author ?? '',
       run.engine,
       run.status,
       run.run_type,
@@ -3990,6 +4014,12 @@ function handleRefInput(val: string) {
                     class="h-3 w-3 shrink-0 text-muted-foreground"
                     :stroke-width="1.75"
                   />
+                  <!-- Dense rows have one line: the repo's short name keeps PRs
+                       from different repos apart (full identity in the tooltip). -->
+                  <span
+                    v-if="historyDensity === 'dense' && runRepoShort(run)"
+                    class="shrink-0 max-w-[6rem] truncate rounded bg-muted/60 px-1 font-mono text-[10px] text-muted-foreground"
+                  >{{ runRepoShort(run) }}</span>
                   <span
                     class="flex-1 min-w-0 truncate font-medium leading-tight"
                     :class="historyDensity === 'dense' ? 'text-xs' : 'text-[13px]'"
@@ -4044,8 +4074,19 @@ function handleRefInput(val: string) {
                      prefix; full value in the tooltip). Kept in the layout but
                      invisible for an unstarted session so rows share one height.
                      `pr-6` keeps it clear of the hover actions (⋯). -->
+                <!-- Issue/PR rows lead with their identity ("owner/repo #N ·
+                     @author") instead, so a review is recognisable before its
+                     model; the full line stays in the tooltip. -->
                 <p
-                  v-if="historyDensity === 'compact'"
+                  v-if="historyDensity === 'compact' && runRefText(run)"
+                  class="mt-0.5 pl-5 pr-6 truncate text-[10px] leading-tight text-muted-foreground/70"
+                  :title="[runRefText(run), runStarted(run) ? runAccountModelLine(run, false) : ''].filter(Boolean).join(' · ')"
+                >
+                  <span class="font-mono text-foreground/70">{{ runRefText(run) }}</span>
+                  <template v-if="runStarted(run)"> · {{ runAccountModelLine(run) }}</template>
+                </p>
+                <p
+                  v-else-if="historyDensity === 'compact'"
                   class="mt-0.5 pl-5 pr-6 truncate text-[10px] leading-tight text-muted-foreground/70"
                   :class="{ invisible: !runStarted(run) }"
                   :title="runAccountModelLine(run, false)"
@@ -4060,6 +4101,15 @@ function handleRefInput(val: string) {
                   class="mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70"
                   :class="{ invisible: !runStarted(run) }"
                 >
+                  <!-- Issue/PR identity; `visible` keeps it shown even while the
+                       rest of the block is hidden for an unstarted run. -->
+                  <p
+                    v-if="runRefText(run)"
+                    class="visible mb-1.5 truncate font-mono text-[11px] text-foreground/70"
+                    :title="runRefText(run) ?? undefined"
+                  >
+                    {{ runRefText(run) }}
+                  </p>
                   <!-- Account badge shown alongside the model when the run has a
                        known Claude account (the name implies Claude); Codex and
                        legacy/account-less runs show just the model. `pr-6` keeps
@@ -4264,6 +4314,14 @@ function handleRefInput(val: string) {
                 <MessageSquare class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.5" />
                 <span class="text-xs font-medium text-foreground/90 truncate">
                   {{ currentRun ? runLabel(currentRun) : t('run.noRunSelected') }}
+                </span>
+                <!-- Which repo / PR / author this run is about. -->
+                <span
+                  v-if="currentRun && runRefText(currentRun)"
+                  class="shrink-0 max-w-[45%] truncate font-mono text-[11px] text-muted-foreground"
+                  :title="runRefText(currentRun) ?? undefined"
+                >
+                  {{ runRefText(currentRun) }}
                 </span>
                 <div class="ml-auto flex items-center gap-1.5 shrink-0">
                   <!-- Prompt navigator: step between the user's own messages or

@@ -60,6 +60,24 @@ pub struct RunRecord {
     /// project root.
     #[serde(default)]
     pub worktree_branch: Option<String>,
+    /// The fetched issue/PR's own title (from its task file's frontmatter);
+    /// `None` for sessions. Only the fetch/refetch/`list_runs` endpoints fill it.
+    #[serde(default)]
+    pub ref_title: Option<String>,
+    /// The fetched issue/PR's author login; `None` for sessions or when unknown.
+    #[serde(default)]
+    pub ref_author: Option<String>,
+}
+
+/// Title + author of a fetched issue/PR, read back from its task file's
+/// frontmatter (the same block `build_*_markdown` writes). Blank / "unknown"
+/// values come back as `None`.
+fn ref_meta(md: &str) -> (Option<String>, Option<String>) {
+    let clean = |v: Option<String>| v.filter(|s| !s.is_empty() && s != "unknown");
+    (
+        clean(parse_frontmatter_str(md, "title")),
+        clean(parse_frontmatter_str(md, "author")),
+    )
 }
 
 /// Repo identity loaded from the `repos` row, used to branch fetch by provider
@@ -306,6 +324,7 @@ pub async fn fetch_issue(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
+    let (ref_title, ref_author) = ref_meta(&md);
 
     // Use the global default engine (per-project engine has been removed).
     let engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
@@ -315,7 +334,7 @@ pub async fn fetch_issue(
     let now = chrono::Utc::now().to_rfc3339();
     let file_path_str = file_path.to_string_lossy().to_string();
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at) VALUES (?, ?, ?, 'analyze_issue', ?, 'fetched', ?, ?, ?, ?)"
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, ref_title, ref_author) VALUES (?, ?, ?, 'analyze_issue', ?, 'fetched', ?, ?, ?, ?, ?, ?)"
     )
     .bind(&run_id)
     .bind(&project_id)
@@ -325,6 +344,8 @@ pub async fn fetch_issue(
     .bind(&file_path_str)
     .bind(&file_path_str)
     .bind(&now)
+    .bind(&ref_title)
+    .bind(&ref_author)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -352,6 +373,8 @@ pub async fn fetch_issue(
         role: None,
         conductor_run_id: None,
         worktree_branch: None,
+        ref_title,
+        ref_author,
     })
 }
 
@@ -680,6 +703,7 @@ pub async fn fetch_pr(
         fs::create_dir_all(parent).map_err(|e| e.to_string())?;
     }
     fs::write(&file_path, &md).map_err(|e| e.to_string())?;
+    let (ref_title, ref_author) = ref_meta(&md);
 
     let engine = crate::commands::settings::resolve_default_engine(db.inner()).await;
 
@@ -687,7 +711,7 @@ pub async fn fetch_pr(
     let now = chrono::Utc::now().to_rfc3339();
     let file_path_str = file_path.to_string_lossy().to_string();
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title, github_account_id) VALUES (?, ?, ?, 'review_pr', ?, 'fetched', ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, title, github_account_id, ref_title, ref_author) VALUES (?, ?, ?, 'review_pr', ?, 'fetched', ?, ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(&run_id)
     .bind(&project_id)
@@ -699,6 +723,8 @@ pub async fn fetch_pr(
     .bind(&now)
     .bind(&title)
     .bind(&github_account_id)
+    .bind(&ref_title)
+    .bind(&ref_author)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;
@@ -726,6 +752,8 @@ pub async fn fetch_pr(
         role: None,
         conductor_run_id: None,
         worktree_branch: None,
+        ref_title,
+        ref_author,
     })
 }
 
@@ -845,6 +873,14 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
     };
 
     fs::write(&canonical, &md).map_err(|e| e.to_string())?;
+    // The issue/PR may have been retitled since the first fetch.
+    let (ref_title, ref_author) = ref_meta(&md);
+    let _ = sqlx::query("UPDATE runs SET ref_title = ?, ref_author = ? WHERE id = ?")
+        .bind(&ref_title)
+        .bind(&ref_author)
+        .bind(&run_id)
+        .execute(db.inner())
+        .await;
 
     // `output_path` still points at the markdown only while the run is 'fetched';
     // after a run it points at the log, which the migration above left alone.
@@ -877,6 +913,8 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         role: None,
         conductor_run_id: None,
         worktree_branch: None,
+        ref_title,
+        ref_author,
     })
 }
 
@@ -889,18 +927,68 @@ fn parse_frontmatter_u64(content: &str, key: &str) -> Option<u64> {
         .and_then(|v| v.trim().parse::<u64>().ok())
 }
 
+/// Parse a string `key: value` field, looking only inside the leading `---`
+/// frontmatter block (the body may well contain a line starting "title:").
+fn parse_frontmatter_str(content: &str, key: &str) -> Option<String> {
+    let mut lines = content.lines();
+    if lines.next()?.trim() != "---" {
+        return None;
+    }
+    let prefix = format!("{}:", key);
+    lines
+        .take_while(|line| line.trim() != "---")
+        .find_map(|line| line.strip_prefix(&prefix))
+        .map(|v| v.trim().to_string())
+}
+
+/// Fill `ref_title` / `ref_author` for issue/PR runs created before those
+/// columns existed, from their task files. Reads only the head of each file;
+/// a run whose file is gone gets '' so it is not retried on every list.
+async fn backfill_ref_meta(db: &Db, project_id: &str) {
+    use sqlx::Row;
+    use std::io::Read;
+    let Ok(rows) = sqlx::query(
+        "SELECT id, input_path FROM runs
+         WHERE project_id = ? AND type IN ('analyze_issue', 'review_pr')
+           AND ref_author IS NULL AND ref_title IS NULL",
+    )
+    .bind(project_id)
+    .fetch_all(db)
+    .await
+    else {
+        return;
+    };
+    for row in rows {
+        let id: String = row.get("id");
+        let path: Option<String> = row.get("input_path");
+        // Bytes, not read_to_string: the 4 KiB cut may split a UTF-8 char.
+        let mut head = Vec::new();
+        if let Some(Ok(f)) = path.map(fs::File::open) {
+            let _ = f.take(4096).read_to_end(&mut head);
+        }
+        let (title, author) = ref_meta(&String::from_utf8_lossy(&head));
+        let _ = sqlx::query("UPDATE runs SET ref_title = ?, ref_author = ? WHERE id = ?")
+            .bind(title.unwrap_or_default())
+            .bind(author.unwrap_or_default())
+            .bind(&id)
+            .execute(db)
+            .await;
+    }
+}
+
 #[tauri::command]
 pub async fn list_runs(
     db: State<'_, Db>,
     project_id: String,
 ) -> Result<Vec<RunRecord>, String> {
     use sqlx::Row;
+    backfill_ref_meta(db.inner(), &project_id).await;
     // Ordered by last activity, not creation: a session resumed today belongs at
     // the top even if its row is months old. The COALESCE is also what the row
     // reports as `last_activity_at`, so the list and the timestamp the UI prints
     // can never disagree.
     let rows = sqlx::query(
-        "SELECT r.id, r.project_id, r.repo_id, r.type, r.ref_number, r.status, r.engine, r.model, r.input_path, r.output_path, r.session_id, r.claude_account_id, r.started_at, r.finished_at, r.created_at, r.title, r.pinned, r.protected, r.role, r.conductor_run_id,
+        "SELECT r.id, r.project_id, r.repo_id, r.type, r.ref_number, r.status, r.engine, r.model, r.input_path, r.output_path, r.session_id, r.claude_account_id, r.started_at, r.finished_at, r.created_at, r.title, r.pinned, r.protected, r.role, r.conductor_run_id, r.ref_title, r.ref_author,
                 COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) AS last_activity_at,
                 w.branch AS worktree_branch
          FROM runs r LEFT JOIN worktrees w ON w.path = r.worktree_path
@@ -936,6 +1024,9 @@ pub async fn list_runs(
         role: row.get("role"),
         conductor_run_id: row.get("conductor_run_id"),
         worktree_branch: row.get("worktree_branch"),
+        // '' marks a backfill that found no task file.
+        ref_title: row.get::<Option<String>, _>("ref_title").filter(|s| !s.is_empty()),
+        ref_author: row.get::<Option<String>, _>("ref_author").filter(|s| !s.is_empty()),
     }).collect())
 }
 
@@ -2353,7 +2444,7 @@ pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<Milestone
 #[cfg(test)]
 mod tests {
     use super::{
-        frontmatter_head_sha, inherit_parent_deadlines, is_bot_author, parse_issue_node, parse_review_requests_page, pr_map_key,
+        frontmatter_head_sha, ref_meta, inherit_parent_deadlines, is_bot_author, parse_issue_node, parse_review_requests_page, pr_map_key,
         BoardItemFields, SearchPrItem,
     };
 
@@ -2368,6 +2459,15 @@ mod tests {
         let mut row = parse_issue_node(&node, "Web");
         row.deadline = deadline.map(|d| d.to_string());
         (format!("acme/web#{number}"), row)
+    }
+
+    #[test]
+    fn ref_meta_reads_only_the_frontmatter() {
+        let md = "---\npr: 7\ntitle: Fix: login: redirect\nauthor: octo\n---\n\n# Fix\n\ntitle: body text\n";
+        assert_eq!(ref_meta(md), (Some("Fix: login: redirect".into()), Some("octo".into())));
+        let anon = "---\nissue: 3\ntitle: \nauthor: unknown\n---\n";
+        assert_eq!(ref_meta(anon), (None, None));
+        assert_eq!(ref_meta("title: no frontmatter\nauthor: x\n"), (None, None));
     }
 
     #[test]

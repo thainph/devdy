@@ -100,6 +100,10 @@ export interface RunRecord {
   conductor_run_id?: string | null
   /** Branch of the worktree the session works in; null/undefined in the project root. Only `list_runs` fills it. */
   worktree_branch?: string | null
+  /** The fetched issue/PR's own title; null for sessions. Filled by fetch/refetch/`list_runs`. */
+  ref_title?: string | null
+  /** The fetched issue/PR's author login; null for sessions or when unknown. */
+  ref_author?: string | null
 }
 
 /**
