@@ -485,14 +485,38 @@ fn strip_url(url: &str) -> String {
 /// env assignments and secret-named flags, the word after an auth header,
 /// token-looking strings, and URL credentials / query strings.
 pub fn sanitize(text: &str) -> String {
+    let text = mask_json_secrets(text);
     let mut out: Vec<String> = Vec::new();
     let mut mask_next = false;
+    // `curl -u user:pass`: the password half of the next word is masked.
+    let mut mask_user_next = false;
+    // The program of the current command segment (for program-specific flags).
+    let mut prog = String::new();
+    let mut expect_prog = true;
     for word in text.split_whitespace() {
         let c = core(word);
         let lower = c.to_ascii_lowercase();
+        if expect_prog && !c.is_empty() && !c.contains('=') {
+            prog = basename(c).to_ascii_lowercase();
+            expect_prog = matches!(
+                prog.as_str(),
+                "sudo" | "env" | "time" | "exec" | "nohup" | "command"
+            );
+        }
+        if matches!(word, "|" | "||" | "&&" | ";" | "&") || word.ends_with(';') {
+            expect_prog = true;
+        }
         let leader = SECRET_LEADERS
             .iter()
             .any(|l| lower == *l || lower.ends_with(&format!("-{l}")));
+        if mask_user_next {
+            mask_user_next = false;
+            match word.split_once(':') {
+                Some((user, _)) => out.push(format!("{user}:{MASK}")),
+                None => out.push(word.to_string()),
+            }
+            continue;
+        }
         if mask_next {
             // `Authorization: Bearer <token>`: the scheme word is kept, the
             // credential after it is masked.
@@ -507,6 +531,31 @@ pub fn sanitize(text: &str) -> String {
         if leader {
             out.push(word.to_string());
             mask_next = true;
+            continue;
+        }
+        if c == "-u" || c == "--user" || c == "--proxy-user" {
+            out.push(word.to_string());
+            mask_user_next = true;
+            continue;
+        }
+        // `sshpass -p PASS` / `sshpass -pPASS`.
+        if prog == "sshpass" && c.starts_with("-p") {
+            out.push("-p".to_string());
+            if c == "-p" {
+                mask_next = true;
+            } else {
+                out.push(MASK.to_string());
+            }
+            continue;
+        }
+        // `mysql -pPASS` (the password is glued to the flag).
+        if matches!(
+            prog.as_str(),
+            "mysql" | "mysqldump" | "mysqladmin" | "mariadb" | "mariadb-dump"
+        ) && c.starts_with("-p")
+            && c.len() > 2
+        {
+            out.push(format!("-p{MASK}"));
             continue;
         }
         // `--token value` / `--password value`.
@@ -540,6 +589,78 @@ pub fn sanitize(text: &str) -> String {
         out.push(word.to_string());
     }
     out.join(" ")
+}
+
+/// A `"` or an escaped `\"` at byte `i`: the marker's length.
+fn quote_at(b: &[u8], i: usize) -> Option<usize> {
+    match (b.get(i), b.get(i + 1)) {
+        (Some(b'"'), _) => Some(1),
+        (Some(b'\\'), Some(b'"')) => Some(2),
+        _ => None,
+    }
+}
+
+/// Mask the values of secret-named keys in JSON-ish text (`-d '{"password":"x"}'`,
+/// `"{\"token\": \"x\"}"`): `"<key>": <value>` where the key contains a secret
+/// word (see [`SECRET_KEYS`]).
+fn mask_json_secrets(text: &str) -> String {
+    let b = text.as_bytes();
+    let mut out = String::with_capacity(text.len());
+    let (mut i, mut copied) = (0usize, 0usize);
+    while i < b.len() {
+        let Some(q) = quote_at(b, i) else {
+            i += 1;
+            continue;
+        };
+        let start = i + q;
+        let mut j = start;
+        while j < b.len() && quote_at(b, j).is_none() {
+            j += 1;
+        }
+        if j >= b.len() || quote_at(b, j) != Some(q) {
+            i = start;
+            continue;
+        }
+        let key = &text[start..j];
+        let mut k = j + q;
+        while k < b.len() && b[k] == b' ' {
+            k += 1;
+        }
+        if k >= b.len() || b[k] != b':' || key.is_empty() || key.len() > 64 || !is_secret_key(key) {
+            i = j + q;
+            continue;
+        }
+        k += 1;
+        while k < b.len() && b[k] == b' ' {
+            k += 1;
+        }
+        let (vstart, vend, vq) = match quote_at(b, k) {
+            Some(vq) => {
+                let vs = k + vq;
+                let mut e = vs;
+                while e < b.len() && quote_at(b, e) != Some(vq) {
+                    // `\x` inside a plain JSON string.
+                    e += if vq == 1 && b[e] == b'\\' { 2 } else { 1 };
+                }
+                (vs, e.min(b.len()), vq)
+            }
+            None => {
+                let mut e = k;
+                while e < b.len() && !matches!(b[e], b',' | b'}' | b']' | b' ' | b'\'' | b'\\') {
+                    e += 1;
+                }
+                (k, e, 0)
+            }
+        };
+        if vend > vstart {
+            out.push_str(&text[copied..vstart]);
+            out.push_str(MASK);
+            copied = vend;
+        }
+        i = (vend + vq).max(i + 1);
+    }
+    out.push_str(&text[copied..]);
+    out
 }
 
 /// At most `max` chars, ending in `…` when cut.
@@ -580,8 +701,16 @@ pub fn begin(run_id: &str, engine: &str) {
 /// Fold one parsed stdout line of `run_id` in.
 pub fn observe(run_id: &str, v: &Value) {
     let now = Utc::now();
-    with_store(|m| {
-        m.entry(run_id.to_string()).or_default().observe(v, now);
+    // Partial deltas (one per token chunk) only move the activity stamp.
+    let delta = str_of(v, "type") == Some("stream_event");
+    with_store(|m| match m.get_mut(run_id) {
+        Some(a) if delta => a.last_event_at = Some(now),
+        Some(a) => a.observe(v, now),
+        None => {
+            let mut a = RunActivity::default();
+            a.observe(v, now);
+            m.insert(run_id.to_string(), a);
+        }
     });
 }
 
@@ -603,6 +732,14 @@ pub fn end(run_id: &str, status: &str, fallback: Option<&str>) {
         } else {
             a.last_error = None;
         }
+        // Keep the map bounded even while no dashboard polls: this run and any
+        // other run still streaming (not ended) stay.
+        let live: HashSet<String> = m
+            .iter()
+            .filter(|(_, a)| a.ended_at.is_none())
+            .map(|(id, _)| id.clone())
+            .collect();
+        prune_map(m, &live);
     });
 }
 
@@ -884,6 +1021,80 @@ mod tests {
         assert_eq!(
             sanitize("cargo test --release  --format=json"),
             "cargo test --release --format=json"
+        );
+    }
+
+    #[test]
+    fn sanitize_masks_program_flags_and_json_secrets() {
+        let cases = [
+            (
+                "curl -u admin:hunter2 https://x.io/a",
+                "curl -u admin:*** https://x.io/a",
+            ),
+            ("curl --user admin:hunter2 x", "curl --user admin:*** x"),
+            (
+                "sshpass -p hunter2 ssh deploy@host",
+                "sshpass -p *** ssh deploy@host",
+            ),
+            ("sshpass -phunter2 ssh host", "sshpass -p *** ssh host"),
+            ("mysql -uroot -phunter2 db", "mysql -uroot -p*** db"),
+            (
+                "cd /x && sudo mysqldump -phunter2 db",
+                "cd /x && sudo mysqldump -p*** db",
+            ),
+            (
+                "curl -d '{\"password\":\"hunter2\",\"user\":\"bob\"}' x",
+                "curl -d '{\"password\":\"***\",\"user\":\"bob\"}' x",
+            ),
+            (
+                "curl -d '{\"api_key\": \"hunter2\", \"n\": 1, \"client_secret\": 42}'",
+                "curl -d '{\"api_key\": \"***\", \"n\": 1, \"client_secret\": ***}'",
+            ),
+            (
+                "curl -d \"{\\\"token\\\":\\\"hunter2\\\"}\" x",
+                "curl -d \"{\\\"token\\\":\\\"***\\\"}\" x",
+            ),
+            // Ordinary uses of the same flags are left alone.
+            ("mkdir -p src/a", "mkdir -p src/a"),
+            ("ssh -p 2222 host", "ssh -p 2222 host"),
+            ("echo '{\"name\":\"x\"}'", "echo '{\"name\":\"x\"}'"),
+        ];
+        for (input, want) in cases {
+            let got = sanitize(input);
+            assert_eq!(got, want, "for {input}");
+            assert!(!got.contains("hunter2"), "{got}");
+        }
+        // Unterminated / odd quoting never panics.
+        for odd in [
+            "\"password",
+            "\"password\":",
+            "\"password\": \"x",
+            "\\\"",
+            "\"ữ\":\"ữ\"",
+        ] {
+            let _ = sanitize(odd);
+        }
+    }
+
+    #[test]
+    fn observe_on_unknown_run_and_deltas() {
+        let id = format!("rt-obs-{}", uuid::Uuid::new_v4());
+        observe(&id, &json!({"type": "stream_event", "event": {}}));
+        let a = get(&id).unwrap();
+        assert!(a.last_event_at.is_some());
+        assert_eq!(a.events_per_minute(Utc::now()).iter().sum::<u32>(), 0);
+        observe(&id, &json!({"type": "stream_event", "event": {}}));
+        observe(
+            &id,
+            &json!({"type": "assistant", "message": {"content": []}}),
+        );
+        assert_eq!(
+            get(&id)
+                .unwrap()
+                .events_per_minute(Utc::now())
+                .iter()
+                .sum::<u32>(),
+            1
         );
     }
 
