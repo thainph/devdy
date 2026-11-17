@@ -1,0 +1,388 @@
+// Unit tests for lib/runtimeDashboard.ts (Runtime Dashboard: state, groups,
+// folding, ordering, sparklines, quota forecast, tool summaries, log lines).
+// Run: node --test src/lib/__tests__/runtimeDashboard.test.mjs
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  QUIET_AFTER_MS,
+  activityBuckets,
+  buildGroups,
+  classifyState,
+  compareSessions,
+  contextPercent,
+  displayOrder,
+  effectiveMode,
+  filterCounts,
+  formatElapsed,
+  groupKeyOf,
+  initialPick,
+  isWaitTool,
+  layoutGroups,
+  logLine,
+  logLines,
+  mapOrder,
+  matchesQuery,
+  needsAttention,
+  nextAfterAnswer,
+  noteActivity,
+  parseViewMode,
+  pushQuotaSample,
+  pushSample,
+  quotaForecast,
+  runningTool,
+  sparkline,
+  stepOrder,
+  stepQueue,
+  toolLabel,
+  toolSummary,
+  waitQueue,
+} from '../runtimeDashboard.ts'
+
+const NOW = Date.parse('2026-11-17T10:00:00Z')
+
+function s(id, over = {}) {
+  return {
+    id,
+    runId: id,
+    projectId: 'p1',
+    projectName: 'Devdy',
+    title: `Session ${id}`,
+    engine: 'claude',
+    role: 'session',
+    conductorId: null,
+    state: 'running',
+    waitingSince: null,
+    startedAt: NOW - 60_000,
+    now: { kind: 'none', tool: null, detail: '', since: null },
+    ctxPercent: 10,
+    spark: [],
+    cpuPercent: null,
+    rssKb: null,
+    ...over,
+  }
+}
+
+const base = { pending: 0, conductor: false, currentTool: null, lastEventAt: NOW, attention: [], now: NOW }
+
+test('classifyState: waiting beats everything but external', () => {
+  assert.equal(classifyState({ ...base, pending: 1, attention: ['quiet'] }), 'waiting')
+  assert.equal(classifyState({ ...base, external: true, pending: 1 }), 'external')
+})
+
+test('classifyState: a conductor in session_wait is idle, not quiet', () => {
+  const lastEventAt = NOW - QUIET_AFTER_MS - 1
+  assert.equal(classifyState({ ...base, conductor: true, currentTool: 'mcp__devdy-conductor__session_wait', lastEventAt }), 'idle')
+  assert.equal(classifyState({ ...base, conductor: false, currentTool: 'mcp__x__session_wait', lastEventAt }), 'quiet')
+})
+
+test('classifyState: quiet from the watchdog or from silence', () => {
+  assert.equal(classifyState({ ...base, attention: ['long_tool'] }), 'quiet')
+  assert.equal(classifyState({ ...base, attention: ['permission_waiting'] }), 'running')
+  assert.equal(classifyState({ ...base, lastEventAt: NOW - QUIET_AFTER_MS - 1 }), 'quiet')
+  assert.equal(classifyState({ ...base, lastEventAt: NOW - QUIET_AFTER_MS + 1000 }), 'running')
+  assert.equal(classifyState({ ...base, lastEventAt: null }), 'running')
+})
+
+test('isWaitTool', () => {
+  assert.ok(isWaitTool('session_wait'))
+  assert.ok(isWaitTool('mcp__conductor__session_wait'))
+  assert.ok(!isWaitTool('mcp__conductor__session_waiting'))
+  assert.ok(!isWaitTool(null))
+})
+
+test('contextPercent and needsAttention', () => {
+  assert.equal(contextPercent(160_000, 200_000), 80)
+  assert.equal(contextPercent(300_000, 200_000), 100)
+  assert.equal(contextPercent(0, 200_000), null)
+  assert.equal(contextPercent(10, null), null)
+  assert.ok(needsAttention(s('a', { ctxPercent: 80 })))
+  assert.ok(!needsAttention(s('a', { ctxPercent: 79 })))
+  assert.ok(needsAttention(s('a', { state: 'quiet' })))
+  assert.ok(!needsAttention(s('a', { state: 'idle' })))
+})
+
+test('compareSessions: waiting (longest first) → quiet → context full → running → idle → external', () => {
+  const list = [
+    s('ext', { state: 'external' }),
+    s('idle', { state: 'idle' }),
+    s('run', {}),
+    s('ctx', { ctxPercent: 90 }),
+    s('quiet', { state: 'quiet' }),
+    s('w2', { state: 'waiting', waitingSince: NOW - 1000 }),
+    s('w1', { state: 'waiting', waitingSince: NOW - 5000 }),
+  ]
+  assert.deepEqual(list.sort(compareSessions).map((x) => x.id), ['w1', 'w2', 'quiet', 'ctx', 'run', 'idle', 'ext'])
+})
+
+test('matchesQuery covers title and project', () => {
+  assert.ok(matchesQuery(s('a', { title: 'Fix filter' }), 'FIX'))
+  assert.ok(matchesQuery(s('a', { projectName: 'Lunchbox' }), 'lunch'))
+  assert.ok(!matchesQuery(s('a'), 'nope'))
+  assert.ok(matchesQuery(s('a'), '  '))
+})
+
+test('filterCounts', () => {
+  const c = filterCounts([s('a', { state: 'waiting' }), s('b', { state: 'quiet', ctxPercent: 85 }), s('c')])
+  assert.deepEqual(c, { wait: 1, quiet: 1, ctx: 1 })
+})
+
+function sample() {
+  return [
+    s('c1', { role: 'conductor', state: 'idle', startedAt: NOW - 10_000 }),
+    s('c2', { role: 'conductor', state: 'idle', startedAt: NOW - 20_000 }),
+    s('w1', { role: 'worker', conductorId: 'c1', state: 'waiting', waitingSince: NOW - 3000 }),
+    s('w2', { role: 'worker', conductorId: 'c1' }),
+    s('w3', { role: 'worker', conductorId: 'c2' }),
+    s('orphan', { role: 'worker', conductorId: 'gone' }),
+    s('solo1', {}),
+    s('e1', { role: 'external', state: 'external', runId: null }),
+  ]
+}
+
+test('buildGroups: conductors oldest first → solo (stray workers too) → external', () => {
+  const groups = buildGroups(sample())
+  assert.deepEqual(groups.map((g) => g.key), ['c2', 'c1', 'solo', 'external'])
+  assert.deepEqual(groups[1].members.map((m) => m.id), ['w1', 'w2'])
+  assert.deepEqual(groups[2].members.map((m) => m.id), ['orphan', 'solo1'])
+  assert.equal(groups[0].conductor.id, 'c2')
+  assert.deepEqual(buildGroups([s('x')]).map((g) => g.key), ['solo'])
+})
+
+const noLayout = { query: '', filter: null, open: {}, showOk: {} }
+
+test('layoutGroups: open by default only when something needs you; external stays closed', () => {
+  const views = layoutGroups(buildGroups(sample()), noLayout)
+  const by = Object.fromEntries(views.map((v) => [v.key, v]))
+  assert.equal(by.c1.open, true)
+  assert.equal(by.c2.open, false)
+  assert.equal(by.solo.open, false)
+  assert.equal(by.external.open, false)
+  assert.equal(by.c1.counts.waiting, 1)
+})
+
+test('layoutGroups: running-fine sessions fold behind "+N" when something needs you', () => {
+  const views = layoutGroups(buildGroups(sample()), noLayout)
+  const c1 = views.find((v) => v.key === 'c1')
+  assert.deepEqual(c1.shown.map((x) => x.id), ['w1'])
+  assert.equal(c1.hasFold, true)
+  assert.equal(c1.foldN, 1)
+  const unfolded = layoutGroups(buildGroups(sample()), { ...noLayout, showOk: { c1: true } }).find((v) => v.key === 'c1')
+  assert.deepEqual(unfolded.shown.map((x) => x.id), ['w1', 'w2'])
+  assert.equal(unfolded.hasFold, false)
+  assert.equal(unfolded.canRefold, true)
+})
+
+test('layoutGroups: a calm group shows up to 4 sessions unfolded, more fold', () => {
+  const small = [s('a'), s('b')]
+  const v1 = layoutGroups(buildGroups(small), noLayout)[0]
+  assert.equal(v1.hasFold, false)
+  assert.equal(v1.shown.length, 2)
+  const big = ['a', 'b', 'c', 'd', 'e'].map((id) => s(id))
+  const v2 = layoutGroups(buildGroups(big), noLayout)[0]
+  assert.equal(v2.hasFold, true)
+  assert.equal(v2.shown.length, 0)
+  assert.equal(v2.foldN, 5)
+})
+
+test('layoutGroups: hand choices win', () => {
+  const views = layoutGroups(buildGroups(sample()), { ...noLayout, open: { c1: false, c2: true } })
+  assert.equal(views.find((v) => v.key === 'c1').open, false)
+  assert.equal(views.find((v) => v.key === 'c2').open, true)
+})
+
+test('layoutGroups: search keeps only matching sessions and opens their groups', () => {
+  const list = sample()
+  list.find((x) => x.id === 'w3').title = 'migrate invoice'
+  const views = layoutGroups(buildGroups(list), { ...noLayout, query: 'invoice' })
+  assert.deepEqual(views.map((v) => v.key), ['c2'])
+  assert.equal(views[0].open, true)
+  assert.deepEqual(views[0].shown.map((x) => x.id), ['w3'])
+  assert.equal(views[0].hasFold, false)
+  assert.equal(layoutGroups(buildGroups(list), { ...noLayout, query: 'zzz' }).length, 0)
+})
+
+test('layoutGroups: matching a conductor shows its members', () => {
+  const list = sample()
+  list.find((x) => x.id === 'c2').title = 'Migrate billing'
+  const views = layoutGroups(buildGroups(list), { ...noLayout, query: 'billing' })
+  assert.deepEqual(views.map((v) => v.key), ['c2'])
+  assert.deepEqual(views[0].shown.map((x) => x.id), ['w3'])
+})
+
+test('layoutGroups: filter chips', () => {
+  const views = layoutGroups(buildGroups(sample()), { ...noLayout, filter: 'wait' })
+  assert.deepEqual(views.map((v) => v.key), ['c1'])
+  assert.deepEqual(views[0].shown.map((x) => x.id), ['w1'])
+})
+
+test('layoutGroups: a conductor that needs you is listed in its own group', () => {
+  const list = sample()
+  list.find((x) => x.id === 'c2').state = 'waiting'
+  const v = layoutGroups(buildGroups(list), noLayout).find((g) => g.key === 'c2')
+  assert.equal(v.open, true)
+  assert.deepEqual(v.shown.map((x) => x.id), ['c2'])
+  assert.equal(v.counts.waiting, 1)
+})
+
+test('displayOrder walks open groups only; mapOrder lists everything', () => {
+  const defs = buildGroups(sample())
+  const views = layoutGroups(defs, noLayout)
+  assert.deepEqual(displayOrder(views), ['w1'])
+  assert.deepEqual(mapOrder(defs).map((x) => x.id), ['c2', 'w3', 'c1', 'w1', 'w2', 'orphan', 'solo1', 'e1'])
+  assert.equal(groupKeyOf(defs, 'w2'), 'c1')
+  assert.equal(groupKeyOf(defs, 'c2'), 'c2')
+  assert.equal(groupKeyOf(defs, 'nope'), null)
+})
+
+test('stepOrder clamps; stepQueue wraps', () => {
+  assert.equal(stepOrder(['a', 'b'], 'b', 1), 'b')
+  assert.equal(stepOrder(['a', 'b'], 'a', -1), 'a')
+  assert.equal(stepOrder(['a', 'b'], null, 1), 'a')
+  assert.equal(stepOrder([], null, 1), null)
+  assert.equal(stepQueue(['a', 'b'], 'b', 1), 'a')
+  assert.equal(stepQueue(['a', 'b'], 'a', -1), 'b')
+  assert.equal(stepQueue(['a', 'b'], 'x', -1), 'b')
+})
+
+test('waitQueue: longest waiting first; nextAfterAnswer moves on', () => {
+  const list = [
+    s('a', { state: 'waiting', waitingSince: NOW - 100 }),
+    s('b', { state: 'waiting', waitingSince: NOW - 900 }),
+    s('c', {}),
+    s('d', { state: 'waiting', waitingSince: NOW - 500 }),
+  ]
+  const q = waitQueue(list)
+  assert.deepEqual(q, ['b', 'd', 'a'])
+  assert.equal(nextAfterAnswer(q, 'd'), 'a')
+  assert.equal(nextAfterAnswer(q, 'a'), 'b')
+  assert.equal(nextAfterAnswer(['a'], 'a'), null)
+  assert.equal(initialPick(q, ['c']), 'b')
+  assert.equal(initialPick([], ['c']), 'c')
+  assert.equal(initialPick([], []), null)
+})
+
+test('effectiveMode / parseViewMode', () => {
+  assert.equal(effectiveMode('auto', 15), 'cards')
+  assert.equal(effectiveMode('auto', 16), 'rows')
+  assert.equal(effectiveMode('cards', 99), 'cards')
+  assert.equal(parseViewMode('rows'), 'rows')
+  assert.equal(parseViewMode('weird'), 'auto')
+  assert.equal(parseViewMode(null), 'auto')
+})
+
+test('sparkline: points, stalled tail, empty', () => {
+  const sp = sparkline([0, 5, 10], 100, 20)
+  assert.equal(sp.points, '0,18 50,10 100,2')
+  assert.equal(sp.stalled, false)
+  assert.equal(sparkline([3, 0, 0, 0, 0, 0]).stalled, true)
+  assert.equal(sparkline([0, 0, 0, 0, 0]).stalled, false)
+  assert.equal(sparkline([0, 0, 0, 0, 0]).empty, true)
+  assert.equal(sparkline([]).points, '')
+  assert.deepEqual(pushSample([1, 2, 3], 4, 3), [2, 3, 4])
+})
+
+test('activity fallback buckets entry growth per minute', () => {
+  const tracks = new Map()
+  noteActivity(tracks, 'r', 10, NOW)
+  assert.equal(tracks.get('r').lastEventAt, null)
+  noteActivity(tracks, 'r', 13, NOW + 1000)
+  noteActivity(tracks, 'r', 13, NOW + 2000)
+  noteActivity(tracks, 'r', 15, NOW + 61_000)
+  const t = tracks.get('r')
+  assert.equal(t.lastEventAt, NOW + 61_000)
+  const b = activityBuckets(t, NOW + 61_000, 3)
+  assert.deepEqual(b, [0, 3, 2])
+  // entries cleared (a new turn reset): the new count is all new events
+  noteActivity(tracks, 'r', 4, NOW + 62_000)
+  assert.deepEqual(activityBuckets(t, NOW + 62_000, 1), [6])
+  assert.deepEqual(activityBuckets(undefined, NOW, 2), [0, 0])
+})
+
+test('formatElapsed', () => {
+  assert.equal(formatElapsed(42_000), '0:42')
+  assert.equal(formatElapsed(12 * 60_000 + 5000), '12:05')
+  assert.equal(formatElapsed(3600_000 + 12 * 60_000 + 40_000), '1:12:40')
+  assert.equal(formatElapsed(null), '')
+  assert.equal(formatElapsed(-5), '0:00')
+})
+
+test('quotaForecast: from the recent pace', () => {
+  const resetsAt = NOW + 3 * 3600_000
+  const samples = [{ at: NOW - 30 * 60_000, pct: 60 }]
+  // 10 points per 30 min → 30 points left → 90 min
+  const f = quotaForecast(70, resetsAt, samples, NOW)
+  assert.equal(f.kind, 'exhaust')
+  assert.equal(f.at, NOW + 90 * 60_000)
+})
+
+test('quotaForecast: resets first → safe; full; unknown', () => {
+  const resetsAt = NOW + 30 * 60_000
+  assert.deepEqual(quotaForecast(70, resetsAt, [{ at: NOW - 30 * 60_000, pct: 60 }], NOW), { kind: 'safe' })
+  assert.deepEqual(quotaForecast(100, resetsAt, [], NOW), { kind: 'full' })
+  assert.deepEqual(quotaForecast(null, resetsAt, [], NOW), { kind: 'unknown' })
+  // flat pace
+  assert.deepEqual(quotaForecast(40, NOW + 3600_000, [{ at: NOW - 20 * 60_000, pct: 40 }], NOW), { kind: 'safe' })
+})
+
+test('quotaForecast: falls back to the average since the window opened', () => {
+  // window opened 2 h ago (reset in 3 h) at 40% → 20%/h → 60 points left → 3 h → exactly at reset → safe
+  assert.deepEqual(quotaForecast(40, NOW + 3 * 3600_000, [], NOW), { kind: 'safe' })
+  // 80% after 2 h → 40%/h → 30 min left
+  const f = quotaForecast(80, NOW + 3 * 3600_000, [], NOW)
+  assert.equal(f.kind, 'exhaust')
+  assert.equal(f.at, NOW + 30 * 60_000)
+  // window just opened: not enough to tell
+  assert.deepEqual(quotaForecast(5, NOW + 5 * 3600_000 - 60_000, [], NOW), { kind: 'unknown' })
+})
+
+test('pushQuotaSample dedups within a minute and drops old samples', () => {
+  let l = pushQuotaSample([], { at: NOW, pct: 10 })
+  l = pushQuotaSample(l, { at: NOW + 1000, pct: 10 })
+  assert.equal(l.length, 1)
+  l = pushQuotaSample(l, { at: NOW + 2000, pct: 11 })
+  assert.equal(l.length, 2)
+  l = pushQuotaSample(l, { at: NOW + 7 * 3600_000, pct: 1 })
+  assert.deepEqual(l, [{ at: NOW + 7 * 3600_000, pct: 1 }])
+})
+
+test('toolLabel / toolSummary across engines', () => {
+  assert.equal(toolLabel('mcp__devdy__todos_list'), 'devdy todos_list')
+  assert.equal(toolLabel('mcp__claude_ai_Gmail__search'), 'claude_ai_Gmail search')
+  assert.equal(toolLabel('Bash'), 'Bash')
+  assert.equal(toolSummary('Bash', { command: 'pnpm   test\n --filter x' }), 'pnpm test --filter x')
+  assert.equal(toolSummary('Bash', { command: ['cargo', 'check'] }), 'cargo check')
+  assert.equal(toolSummary('Edit', { file_path: '/Users/me/repo/src-tauri/src/runs/registry.rs' }), 'runs/registry.rs')
+  // Codex fileChange / apply_patch
+  assert.equal(toolSummary('Edit', { changes: [{ path: 'src/a.ts' }] }), 'src/a.ts')
+  assert.equal(toolSummary('Edit', { changes: { 'lib/b.ts': {} } }), 'lib/b.ts')
+  assert.equal(toolSummary('Edit', { input: '*** Begin Patch\n*** Update File: x/y/z.rs\n' }), 'y/z.rs')
+  assert.equal(toolSummary('Grep', { pattern: 'invoiceId' }), 'invoiceId')
+  assert.equal(toolSummary('AskUserQuestion', { questions: [{ question: 'Which one?' }] }), 'Which one?')
+  assert.equal(toolSummary('X', null), '')
+  assert.equal(toolSummary('Bash', { command: 'x'.repeat(300) }).length, 120)
+})
+
+test('logLine maps entries to compact kinds', () => {
+  assert.deepEqual(logLine({ kind: 'tool', name: 'Bash', input: { command: 'ls' } }), { kind: 'tool', text: 'Bash ls' })
+  assert.deepEqual(
+    logLine({ kind: 'tool', name: 'Bash', input: { command: 'ls' }, result: { is_error: true } }),
+    { kind: 'err', text: 'Bash ls' },
+  )
+  assert.deepEqual(logLine({ kind: 'tool', name: 'AskUserQuestion', input: { questions: [{ question: 'Q?' }] } }), { kind: 'ask', text: 'Q?' })
+  assert.deepEqual(logLine({ kind: 'text', text: '\n\nHello\nworld' }), { kind: 'text', text: 'Hello' })
+  assert.equal(logLine({ kind: 'text', text: '  ' }), null)
+  assert.equal(logLine({ kind: 'thinking', text: 'hmm' }), null)
+  assert.deepEqual(logLine({ kind: 'result', text: 'done', is_error: false }), { kind: 'ok', text: '' })
+  assert.deepEqual(logLine({ kind: 'result', text: 'boom', is_error: true }), { kind: 'err', text: 'boom' })
+  assert.equal(logLine({ kind: 'log', level: 'debug', text: 'x' }), null)
+  assert.deepEqual(logLine({ kind: 'command', name: 'compact' }), { kind: 'note', text: '/compact' })
+  const many = Array.from({ length: 10 }, (_, i) => ({ kind: 'text', text: `t${i}` }))
+  assert.deepEqual(logLines(many, 2).map((l) => l.text), ['t8', 't9'])
+})
+
+test('runningTool: the last tool without a result in the current turn', () => {
+  assert.deepEqual(runningTool([{ kind: 'text', text: 'x' }, { kind: 'tool', name: 'Bash', input: {} }]), { name: 'Bash', input: {} })
+  assert.equal(runningTool([{ kind: 'tool', name: 'Bash', input: {}, result: { is_error: false } }]), null)
+  assert.equal(runningTool([{ kind: 'tool', name: 'Bash', input: {} }, { kind: 'result', text: '', is_error: false }]), null)
+  assert.equal(runningTool([]), null)
+})
