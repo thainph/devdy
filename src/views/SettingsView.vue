@@ -3015,7 +3015,7 @@ watch(() => settings.value.language, (v) => {
           <InboxApiSettings />
         </div>
 
-        <!-- Slack users marked as customers (Work Dashboard). Mounted only while shown. -->
+        <!-- Slack users marked as customers. Mounted only while shown. -->
         <div v-if="!loading && activeSection === 'slackCustomers'" class="max-w-2xl">
           <SlackCustomersSettings />
         </div>

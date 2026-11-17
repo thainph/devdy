@@ -1,497 +1,380 @@
+<script lang="ts">
+// Hand choices (open / closed groups, unfolded "running fine" sessions) last
+// for the app session: kept at module level so leaving the screen and coming
+// back keeps them.
+const sessionOpen: Record<string, boolean> = {}
+const sessionShowOk: Record<string, boolean> = {}
+</script>
+
 <script setup lang="ts">
-// Work Dashboard — the app's start screen, read at a glance across every
-// project. Two views (remembered): "By category" — a summary row, then four
-// cards (customers on Slack, todos, PRs waiting for review, projects at risk
-// of slipping), each ranked only within itself and ordered by the user (drag
-// a card's handle, or "move to the top" from the keyboard), next to a sticky
-// column of the running sessions; and "By project" — one traffic-light row
-// per project. One project filter applies everywhere. No poller of its own:
-// the cards follow the existing stores / events, refresh when the screen
-// opens and on ↻; a 60 s clock only keeps "late N / waiting N" honest.
-import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+// Runtime Dashboard — the app's start screen: everything running right now.
+// Four stat cards (sessions, 5-hour limits, resources, today), then the
+// sessions grouped by conductor (attention first, the ones running fine folded
+// behind "+N") next to a sticky detail panel with the selected session's live
+// log and what it needs from you (permission / question / message / stop).
+// Keyboard: / search · j k select · n next waiting · a allow · d deny ·
+// Enter open · Esc leave the search.
+import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { openUrl } from '@tauri-apps/plugin-opener'
-import { AlertCircle, LayoutDashboard, LayoutGrid, List, RefreshCw } from 'lucide-vue-next'
-import { AppSelect, Button, PageHeader, SegmentedControl } from '@/components/ui'
-import SlackWidget from '@/components/dashboard/SlackWidget.vue'
-import TodosWidget from '@/components/dashboard/TodosWidget.vue'
-import PrWidget from '@/components/dashboard/PrWidget.vue'
-import ProjectHealthWidget from '@/components/dashboard/ProjectHealthWidget.vue'
-import SessionsPanel from '@/components/dashboard/SessionsPanel.vue'
-import SummaryRow, { type SummaryTile } from '@/components/dashboard/SummaryRow.vue'
-import ProjectList from '@/components/dashboard/ProjectList.vue'
-import { useWorkDashboard } from '@/composables/useWorkDashboard'
-import { usePrReviewActions } from '@/composables/usePrReviewActions'
-import { useToast } from '@/composables/useToast'
+import { Activity, Search } from 'lucide-vue-next'
+import { Banner, Button, Input, PageHeader, SegmentedControl } from '@/components/ui'
+import StatSessions from '@/components/dashboard/StatSessions.vue'
+import StatQuota from '@/components/dashboard/StatQuota.vue'
+import StatResources from '@/components/dashboard/StatResources.vue'
+import StatToday from '@/components/dashboard/StatToday.vue'
+import SessionGroup from '@/components/dashboard/SessionGroup.vue'
+import SessionInspector from '@/components/dashboard/SessionInspector.vue'
+import { useRuntimeDashboard } from '@/composables/useRuntimeDashboard'
 import { useConfirm } from '@/composables/useConfirm'
-import { useDragSort } from '@/composables/useDragSort'
-import { useProjectsStore } from '@/stores/projects'
-import { useFocusStore } from '@/stores/focus'
+import { useToast } from '@/composables/useToast'
 import { useLiveRunsStore } from '@/stores/liveRuns'
-import { useRunsStore } from '@/stores/runs'
-import { usePrInboxStore, prKey, type PrInboxItem } from '@/stores/prInbox'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
-import { useSlackCustomersStore } from '@/stores/slackCustomers'
-import { openSlackWindow } from '@/lib/slackWindow'
-import { openItemListWindow } from '@/lib/itemListWindow'
-import { openPrInboxWindow } from '@/lib/prInboxWindow'
-import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
-import { invoke } from '@/lib/tauri'
-import { projectOptions } from '@/lib/projectOptions'
-import { actionableCount } from '@/lib/prPriority'
-import type { SlackDashboardRow } from '@/lib/dashboardSlack'
-import type { DashboardRun } from '@/lib/workDashboard'
+import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
+import { strayIds } from '@/lib/backgroundProcesses'
+import type { RecentRun } from '@/lib/runtimeSnapshot'
 import {
-  moveTo, moveToFront, normalizeOrder, prLevel, projectCard, slackCard, todoLevel, type CategoryKey,
-} from '@/lib/dashboardLayout'
+  buildGroups,
+  displayOrder,
+  effectiveMode,
+  filterCounts,
+  groupKeyOf,
+  initialPick,
+  layoutGroups,
+  mapOrder,
+  needsAttention,
+  answerKeyBlocked,
+  nextAfterAnswer,
+  parseViewMode,
+  stepOrder,
+  stepQueue,
+  waitQueue,
+  type QuickFilter,
+  type RtSession,
+  type ViewMode,
+} from '@/lib/runtimeDashboard'
 
 defineOptions({ name: 'DashboardView' })
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const router = useRouter()
+const { confirm, state: confirmState } = useConfirm()
 const { toast } = useToast()
-const { confirm } = useConfirm()
-const projects = useProjectsStore()
-const focus = useFocusStore()
 const live = useLiveRunsStore()
-const runsStore = useRunsStore()
-const prInbox = usePrInboxStore()
 const tabs = useWorkspaceTabsStore()
-const customers = useSlackCustomersStore()
+const bgProcs = useBackgroundProcessesStore()
+const dash = useRuntimeDashboard()
 
-// ── Project filter (remembered) ──────────────────────────────────────────────
-const FILTER_KEY = 'devdy.dashboard.project'
-const ALL = ''
-function readFilter(): string | null {
-  try { return localStorage.getItem(FILTER_KEY) || null } catch { return null }
+// ── View mode (remembered) ───────────────────────────────────────────────────
+const MODE_KEY = 'devdy.dashboard.mode'
+function readMode(): ViewMode {
+  try { return parseViewMode(localStorage.getItem(MODE_KEY)) } catch { return 'auto' }
 }
-const projectFilter = ref<string | null>(readFilter())
-watch(projectFilter, (v) => {
-  try {
-    if (v) localStorage.setItem(FILTER_KEY, v)
-    else localStorage.removeItem(FILTER_KEY)
-  } catch { /* best-effort */ }
+const mode = ref<ViewMode>(readMode())
+watch(mode, (v) => {
+  try { localStorage.setItem(MODE_KEY, v) } catch { /* best-effort */ }
 })
-// A deleted project falls back to "All projects".
-watch(() => projects.projects, (list) => {
-  if (projectFilter.value && list.length && !list.some((p) => p.id === projectFilter.value)) projectFilter.value = null
+const modeOptions = computed(() => (['auto', 'cards', 'rows'] as const).map((value) => ({ value, label: t(`dashboard.toolbar.mode.${value}`) })))
+const total = computed(() => dash.sessions.value.length)
+const shownMode = computed(() => effectiveMode(mode.value, total.value))
+const modeHint = computed(() => {
+  if (mode.value !== 'auto' || !total.value) return ''
+  return shownMode.value === 'rows' ? t('dashboard.toolbar.autoRows', { n: total.value }) : t('dashboard.toolbar.autoCards')
 })
-const filterOptions = computed(() => [
-  { value: ALL, label: t('dashboard.allProjects') },
-  ...projectOptions(projects.projects),
-])
 
-// ── View + card order (remembered) ───────────────────────────────────────────
-type DashView = 'category' | 'project'
-const VIEW_KEY = 'devdy.dashboard.view'
-const ORDER_KEY = 'devdy.dashboard.order'
-function readView(): DashView {
-  try { return localStorage.getItem(VIEW_KEY) === 'project' ? 'project' : 'category' } catch { return 'category' }
+// ── Search / filter / groups ────────────────────────────────────────────────
+const query = ref('')
+const filter = ref<QuickFilter | null>(null)
+const openMap = ref<Record<string, boolean>>({ ...sessionOpen })
+const showOkMap = ref<Record<string, boolean>>({ ...sessionShowOk })
+watch(openMap, (m) => Object.assign(sessionOpen, m), { deep: true })
+watch(showOkMap, (m) => Object.assign(sessionShowOk, m), { deep: true })
+
+const defs = computed(() => buildGroups(dash.sessions.value))
+const views = computed(() => layoutGroups(defs.value, { query: query.value, filter: filter.value, open: openMap.value, showOk: showOkMap.value }))
+const order = computed(() => displayOrder(views.value))
+const queue = computed(() => waitQueue(dash.sessions.value))
+const mapList = computed(() => mapOrder(defs.value))
+const counts = computed(() => filterCounts(dash.sessions.value))
+const filtering = computed(() => !!query.value.trim() || filter.value !== null)
+
+function toggleGroup(key: string) {
+  const v = views.value.find((g) => g.key === key)
+  openMap.value = { ...openMap.value, [key]: !(v?.open ?? false) }
 }
-function readOrder(): CategoryKey[] {
-  try { return normalizeOrder(JSON.parse(localStorage.getItem(ORDER_KEY) ?? 'null')) } catch { return normalizeOrder(null) }
+function setShowOk(key: string, on: boolean) {
+  showOkMap.value = { ...showOkMap.value, [key]: on }
 }
-const view = ref<DashView>(readView())
-watch(view, (v) => {
-  try { localStorage.setItem(VIEW_KEY, v) } catch { /* best-effort */ }
-})
-const viewOptions = computed(() => [
-  { value: 'category' as const, label: t('dashboard.view.category'), icon: LayoutGrid },
-  { value: 'project' as const, label: t('dashboard.view.project'), icon: List },
-])
-const order = ref<CategoryKey[]>(readOrder())
-watch(order, (o) => {
-  try { localStorage.setItem(ORDER_KEY, JSON.stringify(o)) } catch { /* best-effort */ }
-})
-
-function projectName(id: string | null): string | null {
-  if (!id || projectFilter.value) return null
-  return projects.projects.find((p) => p.id === id)?.name ?? null
+function expandAll() {
+  const keys = defs.value.map((g) => g.key)
+  openMap.value = { ...openMap.value, ...Object.fromEntries(keys.map((k) => [k, true])) }
+  showOkMap.value = { ...showOkMap.value, ...Object.fromEntries(keys.map((k) => [k, true])) }
 }
-
-// ── Data ─────────────────────────────────────────────────────────────────────
-const now = ref(Date.now())
-let clock: ReturnType<typeof setInterval> | null = null
-const dash = useWorkDashboard(projectFilter, now)
-const refreshing = dash.refreshing
-
-function refresh(force = false) {
-  void dash.refresh(force)
+function collapseAll() {
+  const keys = defs.value.map((g) => g.key)
+  openMap.value = { ...openMap.value, ...Object.fromEntries(keys.map((k) => [k, false])) }
+  showOkMap.value = {}
+  for (const k of Object.keys(sessionShowOk)) delete sessionShowOk[k]
 }
-
-onMounted(() => {
-  void customers.start()
-  clock = setInterval(() => { now.value = Date.now() }, 60_000)
+function toggleFilter(f: QuickFilter) {
+  filter.value = filter.value === f ? null : f
+}
+// The "waiting for you" chip hides at 0: drop its filter then, or nothing could clear it.
+watch(() => counts.value.wait, (n) => {
+  if (!n && filter.value === 'wait') filter.value = null
 })
-onBeforeUnmount(() => {
-  if (clock) clearInterval(clock)
-})
 
-// Set only once a refresh has finished; a source that failed is named next to it.
-const lastRefreshLabel = computed(() =>
-  dash.lastRefreshAt.value
-    ? new Date(dash.lastRefreshAt.value).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-    : '',
-)
-const failedLabel = computed(() =>
-  dash.failedSources.value.map((k) => t(`dashboard.sources.${k}`)).join(', '),
+// ── Selection ────────────────────────────────────────────────────────────────
+const selectedId = ref<string | null>(null)
+const selected = computed<RtSession | null>(() => dash.sessions.value.find((s) => s.id === selectedId.value) ?? null)
+const selectedExternal = computed(() =>
+  selected.value?.role === 'external' ? dash.externalById.value.get(selected.value.id) ?? null : null,
 )
 
-// ── Summary row + card order ─────────────────────────────────────────────────
-const cardId = (key: CategoryKey) => `dash-${key}`
-const flash = ref<CategoryKey | null>(null)
-function highlight(key: CategoryKey) {
-  flash.value = key
-  setTimeout(() => { if (flash.value === key) flash.value = null }, 1200)
-}
-function jumpTo(key: CategoryKey) {
-  const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
-  document.getElementById(cardId(key))?.scrollIntoView({ behavior: reduce ? 'auto' : 'smooth', block: 'nearest' })
-  highlight(key)
-}
-function bringToFront(key: CategoryKey) {
-  order.value = moveToFront(order.value, key)
-  highlight(key)
+/** Select a session: its group opens (and unfolds when it runs fine) and it scrolls into view. */
+function select(id: string | null) {
+  if (!id) return
+  selectedId.value = id
+  const s = dash.sessions.value.find((x) => x.id === id)
+  const key = groupKeyOf(defs.value, id)
+  if (key && s) {
+    if (!views.value.find((g) => g.key === key)?.open) openMap.value = { ...openMap.value, [key]: true }
+    const isConductor = defs.value.find((g) => g.key === key)?.conductor?.id === id
+    if (!needsAttention(s) && !isConductor) setShowOk(key, true)
+  }
+  void nextTick(() => {
+    const el = document.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(id)}"]`)
+    const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
+    el?.scrollIntoView({ block: 'nearest', behavior: reduce ? 'auto' : 'smooth' })
+  })
 }
 
-// Drag the card headers' handle to reorder (pointer events via `useDragSort`:
-// the Tauri webview swallows HTML5 drag & drop). The others slide aside while
-// dragging; the order changes once, on drop.
-const cardGrid = ref<HTMLElement | null>(null)
-const drag = useDragSort({
-  container: cardGrid,
-  onDrop: (from, to) => {
-    const key = order.value[from]
-    const target = order.value[to]
-    if (!key || !target) return
-    order.value = moveTo(order.value, key, target)
-    highlight(key)
+// First load: the session waiting longest, else the first on screen. A
+// selected session that ended hands over the same way.
+watch(
+  () => [dash.loaded.value, dash.sessions.value] as const,
+  ([loaded]) => {
+    if (!loaded) return
+    if (selectedId.value && dash.sessions.value.some((s) => s.id === selectedId.value)) return
+    selectedId.value = initialPick(queue.value, order.value) ?? mapList.value[0]?.id ?? null
   },
-})
-function dropTargetKey(): CategoryKey | null {
-  const from = drag.dragFrom.value
-  const to = drag.dragTo.value
-  return from !== null && to !== null && to !== from ? order.value[to] ?? null : null
-}
-// An outline (not a ring) on the Card itself: it follows each theme's corner
-// radius, and themes that restyle the card's box-shadow do not hide it.
-function cardRing(key: CategoryKey) {
-  const out = ['h-full']
-  const dragged = drag.dragFrom.value !== null && order.value[drag.dragFrom.value] === key
-  if (dragged || dropTargetKey() === key || flash.value === key) out.push('outline-2 outline-offset-2 outline-primary/60')
-  return out
-}
+)
 
-const failed = computed(() => new Set(dash.failedSources.value))
-const summary = computed<SummaryTile[]>(() => {
-  const tiles: Record<CategoryKey, SummaryTile> = {
-    slack: (() => {
-      const c = slackCard(dash.slackRows.value)
-      const text = c.waiting.length
-        ? t('dashboard.summary.slack.waiting', { n: c.waiting.length }, c.waiting.length)
-        : c.unassignedNew
-          ? t('dashboard.summary.slack.new', { n: c.unassignedNew }, c.unassignedNew)
-          : t('dashboard.summary.slack.none')
-      return { key: 'slack', label: t('dashboard.slack.title'), text, level: c.level }
-    })(),
-    todos: (() => {
-      const overdue = dash.todos.value.filter((x) => x.group === 'overdue').length
-      const today = dash.todos.value.filter((x) => x.group === 'today').length
-      const text = overdue || today ? t('dashboard.summary.todos.some', { overdue, today }) : t('dashboard.summary.todos.none')
-      return { key: 'todos', label: t('dashboard.todos.title'), text, level: todoLevel(dash.todos.value) }
-    })(),
-    prs: (() => {
-      const n = actionableCount(dash.prs.value)
-      const again = dash.prs.value.rows.filter((r) => r.ai === 'updated' && !r.pr.draft).length
-      const text = !n
-        ? t('dashboard.summary.prs.none')
-        : again
-          ? t('dashboard.summary.prs.again', { n, again })
-          : t('dashboard.summary.prs.some', { n }, n)
-      return { key: 'prs', label: t('dashboard.prs.title'), text, level: prLevel(dash.prs.value) }
-    })(),
-    projects: (() => {
-      const c = projectCard(dash.healths.value)
-      const text = c.risk.length || c.attention.length
-        ? t('dashboard.summary.projects.some', { risk: c.risk.length, attention: c.attention.length })
-        : c.ok.length && c.unknown.length
-          ? t('dashboard.summary.projects.okUnknown', { n: c.unknown.length })
-          : c.ok.length
-            ? t('dashboard.summary.projects.ok')
-            : c.unknown.length ? t('dashboard.summary.projects.unknown') : t('dashboard.summary.projects.none')
-      return { key: 'projects', label: t('dashboard.health.title'), text, level: c.level }
-    })(),
-  }
-  return order.value.map((k) => (failed.value.has(k)
-    ? { ...tiles[k], text: t('dashboard.summary.failed'), level: 'none' as const }
-    : tiles[k]))
-})
-
-// ── Slack actions ────────────────────────────────────────────────────────────
-function openThread(id: string) {
-  void openSlackWindow({ id })
-}
-function openAllThreads() {
-  void openSlackWindow({ projectId: projectFilter.value })
-}
-async function markThreadSeen(id: string) {
-  try {
-    await invoke('mark_slack_thread_seen', { id })
-    await dash.loadSlack()
-  } catch (e) {
-    toast.error(String(e))
-  }
-}
-async function addThreadTodo(row: SlackDashboardRow) {
-  const thread = dash.slackThreadById(row.thread.id)
-  try {
-    await focus.add({
-      text: t('dashboard.slack.todoText', { title: row.thread.title || t('slackThread.untitled') }),
-      projectId: row.thread.projectId,
-      sourceUrl: thread?.threadUrl ?? null,
-    })
-    toast.success(t('dashboard.todoAdded'))
-  } catch (e) {
-    toast.error(String(e))
+/** When the panel last moved on by itself to the next waiting session. */
+let advancedAt: number | null = null
+function onAnswered(id: string) {
+  const next = nextAfterAnswer(queue.value, id)
+  dash.rebuild()
+  if (next) {
+    advancedAt = Date.now()
+    select(next)
   }
 }
 
-// ── Todo actions ─────────────────────────────────────────────────────────────
-function openTodo(id: string) {
-  void openItemListWindow('todo', { id })
-}
-function openAllTodos() {
-  void openItemListWindow('todo', { projectId: projectFilter.value })
-}
-async function markTodoDone(id: string) {
-  try {
-    await focus.update(id, { done: true })
-    toast.success(t('dashboard.todos.doneToast'))
-  } catch (e) {
-    toast.error(String(e))
-  }
-}
-
-// ── PR actions ───────────────────────────────────────────────────────────────
+// ── Opening things ───────────────────────────────────────────────────────────
 function openRun(projectId: string, runId: string) {
   live.markSeen(runId)
   tabs.open(projectId, runId)
   router.push({ name: 'project-run-detail', params: { projectId, runId } }).catch(() => {})
 }
-const review = usePrReviewActions({
-  openRun: (item) => { if (item.project_id && item.existing_run_id) openRun(item.project_id, item.existing_run_id) },
-  runStatus: (item) => (item.existing_run_id ? live.get(item.existing_run_id)?.status ?? item.existing_run_status : null),
-})
-/** The store's own item (the dashboard may show a copy with a live status). */
-function storeItem(item: PrInboxItem): PrInboxItem {
-  return prInbox.items.find((i) => prKey(i) === prKey(item)) ?? item
+function openSession(s: RtSession) {
+  if (s.runId && s.projectId) openRun(s.projectId, s.runId)
 }
-function isReviewing(item: PrInboxItem): boolean {
-  return prInbox.reviewingKeys.has(prKey(item))
+function openRecent(r: RecentRun) {
+  openRun(r.projectId, r.runId)
 }
-function openPr(item: PrInboxItem) {
-  openUrl(item.html_url).catch(() => { /* opener unavailable */ })
-}
-async function addPrTodo(item: PrInboxItem) {
+
+// ── Cleanup (the Background processes action) ────────────────────────────────
+const cleaning = ref(false)
+async function cleanUp() {
+  if (cleaning.value) return
+  cleaning.value = true
   try {
-    await focus.add({
-      text: t('dashboard.prs.todoText', { n: item.number, title: item.title }),
-      projectId: item.project_id,
-      sourceUrl: item.html_url,
+    await bgProcs.refresh()
+    const entries = bgProcs.snapshot?.entries ?? []
+    const ids = strayIds(entries)
+    const n = entries.filter((e) => e.state !== 'active').reduce((sum, e) => sum + e.processes.length, 0)
+    if (!ids.length) {
+      toast.info(t('processes.toast.nothingStopped'))
+      return
+    }
+    const ok = await confirm({
+      title: t('processes.confirm.stopLeftoversTitle'),
+      message: t('processes.confirm.stopLeftoversMessage', { n }, n),
+      confirmLabel: t('processes.stopAllLeftovers'),
     })
-    toast.success(t('dashboard.todoAdded'))
+    if (!ok) return
+    const stopped = await bgProcs.stopEntries(ids, false)
+    if (stopped > 0) toast.success(t('processes.toast.stopped', { n: stopped }, stopped))
+    else toast.info(t('processes.toast.nothingStopped'))
+    void dash.refresh()
   } catch (e) {
-    toast.error(String(e))
-  }
-}
-
-// ── Radar actions ────────────────────────────────────────────────────────────
-function openIssue(url: string) {
-  openUrl(url).catch(() => { /* opener unavailable */ })
-}
-function openRadar(projectId?: string) {
-  void openDeliveryRadarWindow(projectId ?? projectFilter.value ?? undefined)
-}
-function linkBoard(projectId: string) {
-  router.push({ name: 'project-settings', params: { projectId } }).catch(() => {})
-}
-
-// ── Session actions ──────────────────────────────────────────────────────────
-const stopping = ref<Set<string>>(new Set())
-function openSession(projectId: string, runId: string) {
-  openRun(projectId, runId)
-}
-async function stopSession(row: DashboardRun) {
-  const ok = await confirm({
-    title: t('dashboard.runs.stopTitle'),
-    message: t('dashboard.runs.stopMessage', { name: row.run.title || row.run.project_name }),
-    confirmLabel: t('dashboard.runs.stop'),
-    variant: 'destructive',
-  })
-  if (!ok) return
-  const id = row.run.run_id
-  stopping.value = new Set(stopping.value).add(id)
-  try {
-    await runsStore.cancelRun(id)
-    await dash.loadRuns()
-  } catch (e) {
-    toast.error(String(e))
+    toast.error(t('processes.toast.failed', { error: String(e) }))
   } finally {
-    const next = new Set(stopping.value)
-    next.delete(id)
-    stopping.value = next
+    cleaning.value = false
   }
 }
-</script>
 
+// ── Keyboard ─────────────────────────────────────────────────────────────────
+const searchBox = ref<HTMLElement | null>(null)
+const inspector = ref<InstanceType<typeof SessionInspector> | null>(null)
+
+function typingIn(el: EventTarget | null): boolean {
+  if (!(el instanceof HTMLElement)) return false
+  return el.isContentEditable || ['INPUT', 'TEXTAREA', 'SELECT'].includes(el.tagName)
+}
+
+function onKey(e: KeyboardEvent) {
+  if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return
+  if (e.repeat || confirmState.open || typingIn(e.target)) return
+  switch (e.key) {
+    case '/':
+      e.preventDefault()
+      searchBox.value?.querySelector('input')?.focus()
+      break
+    case 'j':
+      select(stepOrder(order.value, selectedId.value, 1))
+      break
+    case 'k':
+      select(stepOrder(order.value, selectedId.value, -1))
+      break
+    case 'n':
+      select(stepQueue(queue.value, selectedId.value, 1))
+      break
+    case 'a':
+    case 'd':
+      // Not a prompt the user has not seen yet (a double press right after moving on).
+      if (answerKeyBlocked(e.repeat, advancedAt, Date.now())) return
+      void (e.key === 'a' ? inspector.value?.allow() : inspector.value?.deny())
+      break
+    case 'Enter':
+      // A focused button handles Enter itself.
+      if (e.target instanceof HTMLElement && ['BUTTON', 'A'].includes(e.target.tagName)) return
+      if (selected.value) openSession(selected.value)
+      break
+  }
+}
+function onSearchKey(e: KeyboardEvent) {
+  if (e.key === 'Escape') {
+    e.preventDefault()
+    ;(e.target as HTMLElement).blur()
+  }
+}
+onMounted(() => window.addEventListener('keydown', onKey))
+onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
+
+const today = computed(() =>
+  new Date(dash.now.value).toLocaleDateString(locale.value, { weekday: 'long', day: '2-digit', month: '2-digit' }),
+)
+const SHORTCUTS = [
+  { keys: ['/'], label: 'search' },
+  { keys: ['j', 'k'], label: 'pick' },
+  { keys: ['n'], label: 'next' },
+  { keys: ['a'], label: 'allow' },
+  { keys: ['d'], label: 'deny' },
+  { keys: ['Enter'], label: 'open' },
+] as const
+</script>
 
 <template>
   <div class="flex h-full flex-col">
     <PageHeader :title="t('dashboard.title')">
       <template #leading>
-        <LayoutDashboard class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
+        <Activity class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
       </template>
       <template #meta>
-        <span v-if="lastRefreshLabel" class="hidden text-[11px] text-muted-foreground md:inline">
-          {{ t('dashboard.refreshedAt', { time: lastRefreshLabel }) }}
-        </span>
-        <span
-          v-if="failedLabel"
-          class="inline-flex items-center gap-1 text-[11px] text-destructive"
-          :title="t('dashboard.failedHint')"
-        >
-          <AlertCircle class="h-3 w-3" :stroke-width="2" />
-          {{ t('dashboard.failed', { sources: failedLabel }) }}
-        </span>
+        <span class="hidden truncate text-[11px] text-muted-foreground md:inline">{{ t('dashboard.subtitle', { date: today }) }}</span>
       </template>
       <template #actions>
-        <SegmentedControl v-model="view" :options="viewOptions" :stretch="false" :aria-label="t('dashboard.view.label')" />
-        <AppSelect
-          :model-value="projectFilter ?? ALL"
-          :options="filterOptions"
-          size="sm"
-          class="w-44"
-          @update:model-value="projectFilter = $event || null"
-        />
-        <Button
-          variant="outline"
-          size="icon"
-          :disabled="refreshing"
-          :title="t('dashboard.refresh')"
-          :aria-label="t('dashboard.refresh')"
-          @click="refresh(true)"
-        >
-          <RefreshCw class="h-3.5 w-3.5" :class="refreshing && 'animate-spin motion-reduce:animate-none'" :stroke-width="1.75" />
-        </Button>
+        <span class="hidden flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground lg:flex" :aria-label="t('dashboard.shortcuts.label')">
+          <template v-for="(k, i) in SHORTCUTS" :key="k.label">
+            <span v-if="i" aria-hidden="true">·</span>
+            <kbd v-for="key in k.keys" :key="key" class="rounded border border-b-2 border-border bg-card px-1 font-mono text-[10px] text-foreground">{{ key }}</kbd>
+            <span>{{ t(`dashboard.shortcuts.${k.label}`) }}</span>
+          </template>
+        </span>
       </template>
     </PageHeader>
 
     <div class="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-      <!-- By category: summary + user-ordered cards | sticky sessions column -->
-      <div v-if="view === 'category'" class="grid items-start gap-4 xl:grid-cols-[minmax(0,1fr)_18.75rem]">
-        <div class="@container min-w-0 space-y-4">
-          <SummaryRow :tiles="summary" @jump="jumpTo" />
-          <div ref="cardGrid" class="grid grid-cols-1 gap-4 @3xl:grid-cols-2">
-            <div
-              v-for="(key, i) in order"
-              :id="cardId(key)"
-              :key="key"
-              :data-drag-index="i"
-              class="relative min-w-0 scroll-mt-4"
-              :style="drag.itemStyle(i)"
-            >
-              <SlackWidget
-                v-if="key === 'slack'"
-                :rows="dash.slackRows.value"
-                :error-count="dash.slackErrors.value"
-                :tracked-count="dash.slackThreadCount.value"
-                :has-customers="customers.customers.length > 0"
-                :state="dash.slackState.value"
-                :now="now"
-                :project-name="projectName"
-                movable
-                :first="i === 0"
-                :class="cardRing(key)"
-                @move-to-front="bringToFront(key)"
-                @drag-start="drag.start(i, $event)"
-                @open="openThread"
-                @open-all="openAllThreads"
-                @add-todo="addThreadTodo"
-                @mark-seen="markThreadSeen"
-              />
-              <TodosWidget
-                v-else-if="key === 'todos'"
-                :todos="dash.todos.value"
-                :state="dash.todoState.value"
-                :now="now"
-                :project-name="projectName"
-                movable
-                :first="i === 0"
-                :class="cardRing(key)"
-                @move-to-front="bringToFront(key)"
-                @drag-start="drag.start(i, $event)"
-                @open="openTodo"
-                @open-all="openAllTodos"
-                @done="markTodoDone"
-              />
-              <PrWidget
-                v-else-if="key === 'prs'"
-                :ranked="dash.prs.value"
-                :actionable="actionableCount(dash.prs.value)"
-                :state="dash.prState.value"
-                :now="now"
-                :busy="isReviewing"
-                movable
-                :first="i === 0"
-                :class="cardRing(key)"
-                @move-to-front="bringToFront(key)"
-                @drag-start="drag.start(i, $event)"
-                @review="review.handleReview(storeItem($event))"
-                @re-review="review.handleReReview(storeItem($event))"
-                @open-pr="openPr"
-                @add-todo="addPrTodo"
-                @map-repo="router.push('/projects')"
-                @open-all="openPrInboxWindow()"
-              />
-              <ProjectHealthWidget
-                v-else
-                :healths="dash.healths.value"
-                :state="dash.healthState.value"
-                :now="now"
-                movable
-                :first="i === 0"
-                :class="cardRing(key)"
-                @move-to-front="bringToFront(key)"
-                @drag-start="drag.start(i, $event)"
-                @open-issue="openIssue"
-                @open-radar="openRadar"
-              />
+      <div class="mx-auto flex max-w-[1480px] flex-col gap-3.5">
+        <Banner v-if="dash.loadError.value" tone="destructive">{{ t('dashboard.loadError', { error: dash.loadError.value }) }}</Banner>
+        <p v-else-if="dash.loaded.value && !dash.hasSnapshot.value" class="text-[11px] text-muted-foreground">{{ t('dashboard.fallbackHint') }}</p>
+        <p v-else-if="dash.snapshotStale.value" class="text-[11px] text-warning">{{ t('dashboard.staleHint') }}</p>
+
+        <div class="grid grid-cols-[repeat(auto-fit,minmax(270px,1fr))] gap-3">
+          <StatSessions
+            :sessions="mapList"
+            :counts="counts"
+            :filter="filter"
+            :selected-id="selectedId"
+            @pick="select"
+            @filter="toggleFilter"
+          />
+          <StatQuota :quotas="dash.quotas.value" />
+          <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
+          <StatToday :today="dash.today.value" @open="openRecent" @all="router.push('/processes')" />
+        </div>
+
+        <div class="flex flex-wrap items-start gap-3.5">
+          <div class="flex min-w-0 flex-[999_1_640px] flex-col gap-2.5">
+            <div class="flex flex-wrap items-center gap-2">
+              <label ref="searchBox" class="relative min-w-0 flex-[1_1_220px] sm:max-w-[340px]">
+                <span class="sr-only">{{ t('dashboard.toolbar.searchLabel') }}</span>
+                <Search class="pointer-events-none absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" aria-hidden="true" />
+                <Input v-model="query" size="xs" class="w-full pl-7" :placeholder="t('dashboard.toolbar.search')" @keydown="onSearchKey" />
+              </label>
+              <SegmentedControl v-model="mode" :options="modeOptions" :stretch="false" :aria-label="t('dashboard.toolbar.mode.label')" />
+              <span v-if="modeHint" class="text-[11px] text-muted-foreground">{{ modeHint }}</span>
+              <span class="ml-auto flex gap-1.5">
+                <Button variant="outline" size="xs" :disabled="!defs.length" @click="expandAll">{{ t('dashboard.toolbar.expandAll') }}</Button>
+                <Button variant="outline" size="xs" :disabled="!defs.length" @click="collapseAll">{{ t('dashboard.toolbar.collapseAll') }}</Button>
+              </span>
             </div>
+
+            <p
+              v-if="dash.loaded.value && !total"
+              class="rounded-lg border border-dashed border-border/70 px-4 py-8 text-center text-xs text-muted-foreground"
+            >
+              {{ t('dashboard.empty') }}
+            </p>
+            <p
+              v-else-if="filtering && !views.length"
+              class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
+            >
+              {{ t('dashboard.noMatch') }}
+            </p>
+
+            <SessionGroup
+              v-for="g in views"
+              :key="g.key"
+              :group="g"
+              :mode="shownMode"
+              :selected-id="selectedId"
+              :now="dash.now.value"
+              @toggle="toggleGroup"
+              @unfold="setShowOk($event, true)"
+              @refold="setShowOk($event, false)"
+              @select="select"
+            />
+          </div>
+
+          <div class="sticky top-0 max-w-full min-w-0 flex-[1_1_400px] self-start">
+            <SessionInspector
+              ref="inspector"
+              :session="selected"
+              :external="selectedExternal"
+              :queue="queue"
+              :now="dash.now.value"
+              @prev="select(stepQueue(queue, selectedId, -1))"
+              @next="select(stepQueue(queue, selectedId, 1))"
+              @answered="onAnswered"
+              @open="openSession"
+              @open-run="openRun"
+            />
           </div>
         </div>
-        <aside class="min-w-0 xl:sticky xl:top-0 xl:max-h-[calc(100dvh-8rem)] xl:overflow-y-auto" :aria-label="t('dashboard.runs.title')">
-          <SessionsPanel
-            :runs="dash.runs.value"
-            :state="dash.runState.value"
-            :now="now"
-            :stopping="stopping"
-            :project-filter="projectFilter"
-            @open="openSession"
-            @stop="stopSession"
-          />
-        </aside>
       </div>
-
-      <!-- By project: one traffic-light row per project -->
-      <ProjectList
-        v-else
-        :rows="dash.byProject.value"
-        :state="dash.healthState.value"
-        @open-radar="openRadar"
-        @open-issue="openIssue"
-        @link-board="linkBoard"
-      />
     </div>
   </div>
 </template>

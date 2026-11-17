@@ -4,11 +4,10 @@ import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 
 /**
- * Slack users the user marked as customers (`slack_customers`, Work Dashboard).
- * A thread whose latest human message comes from one of them is "waiting on
- * me". Marked from the Slack threads window, listed in Settings. Every window
- * has its own Pinia, so writes are broadcast (`slack-customers://changed`) and
- * each window's store reloads.
+ * Slack users the user marked as customers (`slack_customers`); their
+ * messages carry a "Customer" badge in the Slack threads window, where they
+ * are marked; listed in Settings. Every window has its own Pinia, so writes
+ * are broadcast (`slack-customers://changed`) and each window's store reloads.
  */
 
 /** Mirrors the Rust `SlackCustomer`. */

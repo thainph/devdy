@@ -31,7 +31,7 @@ function editorRedirects(base: string): RouteRecordRaw[] {
 const router = createRouter({
   history: createWebHistory(),
   routes: [
-    // The Work Dashboard is the start screen.
+    // The Runtime Dashboard is the start screen.
     { path: '/', redirect: '/dashboard' },
     { path: '/dashboard', name: 'dashboard', component: DashboardView },
     { path: '/skills', name: 'skills', component: SkillsView },

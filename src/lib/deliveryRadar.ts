@@ -74,7 +74,7 @@ export interface RadarThresholds {
   staleDays: number
   /**
    * A milestone whose share of elapsed time exceeds its share of closed issues
-   * by more than this many points is behind schedule (Work Dashboard).
+   * by more than this many points is behind schedule (the agents' radar summary).
    */
   milestoneLagPct: number
 }

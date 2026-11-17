@@ -18,7 +18,7 @@
     "staleHint": "No update on the issue for more than this many days",
     "milestoneLag": "Milestone lag"
   },
-  "milestoneLagHint": "Work Dashboard: a milestone is behind schedule when its share of elapsed time exceeds its share of closed issues by more than this many points.",
+  "milestoneLagHint": "A milestone counts as behind schedule when its share of elapsed time exceeds its share of closed issues by more than this many points. Used by the radar summary Devdy's radar tools give agents.",
   "days": "days",
   "searchPlaceholder": "Search issue, #number, assignee…",
   "groupPerson": "By assignee",

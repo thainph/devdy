@@ -596,6 +596,9 @@ pub async fn drain_sidecar(
     let plan_usage_key =
         crate::commands::stats::claude_plan_usage_key(claude_account_id.as_deref());
 
+    // Runtime Dashboard: per-run activity (last event, tool, context) for this turn.
+    crate::runs::runtime::begin(&run_id, &engine);
+
     // Announce this run to the desktop webview so app-wide surfaces (the active-
     // runs dock, the permission notifier and its native OS notification) attach
     // their per-run listeners even when the user never opened this run's view —
@@ -864,6 +867,9 @@ pub async fn drain_sidecar(
                         }
                         let is_result = kind == "result";
                         let mut queue_event = false;
+                        if let Some(v) = parsed.as_ref() {
+                            crate::runs::runtime::observe(&run_id, v);
+                        }
 
                         // Liveness bookkeeping: `_devdy_*` lines prove the sidecar
                         // alive; anything else is the engine making progress.
@@ -1369,6 +1375,16 @@ pub async fn drain_sidecar(
         closed_code,
         closed_signal.as_deref(),
         exit_status,
+    );
+    crate::runs::runtime::end(
+        &run_id,
+        final_status,
+        crate::runs::runtime::exit_reason(
+            closed_code,
+            closed_signal.as_deref(),
+            exit_status.map(|s| s.success()),
+        )
+        .as_deref(),
     );
     let finished_at = chrono::Utc::now().to_rfc3339();
     // A turn finishing is not user activity, so it must not float the run in

@@ -167,10 +167,10 @@
   },
   "customer": {
     "badge": "Khách",
-    "badgeTitle": "Đã đánh dấu là khách (Tổng quan công việc)",
+    "badgeTitle": "Đã đánh dấu là khách",
     "mark": "Đánh dấu là khách",
     "unmark": "Bỏ đánh dấu khách",
-    "markTitle": "Đánh dấu {name} là khách: tin nhắn của họ được tính là “khách chờ bạn” trên trang tổng quan",
+    "markTitle": "Đánh dấu {name} là khách: tin nhắn của họ có nhãn Khách trong cửa sổ này",
     "unmarkTitle": "Không coi {name} là khách nữa",
     "marked": "Đã đánh dấu {name} là khách",
     "unmarked": "{name} không còn là khách"
