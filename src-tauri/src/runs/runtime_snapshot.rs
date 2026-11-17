@@ -110,6 +110,8 @@ pub struct ExternalSession {
     pub project_name: Option<String>,
     pub last_activity_at: String,
     pub transcript_path: String,
+    /// The run the session watcher mirrored this transcript into, if any.
+    pub run_id: Option<String>,
 }
 
 /// A transcript written within this window counts as a running session.
@@ -769,6 +771,9 @@ async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSessi
         .collect();
     let metas = metas(candidates.iter().map(|c| c.0.clone()).collect()).await;
 
+    let sids: Vec<String> = candidates.iter().map(|c| c.3.clone()).collect();
+    let mirrored = mirrored_runs(db, &sids).await?;
+
     let mut out = Vec::new();
     for (path, at, engine, sid) in candidates {
         let cwd = match metas.get(&path) {
@@ -797,10 +802,67 @@ async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSessi
             project_id: project.map(|p| p.id.clone()),
             project_name: project.map(|p| p.name.clone()),
             last_activity_at: at.to_rfc3339(),
+            run_id: pick_mirrored_run(
+                mirrored.get(&sid).map(Vec::as_slice).unwrap_or_default(),
+                &path.to_string_lossy(),
+                project.map(|p| p.id.as_str()),
+            ),
             transcript_path: path.to_string_lossy().to_string(),
         });
     }
     Ok(out)
+}
+
+/// A run row a session was mirrored into by the session watcher.
+#[derive(Debug, Clone, PartialEq)]
+struct MirroredRun {
+    run_id: String,
+    project_id: String,
+    transcript_path: Option<String>,
+}
+
+/// Runs holding each of `session_ids`, most recently active first.
+async fn mirrored_runs(
+    db: &Db,
+    session_ids: &[String],
+) -> Result<HashMap<String, Vec<MirroredRun>>, sqlx::Error> {
+    let mut out: HashMap<String, Vec<MirroredRun>> = HashMap::new();
+    if session_ids.is_empty() {
+        return Ok(out);
+    }
+    let placeholders = vec!["?"; session_ids.len()].join(", ");
+    let sql = format!(
+        "SELECT id, project_id, session_id, transcript_path FROM runs \
+         WHERE session_id IN ({placeholders}) \
+         ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC, id"
+    );
+    let mut q = sqlx::query(&sql);
+    for sid in session_ids {
+        q = q.bind(sid);
+    }
+    for row in q.fetch_all(db).await? {
+        out.entry(row.get("session_id"))
+            .or_default()
+            .push(MirroredRun {
+                run_id: row.get("id"),
+                project_id: row.get("project_id"),
+                transcript_path: row.get("transcript_path"),
+            });
+    }
+    Ok(out)
+}
+
+/// The mirrored run of a transcript: the one recorded with this exact file,
+/// else the one in the matched project, else the most recently active.
+fn pick_mirrored_run(runs: &[MirroredRun], path: &str, project_id: Option<&str>) -> Option<String> {
+    runs.iter()
+        .find(|r| r.transcript_path.as_deref() == Some(path))
+        .or_else(|| {
+            runs.iter()
+                .find(|r| Some(r.project_id.as_str()) == project_id)
+        })
+        .or_else(|| runs.first())
+        .map(|r| r.run_id.clone())
 }
 
 #[cfg(test)]
@@ -1145,6 +1207,81 @@ mod tests {
         std::fs::write(&f, format!("{probe}{more}")).unwrap();
         assert_eq!(read_meta(&f).0, TranscriptMeta::Cwd(Some("/w/repo".into())));
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn finds_the_run_a_transcript_was_mirrored_into() {
+        let db = memory_db().await;
+        let at = "2026-11-17T00:00:00+00:00";
+        for (id, project, sid, path, activity) in [
+            (
+                "imp-a",
+                "p1",
+                "sid-a",
+                Some("/h/.claude/projects/-w-a/sid-a.jsonl"),
+                "2026-11-17T01:00:00+00:00",
+            ),
+            ("imp-b1", "p1", "sid-b", None, "2026-11-17T01:00:00+00:00"),
+            ("imp-b2", "p2", "sid-b", None, "2026-11-17T02:00:00+00:00"),
+            ("other", "p1", "sid-x", None, "2026-11-17T03:00:00+00:00"),
+        ] {
+            sqlx::query(
+                "INSERT INTO runs (id, project_id, type, status, engine, session_id, transcript_path, \
+                 created_at, started_at, finished_at, last_activity_at) \
+                 VALUES (?, ?, 'session', 'done', 'claude', ?, ?, ?, ?, ?, ?)",
+            )
+            .bind(id)
+            .bind(project)
+            .bind(sid)
+            .bind(path)
+            .bind(at)
+            .bind(at)
+            .bind(at)
+            .bind(activity)
+            .execute(&db)
+            .await
+            .unwrap();
+        }
+        let sids: Vec<String> = ["sid-a", "sid-b", "sid-none"]
+            .iter()
+            .map(|s| s.to_string())
+            .collect();
+        let m = mirrored_runs(&db, &sids).await.unwrap();
+        assert_eq!(m.len(), 2);
+        assert!(!m.contains_key("sid-x"));
+        let b = &m["sid-b"];
+        assert_eq!(b[0].run_id, "imp-b2", "most recently active first");
+
+        let a = &m["sid-a"];
+        assert_eq!(
+            pick_mirrored_run(a, "/h/.claude/projects/-w-a/sid-a.jsonl", None).as_deref(),
+            Some("imp-a")
+        );
+        assert_eq!(
+            pick_mirrored_run(b, "/elsewhere.jsonl", Some("p1")).as_deref(),
+            Some("imp-b1")
+        );
+        assert_eq!(
+            pick_mirrored_run(b, "/elsewhere.jsonl", None).as_deref(),
+            Some("imp-b2")
+        );
+        assert_eq!(pick_mirrored_run(&[], "/x.jsonl", Some("p1")), None);
+        assert!(mirrored_runs(&db, &[]).await.unwrap().is_empty());
+
+        let s = ExternalSession {
+            id: "claude:sid-a".into(),
+            engine: "claude".into(),
+            title: "claude · a".into(),
+            cwd: None,
+            project_id: None,
+            project_name: None,
+            last_activity_at: at.into(),
+            transcript_path: "/x".into(),
+            run_id: Some("imp-a".into()),
+        };
+        let v = serde_json::to_value(&s).unwrap();
+        assert_eq!(v["runId"], "imp-a");
+        assert_eq!(v["transcriptPath"], "/x");
     }
 
     #[tokio::test]
