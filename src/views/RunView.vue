@@ -530,6 +530,10 @@ const historyModel = ref<string | null>(null)
 // it back as `before` fetches the window just older than it.
 const HISTORY_PAGE_INITIAL = 80
 const HISTORY_PAGE_STEP = 120
+// Records of earlier log put in front of a live session that started without
+// them (see `seedLiveHistory`). The live view has no "show earlier", so this is
+// generous enough to cover a few full turns.
+const LIVE_HISTORY_SEED = 400
 const historyCursor = ref<number | null>(null)
 const historyHasMore = ref(false)
 const historyLoadingMore = ref(false)
@@ -3329,6 +3333,32 @@ async function handleClearAllRuns() {
   }
 }
 
+// A live session first seen on a resume driven from outside this view (PR Inbox
+// re-review, Remote Control, a conductor follow-up) holds only the new turns.
+// Prepend the earlier log once so the conversation it continues stays visible.
+async function seedLiveHistory(runId: string) {
+  const s = live.get(runId)
+  const end = s?.historyEnd
+  if (!s || end == null) return
+  s.historyEnd = null
+  try {
+    const page = await runsStore.getRunLogPage(runId, end, LIVE_HISTORY_SEED)
+    live.prependHistory(runId, parseStreamLogWindow(page.records, { seedModel: modelFromPreamble(page.preamble) }))
+  } catch {
+    s.historyEnd = end
+  }
+}
+
+// The current run's live session can become one to seed while it is on screen
+// (re-reviewed from the PR Inbox while open here).
+watch(
+  () => session.value?.historyEnd,
+  (end) => {
+    const id = currentRunId.value
+    if (end != null && id && !isViewingHistory.value) void seedLiveHistory(id)
+  },
+)
+
 async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: boolean } = {}) {
   // Save where the reader was in the outgoing run while its DOM is still up.
   if (currentRunId.value !== runId) scrollMemory.flush()
@@ -3355,6 +3385,7 @@ async function loadRunLog(runId: string, opts: { preferDisk?: boolean; force?: b
     if (liveSession.status === 'running' && !live.isListening(runId)) {
       await live.startListening(runId, projectId.value)
     }
+    await seedLiveHistory(runId)
     if (!opts.preferDisk && !(await scrollMemory.restore(runId)) && currentRunId.value === runId) {
       stickToBottom.value = true
       scrollOutputToBottom()

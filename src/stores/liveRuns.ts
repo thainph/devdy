@@ -9,6 +9,7 @@ import {
   scanNewEntries,
   settlePartials,
   type StreamEntry,
+  type StreamState,
   type ImageAttachment,
 } from '@/lib/streamEvents'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
@@ -89,6 +90,14 @@ export interface LiveSession {
    * per-turn key for watchers that would otherwise walk `entries` to find one.
    */
   resultCount: number
+  /**
+   * Byte offset where the run's earlier on-disk log ends, for a session this
+   * store first saw on a resume driven from outside RunView (PR Inbox
+   * re-review, Remote Control, a conductor follow-up). Such a session holds only
+   * the new turns, so RunView prepends the older log once (`prependHistory`)
+   * and clears this. Null when there is nothing left to seed.
+   */
+  historyEnd: number | null
 }
 
 /** One liveness notice, keyed so the backend can clear it when it resolves. */
@@ -334,6 +343,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         notifyDone: false,
         attention: [] as RunAttention[],
         resultCount: 0,
+        historyEnd: null,
       }) as LiveSession
       // Seed the per-run allow/deny lists with the standing choices the user
       // made for this project in earlier runs, so they apply again here.
@@ -419,10 +429,16 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
    * previous turn, so reset the turn state here — otherwise the session keeps
    * the terminal status from its last `run:done` and becomes evictable while
    * running.
+   *
+   * `historyEnd` is the backend's log size before a resume (null on a fresh
+   * start). A session created here starts empty, so it remembers where the
+   * earlier log ends for RunView to seed; an existing session already holds it.
    */
-  async function activate(runId: string, projectId: string) {
+  async function activate(runId: string, projectId: string, historyEnd?: number | null) {
     activeRunIds.add(runId)
+    const isNew = !sessions.has(runId)
     const s = ensure(runId, projectId)
+    if (isNew && historyEnd) s.historyEnd = historyEnd
     s.status = 'running'
     s.notifyDone = false
     await startListening(runId, projectId)
@@ -933,6 +949,29 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     evictTerminalSessions()
   }
 
+  /**
+   * Put earlier turns (parsed from the on-disk log) in front of a live
+   * session's entries, shifting the tool index and the scan cursor so the
+   * entries already streamed keep resolving.
+   */
+  function prependHistory(runId: string, history: StreamState) {
+    const s = sessions.get(runId)
+    const toolIndex = toolIndexes.get(runId)
+    const n = history.entries.length
+    if (!s || !toolIndex || n === 0) return
+    s.entries.unshift(...history.entries)
+    for (const [id, i] of toolIndex) toolIndex.set(id, i + n)
+    for (const [id, i] of history.toolIndex) if (!toolIndex.has(id)) toolIndex.set(id, i)
+    scannedUpTo.set(runId, (scannedUpTo.get(runId) ?? 0) + n)
+    s.hasStreamEvents = true
+    if (!s.model && history.model) s.model = history.model
+    for (const e of history.entries) {
+      if (e.kind !== 'system') continue
+      if (!s.sessionId && e.sessionId) s.sessionId = e.sessionId
+      if (!s.slashCommands.length && e.slashCommands?.length) s.slashCommands = e.slashCommands
+    }
+  }
+
   /** Drop a run's session entirely (stop listeners + free memory). */
   function discard(runId: string) {
     stopListening(runId)
@@ -1013,6 +1052,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
     setStatus,
     isListening,
     activate,
+    prependHistory,
     startListening,
     stopListening,
     rememberAllowedTool,

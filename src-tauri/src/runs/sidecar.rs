@@ -605,10 +605,18 @@ pub async fn drain_sidecar(
     // but nothing on the desktop. Keyed globally (not by run id) because the
     // webview cannot subscribe to a run id it does not yet know. Idempotent on the
     // JS side, so this is a no-op for runs the desktop already started locally.
+    // On a resume, `history_end` is the log size before this turn (nothing of it
+    // is flushed yet), so a window that first sees the run here can load the
+    // earlier conversation up to that point instead of showing only new turns.
     if !project_id.is_empty() {
+        let history_end = if merge_existing_log {
+            std::fs::metadata(&log_path).ok().map(|m| m.len())
+        } else {
+            None
+        };
         let _ = app.emit(
             "run:activated",
-            serde_json::json!({ "run_id": run_id, "project_id": project_id }),
+            serde_json::json!({ "run_id": run_id, "project_id": project_id, "history_end": history_end }),
         );
     }
 

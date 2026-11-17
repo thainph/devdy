@@ -622,15 +622,15 @@ onMounted(async () => {
   // native notification), not just on the phone. `startListening` is idempotent,
   // so re-announcing a locally-started run is a harmless no-op.
   try {
-    unlistenActivated = await listen<{ run_id: string; project_id: string }>(
+    unlistenActivated = await listen<{ run_id: string; project_id: string; history_end?: number | null }>(
       'run:activated',
       async (e) => {
-        const { run_id, project_id } = e.payload ?? {}
+        const { run_id, project_id, history_end } = e.payload ?? {}
         if (!run_id || !project_id) return
         // `activate` (not just `startListening`): on a backend-driven resume the
         // listeners survived the previous turn, so only this resets the stale
         // terminal status that would otherwise let the session be evicted.
-        live.activate(run_id, project_id).catch(() => {})
+        live.activate(run_id, project_id, history_end).catch(() => {})
         // A freshly-spawned run (notably a conductor's worker) lands in
         // live.sessions the instant it activates, but the dock groups workers
         // under their conductor via runMeta[run].conductor_run_id — which only
