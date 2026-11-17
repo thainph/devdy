@@ -111,8 +111,12 @@
   "reReviewPrompt": {
     "button": "Prompt review lại",
     "title": "Prompt review lại",
-    "hint": "Review lại sẽ chạy tiếp phiên review cũ của PR: tải lại PR (diff mới nhất, comment và review), rồi gửi prompt này. Để trống để dùng prompt mặc định.",
+    "hint": "Review lại sẽ chạy tiếp phiên review cũ của PR: tải lại PR (diff mới nhất, comment và review), rồi gửi prompt này.",
     "reset": "Khôi phục mặc định",
-    "saveFailed": "Không lưu được: {error}"
+    "saveFailed": "Không lưu được: {error}",
+    "source": "Nguồn prompt",
+    "custom": "Tự nhập (mặc định nếu để trống)",
+    "noSaved": "Chưa có prompt nào trong Cài đặt → Mẫu Prompt. Thêm ở đó để chọn tại đây.",
+    "savedReadonly": "Đang dùng prompt đã lưu — sửa nội dung trong Cài đặt → Mẫu Prompt."
   }
 }

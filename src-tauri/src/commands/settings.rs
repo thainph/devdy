@@ -149,6 +149,7 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     // PR Inbox poller (pr_inbox).
     "pr_inbox.poll_minutes",
     "pr_inbox.rereview_prompt",
+    "pr_inbox.rereview_prompt_id",
     // Focus (focus::settings); the calendar choice stays per machine.
     "focus.work_start",
     "focus.work_end",

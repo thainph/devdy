@@ -30,8 +30,11 @@ const SEEN_KEY: &str = "pr_inbox.seen";
 pub const DEFAULT_POLL_MINUTES: u64 = 5;
 /// Follow-up prompt sent when the inbox re-reviews a PR in its existing session.
 pub const REREVIEW_PROMPT_KEY: &str = "pr_inbox.rereview_prompt";
+/// Id of a Settings → Saved prompts entry to use as the re-review prompt. Takes
+/// precedence over [`REREVIEW_PROMPT_KEY`] while that entry still exists.
+pub const REREVIEW_PROMPT_ID_KEY: &str = "pr_inbox.rereview_prompt_id";
 /// Used while the user hasn't saved their own re-review prompt.
-const DEFAULT_REREVIEW_PROMPT: &str = "The pull request has been updated since your last review. Its task file (the same input file as before) has just been re-fetched with the latest diff, comments and reviews — read it again.\n\nReview the changes made since your previous review: check whether each of your earlier findings was addressed, and flag any new issues the update introduced. Follow the same review process and output format as your previous review.";
+const DEFAULT_REREVIEW_PROMPT: &str = "PR đã được cập nhật kể từ lần review trước. File task (cùng file input như trước) vừa được tải lại với diff, comment và review mới nhất — hãy đọc lại file đó.\n\nReview các thay đổi kể từ lần review trước: kiểm tra từng vấn đề đã nêu trước đó đã được xử lý chưa, và chỉ ra các vấn đề mới phát sinh trong lần cập nhật này. Làm theo đúng quy trình review và định dạng output như lần review trước. Viết kết quả bằng tiếng Việt.";
 /// Let startup settle (network, keychain) before the first poll.
 const FIRST_TICK: Duration = Duration::from_secs(10);
 /// Sleep while polling is off; a settings change wakes the poller earlier.
@@ -331,13 +334,72 @@ pub async fn get_pr_inbox_rereview_prompt(db: tauri::State<'_, Db>) -> Result<St
 }
 
 /// [`get_pr_inbox_rereview_prompt`] for callers without a Tauri `State`.
+/// Resolution: the linked saved prompt (if it still exists and isn't blank),
+/// else the custom text, else the built-in default.
 pub async fn rereview_prompt(db: &Db) -> Result<String, String> {
-    let saved: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
-        .bind(REREVIEW_PROMPT_KEY)
+    if let Some(id) = setting(db, REREVIEW_PROMPT_ID_KEY).await? {
+        let library = setting(db, "saved_prompts").await?.unwrap_or_default();
+        let body = crate::remote::forwarder::parse_saved_prompts(&library)
+            .into_iter()
+            .find(|p| p.id == id)
+            .map(|p| p.body)
+            .filter(|b| !b.trim().is_empty());
+        if let Some(body) = body {
+            return Ok(body);
+        }
+    }
+    Ok(custom_rereview_prompt(db).await?.unwrap_or_else(|| DEFAULT_REREVIEW_PROMPT.to_string()))
+}
+
+async fn setting(db: &Db, key: &str) -> Result<Option<String>, String> {
+    let v: Option<String> = sqlx::query_scalar("SELECT value FROM settings WHERE key = ?")
+        .bind(key)
         .fetch_optional(db)
         .await
         .map_err(|e| e.to_string())?;
-    Ok(saved.filter(|p| !p.trim().is_empty()).unwrap_or_else(|| DEFAULT_REREVIEW_PROMPT.to_string()))
+    Ok(v.filter(|v| !v.trim().is_empty()))
+}
+
+async fn custom_rereview_prompt(db: &Db) -> Result<Option<String>, String> {
+    setting(db, REREVIEW_PROMPT_KEY).await
+}
+
+/// What the re-review prompt editor shows: the linked saved prompt (if any) and
+/// the custom text (the default when none is saved).
+#[derive(Debug, Serialize)]
+pub struct ReReviewPromptConfig {
+    pub saved_prompt_id: Option<String>,
+    pub prompt: String,
+}
+
+#[tauri::command]
+pub async fn get_pr_inbox_rereview_config(db: tauri::State<'_, Db>) -> Result<ReReviewPromptConfig, String> {
+    Ok(ReReviewPromptConfig {
+        saved_prompt_id: setting(db.inner(), REREVIEW_PROMPT_ID_KEY).await?,
+        prompt: custom_rereview_prompt(db.inner())
+            .await?
+            .unwrap_or_else(|| DEFAULT_REREVIEW_PROMPT.to_string()),
+    })
+}
+
+/// Link the re-review prompt to a saved prompt (Settings → Saved prompts), or
+/// unlink it (`None`) so the custom text / default applies again.
+#[tauri::command]
+pub async fn set_pr_inbox_rereview_prompt_id(
+    db: tauri::State<'_, Db>,
+    saved_prompt_id: Option<String>,
+) -> Result<(), String> {
+    match saved_prompt_id.filter(|id| !id.trim().is_empty()) {
+        Some(id) => crate::commands::settings::set_setting(db.inner(), REREVIEW_PROMPT_ID_KEY, &id).await,
+        None => {
+            sqlx::query("DELETE FROM settings WHERE key = ?")
+                .bind(REREVIEW_PROMPT_ID_KEY)
+                .execute(db.inner())
+                .await
+                .map_err(|e| e.to_string())?;
+            Ok(())
+        }
+    }
 }
 
 /// Save the re-review prompt. A blank one (or the default itself) clears the

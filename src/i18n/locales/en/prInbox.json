@@ -111,8 +111,12 @@
   "reReviewPrompt": {
     "button": "Re-review prompt",
     "title": "Re-review prompt",
-    "hint": "Re-review continues the PR’s existing review session: it re-fetches the PR (latest diff, comments and reviews), then sends this prompt. Leave it blank to use the default.",
+    "hint": "Re-review continues the PR’s existing review session: it re-fetches the PR (latest diff, comments and reviews), then sends this prompt.",
     "reset": "Reset to default",
-    "saveFailed": "Could not save: {error}"
+    "saveFailed": "Could not save: {error}",
+    "source": "Prompt source",
+    "custom": "Custom (default when blank)",
+    "noSaved": "No prompts in Settings → Prompt Templates yet. Add one there to pick it here.",
+    "savedReadonly": "Using a saved prompt — edit its text in Settings → Prompt Templates."
   }
 }

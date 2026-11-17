@@ -606,6 +606,8 @@ pub fn run() {
             pr_inbox::set_pr_inbox_poll_minutes,
             pr_inbox::get_pr_inbox_rereview_prompt,
             pr_inbox::set_pr_inbox_rereview_prompt,
+            pr_inbox::get_pr_inbox_rereview_config,
+            pr_inbox::set_pr_inbox_rereview_prompt_id,
             resolve_github_board,
             list_github_boards,
             save_github_board,

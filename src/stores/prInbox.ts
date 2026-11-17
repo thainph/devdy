@@ -272,6 +272,16 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     await invoke('set_pr_inbox_rereview_prompt', { prompt })
   }
 
+  /** The editor's view: linked saved prompt id (if any) + custom text (else the default). */
+  async function loadReReviewConfig(): Promise<{ saved_prompt_id: string | null; prompt: string }> {
+    return invoke('get_pr_inbox_rereview_config')
+  }
+
+  /** Use a Settings → Saved prompts entry for re-review; null goes back to the custom text. */
+  async function saveReReviewPromptId(savedPromptId: string | null): Promise<void> {
+    await invoke('set_pr_inbox_rereview_prompt_id', { savedPromptId })
+  }
+
   async function refresh() {
     loading.value = true
     lastAttemptAt.value = Date.now()
@@ -365,7 +375,7 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     items, loading, error, warnings, lastRefreshedAt, lastAttemptAt, reviewingKeys,
     groupBy, hideBots, collapsedGroups, filters, density, botLogins,
     pollMinutes,
-    load, refresh, loadPollMinutes, setPollMinutes, loadReReviewPrompt, saveReReviewPrompt, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
+    load, refresh, loadPollMinutes, setPollMinutes, loadReReviewPrompt, saveReReviewPrompt, loadReReviewConfig, saveReReviewPromptId, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
     setFilters, clearFilters, setDensity, setBotLogins, addBotLogin, removeBotLogin,
   }
 })
