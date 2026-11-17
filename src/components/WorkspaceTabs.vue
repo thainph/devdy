@@ -6,6 +6,7 @@ import { X, FolderOpen } from 'lucide-vue-next'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useProjectsStore } from '@/stores/projects'
+import { useRunsStore } from '@/stores/runs'
 import { useDragSort } from '@/composables/useDragSort'
 
 /**
@@ -21,6 +22,7 @@ const router = useRouter()
 const tabsStore = useWorkspaceTabsStore()
 const live = useLiveRunsStore()
 const projectsStore = useProjectsStore()
+const runsStore = useRunsStore()
 
 const activeProjectId = computed(() =>
   typeof route.params.projectId === 'string' ? route.params.projectId : null,
@@ -44,7 +46,11 @@ const states = computed(() => {
   const map: Record<string, ProjectState> = {}
   for (const tab of tabsStore.tabs) map[tab.projectId] = { running: false, pending: 0 }
   live.sessions.forEach((s) => {
-    const st = map[s.projectId]
+    // A worker is shown (and its permissions answered) inside its conductor's
+    // session, which may be in another project — light that project's tab.
+    const parentId = runsStore.runMeta.get(s.runId)?.conductor_run_id
+    const owner = (parentId && runsStore.runMeta.get(parentId)?.project_id) || s.projectId
+    const st = map[owner]
     if (!st) return
     if (s.status === 'running') st.running = true
     st.pending += s.permissionQueue.length
@@ -59,7 +65,10 @@ function stateOf(projectId: string): ProjectState {
 function select(projectId: string) {
   if (projectId === activeProjectId.value) return
   const tab = tabsStore.tabs.find((t) => t.projectId === projectId)
-  if (tab?.lastRunId) {
+  // A remembered run from another project (pinned before cross-project workers
+  // were filed correctly) would open that project's session under this tab.
+  const lastOwner = tab?.lastRunId ? runsStore.runMeta.get(tab.lastRunId)?.project_id : undefined
+  if (tab?.lastRunId && (!lastOwner || lastOwner === projectId)) {
     router
       .push({ name: 'project-run-detail', params: { projectId, runId: tab.lastRunId } })
       .catch(() => {})

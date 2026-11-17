@@ -401,6 +401,9 @@ pub struct ConductorWorker {
     /// so the worker panel can show the same badges as the History rows.
     pub model: Option<String>,
     pub claude_account_id: Option<String>,
+    /// Project the worker runs in — may differ from the conductor's when it
+    /// was spawned with `project` / `todo_id`.
+    pub project_id: String,
 }
 
 #[derive(Serialize)]
@@ -448,7 +451,7 @@ pub async fn get_conductor_detail(
     // Newest activity first, mirroring the History list's sort (list_runs) so the
     // most recently active worker sits at the top instead of forcing a scroll down.
     let wrows = sqlx::query(
-        "SELECT id, title, status, engine, model, claude_account_id FROM runs WHERE conductor_run_id = ?
+        "SELECT id, title, status, engine, model, claude_account_id, project_id FROM runs WHERE conductor_run_id = ?
          ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC",
     )
     .bind(&conductor_run_id)
@@ -464,6 +467,7 @@ pub async fn get_conductor_detail(
             engine: r.get("engine"),
             model: r.get("model"),
             claude_account_id: r.get("claude_account_id"),
+            project_id: r.get("project_id"),
         })
         .collect();
 

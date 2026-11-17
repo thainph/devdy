@@ -262,6 +262,21 @@ export const useRunsStore = defineStore('runs', () => {
     if (project_id === loadedProjectId.value) applyRuns(mergeKeepingOrder(list))
   }
 
+  /**
+   * A conductor may spawn workers in OTHER projects, so `refreshMeta` of the
+   * worker's project never returns the conductor row. Load the conductor's own
+   * project into `runMeta` so surfaces keyed by project (dock, workspace tabs)
+   * file the worker under its conductor's project instead of the worker's.
+   */
+  async function ensureConductorMeta(workerRunId: string) {
+    const parentId = runMeta.get(workerRunId)?.conductor_run_id
+    if (!parentId || runMeta.has(parentId)) return
+    const d = await invoke<{ session: { project_id: string } | null }>('get_conductor_detail', {
+      conductorRunId: parentId,
+    })
+    if (d.session?.project_id) await refreshMeta(d.session.project_id)
+  }
+
   async function fetchIssue(project_id: string, repo_id: string, issue_number: number): Promise<RunRecord> {
     return invoke<RunRecord>('fetch_issue', { projectId: project_id, repoId: repo_id, issueNumber: issue_number })
   }
@@ -616,7 +631,7 @@ export const useRunsStore = defineStore('runs', () => {
 
   return {
     runs, loading, loadedProjectId, runMeta, orderStale,
-    fetchRuns, sortRuns, refreshMeta, fetchIssue, fetchPr,
+    fetchRuns, sortRuns, refreshMeta, ensureConductorMeta, fetchIssue, fetchPr,
     startRun, rerunRun, refetchRun, cancelRun, resumeRun,
     getRunLog, getRunLogRevision, getRunLogPage, getRunLogForward, getRunLogPath, getRunToolRecords, getRunUserRecords, readRunInput,
     respondPermission, listPendingPermissions, listLiveRuns, sendUserMessage, endRunInput,
