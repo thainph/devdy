@@ -130,6 +130,8 @@ const displayRows = computed<DisplayRow[]>(() => {
       id,
       header: {
         runId: id,
+        // Workers may run in another project; the worker's project is only a
+        // placeholder until `ensureConductorMeta` loads the conductor's own.
         projectId: meta?.project_id ?? workers[0].projectId,
         status: meta?.status ?? 'running',
         pending: 0,
@@ -199,7 +201,17 @@ function projectName(projectId: string): string {
   return projectsStore.projects.find((p) => p.id === projectId)?.name ?? 'Project'
 }
 
-function open(row: DockRow) {
+async function open(row: DockRow) {
+  // A synthesized conductor row whose metadata isn't loaded yet carries its
+  // worker's project, which may not be the conductor's — resolve it first.
+  if (row.role === 'conductor' && !runsStore.runMeta.has(row.runId)) {
+    const worker = [...live.sessions.values()].find(
+      (s) => runsStore.runMeta.get(s.runId)?.conductor_run_id === row.runId,
+    )
+    if (worker) await runsStore.ensureConductorMeta(worker.runId).catch(() => {})
+    const owner = runsStore.runMeta.get(row.runId)?.project_id
+    if (owner) row = { ...row, projectId: owner }
+  }
   // Opening the run counts as viewing it — clear its finished notification.
   live.markSeen(row.runId)
   // A conductor row stands in for its workers, so opening it acknowledges their

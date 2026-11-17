@@ -329,6 +329,14 @@ watch(
     // A session pop-out is locked to one run; it must not pin workspace tabs.
     if (isSessionWindow) return
     if ((name === 'project-run' || name === 'project-run-detail') && typeof projectId === 'string') {
+      // A run opened under the wrong project (e.g. a conductor reached through a
+      // worker it spawned in another project): move to the run's own project
+      // instead of pinning it as this project's last run.
+      const owner = typeof runId === 'string' ? runsStore.runMeta.get(runId)?.project_id : undefined
+      if (owner && owner !== projectId) {
+        router.replace({ name: 'project-run-detail', params: { projectId: owner, runId } }).catch(() => {})
+        return
+      }
       tabsStore.open(projectId, typeof runId === 'string' ? runId : null)
     }
   },
@@ -643,6 +651,9 @@ onMounted(async () => {
         if (!runsStore.runMeta.has(run_id)) {
           await runsStore.refreshMeta(project_id).catch(() => {})
         }
+        // The conductor may live in another project: learn its project too, or
+        // the dock would file (and open) the conductor under the worker's project.
+        await runsStore.ensureConductorMeta(run_id).catch(() => {})
         // Worker of the conductor currently open in a RunView? Refresh that
         // conductor's right-side worker panel too. The panel is otherwise driven
         // ONLY by the per-select `conductor:changed` listener — a single point of
