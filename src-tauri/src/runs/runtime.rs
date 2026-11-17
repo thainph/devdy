@@ -123,13 +123,20 @@ fn str_of<'a>(v: &'a Value, key: &str) -> Option<&'a str> {
     v.get(key).and_then(|x| x.as_str())
 }
 
-/// input + cache read + cache creation of a usage object (the prompt the model
-/// saw, i.e. the context window occupancy). None when absent or zero.
+/// Context occupancy of a usage object, computed exactly like the webview's
+/// `sumUsage` (`src/lib/streamEvents.ts`) so both show the same number: input +
+/// output + cache creation + cache read. None when absent or zero.
 fn context_of(usage: Option<&Value>) -> Option<u64> {
     let u = usage?;
-    let tok = |k: &str| u.get(k).and_then(|x| x.as_u64()).unwrap_or(0);
-    let total =
-        tok("input_tokens") + tok("cache_read_input_tokens") + tok("cache_creation_input_tokens");
+    let tok = |k: &str| {
+        u.get(k)
+            .and_then(|x| x.as_u64().or_else(|| x.as_f64().map(|f| f.max(0.0) as u64)))
+            .unwrap_or(0)
+    };
+    let total = tok("input_tokens")
+        + tok("output_tokens")
+        + tok("cache_creation_input_tokens")
+        + tok("cache_read_input_tokens");
     (total > 0).then_some(total)
 }
 
@@ -166,7 +173,6 @@ impl RunActivity {
         }
         self.buckets.record(unix_minute(now));
 
-        let subagent = !matches!(v.get("parent_tool_use_id"), None | Some(Value::Null));
         match kind {
             "assistant" => {
                 let message = v.get("message");
@@ -180,12 +186,11 @@ impl RunActivity {
                         self.open_tool(block, now);
                     }
                 }
-                // A subagent's usage is its own context, not the run's.
-                if !subagent {
-                    if let Some(ctx) = context_of(message.and_then(|m| m.get("usage"))) {
-                        self.context_tokens = Some(ctx);
-                        self.saw_message_usage = true;
-                    }
+                // Same rule as the webview (`extractContextTokens`): any
+                // assistant message's usage, subagents included.
+                if let Some(ctx) = context_of(message.and_then(|m| m.get("usage"))) {
+                    self.context_tokens = Some(ctx);
+                    self.saw_message_usage = true;
                 }
             }
             "user" => {
@@ -891,33 +896,40 @@ mod tests {
                 "cache_creation_input_tokens": create, "output_tokens": 999}}})
         };
         assert_eq!(a.context_tokens, None);
+        // input + output + cache creation + cache read, like the webview.
         a.observe(&msg(10, 50_000, 200), at(0, 0));
-        assert_eq!(a.context_tokens, Some(50_210));
+        assert_eq!(a.context_tokens, Some(51_209));
         a.observe(&msg(5, 40_000, 0), at(0, 1));
         assert_eq!(
             a.context_tokens,
-            Some(40_005),
+            Some(41_004),
             "latest, not the high-water mark"
         );
-        // A subagent's usage does not move the run's context.
+        // A message with zero usage leaves the value alone.
         a.observe(
-            &json!({"type": "assistant", "parent_tool_use_id": "t", "message": {"content": [], "usage": {"input_tokens": 1}}}),
+            &json!({"type": "assistant", "message": {"content": [], "usage": {"input_tokens": 0}}}),
             at(0, 2),
         );
-        assert_eq!(a.context_tokens, Some(40_005));
+        assert_eq!(a.context_tokens, Some(41_004));
+        // Subagent messages count too, exactly as in the webview.
+        a.observe(
+            &json!({"type": "assistant", "parent_tool_use_id": "t", "message": {"content": [], "usage": {"input_tokens": 7, "output_tokens": 3}}}),
+            at(0, 2),
+        );
+        assert_eq!(a.context_tokens, Some(10));
         // The cumulative result total is ignored once per-message usage was seen.
         a.observe(
             &json!({"type": "result", "subtype": "success", "usage": {"input_tokens": 900_000}}),
             at(0, 3),
         );
-        assert_eq!(a.context_tokens, Some(40_005));
+        assert_eq!(a.context_tokens, Some(10));
         a.observe(
             &json!({"type": "system", "subtype": "compact_boundary"}),
             at(0, 4),
         );
         assert_eq!(a.context_tokens, Some(0));
         a.observe(&msg(1, 3_000, 0), at(0, 5));
-        assert_eq!(a.context_tokens, Some(3_001));
+        assert_eq!(a.context_tokens, Some(4_000));
     }
 
     #[test]
@@ -927,7 +939,7 @@ mod tests {
             &json!({"type": "result", "subtype": "success", "usage": {"input_tokens": 100, "cache_read_input_tokens": 2_000, "output_tokens": 50}}),
             at(0, 0),
         );
-        assert_eq!(a.context_tokens, Some(2_100));
+        assert_eq!(a.context_tokens, Some(2_150));
     }
 
     #[test]

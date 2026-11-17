@@ -475,7 +475,8 @@ pub async fn today_stats<Tz: TimeZone>(
 /// What a transcript file says about its session, read once per file.
 #[derive(Debug, Clone, PartialEq)]
 enum TranscriptMeta {
-    /// A codex subagent / fork rollout: part of another session, not listed.
+    /// Not a user session: a codex subagent / fork rollout (part of another
+    /// session) or one of Devdy's own helper sessions.
     Skip,
     Cwd(Option<String>),
 }
@@ -500,29 +501,126 @@ fn claude_session_id(path: &Path) -> Option<String> {
     uuid::Uuid::parse_str(stem).ok().map(|_| stem.to_string())
 }
 
-/// The first `cwd` recorded in a Claude transcript (only its head is read).
-fn claude_cwd(path: &Path) -> Option<String> {
-    use std::io::{BufRead, BufReader, Read};
-    let file = std::fs::File::open(path).ok()?;
-    BufReader::new(file.take(64 * 1024))
-        .lines()
-        .map_while(Result::ok)
-        .take(50)
-        .find_map(|l| {
-            let v: Value = serde_json::from_str(&l).ok()?;
-            v.get("cwd").and_then(|c| c.as_str()).map(str::to_string)
-        })
+/// What the head of a Claude transcript says: its first `cwd`, and whether every
+/// prompt in it is the `/usage` command (the shape of Devdy's usage probe).
+#[derive(Debug, Default, PartialEq)]
+struct ClaudeHead {
+    cwd: Option<String>,
+    only_usage_command: bool,
 }
 
-fn read_meta(path: &Path) -> TranscriptMeta {
+/// Text of a user message's content (string, or its text blocks).
+fn user_text(content: &Value) -> String {
+    match content {
+        Value::String(s) => s.clone(),
+        Value::Array(blocks) => blocks
+            .iter()
+            .filter(|b| b.get("type").and_then(|t| t.as_str()) == Some("text"))
+            .filter_map(|b| b.get("text").and_then(|t| t.as_str()))
+            .collect::<Vec<_>>()
+            .join("\n"),
+        _ => String::new(),
+    }
+}
+
+/// Read the head (64 KiB / 200 lines) of a Claude transcript.
+fn claude_head(path: &Path) -> ClaudeHead {
+    use std::io::{BufRead, BufReader, Read};
+    let Ok(file) = std::fs::File::open(path) else {
+        return ClaudeHead::default();
+    };
+    let mut head = ClaudeHead::default();
+    let (mut usage_prompts, mut other_prompts) = (0usize, 0usize);
+    for line in BufReader::new(file.take(64 * 1024))
+        .lines()
+        .map_while(Result::ok)
+        .take(200)
+    {
+        let Ok(v) = serde_json::from_str::<Value>(&line) else {
+            continue;
+        };
+        if head.cwd.is_none() {
+            head.cwd = v.get("cwd").and_then(|c| c.as_str()).map(str::to_string);
+        }
+        if v.get("type").and_then(|t| t.as_str()) != Some("user") {
+            continue;
+        }
+        let Some(content) = v.get("message").and_then(|m| m.get("content")) else {
+            continue;
+        };
+        let text = user_text(content);
+        let text = text.trim();
+        // Tool results, and the caveat / stdout lines the CLI records around a
+        // local slash command, are not prompts.
+        if text.is_empty() || text.starts_with("<local-command-") {
+            continue;
+        }
+        if text == "/usage" || text.contains("<command-name>/usage</command-name>") {
+            usage_prompts += 1;
+        } else {
+            other_prompts += 1;
+        }
+    }
+    head.only_usage_command = usage_prompts > 0 && other_prompts == 0;
+    head
+}
+
+/// The working directories of Devdy's helper sessions (translation, Slack
+/// translation, Focus AI, mascot speech, model discovery): they all run in the
+/// system temp dir, which macOS may record either way round `/private`.
+fn helper_dirs() -> &'static Vec<String> {
+    static DIRS: OnceLock<Vec<String>> = OnceLock::new();
+    DIRS.get_or_init(|| {
+        let tmp = std::env::temp_dir();
+        let mut dirs = vec![tmp.to_string_lossy().to_string()];
+        if let Ok(real) = std::fs::canonicalize(&tmp) {
+            dirs.push(real.to_string_lossy().to_string());
+        }
+        let extra: Vec<String> = dirs
+            .iter()
+            .filter_map(|d| match d.strip_prefix("/private") {
+                Some(rest) => Some(rest.to_string()),
+                None => d.starts_with("/var/").then(|| format!("/private{d}")),
+            })
+            .collect();
+        dirs.extend(extra);
+        dirs.iter()
+            .map(|d| d.trim_end_matches('/').to_string())
+            .filter(|d| !d.is_empty())
+            .collect()
+    })
+}
+
+fn is_helper_cwd(cwd: &str, helper_dirs: &[String]) -> bool {
+    let cwd = cwd.trim_end_matches('/');
+    helper_dirs.iter().any(|d| d == cwd)
+}
+
+/// A transcript's metadata and whether it may be cached. A transcript holding
+/// nothing but `/usage` (Devdy's usage probe runs that in a project dir) is
+/// skipped but re-read later: a user session may start the same way.
+fn read_meta(path: &Path) -> (TranscriptMeta, bool) {
+    let helpers = helper_dirs();
     if is_codex_rollout(path) {
-        match crate::commands::codex_sessions::rollout_meta(path) {
+        let meta = match crate::commands::codex_sessions::rollout_meta(path) {
+            Some((cwd, _)) if is_helper_cwd(&cwd, helpers) => TranscriptMeta::Skip,
             Some((cwd, _)) => TranscriptMeta::Cwd(Some(cwd)),
             None => TranscriptMeta::Skip,
-        }
-    } else {
-        TranscriptMeta::Cwd(claude_cwd(path))
+        };
+        return (meta, true);
     }
+    let head = claude_head(path);
+    if head
+        .cwd
+        .as_deref()
+        .is_some_and(|c| is_helper_cwd(c, helpers))
+    {
+        return (TranscriptMeta::Skip, true);
+    }
+    if head.only_usage_command {
+        return (TranscriptMeta::Skip, false);
+    }
+    (TranscriptMeta::Cwd(head.cwd), true)
 }
 
 /// Metadata of `paths`, reading (off the async runtime) only uncached files.
@@ -558,8 +656,10 @@ async fn metas(paths: Vec<PathBuf>) -> HashMap<PathBuf, TranscriptMeta> {
     if cache.len() + read.len() > MAX_META_CACHE {
         cache.clear();
     }
-    for (p, m) in read {
-        cache.insert(p.clone(), m.clone());
+    for (p, (m, cacheable)) in read {
+        if cacheable {
+            cache.insert(p.clone(), m.clone());
+        }
         out.insert(p, m);
     }
     out
@@ -602,16 +702,15 @@ fn dir_basename(path: &str) -> &str {
     t.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(t)
 }
 
-/// Sessions whose transcript was written in the last [`EXTERNAL_WINDOW`] and
-/// that no running Devdy run owns.
-async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSession>, sqlx::Error> {
-    let writes = session_watcher::recent_writes(EXTERNAL_WINDOW);
-    if writes.is_empty() {
-        return Ok(Vec::new());
-    }
-    // Devdy's own sessions write the same stores: skip any running run's.
+/// Session / thread ids of every session Devdy itself ran: any run that went
+/// through a Devdy turn (it stamps `started_at` past `created_at`; a session
+/// merely imported from an external transcript keeps them equal), any running
+/// run, and the live runs. Devdy's sessions write the same transcript stores,
+/// so these are never reported as external.
+async fn devdy_session_ids(db: &Db, live: &[String]) -> Result<HashSet<String>, sqlx::Error> {
     let mut owned: HashSet<String> = sqlx::query_scalar::<_, String>(
-        "SELECT session_id FROM runs WHERE status = 'running' AND session_id IS NOT NULL",
+        "SELECT session_id FROM runs WHERE session_id IS NOT NULL \
+         AND (status = 'running' OR (started_at IS NOT NULL AND started_at <> created_at))",
     )
     .fetch_all(db)
     .await?
@@ -628,6 +727,17 @@ async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSessi
         }
         owned.extend(q.fetch_all(db).await?);
     }
+    Ok(owned)
+}
+
+/// Sessions whose transcript was written in the last [`EXTERNAL_WINDOW`] and
+/// that no running Devdy run owns.
+async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSession>, sqlx::Error> {
+    let writes = session_watcher::recent_writes(EXTERNAL_WINDOW);
+    if writes.is_empty() {
+        return Ok(Vec::new());
+    }
+    let owned = devdy_session_ids(db, live).await?;
 
     let candidates: Vec<(PathBuf, DateTime<Utc>, &'static str, String)> = writes
         .into_iter()
@@ -975,17 +1085,127 @@ mod tests {
         )));
     }
 
-    #[test]
-    fn reads_claude_cwd_from_head() {
+    fn write_tmp(name: &str, body: &str) -> (PathBuf, PathBuf) {
         let dir = std::env::temp_dir().join(format!("devdy-rt-{}", uuid::Uuid::new_v4()));
         std::fs::create_dir_all(&dir).unwrap();
-        let f = dir.join("t.jsonl");
-        std::fs::write(
-            &f,
-            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"cwd\":\"/w/repo\"}\n",
-        )
-        .unwrap();
-        assert_eq!(claude_cwd(&f).as_deref(), Some("/w/repo"));
+        let f = dir.join(name);
+        std::fs::write(&f, body).unwrap();
+        (dir, f)
+    }
+
+    #[test]
+    fn reads_claude_cwd_from_head() {
+        let (dir, f) = write_tmp(
+            "t.jsonl",
+            "{\"type\":\"summary\"}\n{\"type\":\"user\",\"cwd\":\"/w/repo\",\"message\":{\"content\":\"fix the bug\"}}\n",
+        );
+        let head = claude_head(&f);
+        assert_eq!(head.cwd.as_deref(), Some("/w/repo"));
+        assert!(!head.only_usage_command);
+        assert_eq!(
+            read_meta(&f),
+            (TranscriptMeta::Cwd(Some("/w/repo".into())), true)
+        );
         let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn skips_helper_sessions_in_temp_dir() {
+        let tmp = std::env::temp_dir();
+        let tmp = tmp.to_string_lossy();
+        let helpers = helper_dirs();
+        assert!(is_helper_cwd(&tmp, helpers));
+        assert!(is_helper_cwd(tmp.trim_end_matches('/'), helpers));
+        if let Ok(real) = std::fs::canonicalize(std::env::temp_dir()) {
+            assert!(is_helper_cwd(&real.to_string_lossy(), helpers));
+        }
+        assert!(!is_helper_cwd("/w/repo", helpers));
+        assert!(!is_helper_cwd(
+            &format!("{}/project", tmp.trim_end_matches('/')),
+            helpers
+        ));
+
+        let line = serde_json::json!({"type": "user", "cwd": tmp, "message": {"content": "Translate this"}});
+        let (dir, f) = write_tmp("t.jsonl", &format!("{line}\n"));
+        assert_eq!(read_meta(&f), (TranscriptMeta::Skip, true));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[test]
+    fn usage_probe_transcript_is_skipped_until_a_real_prompt() {
+        let probe = concat!(
+            "{\"type\":\"user\",\"cwd\":\"/w/repo\",\"isMeta\":true,\"message\":{\"content\":\"<local-command-caveat>Caveat</local-command-caveat>\"}}\n",
+            "{\"type\":\"user\",\"cwd\":\"/w/repo\",\"message\":{\"content\":\"<command-name>/usage</command-name>\\n<command-args></command-args>\"}}\n",
+            "{\"type\":\"user\",\"cwd\":\"/w/repo\",\"message\":{\"content\":\"<local-command-stdout>42%</local-command-stdout>\"}}\n",
+        );
+        let (dir, f) = write_tmp("t.jsonl", probe);
+        assert_eq!(read_meta(&f), (TranscriptMeta::Skip, false), "not cached");
+        // The user continues that session: it is theirs.
+        let more = "{\"type\":\"user\",\"cwd\":\"/w/repo\",\"message\":{\"content\":[{\"type\":\"text\",\"text\":\"now refactor\"}]}}\n";
+        std::fs::write(&f, format!("{probe}{more}")).unwrap();
+        assert_eq!(read_meta(&f).0, TranscriptMeta::Cwd(Some("/w/repo".into())));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    #[tokio::test]
+    async fn devdy_sessions_are_owned_imports_are_not() {
+        let db = memory_db().await;
+        let created = "2026-11-16T00:00:00+00:00";
+        insert_run(
+            &db,
+            "devdy-done",
+            "done",
+            created,
+            Some("2026-11-16T01:00:00+00:00"),
+            Some("2026-11-16T02:00:00+00:00"),
+        )
+        .await;
+        insert_run(
+            &db,
+            "devdy-running",
+            "running",
+            created,
+            Some(created),
+            None,
+        )
+        .await;
+        insert_run(
+            &db,
+            "imported",
+            "done",
+            created,
+            Some(created),
+            Some("2026-11-17T00:00:00+00:00"),
+        )
+        .await;
+        insert_run(&db, "live", "done", created, Some(created), None).await;
+        insert_run(
+            &db,
+            "no-session",
+            "done",
+            created,
+            Some("2026-11-16T01:00:00+00:00"),
+            None,
+        )
+        .await;
+        for id in ["devdy-done", "devdy-running", "imported", "live"] {
+            sqlx::query("UPDATE runs SET session_id = ? WHERE id = ?")
+                .bind(format!("sid-{id}"))
+                .bind(id)
+                .execute(&db)
+                .await
+                .unwrap();
+        }
+        let owned = devdy_session_ids(&db, &[]).await.unwrap();
+        assert!(owned.contains("sid-devdy-done"), "finished Devdy runs too");
+        assert!(owned.contains("sid-devdy-running"));
+        assert!(
+            !owned.contains("sid-imported"),
+            "an external session imported into History is still external"
+        );
+        assert!(!owned.contains("sid-live"));
+        let owned = devdy_session_ids(&db, &["live".to_string()]).await.unwrap();
+        assert!(owned.contains("sid-live"));
+        assert_eq!(owned.len(), 3);
     }
 }
