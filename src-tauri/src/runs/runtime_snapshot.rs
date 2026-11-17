@@ -164,12 +164,8 @@ pub async fn get_runtime_snapshot(
         cpu_history: push_cpu_sample(round1(procs.cpu)),
     };
 
-    let today = today_stats(db.inner(), now.with_timezone(&chrono::Local))
-        .await
-        .map_err(|e| e.to_string())?;
-    let external = external_sessions(db.inner(), &live)
-        .await
-        .map_err(|e| e.to_string())?;
+    let today = today_section(db.inner(), now.with_timezone(&chrono::Local)).await;
+    let external = external_section(db.inner(), &live).await;
 
     Ok(RuntimeSnapshot {
         generated_at: now.to_rfc3339(),
@@ -178,6 +174,40 @@ pub async fn get_runtime_snapshot(
         today,
         external,
     })
+}
+
+// Each section degrades on its own: a failed query empties that section instead
+// of failing the whole snapshot. Only the error kind is logged.
+
+async fn today_section<Tz: TimeZone>(db: &Db, now: DateTime<Tz>) -> RuntimeToday {
+    today_stats(db, now).await.unwrap_or_else(|e| {
+        tracing::warn!(
+            event = "runtime_snapshot_today_failed",
+            error = sql_error_kind(&e)
+        );
+        RuntimeToday::default()
+    })
+}
+
+async fn external_section(db: &Db, live: &[String]) -> Vec<ExternalSession> {
+    external_sessions(db, live).await.unwrap_or_else(|e| {
+        tracing::warn!(
+            event = "runtime_snapshot_external_failed",
+            error = sql_error_kind(&e)
+        );
+        Vec::new()
+    })
+}
+
+/// A short, data-free description of a query failure for the log.
+fn sql_error_kind(e: &sqlx::Error) -> &'static str {
+    match e {
+        sqlx::Error::Database(_) => "database error",
+        sqlx::Error::PoolTimedOut | sqlx::Error::PoolClosed => "pool unavailable",
+        sqlx::Error::Io(_) => "io error",
+        sqlx::Error::ColumnDecode { .. } | sqlx::Error::Decode(_) => "decode error",
+        _ => "query error",
+    }
 }
 
 fn round1(x: f64) -> f64 {
@@ -704,34 +734,6 @@ fn dir_basename(path: &str) -> &str {
     t.rsplit('/').next().filter(|s| !s.is_empty()).unwrap_or(t)
 }
 
-/// Session / thread ids of every session Devdy itself ran: any run that went
-/// through a Devdy turn (it stamps `started_at` past `created_at`; a session
-/// merely imported from an external transcript keeps them equal), any running
-/// run, and the live runs. Devdy's sessions write the same transcript stores,
-/// so these are never reported as external.
-async fn devdy_session_ids(db: &Db, live: &[String]) -> Result<HashSet<String>, sqlx::Error> {
-    let mut owned: HashSet<String> = sqlx::query_scalar::<_, String>(
-        "SELECT session_id FROM runs WHERE session_id IS NOT NULL \
-         AND (status = 'running' OR (started_at IS NOT NULL AND started_at <> created_at))",
-    )
-    .fetch_all(db)
-    .await?
-    .into_iter()
-    .collect();
-    if !live.is_empty() {
-        let placeholders = vec!["?"; live.len()].join(", ");
-        let sql = format!(
-            "SELECT session_id FROM runs WHERE session_id IS NOT NULL AND id IN ({placeholders})"
-        );
-        let mut q = sqlx::query_scalar::<_, String>(&sql);
-        for id in live {
-            q = q.bind(id);
-        }
-        owned.extend(q.fetch_all(db).await?);
-    }
-    Ok(owned)
-}
-
 /// Sessions whose transcript was written in the last [`EXTERNAL_WINDOW`] and
 /// that no running Devdy run owns.
 async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSession>, sqlx::Error> {
@@ -739,8 +741,6 @@ async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSessi
     if writes.is_empty() {
         return Ok(Vec::new());
     }
-    let owned = devdy_session_ids(db, live).await?;
-
     let candidates: Vec<(PathBuf, DateTime<Utc>, &'static str, String)> = writes
         .into_iter()
         .filter_map(|(path, at)| {
@@ -752,8 +752,17 @@ async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSessi
             } else {
                 ("claude", claude_session_id(&path)?)
             };
-            (!owned.contains(&sid)).then_some((path, at, engine, sid))
+            Some((path, at, engine, sid))
         })
+        .collect();
+    if candidates.is_empty() {
+        return Ok(Vec::new());
+    }
+    let sids: Vec<String> = candidates.iter().map(|c| c.3.clone()).collect();
+    let SessionRuns { owned, mirrored } = session_runs(db, &sids, live).await?;
+    let candidates: Vec<_> = candidates
+        .into_iter()
+        .filter(|c| !owned.contains(&c.3))
         .collect();
     if candidates.is_empty() {
         return Ok(Vec::new());
@@ -770,9 +779,6 @@ async fn external_sessions(db: &Db, live: &[String]) -> Result<Vec<ExternalSessi
         })
         .collect();
     let metas = metas(candidates.iter().map(|c| c.0.clone()).collect()).await;
-
-    let sids: Vec<String> = candidates.iter().map(|c| c.3.clone()).collect();
-    let mirrored = mirrored_runs(db, &sids).await?;
 
     let mut out = Vec::new();
     for (path, at, engine, sid) in candidates {
@@ -821,19 +827,35 @@ struct MirroredRun {
     transcript_path: Option<String>,
 }
 
-/// Runs holding each of `session_ids`, most recently active first.
-async fn mirrored_runs(
+/// What the `runs` table knows about a set of session / thread ids.
+#[derive(Debug, Default)]
+struct SessionRuns {
+    /// Sessions Devdy itself ran: a run that went through a Devdy turn (it
+    /// stamps `started_at` past `created_at`; a session merely imported from an
+    /// external transcript keeps them equal), a running run, or a live one.
+    /// Devdy's sessions write the same transcript stores, so these are never
+    /// reported as external.
+    owned: HashSet<String>,
+    /// Rows the session watcher mirrored each session into, most recently
+    /// active first.
+    mirrored: HashMap<String, Vec<MirroredRun>>,
+}
+
+/// One query over just `session_ids` (the transcripts written lately).
+async fn session_runs(
     db: &Db,
     session_ids: &[String],
-) -> Result<HashMap<String, Vec<MirroredRun>>, sqlx::Error> {
-    let mut out: HashMap<String, Vec<MirroredRun>> = HashMap::new();
+    live: &[String],
+) -> Result<SessionRuns, sqlx::Error> {
+    let mut out = SessionRuns::default();
     if session_ids.is_empty() {
         return Ok(out);
     }
     let placeholders = vec!["?"; session_ids.len()].join(", ");
     let sql = format!(
-        "SELECT id, project_id, session_id, transcript_path FROM runs \
-         WHERE session_id IN ({placeholders}) \
+        "SELECT id, project_id, session_id, transcript_path, \
+                (status = 'running' OR (started_at IS NOT NULL AND started_at <> created_at)) AS devdy \
+         FROM runs WHERE session_id IN ({placeholders}) \
          ORDER BY COALESCE(last_activity_at, finished_at, started_at, created_at) DESC, id"
     );
     let mut q = sqlx::query(&sql);
@@ -841,10 +863,16 @@ async fn mirrored_runs(
         q = q.bind(sid);
     }
     for row in q.fetch_all(db).await? {
-        out.entry(row.get("session_id"))
+        let session_id: String = row.get("session_id");
+        let run_id: String = row.get("id");
+        if row.get::<bool, _>("devdy") || live.contains(&run_id) {
+            out.owned.insert(session_id.clone());
+        }
+        out.mirrored
+            .entry(session_id)
             .or_default()
             .push(MirroredRun {
-                run_id: row.get("id"),
+                run_id,
                 project_id: row.get("project_id"),
                 transcript_path: row.get("transcript_path"),
             });
@@ -978,6 +1006,32 @@ mod tests {
         assert_eq!(t.recent[2].project_name, "proj");
         assert_eq!(t.recent[2].title.as_deref(), Some("Run d2"));
         assert!(t.recent[2].finished_at.starts_with("2026-11-17T02:00:00"));
+    }
+
+    #[tokio::test]
+    async fn sections_degrade_independently() {
+        let db = memory_db().await;
+        insert_run(
+            &db,
+            "d",
+            "done",
+            "2026-11-16T00:00:00+00:00",
+            Some("2026-11-16T01:00:00+00:00"),
+            Some("2026-11-17T02:00:00+00:00"),
+        )
+        .await;
+        assert_eq!(today_section(&db, Utc::now()).await.recent.len(), 1);
+        db.close().await;
+        assert!(today_stats(&db, Utc::now()).await.is_err());
+        assert_eq!(
+            today_section(&db, Utc::now()).await,
+            RuntimeToday::default()
+        );
+        assert!(external_section(&db, &[]).await.is_empty());
+        assert!(
+            session_runs(&db, &[], &[]).await.is_ok(),
+            "no candidates: no query"
+        );
     }
 
     #[tokio::test]
@@ -1246,7 +1300,7 @@ mod tests {
             .iter()
             .map(|s| s.to_string())
             .collect();
-        let m = mirrored_runs(&db, &sids).await.unwrap();
+        let m = session_runs(&db, &sids, &[]).await.unwrap().mirrored;
         assert_eq!(m.len(), 2);
         assert!(!m.contains_key("sid-x"));
         let b = &m["sid-b"];
@@ -1266,7 +1320,11 @@ mod tests {
             Some("imp-b2")
         );
         assert_eq!(pick_mirrored_run(&[], "/x.jsonl", Some("p1")), None);
-        assert!(mirrored_runs(&db, &[]).await.unwrap().is_empty());
+        assert!(session_runs(&db, &[], &[])
+            .await
+            .unwrap()
+            .mirrored
+            .is_empty());
 
         let s = ExternalSession {
             id: "claude:sid-a".into(),
@@ -1333,7 +1391,11 @@ mod tests {
                 .await
                 .unwrap();
         }
-        let owned = devdy_session_ids(&db, &[]).await.unwrap();
+        let sids: Vec<String> = ["devdy-done", "devdy-running", "imported", "live", "unknown"]
+            .iter()
+            .map(|id| format!("sid-{id}"))
+            .collect();
+        let owned = session_runs(&db, &sids, &[]).await.unwrap().owned;
         assert!(owned.contains("sid-devdy-done"), "finished Devdy runs too");
         assert!(owned.contains("sid-devdy-running"));
         assert!(
@@ -1341,8 +1403,14 @@ mod tests {
             "an external session imported into History is still external"
         );
         assert!(!owned.contains("sid-live"));
-        let owned = devdy_session_ids(&db, &["live".to_string()]).await.unwrap();
+        let owned = session_runs(&db, &sids, &["live".to_string()])
+            .await
+            .unwrap()
+            .owned;
         assert!(owned.contains("sid-live"));
         assert_eq!(owned.len(), 3);
+        // Only the asked-for sessions are looked at.
+        let owned = session_runs(&db, &sids[..1], &[]).await.unwrap().owned;
+        assert_eq!(owned.len(), 1);
     }
 }
