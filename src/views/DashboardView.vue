@@ -17,7 +17,6 @@ const sessionShowOk: Record<string, boolean> = {}
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { openPath } from '@tauri-apps/plugin-opener'
 import { Activity, Search } from 'lucide-vue-next'
 import { Banner, Button, Input, PageHeader, SegmentedControl } from '@/components/ui'
 import StatSessions from '@/components/dashboard/StatSessions.vue'
@@ -44,6 +43,7 @@ import {
   layoutGroups,
   mapOrder,
   needsAttention,
+  answerKeyBlocked,
   nextAfterAnswer,
   parseViewMode,
   stepOrder,
@@ -160,10 +160,15 @@ watch(
   },
 )
 
+/** When the panel last moved on by itself to the next waiting session. */
+let advancedAt: number | null = null
 function onAnswered(id: string) {
   const next = nextAfterAnswer(queue.value, id)
   dash.rebuild()
-  if (next) select(next)
+  if (next) {
+    advancedAt = Date.now()
+    select(next)
+  }
 }
 
 // ── Opening things ───────────────────────────────────────────────────────────
@@ -177,9 +182,6 @@ function openSession(s: RtSession) {
 }
 function openRecent(r: RecentRun) {
   openRun(r.projectId, r.runId)
-}
-function openTranscript(path: string) {
-  openPath(path).catch(() => { /* opener unavailable */ })
 }
 
 // ── Cleanup (the Background processes action) ────────────────────────────────
@@ -224,7 +226,7 @@ function typingIn(el: EventTarget | null): boolean {
 
 function onKey(e: KeyboardEvent) {
   if (e.defaultPrevented || e.metaKey || e.ctrlKey || e.altKey || e.isComposing) return
-  if (confirmState.open || typingIn(e.target)) return
+  if (e.repeat || confirmState.open || typingIn(e.target)) return
   switch (e.key) {
     case '/':
       e.preventDefault()
@@ -240,10 +242,10 @@ function onKey(e: KeyboardEvent) {
       select(stepQueue(queue.value, selectedId.value, 1))
       break
     case 'a':
-      void inspector.value?.allow()
-      break
     case 'd':
-      void inspector.value?.deny()
+      // Not a prompt the user has not seen yet (a double press right after moving on).
+      if (answerKeyBlocked(e.repeat, advancedAt, Date.now())) return
+      void (e.key === 'a' ? inspector.value?.allow() : inspector.value?.deny())
       break
     case 'Enter':
       // A focused button handles Enter itself.
@@ -298,6 +300,7 @@ const SHORTCUTS = [
       <div class="mx-auto flex max-w-[1480px] flex-col gap-3.5">
         <Banner v-if="dash.loadError.value" tone="destructive">{{ t('dashboard.loadError', { error: dash.loadError.value }) }}</Banner>
         <p v-else-if="dash.loaded.value && !dash.hasSnapshot.value" class="text-[11px] text-muted-foreground">{{ t('dashboard.fallbackHint') }}</p>
+        <p v-else-if="dash.snapshotStale.value" class="text-[11px] text-warning">{{ t('dashboard.staleHint') }}</p>
 
         <div class="grid grid-cols-[repeat(auto-fit,minmax(270px,1fr))] gap-3">
           <StatSessions
@@ -367,7 +370,7 @@ const SHORTCUTS = [
               @next="select(stepQueue(queue, selectedId, 1))"
               @answered="onAnswered"
               @open="openSession"
-              @open-transcript="openTranscript"
+              @open-run="openRun"
             />
           </div>
         </div>

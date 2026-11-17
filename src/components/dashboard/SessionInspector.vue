@@ -10,13 +10,14 @@
 //   • otherwise → message the session (`send_user_message`) or stop it.
 // After an answer it reports `answered` so the dashboard moves on to the next
 // session waiting for you; the short confirmation stays visible here.
-import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
+import { computed, nextTick, onBeforeUnmount, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { ChevronLeft, ChevronRight, ExternalLink, MessageCircleQuestion, ShieldAlert, Square } from 'lucide-vue-next'
 import { Button, Textarea } from '@/components/ui'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
 import { useConfirm } from '@/composables/useConfirm'
+import { useToast } from '@/composables/useToast'
 import { useSessionLog } from '@/composables/useRuntimeDashboard'
 import { formatCpu, formatRss } from '@/lib/backgroundProcesses'
 import { toolLabel, type LogKind, type RtSession } from '@/lib/runtimeDashboard'
@@ -38,7 +39,8 @@ const emit = defineEmits<{
   /** A prompt of this session was answered (move on to the next waiting one). */
   answered: [id: string]
   open: [session: RtSession]
-  openTranscript: [path: string]
+  /** Open a run in the app (an external session's mirrored run). */
+  openRun: [projectId: string, runId: string]
 }>()
 
 const { t } = useI18n()
@@ -46,6 +48,7 @@ const L = useRuntimeLabels()
 const live = useLiveRunsStore()
 const runsStore = useRunsStore()
 const { confirm } = useConfirm()
+const { toast } = useToast()
 
 const s = computed(() => props.session)
 const runId = computed(() => s.value?.runId ?? null)
@@ -145,7 +148,16 @@ const picked = ref<string[][]>([])
 /** Final answer of each question already passed. */
 const finals = ref<string[]>([])
 const freeText = ref('')
-const message = ref('')
+// Message drafts per run: a draft never follows the selection to another session.
+const drafts = reactive(new Map<string, string>())
+const message = computed({
+  get: () => (runId.value ? drafts.get(runId.value) ?? '' : ''),
+  set: (v: string) => {
+    if (!runId.value) return
+    if (v) drafts.set(runId.value, v)
+    else drafts.delete(runId.value)
+  },
+})
 watch(() => head.value?.request_id, () => {
   step.value = 0
   picked.value = []
@@ -268,7 +280,7 @@ async function send() {
   try {
     live.pushUser(cur.runId, cur.projectId, text)
     await runsStore.sendUserMessage(cur.runId, text)
-    message.value = ''
+    drafts.delete(cur.runId)
     showFlash(t('dashboard.detail.flash.sent'), 'ok')
   } catch {
     showFlash(t('dashboard.detail.flash.failed'), 'bad')
@@ -299,6 +311,15 @@ async function stop() {
   } catch {
     showFlash(t('dashboard.detail.flash.failed'), 'bad')
   }
+}
+
+// An external session's transcript lives in ~/.claude / ~/.codex, which the
+// opener may not reach: open its mirrored run in the app instead.
+function openExternal() {
+  const id = mirroredRunId.value
+  const projectId = (id ? runsStore.runMeta.get(id)?.project_id : null) ?? props.external?.projectId ?? null
+  if (id && projectId) emit('openRun', projectId, id)
+  else toast.info(t('dashboard.detail.transcriptUnavailable'))
 }
 
 // ── Header bits ───────────────────────────────────────────────────────────
@@ -453,8 +474,8 @@ defineExpose({
           <Button v-if="s.runId" variant="outline" size="sm" @click="emit('open', s)">
             <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />{{ t('dashboard.detail.open') }}
           </Button>
-          <Button v-else-if="external" variant="outline" size="sm" @click="emit('openTranscript', external.transcriptPath)">
-            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />{{ t('dashboard.detail.openTranscript') }}
+          <Button v-else-if="external" variant="outline" size="sm" @click="openExternal">
+            <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />{{ mirroredRunId ? t('dashboard.detail.open') : t('dashboard.detail.openTranscript') }}
           </Button>
           <Button v-if="s.runId" variant="destructive" size="sm" class="ml-auto" @click="stop">
             <Square class="h-3 w-3" :stroke-width="2" />{{ t('dashboard.detail.stop') }}

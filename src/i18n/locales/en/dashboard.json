@@ -4,6 +4,7 @@
   "untitled": "Untitled session",
   "loadError": "Could not load the running sessions: {error}",
   "fallbackHint": "Limited live data: per-session activity, today's runs and sessions outside Devdy show once the app provides them.",
+  "staleHint": "Live details could not be refreshed just now; showing the last ones received.",
   "empty": "Nothing is running right now. Start a session from a project and it shows up here.",
   "noMatch": "No session matches.",
   "shortcuts": {
@@ -160,6 +161,7 @@
     "stopMessage": "Stop “{name}”? Its current turn is cancelled.",
     "open": "Open full session",
     "openTranscript": "Open transcript",
+    "transcriptUnavailable": "This session isn't linked to a Devdy project yet, so its transcript can't be opened here.",
     "flash": {
       "allowed": "Allowed · the agent continues",
       "always": "Allowed and remembered for this project",

@@ -4,7 +4,9 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
+  ANSWER_KEY_GUARD_MS,
   QUIET_AFTER_MS,
+  answerKeyBlocked,
   activityBuckets,
   buildGroups,
   classifyState,
@@ -16,6 +18,7 @@ import {
   formatElapsed,
   groupKeyOf,
   initialPick,
+  isMissingCommandError,
   isWaitTool,
   lastEvent,
   layoutGroups,
@@ -400,4 +403,32 @@ test('lastEvent: the latest line with text, a tool keeps its name', () => {
   assert.deepEqual(lastEvent([...entries, { kind: 'result', text: '', is_error: false }]), { tool: 'Bash', text: 'Bash cargo check' })
   assert.equal(lastEvent([]), null)
   assert.equal(lastEvent([{ kind: 'text', text: 'old' }, { kind: 'thinking', text: '' }], 1), null)
+})
+
+test('a conductor with live workers and no running tool waits on them (Codex)', () => {
+  const lastEventAt = NOW - QUIET_AFTER_MS - 1
+  assert.equal(classifyState({ ...base, conductor: true, liveWorkers: 2, currentTool: null, lastEventAt }), 'idle')
+  assert.equal(classifyState({ ...base, conductor: true, liveWorkers: 2, currentTool: 'Bash' }), 'running')
+  assert.equal(classifyState({ ...base, conductor: true, liveWorkers: 0, currentTool: null, lastEventAt }), 'quiet')
+  assert.equal(classifyState({ ...base, conductor: true, liveWorkers: 2, pending: 1 }), 'waiting')
+})
+
+test('toolSummary masks credentials shown on cards and in the log', () => {
+  assert.equal(toolSummary('Bash', { command: 'GH_TOKEN=abc gh pr list' }), 'GH_TOKEN=*** gh pr list')
+  assert.equal(toolSummary('WebFetch', { url: 'https://x.io/a?token=1' }), 'https://x.io/a')
+  assert.deepEqual(logLine({ kind: 'tool', name: 'Bash', input: { command: 'sshpass -p pw ssh h' } }), { kind: 'tool', text: 'Bash sshpass -p *** ssh h' })
+})
+
+test('answerKeyBlocked: auto-repeat and the moment after moving on', () => {
+  assert.equal(answerKeyBlocked(true, null, NOW), true)
+  assert.equal(answerKeyBlocked(false, null, NOW), false)
+  assert.equal(answerKeyBlocked(false, NOW - ANSWER_KEY_GUARD_MS + 1, NOW), true)
+  assert.equal(answerKeyBlocked(false, NOW - ANSWER_KEY_GUARD_MS, NOW), false)
+})
+
+test('isMissingCommandError tells a missing command from a transient failure', () => {
+  assert.equal(isMissingCommandError('command get_runtime_snapshot not found'), true)
+  assert.equal(isMissingCommandError(new Error('Unknown command get_runtime_snapshot')), true)
+  assert.equal(isMissingCommandError('database is locked'), false)
+  assert.equal(isMissingCommandError('timeout'), false)
 })

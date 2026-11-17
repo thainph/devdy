@@ -4,6 +4,7 @@
   "untitled": "Session chưa đặt tên",
   "loadError": "Không tải được các session đang chạy: {error}",
   "fallbackHint": "Dữ liệu trực tiếp còn hạn chế: nhịp hoạt động từng session, số session hôm nay và session ngoài Devdy sẽ hiện khi ứng dụng cung cấp.",
+  "staleHint": "Vừa rồi không cập nhật được dữ liệu trực tiếp; đang hiện dữ liệu nhận được lần trước.",
   "empty": "Hiện không có gì đang chạy. Bắt đầu một session từ một project, nó sẽ hiện ở đây.",
   "noMatch": "Không có session nào khớp.",
   "shortcuts": {
@@ -160,6 +161,7 @@
     "stopMessage": "Dừng “{name}”? Lượt đang chạy sẽ bị huỷ.",
     "open": "Mở session đầy đủ",
     "openTranscript": "Mở transcript",
+    "transcriptUnavailable": "Session này chưa gắn với project nào trong Devdy nên chưa mở được transcript ở đây.",
     "flash": {
       "allowed": "Đã cho phép · agent chạy tiếp",
       "always": "Đã cho phép và nhớ cho project này",

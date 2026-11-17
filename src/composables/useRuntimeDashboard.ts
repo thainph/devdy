@@ -32,6 +32,7 @@ import {
   activityBuckets,
   classifyState,
   contextPercent,
+  isMissingCommandError,
   lastEvent,
   logLine,
   noteActivity,
@@ -120,6 +121,8 @@ export function useRuntimeDashboard() {
   const snapshot = shallowRef<RuntimeSnapshot | null>(null)
   /** False while `get_runtime_snapshot` is unavailable (fallback mode). */
   const hasSnapshot = ref(false)
+  /** The last poll of the snapshot failed; the one shown is older. */
+  const snapshotStale = ref(false)
   const loaded = ref(false)
   const loadError = ref<string | null>(null)
   const sessions = shallowRef<RtSession[]>([])
@@ -188,6 +191,7 @@ export function useRuntimeDashboard() {
     const state = classifyState({
       pending,
       conductor,
+      liveWorkers: conductor ? activeRuns.value.filter((x) => x.conductor_run_id === ar.run_id).length : 0,
       currentTool: line.kind === 'tool' ? line.tool : null,
       lastEventAt,
       attention: s?.attention.map((a) => a.kind) ?? [],
@@ -330,12 +334,18 @@ export function useRuntimeDashboard() {
       }
       if (snap.status === 'fulfilled' && snap.value) {
         snapshot.value = snap.value
+        snapshotStale.value = false
         if (!hasSnapshot.value) {
           hasSnapshot.value = true
           stopBgWatch()
         }
+      } else if (snapshot.value && !(snap.status === 'rejected' && isMissingCommandError(snap.reason))) {
+        // A transient failure: keep the last good snapshot, flagged as stale.
+        snapshotStale.value = true
       } else {
+        // No backend support (or never got one): build what we can ourselves.
         snapshot.value = null
+        snapshotStale.value = false
         hasSnapshot.value = false
         if (pollTimer) startBgWatch()
       }
@@ -451,6 +461,7 @@ export function useRuntimeDashboard() {
     loaded,
     loadError,
     hasSnapshot,
+    snapshotStale,
     resources,
     today,
     quotas,
@@ -486,13 +497,21 @@ export function useSessionLog(runId: Ref<string | null>) {
   const stamps = new WeakMap<object, number>()
   let baseline = 0
   let token = 0
+  /**
+   * Live entries before this index are not shown: when the disk tail was read
+   * while the session already streamed, what arrived meanwhile may be in that
+   * tail too — skipping it avoids printing those lines twice.
+   */
+  const liveFrom = ref(0)
 
-  async function loadHistory(id: string, before?: number) {
+  async function loadHistory(id: string, before?: number, overlapsLive = false) {
     const mine = ++token
     loading.value = true
     try {
       const page = await runsStore.getRunLogPage(id, before, HISTORY_RECORDS)
-      if (mine === token) history.value = parseStreamLogWindow(page.records).entries
+      if (mine !== token) return
+      history.value = parseStreamLogWindow(page.records).entries
+      if (overlapsLive) liveFrom.value = live.sessions.get(id)?.entries.length ?? 0
     } catch {
       if (mine === token) history.value = []
     } finally {
@@ -505,6 +524,7 @@ export function useSessionLog(runId: Ref<string | null>) {
     token++
     loading.value = false
     baseline = 0
+    liveFrom.value = 0
     if (!id) return
     const s = live.sessions.get(id)
     baseline = s?.entries.length ?? 0
@@ -513,7 +533,7 @@ export function useSessionLog(runId: Ref<string | null>) {
     } else if (s.historyEnd !== null) {
       void loadHistory(id, s.historyEnd) // earlier turns, before what streams live
     } else if (s.entries.length === 0) {
-      void loadHistory(id)
+      void loadHistory(id, undefined, true) // nothing live yet: the disk tail, without overlap
     }
   }
   watch(runId, select, { immediate: true })
@@ -548,7 +568,7 @@ export function useSessionLog(runId: Ref<string | null>) {
     }
     const entries = live.sessions.get(id)?.entries ?? []
     const t0 = Date.now()
-    for (let i = Math.max(0, entries.length - LIVE_LINES); i < entries.length; i++) {
+    for (let i = Math.max(liveFrom.value, entries.length - LIVE_LINES); i < entries.length; i++) {
       const raw = toRaw(entries[i])
       const l = logLine(raw)
       if (!l) continue

@@ -5,6 +5,7 @@
 // `composables/useRuntimeDashboard.ts`.
 //
 // Pure logic (no Vue / Tauri / `@/` imports) for node:test.
+import { sanitizeSecrets } from './sanitizeSecrets.ts'
 
 // ── Live runs (existing `list_active_runs`) ─────────────────────────────────
 
@@ -110,6 +111,8 @@ export interface StateInput {
   /** Open permission / question prompts. */
   pending: number
   conductor: boolean
+  /** Live workers of this conductor. */
+  liveWorkers?: number
   /** Name of the tool running now, if known. */
   currentTool: string | null
   /** Epoch ms of the last stream event, null when unknown. */
@@ -123,6 +126,9 @@ export function classifyState(i: StateInput): SessionState {
   if (i.external) return 'external'
   if (i.pending > 0) return 'waiting'
   if (i.conductor && isWaitTool(i.currentTool)) return 'idle'
+  // A conductor with live workers and no other tool running is waiting on them
+  // (Codex never reports the running tool, so `session_wait` is not seen there).
+  if (i.conductor && (i.liveWorkers ?? 0) > 0 && i.currentTool === null) return 'idle'
   if (i.attention.some((k) => QUIET_NOTICES.has(k))) return 'quiet'
   if (i.lastEventAt !== null && i.now - i.lastEventAt > QUIET_AFTER_MS) return 'quiet'
   return 'running'
@@ -559,6 +565,11 @@ function str(v: unknown): string {
   return typeof v === 'string' ? v : ''
 }
 
+/** Clipped, with anything credential-like masked (a command / target shown on a card or in the log). */
+function safe(s: string, max = SUMMARY_MAX): string {
+  return clip(sanitizeSecrets(s), max)
+}
+
 function clip(s: string, max = SUMMARY_MAX): string {
   const one = s.replace(/\s+/g, ' ').trim()
   return one.length > max ? `${one.slice(0, max - 1)}…` : one
@@ -602,7 +613,7 @@ export function shortPath(p: string, keep = 2): string {
  * question a tool call is about. Clipped to one short line.
  */
 export function toolSummary(name: string, input: unknown): string {
-  if (typeof input === 'string') return clip(input)
+  if (typeof input === 'string') return safe(input)
   const o = obj(input)
   const n = name.toLowerCase()
   if (n === 'askuserquestion') {
@@ -611,14 +622,14 @@ export function toolSummary(name: string, input: unknown): string {
   }
   if (n === 'bash') {
     const cmd = o.command ?? o.cmd
-    return clip(typeof cmd === 'string' ? cmd : Array.isArray(cmd) ? cmd.join(' ') : str(o.description))
+    return safe(typeof cmd === 'string' ? cmd : Array.isArray(cmd) ? cmd.join(' ') : str(o.description))
   }
   if (n === 'task' || n === 'agent') return clip(str(o.description) || str(o.prompt))
   if (n === 'todowrite') return ''
   const file = fileOf(o)
   if (file) return clip(shortPath(file))
   for (const k of ['pattern', 'query', 'url', 'command', 'description', 'prompt']) {
-    if (str(o[k]).trim()) return clip(str(o[k]))
+    if (str(o[k]).trim()) return safe(str(o[k]))
   }
   return ''
 }
@@ -722,4 +733,29 @@ export function runningTool(entries: readonly LogEntryLite[]): { name: string; i
     }
   }
   return null
+}
+
+// ── Keyboard answers ────────────────────────────────────────────────────────
+
+/** After moving on to the next waiting session, `a` / `d` stay ignored this long. */
+export const ANSWER_KEY_GUARD_MS = 400
+
+/**
+ * Whether an `a` / `d` key press must be ignored: a held key (auto-repeat), or
+ * one landing right after the dashboard moved on to the next waiting session —
+ * a double press must not answer a prompt the user has not seen yet.
+ */
+export function answerKeyBlocked(repeat: boolean, advancedAt: number | null, now: number): boolean {
+  return repeat || (advancedAt !== null && now - advancedAt < ANSWER_KEY_GUARD_MS)
+}
+
+// ── Backend availability ────────────────────────────────────────────────────
+
+/**
+ * The snapshot command does not exist (an older backend) — as opposed to a
+ * transient failure, which keeps the last good snapshot.
+ */
+export function isMissingCommandError(err: unknown): boolean {
+  const msg = String(err instanceof Error ? err.message : err)
+  return /command\s+\S+\s+not\s+found|unknown\s+command|not\s+found.*command|no such command/i.test(msg)
 }
