@@ -1,233 +1,173 @@
 {
-  "title": "Tổng quan công việc",
-  "allProjects": "Tất cả dự án",
-  "refresh": "Làm mới tất cả",
-  "refreshedAt": "cập nhật {time}",
-  "updated": "cập nhật {age}",
-  "staleData": "dữ liệu cũ · {age}",
-  "justNow": "vừa xong",
-  "ago": "{duration} trước",
-  "duration": {
-    "m": "{n} phút",
-    "h": "{n} giờ",
-    "d": "{n} ngày"
+  "title": "Đang chạy",
+  "subtitle": "{date} · trực tiếp · nhóm theo conductor",
+  "untitled": "Session chưa đặt tên",
+  "loadError": "Không tải được các session đang chạy: {error}",
+  "fallbackHint": "Dữ liệu trực tiếp còn hạn chế: nhịp hoạt động từng session, số session hôm nay và session ngoài Devdy sẽ hiện khi ứng dụng cung cấp.",
+  "empty": "Hiện không có gì đang chạy. Bắt đầu một session từ một project, nó sẽ hiện ở đây.",
+  "noMatch": "Không có session nào khớp.",
+  "shortcuts": {
+    "label": "Phím tắt",
+    "search": "tìm",
+    "pick": "chọn",
+    "next": "chờ tiếp theo",
+    "allow": "cho phép",
+    "deny": "từ chối",
+    "open": "mở"
   },
-  "loadError": "Không tải được: {error}",
-  "todoAdded": "Đã thêm todo",
-  "slack": {
-    "title": "Khách hàng",
-    "waiting": "chờ {duration}",
-    "fetchErrors": "{n} thread không tải được — mở cửa sổ Slack để thử lại.",
-    "noCustomers": "Chưa đánh dấu khách nào: trong cửa sổ Slack threads, rê chuột vào một tin nhắn và chọn “Đánh dấu là khách” để biết ai đang chờ bạn.",
-    "emptyNone": "Chưa theo dõi thread Slack nào. Thêm từ cửa sổ Slack threads.",
-    "empty": "Không có thread Slack nào ở đây.",
-    "unread": "Có tin mới",
-    "waitingOnCustomer": "Chờ khách",
-    "addTodo": "Tạo todo từ thread này",
-    "markSeen": "Đánh dấu đã xem",
-    "todoText": "Trả lời Slack: {title}",
-    "seeAll": "Slack threads",
-    "answer": "khách đang chờ bạn trả lời",
-    "groups": {
-      "waiting": "Chờ bạn",
-      "later": "Không cần trả lời ngay"
+  "stat": {
+    "sessions": {
+      "title": "Session",
+      "unit": "session | session",
+      "meta": "{conductors} conductor · {external} ngoài Devdy | {conductors} conductor · {external} ngoài Devdy",
+      "mapLabel": "Bản đồ session: mỗi ô một session",
+      "chip": {
+        "wait": "{n} chờ bạn",
+        "quiet": "{n} im lâu",
+        "ctx": "{n} context > 80%"
+      }
     },
-    "open": "Mở thread",
-    "view": "Xem",
-    "youRepliedLast": "bạn trả lời cuối · đang chờ khách",
-    "unassignedNew": "{n} thread có tin mới",
-    "unassignedHint": "chưa gán khách cho các thread này",
-    "calm": "Không có khách nào đang chờ bạn."
-  },
-  "todos": {
-    "title": "Todo",
-    "empty": "Không có todo quá hạn, sắp hạn hay đang làm.",
-    "lateDays": "trễ {n} ngày",
-    "lateToday": "Quá hạn",
-    "today": "Hạn hôm nay",
-    "inDays": "Còn {n} ngày",
-    "status": {
-      "todo": "Cần làm",
-      "doing": "Đang làm",
-      "waiting": "Đang chờ"
+    "quota": {
+      "title": "Hạn mức 5 giờ",
+      "noData": "chưa có dữ liệu",
+      "exhaust": "hết lúc ~{time} nếu giữ tốc độ này",
+      "safe": "còn dư",
+      "full": "đã hết hạn mức",
+      "unknown": "chưa đủ dữ liệu để dự báo",
+      "reset": "reset {time}"
     },
-    "priorityHigh": "Ưu tiên cao",
-    "priorityLow": "Ưu tiên thấp",
-    "markDone": "Xong",
-    "doneToast": "Đã xong todo",
-    "seeAll": "Todo",
-    "answer": "trễ hạn",
-    "answerToday": "{n} hạn hôm nay",
-    "groups": {
-      "overdue": "Trễ hạn",
-      "today": "Hôm nay",
-      "upcoming": "Sắp tới & đang làm"
+    "resources": {
+      "title": "Tài nguyên",
+      "processes": "{n} tiến trình | {n} tiến trình",
+      "cpu": "CPU",
+      "ram": "RAM",
+      "ofTotal": "/ {total}",
+      "orphans": "{n} tiến trình sót lại | {n} tiến trình sót lại",
+      "staleWorktrees": "{n} worktree treo | {n} worktree treo",
+      "clean": "Dọn",
+      "cleanTitle": "Dừng các tiến trình còn sót lại từ session đã kết thúc hoặc lần chạy app trước",
+      "noData": "chưa có dữ liệu",
+      "cpuTitle": "Phần CPU của cả máy mà các tiến trình Devdy đang dùng"
+    },
+    "today": {
+      "title": "Hôm nay",
+      "finished": "xong",
+      "failed": "{n} lỗi",
+      "all": "Tất cả",
+      "allTitle": "Mở màn tiến trình nền",
+      "empty": "Hôm nay chưa có session nào xong.",
+      "noData": "Chưa có dữ liệu.",
+      "status": {
+        "done": "xong",
+        "failed": "lỗi",
+        "cancelled": "đã huỷ"
+      }
     }
   },
-  "prs": {
-    "title": "PR chờ bạn review",
-    "scope": "GitHub PR",
-    "draft": "Draft",
-    "soleReviewer": "bạn là reviewer cuối",
-    "ai": {
-      "none": "chưa AI review",
-      "running": "AI đang review",
-      "done": "AI đã review",
-      "updated": "có commit mới sau AI review"
+  "toolbar": {
+    "search": "Tìm theo tên hoặc project…",
+    "searchLabel": "Tìm session",
+    "mode": {
+      "label": "Kiểu hiển thị",
+      "auto": "Tự động",
+      "cards": "Thẻ",
+      "rows": "Dòng"
     },
-    "mapRepo": "Gán repo",
-    "mapRepoHint": "Repo này chưa thuộc dự án nào — thêm vào một dự án để chạy review",
-    "reReview": "Review lại",
-    "review": "AI review",
-    "openSession": "Mở session",
-    "addTodo": "Tạo todo “Review PR #{n}”",
-    "openPr": "Mở PR trên GitHub",
-    "empty": "Không có PR nào chờ bạn review.",
-    "todoText": "Review PR #{n}: {title}",
-    "seeAll": "PR Inbox",
-    "answer": "PR đang chờ bạn",
-    "groups": {
-      "reReview": "Cần review lại",
-      "toReview": "Chưa review",
-      "bots": "Bot"
-    },
-    "size": {
-      "small": "nhỏ",
-      "medium": "vừa",
-      "large": "lớn"
-    },
-    "ci": {
-      "success": "CI xanh",
-      "failure": "CI đang lỗi",
-      "pending": "CI đang chạy"
-    },
-    "ciWaitAuthor": "chờ tác giả sửa CI"
+    "autoRows": "đang hiện dạng dòng vì có {n} session",
+    "autoCards": "đang hiện dạng thẻ",
+    "expandAll": "Mở hết",
+    "collapseAll": "Thu hết"
   },
-  "health": {
-    "title": "Dự án",
-    "scope": "GitHub Project board",
-    "openRadarAt": "Mở Delivery Radar tại {name}",
-    "noProjects": "Chưa có dự án nào.",
-    "reason": {
-      "no-board": "chưa liên kết board",
-      "gitlab": "GitLab chưa được hỗ trợ",
-      "error": "lần tải gần nhất bị lỗi",
-      "truncated": "dữ liệu board bị cắt bớt",
-      "loading": "đang tải…"
-    },
-    "seeAll": "Delivery Radar",
-    "answer": "dự án có rủi ro trễ",
-    "answerRest": "{attention} cần chú ý · {ok} ổn",
-    "groups": {
-      "risky": "Cần xem",
-      "rest": "Còn lại"
-    },
-    "okSub": "không có issue trễ",
-    "openIssue": "Mở issue",
-    "radar": "Radar",
-    "why": {
-      "issueOverdue": "{issue} trễ {n} ngày",
-      "issueDueSoon": "{issue} hạn hôm nay | {issue} còn {n} ngày | {issue} còn {n} ngày",
-      "issue": {
-        "not-started": "{issue} chưa bắt đầu",
-        "stale": "{issue} lâu không cập nhật"
-      },
-      "milestoneOverdue": "milestone {title} quá hạn {n} ngày",
-      "milestoneLag": "milestone {title} chậm khoảng {n}%",
-      "riskyIssues": "thêm {n} issue có rủi ro"
-    },
-    "answerUnknown": "{n} chưa đánh giá được"
+  "group": {
+    "solo": "Session lẻ",
+    "soloSub": "không thuộc conductor nào",
+    "external": "Ngoài Devdy",
+    "externalSub": "terminal / IDE · chỉ xem",
+    "workers": "{n} worker | {n} worker",
+    "sessions": "{n} session | {n} session",
+    "waiting": "{n} chờ bạn",
+    "quiet": "{n} im lâu",
+    "ctx": "{n} context đầy",
+    "viewConductor": "Xem conductor",
+    "fold": "+{n} đang chạy ổn",
+    "show": "Hiện",
+    "refold": "Ẩn {n} session đang chạy ổn | Ẩn {n} session đang chạy ổn"
   },
-  "runs": {
-    "title": "Session đang chạy",
-    "untitled": "Session",
-    "empty": "Không có session nào đang chạy.",
-    "waitingPermission": "{n} yêu cầu chờ duyệt",
-    "idle": "đang mở, rảnh",
-    "workers": "{n} worker",
-    "review": "Xem yêu cầu",
-    "open": "Mở",
-    "stop": "Dừng",
-    "stopTitle": "Dừng session này?",
-    "stopMessage": "“{name}” sẽ bị huỷ. Bạn có thể tiếp tục lại sau.",
-    "waitingItem": "{name} — {n} yêu cầu",
+  "state": {
+    "waiting": "chờ bạn",
+    "quiet": "im lâu",
+    "running": "đang chạy",
+    "idle": "chờ worker",
+    "external": "bên ngoài"
+  },
+  "role": {
+    "conductor": "conductor",
     "worker": "worker",
-    "answer": "đang chạy",
-    "answerWaiting": "{n} chờ duyệt",
-    "activity": {
-      "permission": "Chờ duyệt: {tool}",
-      "tool": "Đang chạy {tool}"
-    },
-    "recentDone": "Xong gần đây",
-    "done": "đã xong",
-    "failed": "lỗi hoặc đã dừng",
-    "runningNow": "đang chạy"
+    "session": "session",
+    "external": "ngoài Devdy"
   },
-  "sources": {
-    "todos": "Todo",
-    "prs": "PR",
-    "runs": "Session",
-    "slack": "Slack",
-    "projects": "Radar"
+  "engine": {
+    "claude": "Claude",
+    "codex": "Codex"
   },
-  "failed": "tải lỗi: {sources}",
-  "failedHint": "Các nguồn này tải không được; widget tương ứng hiện lỗi và dữ liệu gần nhất đang có.",
-  "more": "+{n} mục khác",
-  "view": {
-    "label": "Góc nhìn dashboard",
-    "category": "Theo hạng mục",
-    "project": "Theo dự án"
+  "now": {
+    "permission": "Xin quyền {tool}: {detail}",
+    "permissionBare": "Xin quyền dùng {tool}",
+    "permissionUnknown": "Đang xin quyền",
+    "question": "Hỏi: {detail}",
+    "questionBare": "Có câu hỏi cho bạn",
+    "wait": "Đang đợi các worker",
+    "working": "Đang làm…",
+    "lastActivity": "hoạt động {age} trước"
   },
-  "order": {
-    "drag": "Kéo để sắp lại thứ tự thẻ",
-    "moveToFront": "Đưa “{name}” lên đầu"
-  },
-  "summary": {
-    "failed": "không tải được",
-    "slack": {
-      "waiting": "{n} khách chờ bạn",
-      "new": "{n} thread có tin mới",
-      "none": "không ai đang chờ bạn"
-    },
-    "todos": {
-      "some": "{overdue} trễ · {today} hôm nay",
-      "none": "không có việc gấp"
-    },
-    "prs": {
-      "some": "{n} PR",
-      "again": "{n} PR · {again} cần review lại",
-      "none": "không có PR chờ bạn"
-    },
-    "projects": {
-      "some": "{risk} rủi ro · {attention} cần chú ý",
-      "ok": "tất cả ổn",
-      "unknown": "chưa đủ dữ liệu",
-      "none": "chưa có dự án",
-      "okUnknown": "ổn · {n} chưa đánh giá được"
-    }
-  },
-  "byProject": {
-    "level": {
-      "red": "Rủi ro trễ",
-      "orange": "Cần chú ý",
-      "green": "Ổn",
-      "gray": "Chưa đủ dữ liệu"
-    },
-    "noLateIssue": "Không có issue trễ",
-    "customerWaiting": "khách {name} chờ {duration}",
-    "customerWaitingAnon": "một khách chờ {duration}",
-    "todoLate": "todo trễ {n} ngày",
-    "todoLateToday": "có todo quá hạn",
-    "sessionsWaiting": "{n} session chờ duyệt",
-    "progress": "{title}: xong {done}% · đã qua {elapsed}% thời gian",
-    "progressNoStart": "{title}: xong {done}% (chưa có ngày bắt đầu)",
-    "linkBoard": "Liên kết board",
-    "noMilestone": "Không có milestone có hạn",
-    "count": {
-      "customers": "{n} khách chờ",
-      "prs": "{n} PR",
-      "todos": "{n} todo trễ",
-      "sessions": "{n} session"
+  "context": "context",
+  "contextTitle": "Context đã dùng {pct}%",
+  "contextUnknown": "Chưa biết mức dùng context",
+  "activityTitle": "Số event mỗi phút trong 20 phút gần đây",
+  "activityStalled": "Vài phút gần đây không có event nào",
+  "detail": {
+    "title": "Chi tiết session",
+    "queue": "chờ bạn {i}/{n}",
+    "queueCount": "{n} đang chờ bạn",
+    "prev": "Session chờ trước",
+    "next": "Session chờ tiếp theo",
+    "none": "Chọn một session để xem log.",
+    "logLabel": "Log của {name}",
+    "logEmpty": "Chưa có output.",
+    "logLoading": "Đang tải log…",
+    "turnDone": "Xong lượt",
+    "resources": "CPU {cpu} · RAM {ram}",
+    "permTitle": "Xin quyền chạy {tool}",
+    "planTitle": "Đã lập xong kế hoạch — duyệt để bắt đầu",
+    "allow": "Cho phép",
+    "always": "Luôn cho phép",
+    "alwaysTitle": "Cho phép lần này và tự cho phép tool này trong project",
+    "deny": "Từ chối",
+    "approve": "Duyệt",
+    "keepPlanning": "Lập tiếp kế hoạch",
+    "questionStep": "Câu hỏi {i}/{n}",
+    "answerPlaceholder": "Hoặc gõ câu trả lời… (Enter để gửi)",
+    "answerLabel": "Trả lời agent",
+    "send": "Gửi",
+    "msgPlaceholder": "Nhắn thêm cho session này…",
+    "msgLabel": "Nhắn cho session",
+    "hintCalm": "Session không cần bạn lúc này.",
+    "hintIdle": "Conductor đang đợi worker. Bạn vẫn có thể nhắn để đổi hướng.",
+    "hintExternal": "Session chạy ngoài Devdy: chỉ xem được log.",
+    "externalNoLog": "Chưa có log của session này ở đây — mở transcript để đọc.",
+    "stop": "Dừng session",
+    "stopTitle": "Dừng session này?",
+    "stopMessage": "Dừng “{name}”? Lượt đang chạy sẽ bị huỷ.",
+    "open": "Mở session đầy đủ",
+    "openTranscript": "Mở transcript",
+    "flash": {
+      "allowed": "Đã cho phép · agent chạy tiếp",
+      "always": "Đã cho phép và nhớ cho project này",
+      "denied": "Đã từ chối · agent được báo lại",
+      "answered": "Đã gửi câu trả lời · agent chạy tiếp",
+      "sent": "Đã gửi tin nhắn",
+      "stopped": "Đã dừng session",
+      "failed": "Không gửi được — thử lại hoặc mở session đầy đủ."
     }
   }
 }

@@ -6,6 +6,36 @@
 //
 // Pure logic (no Vue / Tauri / `@/` imports) for node:test.
 
+// ── Live runs (existing `list_active_runs`) ─────────────────────────────────
+
+/** Mirrors the Rust `ActiveRun` (`list_active_runs`). */
+export interface ActiveRun {
+  run_id: string
+  project_id: string
+  project_name: string
+  title: string | null
+  run_type: string
+  ref_number: number | null
+  engine: string | null
+  model: string | null
+  status: string
+  started_at: string | null
+  created_at: string
+  role: string | null
+  conductor_run_id: string | null
+  pending_permissions: number
+  waiting_since: string | null
+}
+
+/** A run's name: its title, else "Issue #n" / "PR #n", else null. */
+export function runTitle(r: Pick<ActiveRun, 'title' | 'run_type' | 'ref_number'>): string | null {
+  if (r.title?.trim()) return r.title.trim()
+  if (r.run_type !== 'session' && r.ref_number != null) {
+    return `${r.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${r.ref_number}`
+  }
+  return null
+}
+
 // ── Session summary ─────────────────────────────────────────────────────────
 
 /**
@@ -23,8 +53,9 @@ export type Engine = 'claude' | 'codex'
 
 /** What the session is doing now (the card's "now" line). */
 export interface NowLine {
-  kind: 'tool' | 'permission' | 'question' | 'wait' | 'none'
-  /** Tool name (permission / tool), null otherwise. */
+  /** `last` = no step known to be running: the session's latest event instead. */
+  kind: 'tool' | 'permission' | 'question' | 'wait' | 'last' | 'none'
+  /** Tool name (permission / tool / a last event that was a tool), null otherwise. */
   tool: string | null
   /** Command / file / question text, possibly empty. */
   detail: string
@@ -106,9 +137,9 @@ export function needsAttention(s: Pick<RtSession, 'state' | 'ctxPercent'>): bool
   return s.state === 'waiting' || s.state === 'quiet' || ctxFull(s)
 }
 
-/** 0-100 (capped), null when either side is unknown. */
+/** 0-100 (capped), null when either side is unknown (0 tokens = just compacted). */
 export function contextPercent(tokens: number | null | undefined, limit: number | null | undefined): number | null {
-  if (!tokens || !limit || limit <= 0) return null
+  if (tokens === null || tokens === undefined || !Number.isFinite(tokens) || !limit || limit <= 0) return null
   return Math.min(100, Math.round((tokens / limit) * 100))
 }
 
@@ -663,6 +694,21 @@ export function logLines(entries: readonly LogEntryLite[], max = 150): LogLine[]
     if (l) out.push(l)
   }
   return out
+}
+
+/**
+ * The latest meaningful event of a session (looking back `within` entries), for
+ * the "now" line when no running step is known — Codex reports tools only once
+ * they finished.
+ */
+export function lastEvent(entries: readonly LogEntryLite[], within = 30): { tool: string | null; text: string } | null {
+  for (let i = entries.length - 1; i >= Math.max(0, entries.length - within); i--) {
+    const e = entries[i]
+    const l = logLine(e)
+    if (!l || !l.text) continue
+    return { tool: e.kind === 'tool' ? (e as { name: string }).name : null, text: l.text }
+  }
+  return null
 }
 
 /** The tool still running at the end of a turn's entries (no result yet), if any. */

@@ -1,233 +1,173 @@
 {
-  "title": "Work Dashboard",
-  "allProjects": "All projects",
-  "refresh": "Refresh everything",
-  "refreshedAt": "refreshed {time}",
-  "updated": "updated {age}",
-  "staleData": "old data · {age}",
-  "justNow": "just now",
-  "ago": "{duration} ago",
-  "duration": {
-    "m": "{n}m",
-    "h": "{n}h",
-    "d": "{n}d"
+  "title": "Running",
+  "subtitle": "{date} · live · grouped by conductor",
+  "untitled": "Untitled session",
+  "loadError": "Could not load the running sessions: {error}",
+  "fallbackHint": "Limited live data: per-session activity, today's runs and sessions outside Devdy show once the app provides them.",
+  "empty": "Nothing is running right now. Start a session from a project and it shows up here.",
+  "noMatch": "No session matches.",
+  "shortcuts": {
+    "label": "Keyboard shortcuts",
+    "search": "search",
+    "pick": "select",
+    "next": "next waiting",
+    "allow": "allow",
+    "deny": "deny",
+    "open": "open"
   },
-  "loadError": "Could not load: {error}",
-  "todoAdded": "Todo added",
-  "slack": {
-    "title": "Customers",
-    "waiting": "waiting {duration}",
-    "fetchErrors": "{n} thread could not be fetched — open the Slack window to retry. | {n} threads could not be fetched — open the Slack window to retry.",
-    "noCustomers": "No customers marked yet: in the Slack threads window, hover a message and choose “Mark as customer” to see who is waiting on you.",
-    "emptyNone": "No Slack threads tracked yet. Add one from the Slack threads window.",
-    "empty": "No Slack threads here.",
-    "unread": "New messages",
-    "waitingOnCustomer": "Waiting on the customer",
-    "addTodo": "Create a todo from this thread",
-    "markSeen": "Mark as seen",
-    "todoText": "Reply on Slack: {title}",
-    "seeAll": "Slack threads",
-    "answer": "customer waiting for your reply | customers waiting for your reply",
-    "groups": {
-      "waiting": "Waiting on you",
-      "later": "No reply needed now"
+  "stat": {
+    "sessions": {
+      "title": "Sessions",
+      "unit": "session | sessions",
+      "meta": "{conductors} conductor · {external} outside Devdy | {conductors} conductors · {external} outside Devdy",
+      "mapLabel": "Session map: one square per session",
+      "chip": {
+        "wait": "{n} waiting for you",
+        "quiet": "{n} quiet for long",
+        "ctx": "{n} context > 80%"
+      }
     },
-    "open": "Open thread",
-    "view": "View",
-    "youRepliedLast": "you replied last · waiting on the customer",
-    "unassignedNew": "{n} thread with new messages | {n} threads with new messages",
-    "unassignedHint": "no customer marked on these threads",
-    "calm": "No customer is waiting on you."
-  },
-  "todos": {
-    "title": "Todos",
-    "empty": "Nothing overdue, due soon or in progress.",
-    "lateDays": "{n} day late | {n} days late",
-    "lateToday": "Overdue",
-    "today": "Due today",
-    "inDays": "Due in {n} day | Due in {n} days",
-    "status": {
-      "todo": "To do",
-      "doing": "In progress",
-      "waiting": "Waiting"
+    "quota": {
+      "title": "5-hour limit",
+      "noData": "no data yet",
+      "exhaust": "runs out ~{time} at this pace",
+      "safe": "enough left",
+      "full": "limit reached",
+      "unknown": "pace not known yet",
+      "reset": "resets {time}"
     },
-    "priorityHigh": "High priority",
-    "priorityLow": "Low priority",
-    "markDone": "Done",
-    "doneToast": "Todo done",
-    "seeAll": "Todos",
-    "answer": "overdue",
-    "answerToday": "{n} due today",
-    "groups": {
-      "overdue": "Overdue",
-      "today": "Today",
-      "upcoming": "Coming up & in progress"
+    "resources": {
+      "title": "Resources",
+      "processes": "{n} process | {n} processes",
+      "cpu": "CPU",
+      "ram": "RAM",
+      "ofTotal": "/ {total}",
+      "orphans": "{n} leftover process | {n} leftover processes",
+      "staleWorktrees": "{n} stale worktree | {n} stale worktrees",
+      "clean": "Clean up",
+      "cleanTitle": "Stop the processes left behind by ended sessions or a previous app run",
+      "noData": "no data yet",
+      "cpuTitle": "Share of the whole machine used by Devdy's processes"
+    },
+    "today": {
+      "title": "Today",
+      "finished": "finished",
+      "failed": "{n} failed",
+      "all": "All",
+      "allTitle": "Open the background processes",
+      "empty": "Nothing finished yet today.",
+      "noData": "Not available yet.",
+      "status": {
+        "done": "done",
+        "failed": "failed",
+        "cancelled": "cancelled"
+      }
     }
   },
-  "prs": {
-    "title": "PRs waiting for your review",
-    "scope": "GitHub PRs",
-    "draft": "Draft",
-    "soleReviewer": "you are the last reviewer",
-    "ai": {
-      "none": "no AI review",
-      "running": "AI review running",
-      "done": "AI review done",
-      "updated": "new commits since AI review"
+  "toolbar": {
+    "search": "Search by name or project…",
+    "searchLabel": "Search sessions",
+    "mode": {
+      "label": "Display",
+      "auto": "Auto",
+      "cards": "Cards",
+      "rows": "Rows"
     },
-    "mapRepo": "Map repo",
-    "mapRepoHint": "This repository is not in any project yet — add it to a project to run reviews",
-    "reReview": "Review again",
-    "review": "AI review",
-    "openSession": "Open session",
-    "addTodo": "Create todo “Review PR #{n}”",
-    "openPr": "Open the PR on GitHub",
-    "empty": "No PRs waiting for your review.",
-    "todoText": "Review PR #{n}: {title}",
-    "seeAll": "PR Inbox",
-    "answer": "PR waiting for you | PRs waiting for you",
-    "groups": {
-      "reReview": "Review again",
-      "toReview": "To review",
-      "bots": "Bots"
-    },
-    "size": {
-      "small": "small",
-      "medium": "medium",
-      "large": "large"
-    },
-    "ci": {
-      "success": "CI passing",
-      "failure": "CI failing",
-      "pending": "CI running"
-    },
-    "ciWaitAuthor": "author to fix CI"
+    "autoRows": "showing rows: {n} sessions",
+    "autoCards": "showing cards",
+    "expandAll": "Expand all",
+    "collapseAll": "Collapse all"
   },
-  "health": {
-    "title": "Projects",
-    "scope": "GitHub Project boards",
-    "openRadarAt": "Open Delivery Radar at {name}",
-    "noProjects": "No projects yet.",
-    "reason": {
-      "no-board": "no board linked",
-      "gitlab": "GitLab is not supported yet",
-      "error": "last fetch failed",
-      "truncated": "board data was cut short",
-      "loading": "loading…"
-    },
-    "seeAll": "Delivery Radar",
-    "answer": "project at risk of slipping | projects at risk of slipping",
-    "answerRest": "{attention} need attention · {ok} on track",
-    "groups": {
-      "risky": "Needs a look",
-      "rest": "Others"
-    },
-    "okSub": "no late issue",
-    "openIssue": "Open issue",
-    "radar": "Radar",
-    "why": {
-      "issueOverdue": "{issue} is {n} day late | {issue} is {n} days late",
-      "issueDueSoon": "{issue} is due today | {issue} is due in {n} day | {issue} is due in {n} days",
-      "issue": {
-        "not-started": "{issue} has not started",
-        "stale": "{issue} has had no update for a while"
-      },
-      "milestoneOverdue": "milestone {title} is past due by {n} day | milestone {title} is past due by {n} days",
-      "milestoneLag": "milestone {title} is about {n}% behind",
-      "riskyIssues": "{n} more issue at risk | {n} more issues at risk"
-    },
-    "answerUnknown": "{n} could not be judged"
-  },
-  "runs": {
-    "title": "Running sessions",
-    "untitled": "Session",
-    "empty": "No session running.",
-    "waitingPermission": "awaiting permission | {n} awaiting permission",
-    "idle": "open, idle",
+  "group": {
+    "solo": "Standalone sessions",
+    "soloSub": "not part of a conductor",
+    "external": "Outside Devdy",
+    "externalSub": "terminal / IDE · view only",
     "workers": "{n} worker | {n} workers",
-    "review": "View request",
-    "open": "Open",
-    "stop": "Stop",
-    "stopTitle": "Stop this session?",
-    "stopMessage": "“{name}” will be cancelled. You can resume it later.",
-    "waitingItem": "{name} — {n} request | {name} — {n} requests",
+    "sessions": "{n} session | {n} sessions",
+    "waiting": "{n} waiting for you",
+    "quiet": "{n} quiet for long",
+    "ctx": "{n} context full",
+    "viewConductor": "View conductor",
+    "fold": "+{n} running fine",
+    "show": "Show",
+    "refold": "Hide {n} session running fine | Hide {n} sessions running fine"
+  },
+  "state": {
+    "waiting": "waiting for you",
+    "quiet": "quiet for long",
+    "running": "running",
+    "idle": "waiting on workers",
+    "external": "outside Devdy"
+  },
+  "role": {
+    "conductor": "conductor",
     "worker": "worker",
-    "answer": "running",
-    "answerWaiting": "{n} awaiting approval",
-    "activity": {
-      "permission": "Awaiting approval: {tool}",
-      "tool": "Running {tool}"
-    },
-    "recentDone": "Finished recently",
-    "done": "finished",
-    "failed": "failed or stopped",
-    "runningNow": "running"
+    "session": "session",
+    "external": "outside Devdy"
   },
-  "sources": {
-    "todos": "Todos",
-    "prs": "PRs",
-    "runs": "Sessions",
-    "slack": "Slack",
-    "projects": "Radar"
+  "engine": {
+    "claude": "Claude",
+    "codex": "Codex"
   },
-  "failed": "load failed: {sources}",
-  "failedHint": "These sources could not be loaded; their widget shows the error and the last data it had.",
-  "more": "+{n} more",
-  "view": {
-    "label": "Dashboard view",
-    "category": "By category",
-    "project": "By project"
+  "now": {
+    "permission": "Asks to run {tool}: {detail}",
+    "permissionBare": "Asks permission for {tool}",
+    "permissionUnknown": "Asks for permission",
+    "question": "Asks: {detail}",
+    "questionBare": "Has a question for you",
+    "wait": "Waiting on workers",
+    "working": "Working…",
+    "lastActivity": "last activity {age} ago"
   },
-  "order": {
-    "drag": "Drag to reorder the cards",
-    "moveToFront": "Move “{name}” to the top"
-  },
-  "summary": {
-    "failed": "could not load",
-    "slack": {
-      "waiting": "{n} waiting on you",
-      "new": "{n} thread with new messages | {n} threads with new messages",
-      "none": "nobody waiting on you"
-    },
-    "todos": {
-      "some": "{overdue} overdue · {today} today",
-      "none": "nothing urgent"
-    },
-    "prs": {
-      "some": "{n} PR | {n} PRs",
-      "again": "{n} PRs · {again} to review again",
-      "none": "none waiting for you"
-    },
-    "projects": {
-      "some": "{risk} at risk · {attention} need attention",
-      "ok": "all on track",
-      "unknown": "not enough data",
-      "none": "no projects yet",
-      "okUnknown": "on track · {n} not judged"
-    }
-  },
-  "byProject": {
-    "level": {
-      "red": "At risk",
-      "orange": "Needs attention",
-      "green": "On track",
-      "gray": "Not enough data"
-    },
-    "noLateIssue": "No late issue",
-    "customerWaiting": "customer {name} waiting {duration}",
-    "customerWaitingAnon": "a customer waiting {duration}",
-    "todoLate": "a todo {n} day late | a todo {n} days late",
-    "todoLateToday": "a todo overdue",
-    "sessionsWaiting": "{n} session awaiting approval | {n} sessions awaiting approval",
-    "progress": "{title}: {done}% done · {elapsed}% of the time used",
-    "progressNoStart": "{title}: {done}% done (no start date)",
-    "linkBoard": "Link board",
-    "noMilestone": "No milestone with a due date",
-    "count": {
-      "customers": "{n} customer waiting | {n} customers waiting",
-      "prs": "{n} PR | {n} PRs",
-      "todos": "{n} overdue todo | {n} overdue todos",
-      "sessions": "{n} session | {n} sessions"
+  "context": "context",
+  "contextTitle": "Context window {pct}% full",
+  "contextUnknown": "Context use not known yet",
+  "activityTitle": "Events per minute over the last 20 minutes",
+  "activityStalled": "No events for the last few minutes",
+  "detail": {
+    "title": "Session details",
+    "queue": "waiting {i}/{n}",
+    "queueCount": "{n} waiting for you",
+    "prev": "Previous waiting session",
+    "next": "Next waiting session",
+    "none": "Select a session to see its log.",
+    "logLabel": "Log of {name}",
+    "logEmpty": "No output yet.",
+    "logLoading": "Loading the log…",
+    "turnDone": "Turn finished",
+    "resources": "CPU {cpu} · RAM {ram}",
+    "permTitle": "Asks to run {tool}",
+    "planTitle": "Finished planning — approve to start",
+    "allow": "Allow",
+    "always": "Always allow",
+    "alwaysTitle": "Allow now and auto-allow this tool for this project",
+    "deny": "Deny",
+    "approve": "Approve",
+    "keepPlanning": "Keep planning",
+    "questionStep": "Question {i} of {n}",
+    "answerPlaceholder": "Or type an answer… (Enter to send)",
+    "answerLabel": "Answer the agent",
+    "send": "Send",
+    "msgPlaceholder": "Send this session a message…",
+    "msgLabel": "Message the session",
+    "hintCalm": "This session doesn't need you right now.",
+    "hintIdle": "The conductor is waiting on its workers. You can still message it to change course.",
+    "hintExternal": "This session runs outside Devdy: its log is view-only.",
+    "externalNoLog": "No log for this session here — open the transcript to read it.",
+    "stop": "Stop session",
+    "stopTitle": "Stop this session?",
+    "stopMessage": "Stop “{name}”? Its current turn is cancelled.",
+    "open": "Open full session",
+    "openTranscript": "Open transcript",
+    "flash": {
+      "allowed": "Allowed · the agent continues",
+      "always": "Allowed and remembered for this project",
+      "denied": "Denied · the agent was told",
+      "answered": "Answer sent · the agent continues",
+      "sent": "Message sent",
+      "stopped": "Session stopped",
+      "failed": "Couldn't send it — try again or open the full session."
     }
   }
 }

@@ -17,6 +17,7 @@ import {
   groupKeyOf,
   initialPick,
   isWaitTool,
+  lastEvent,
   layoutGroups,
   logLine,
   logLines,
@@ -93,7 +94,8 @@ test('isWaitTool', () => {
 test('contextPercent and needsAttention', () => {
   assert.equal(contextPercent(160_000, 200_000), 80)
   assert.equal(contextPercent(300_000, 200_000), 100)
-  assert.equal(contextPercent(0, 200_000), null)
+  assert.equal(contextPercent(0, 200_000), 0)
+  assert.equal(contextPercent(null, 200_000), null)
   assert.equal(contextPercent(10, null), null)
   assert.ok(needsAttention(s('a', { ctxPercent: 80 })))
   assert.ok(!needsAttention(s('a', { ctxPercent: 79 })))
@@ -385,4 +387,17 @@ test('runningTool: the last tool without a result in the current turn', () => {
   assert.equal(runningTool([{ kind: 'tool', name: 'Bash', input: {}, result: { is_error: false } }]), null)
   assert.equal(runningTool([{ kind: 'tool', name: 'Bash', input: {} }, { kind: 'result', text: '', is_error: false }]), null)
   assert.equal(runningTool([]), null)
+})
+
+test('lastEvent: the latest line with text, a tool keeps its name', () => {
+  const entries = [
+    { kind: 'tool', name: 'Bash', input: { command: 'cargo check' }, result: { is_error: false } },
+    { kind: 'thinking', text: 'hmm' },
+  ]
+  assert.deepEqual(lastEvent(entries), { tool: 'Bash', text: 'Bash cargo check' })
+  assert.deepEqual(lastEvent([...entries, { kind: 'text', text: 'All good' }]), { tool: null, text: 'All good' })
+  // a finished turn has no text of its own: look past it
+  assert.deepEqual(lastEvent([...entries, { kind: 'result', text: '', is_error: false }]), { tool: 'Bash', text: 'Bash cargo check' })
+  assert.equal(lastEvent([]), null)
+  assert.equal(lastEvent([{ kind: 'text', text: 'old' }, { kind: 'thinking', text: '' }], 1), null)
 })
