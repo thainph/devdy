@@ -89,7 +89,6 @@
     "waiting": "{n} waiting for you",
     "quiet": "{n} quiet for long",
     "ctx": "{n} context full",
-    "viewConductor": "View conductor",
     "fold": "+{n} running fine",
     "show": "Show",
     "refold": "Hide {n} session running fine | Hide {n} sessions running fine"

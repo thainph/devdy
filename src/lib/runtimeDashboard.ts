@@ -247,7 +247,7 @@ export function buildGroups(list: readonly RtSession[]): GroupDef[] {
 
 /**
  * The sessions a group lists: its members, plus the conductor itself when it
- * needs you (otherwise it is reached through "View conductor").
+ * needs you (otherwise it is reached through the group header).
  */
 export function groupItems(g: GroupDef): RtSession[] {
   return g.conductor && needsAttention(g.conductor) ? [g.conductor, ...g.members] : g.members

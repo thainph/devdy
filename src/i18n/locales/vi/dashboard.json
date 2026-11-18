@@ -89,7 +89,6 @@
     "waiting": "{n} chờ bạn",
     "quiet": "{n} im lâu",
     "ctx": "{n} context đầy",
-    "viewConductor": "Xem conductor",
     "fold": "+{n} đang chạy ổn",
     "show": "Hiện",
     "refold": "Ẩn {n} session đang chạy ổn | Ẩn {n} session đang chạy ổn"

@@ -34,9 +34,36 @@ pub struct ActiveRun {
 pub type PendingInfo = (usize, Option<String>);
 
 /// Rows of `run_ids` (live ids missing from the DB are skipped), with their
-/// pending prompts. Ordered like the dashboard lists them: awaiting a
-/// permission first (longest waiting first), then the longest running.
+/// pending prompts. The conductor of a live worker is listed too even while
+/// its own sidecar is down between turns (it is resumed when a worker
+/// finishes), so its workers keep their group instead of flipping to
+/// standalone. Ordered like the dashboard lists them: awaiting a permission
+/// first (longest waiting first), then the longest running.
 pub async fn active_runs(
+    db: &Db,
+    run_ids: &[String],
+    pending: &HashMap<String, PendingInfo>,
+) -> Result<Vec<ActiveRun>, sqlx::Error> {
+    let mut out = fetch_rows(db, run_ids, pending).await?;
+    let mut missing: Vec<String> = out
+        .iter()
+        .filter_map(|r| r.conductor_run_id.clone())
+        .filter(|c| !out.iter().any(|r| &r.run_id == c))
+        .collect();
+    missing.sort();
+    missing.dedup();
+    out.extend(fetch_rows(db, &missing, pending).await?);
+    out.sort_by(|a, b| {
+        (b.pending_permissions > 0)
+            .cmp(&(a.pending_permissions > 0))
+            .then_with(|| a.waiting_since.cmp(&b.waiting_since))
+            .then_with(|| a.started_at.cmp(&b.started_at))
+            .then_with(|| a.run_id.cmp(&b.run_id))
+    });
+    Ok(out)
+}
+
+async fn fetch_rows(
     db: &Db,
     run_ids: &[String],
     pending: &HashMap<String, PendingInfo>,
@@ -57,7 +84,7 @@ pub async fn active_runs(
         q = q.bind(id);
     }
     let rows = q.fetch_all(db).await?;
-    let mut out: Vec<ActiveRun> = rows
+    Ok(rows
         .iter()
         .map(|row| {
             let run_id: String = row.get("id");
@@ -81,15 +108,7 @@ pub async fn active_runs(
                 run_id,
             }
         })
-        .collect();
-    out.sort_by(|a, b| {
-        (b.pending_permissions > 0)
-            .cmp(&(a.pending_permissions > 0))
-            .then_with(|| a.waiting_since.cmp(&b.waiting_since))
-            .then_with(|| a.started_at.cmp(&b.started_at))
-            .then_with(|| a.run_id.cmp(&b.run_id))
-    });
-    Ok(out)
+        .collect())
 }
 
 /// Pending prompts of every run, from the permission store.
@@ -153,5 +172,27 @@ mod tests {
         assert_eq!(rows[1].title.as_deref(), Some("Run b"));
 
         assert!(active_runs(&db, &[], &pending).await.unwrap().is_empty());
+    }
+
+    #[tokio::test]
+    async fn lists_the_conductor_of_a_live_worker() {
+        let db = memory_db().await;
+        run(&db, "cond", "p1", "2026-01-02T08:00:00Z").await;
+        run(&db, "w1", "p1", "2026-01-02T09:00:00Z").await;
+        run(&db, "w2", "p1", "2026-01-02T10:00:00Z").await;
+        sqlx::query("UPDATE runs SET role = 'conductor', status = 'done' WHERE id = 'cond'")
+            .execute(&db)
+            .await
+            .unwrap();
+        sqlx::query("UPDATE runs SET role = 'worker', conductor_run_id = 'cond' WHERE id IN ('w1', 'w2')")
+            .execute(&db)
+            .await
+            .unwrap();
+
+        let ids: Vec<String> = ["w1", "w2"].iter().map(|s| s.to_string()).collect();
+        let rows = active_runs(&db, &ids, &HashMap::new()).await.unwrap();
+        let order: Vec<&str> = rows.iter().map(|r| r.run_id.as_str()).collect();
+        assert_eq!(order, ["cond", "w1", "w2"]);
+        assert_eq!(rows[0].role.as_deref(), Some("conductor"));
     }
 }

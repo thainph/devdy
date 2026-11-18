@@ -1,12 +1,12 @@
 <script setup lang="ts">
 // One group of the Runtime Dashboard: a conductor with its workers, the
 // standalone sessions, or the sessions outside Devdy. One-line header (click to
-// collapse / expand) with a dot per member and attention tags; the open body
+// collapse / expand; on a conductor group the name selects the conductor and
+// the chevron collapses) with attention tags and the member count; the open body
 // lists what needs you and folds the sessions running fine behind "+N".
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CheckCircle2, ChevronRight, ExternalLink, Folder, Layers } from 'lucide-vue-next'
-import { Button } from '@/components/ui'
 import type { GroupView } from '@/lib/runtimeDashboard'
 import SessionCard from './SessionCard.vue'
 import SessionRow from './SessionRow.vue'
@@ -45,23 +45,48 @@ const countTag = computed(() => {
   const n = g.value.members.length
   return g.value.kind === 'conductor' ? t('dashboard.group.workers', { n }, n) : t('dashboard.group.sessions', { n }, n)
 })
+const conductorSelected = computed(() => !!g.value.conductor && props.selectedId === g.value.conductor.id)
 const FOLD_DOTS = 12
 </script>
 
 <template>
   <section
-    class="rounded-lg border"
-    :class="g.kind === 'conductor' ? 'border-border/70 bg-muted/30' : 'border-dashed border-border/70'"
+    class="rounded-lg border transition-colors"
+    :class="
+      g.kind !== 'conductor'
+        ? 'border-dashed border-border/70'
+        : conductorSelected
+          ? 'border-primary/50 bg-primary/[0.04]'
+          : 'border-border/60 bg-muted/30'
+    "
     :aria-label="title"
   >
     <div class="flex min-h-[46px] flex-wrap items-center gap-2 px-2.5 py-1.5">
       <button
+        v-if="g.conductor"
         type="button"
-        class="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary"
+        class="grid h-6 w-6 shrink-0 cursor-pointer place-items-center rounded-md hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary"
         :aria-expanded="g.open"
+        :aria-label="title"
         @click="emit('toggle', g.key)"
       >
         <ChevronRight
+          class="h-3.5 w-3.5 text-muted-foreground transition-transform motion-reduce:transition-none"
+          :class="g.open && 'rotate-90'"
+          :stroke-width="2"
+          aria-hidden="true"
+        />
+      </button>
+      <button
+        type="button"
+        :data-session-id="g.conductor?.id"
+        class="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary"
+        :aria-expanded="g.conductor ? undefined : g.open"
+        :aria-pressed="g.conductor ? conductorSelected : undefined"
+        @click="g.conductor ? emit('select', g.conductor.id) : emit('toggle', g.key)"
+      >
+        <ChevronRight
+          v-if="!g.conductor"
           class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform motion-reduce:transition-none"
           :class="g.open && 'rotate-90'"
           :stroke-width="2"
@@ -74,26 +99,14 @@ const FOLD_DOTS = 12
           :stroke-width="1.75"
           aria-hidden="true"
         />
-        <span class="truncate text-sm font-semibold text-foreground">{{ title }}</span>
+        <span class="truncate text-sm font-semibold" :class="conductorSelected ? 'text-primary' : 'text-foreground'">{{ title }}</span>
         <span class="truncate text-[11px] text-muted-foreground">{{ sub }}</span>
       </button>
-      <span class="flex max-w-[220px] flex-wrap gap-[3px]" aria-hidden="true">
-        <i v-for="(st, i) in g.dots" :key="i" class="block h-2 w-2 rounded-sm" :class="STATE_FILL[st]" />
-      </span>
       <span class="ml-auto flex flex-wrap items-center gap-1.5">
         <span v-if="g.counts.waiting" class="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{{ t('dashboard.group.waiting', { n: g.counts.waiting }) }}</span>
         <span v-if="g.counts.quiet" class="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{{ t('dashboard.group.quiet', { n: g.counts.quiet }) }}</span>
         <span v-if="g.counts.ctx" class="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{{ t('dashboard.group.ctx', { n: g.counts.ctx }) }}</span>
         <span class="rounded-full bg-muted px-2 py-0.5 text-[10px] font-semibold text-muted-foreground">{{ countTag }}</span>
-        <Button
-          v-if="g.conductor"
-          variant="outline"
-          size="xs"
-          :aria-pressed="selectedId === g.conductor.id"
-          @click="emit('select', g.conductor.id)"
-        >
-          {{ t('dashboard.group.viewConductor') }}
-        </Button>
       </span>
     </div>
 
