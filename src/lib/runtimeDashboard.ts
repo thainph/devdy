@@ -26,6 +26,11 @@ export interface ActiveRun {
   conductor_run_id: string | null
   pending_permissions: number
   waiting_since: string | null
+  /**
+   * The sidecar is alive. False for a conductor listed only because its
+   * workers still run while it sits between turns (older backends omit it).
+   */
+  live?: boolean
 }
 
 /** A run's name: its title, else "Issue #n" / "PR #n", else null. */
@@ -77,6 +82,11 @@ export interface RtSession {
   role: SessionRole
   /** Conductor run id of a worker. */
   conductorId: string | null
+  /**
+   * Its sidecar is alive. False for an external session and for a conductor
+   * between turns (no Stop; a message resumes it first).
+   */
+  live: boolean
   state: SessionState
   /** Epoch ms the oldest open prompt arrived (waiting only). */
   waitingSince: number | null
@@ -111,6 +121,8 @@ export interface StateInput {
   /** Open permission / question prompts. */
   pending: number
   conductor: boolean
+  /** Not running a turn now (a conductor between turns while its workers run). */
+  ended?: boolean
   /** Live workers of this conductor. */
   liveWorkers?: number
   /** Name of the tool running now, if known. */
@@ -125,6 +137,7 @@ export interface StateInput {
 export function classifyState(i: StateInput): SessionState {
   if (i.external) return 'external'
   if (i.pending > 0) return 'waiting'
+  if (i.conductor && i.ended) return 'idle'
   if (i.conductor && isWaitTool(i.currentTool)) return 'idle'
   // A conductor with live workers and no other tool running is waiting on them
   // (Codex never reports the running tool, so `session_wait` is not seen there).
@@ -245,14 +258,6 @@ export function buildGroups(list: readonly RtSession[]): GroupDef[] {
   return out
 }
 
-/**
- * The sessions a group lists: its members, plus the conductor itself when it
- * needs you (otherwise it is reached through the group header).
- */
-export function groupItems(g: GroupDef): RtSession[] {
-  return g.conductor && needsAttention(g.conductor) ? [g.conductor, ...g.members] : g.members
-}
-
 export interface LayoutOptions {
   query: string
   filter: QuickFilter | null
@@ -289,10 +294,14 @@ export function layoutGroups(defs: readonly GroupDef[], o: LayoutOptions): Group
   const filtering = !!o.query.trim() || o.filter !== null
   const out: GroupView[] = []
   for (const g of defs) {
-    const items = groupItems(g)
-    const condHit = !!g.conductor && matchesQuery(g.conductor, o.query)
-    const visible = items.filter((s) => matchesFilter(s, o.filter) && (condHit || matchesQuery(s, o.query)))
-    if (filtering && !visible.length) continue
+    const c = g.conductor
+    const items = c ? [c, ...g.members] : g.members
+    const condHit = !!c && matchesQuery(c, o.query)
+    const visible = g.members.filter((s) => matchesFilter(s, o.filter) && (condHit || matchesQuery(s, o.query)))
+    // The conductor heads its open group (click = its log) and never folds;
+    // while filtering it shows only when it matches itself.
+    const condShown = !!c && (!filtering || (condHit && matchesFilter(c, o.filter)))
+    if (filtering && !visible.length && !condShown) continue
     const attn = visible.filter(needsAttention)
     const ok = visible.filter((s) => !needsAttention(s))
     const defaultOpen = g.kind !== 'external' && items.some(needsAttention)
@@ -308,7 +317,7 @@ export function layoutGroups(defs: readonly GroupDef[], o: LayoutOptions): Group
     out.push({
       ...g,
       open,
-      shown: sortSessions(showOk ? visible : attn),
+      shown: [...(condShown && c ? [c] : []), ...sortSessions(showOk ? visible : attn)],
       dots: sortSessions(g.members).map((s) => s.state),
       counts,
       foldN: ok.length,

@@ -278,6 +278,14 @@ async function send() {
   if (!text || !cur?.runId || !cur.projectId || busy.value) return
   busy.value = true
   try {
+    // A conductor between turns has no sidecar: resume it first, as RunView
+    // does for a finished run, then hand it the message.
+    if (!cur.live) {
+      live.ensure(cur.runId, cur.projectId)
+      live.setStatus(cur.runId, 'running')
+      await live.startListening(cur.runId, cur.projectId)
+      await runsStore.resumeRun(cur.runId)
+    }
     live.pushUser(cur.runId, cur.projectId, text)
     await runsStore.sendUserMessage(cur.runId, text)
     drafts.delete(cur.runId)
@@ -477,7 +485,7 @@ defineExpose({
           <Button v-else-if="external" variant="outline" size="sm" @click="openExternal">
             <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />{{ mirroredRunId ? t('dashboard.detail.open') : t('dashboard.detail.openTranscript') }}
           </Button>
-          <Button v-if="s.runId" variant="destructive" size="sm" class="ml-auto" @click="stop">
+          <Button v-if="s.runId && s.live" variant="destructive" size="sm" class="ml-auto" @click="stop">
             <Square class="h-3 w-3" :stroke-width="2" />{{ t('dashboard.detail.stop') }}
           </Button>
         </div>

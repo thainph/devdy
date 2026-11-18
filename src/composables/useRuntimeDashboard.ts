@@ -191,6 +191,7 @@ export function useRuntimeDashboard() {
     const state = classifyState({
       pending,
       conductor,
+      ended: ar.live === false,
       liveWorkers: conductor ? activeRuns.value.filter((x) => x.conductor_run_id === ar.run_id).length : 0,
       currentTool: line.kind === 'tool' ? line.tool : null,
       lastEventAt,
@@ -212,6 +213,7 @@ export function useRuntimeDashboard() {
       engine: ar.engine === 'codex' ? 'codex' : 'claude',
       role: conductor ? 'conductor' : ar.conductor_run_id ? 'worker' : 'session',
       conductorId: ar.conductor_run_id,
+      live: ar.live !== false,
       state,
       waitingSince: state === 'waiting' ? line.since : null,
       startedAt: parseTime(ar.started_at ?? ar.created_at),
@@ -234,6 +236,7 @@ export function useRuntimeDashboard() {
       engine: e.engine === 'codex' ? 'codex' : 'claude',
       role: 'external',
       conductorId: null,
+      live: false,
       state: 'external',
       waitingSince: null,
       startedAt: null,
@@ -311,10 +314,14 @@ export function useRuntimeDashboard() {
   // ── Polling ─────────────────────────────────────────────────────────────
   let inflight: Promise<void> | null = null
 
-  /** Attach liveRuns listeners to live runs this window does not follow yet (e.g. after a reload). */
+  /**
+   * Attach liveRuns listeners to live runs this window does not follow yet (e.g.
+   * after a reload). A conductor between turns is skipped: it is followed once a
+   * worker's finish resumes it and it shows up live.
+   */
   function follow(list: ActiveRun[]) {
     for (const r of list) {
-      if (!live.isListening(r.run_id)) live.startListening(r.run_id, r.project_id).catch(() => {})
+      if (r.live !== false && !live.isListening(r.run_id)) live.startListening(r.run_id, r.project_id).catch(() => {})
     }
   }
 

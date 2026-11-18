@@ -28,6 +28,10 @@ pub struct ActiveRun {
     pub pending_permissions: usize,
     /// When the oldest open prompt arrived (RFC3339).
     pub waiting_since: Option<String>,
+    /// The run's sidecar is alive. False only for a conductor listed because
+    /// its workers still run while it sits between turns (see
+    /// [`active_runs`]).
+    pub live: bool,
 }
 
 /// Open permission prompts of a run: (count, oldest arrival).
@@ -37,8 +41,9 @@ pub type PendingInfo = (usize, Option<String>);
 /// pending prompts. The conductor of a live worker is listed too even while
 /// its own sidecar is down between turns (it is resumed when a worker
 /// finishes), so its workers keep their group instead of flipping to
-/// standalone. Ordered like the dashboard lists them: awaiting a permission
-/// first (longest waiting first), then the longest running.
+/// standalone; such a conductor carries `live: false`. Ordered like the
+/// dashboard lists them: awaiting a permission first (longest waiting first),
+/// then the longest running.
 pub async fn active_runs(
     db: &Db,
     run_ids: &[String],
@@ -52,7 +57,11 @@ pub async fn active_runs(
         .collect();
     missing.sort();
     missing.dedup();
-    out.extend(fetch_rows(db, &missing, pending).await?);
+    let mut parents = fetch_rows(db, &missing, pending).await?;
+    for p in &mut parents {
+        p.live = false;
+    }
+    out.extend(parents);
     out.sort_by(|a, b| {
         (b.pending_permissions > 0)
             .cmp(&(a.pending_permissions > 0))
@@ -105,6 +114,7 @@ async fn fetch_rows(
                 conductor_run_id: row.get("conductor_run_id"),
                 pending_permissions,
                 waiting_since,
+                live: true,
                 run_id,
             }
         })
@@ -194,5 +204,7 @@ mod tests {
         let order: Vec<&str> = rows.iter().map(|r| r.run_id.as_str()).collect();
         assert_eq!(order, ["cond", "w1", "w2"]);
         assert_eq!(rows[0].role.as_deref(), Some("conductor"));
+        assert!(!rows[0].live);
+        assert!(rows[1..].iter().all(|r| r.live));
     }
 }

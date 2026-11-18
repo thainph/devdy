@@ -1580,7 +1580,8 @@ pub async fn list_live_runs(registry: State<'_, RunRegistry>) -> Result<Vec<Stri
 }
 
 /// Every live run (any project) with its metadata and pending permission
-/// prompts — the Work Dashboard's "running sessions" strip.
+/// prompts, plus the conductors of live workers that sit between turns
+/// (`live: false`) — the Runtime Dashboard's session list.
 #[tauri::command]
 pub async fn list_active_runs(
     db: State<'_, Db>,
