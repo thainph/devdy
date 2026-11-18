@@ -271,8 +271,6 @@ export interface GroupView extends GroupDef {
   open: boolean
   /** Sessions listed in the open group, ordered. */
   shown: RtSession[]
-  /** States of every member, ordered (header dots). */
-  dots: SessionState[]
   counts: { waiting: number; quiet: number; ctx: number }
   /** Folded "running fine" sessions. */
   foldN: number
@@ -318,7 +316,6 @@ export function layoutGroups(defs: readonly GroupDef[], o: LayoutOptions): Group
       ...g,
       open,
       shown: [...(condShown && c ? [c] : []), ...sortSessions(showOk ? visible : attn)],
-      dots: sortSessions(g.members).map((s) => s.state),
       counts,
       foldN: ok.length,
       foldStates: okSorted.map((s) => s.state),
