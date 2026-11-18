@@ -248,8 +248,8 @@ const SHORTCUTS = [
       </template>
     </PageHeader>
 
-    <div class="min-h-0 flex-1 overflow-y-auto px-6 py-4">
-      <div class="mx-auto flex max-w-[1480px] flex-col gap-3.5">
+    <div class="min-h-0 flex-1 overflow-y-auto p-6">
+      <div class="flex flex-col gap-3.5">
         <Banner v-if="dash.loadError.value" tone="destructive">{{ t('dashboard.loadError', { error: dash.loadError.value }) }}</Banner>
         <p v-else-if="dash.loaded.value && !dash.hasSnapshot.value" class="text-[11px] text-muted-foreground">{{ t('dashboard.fallbackHint') }}</p>
         <p v-else-if="dash.snapshotStale.value" class="text-[11px] text-warning">{{ t('dashboard.staleHint') }}</p>

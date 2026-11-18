@@ -48,7 +48,7 @@ import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
   GitPullRequest, RefreshCw, Sparkles, User, Bot, ChevronRight, Folder, BookMarked,
-  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, Pin, PinOff, RotateCcw,
+  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, RotateCcw,
 } from 'lucide-vue-next'
 
 // Named explicitly (devtools / warnings): an inferred name is a build detail
@@ -109,11 +109,11 @@ function runStatus(item: PrInboxItem): string | null {
 }
 
 // Standalone window: same window-priority behaviour as the other pop-outs
-// (on top while focused, or pinned), and resync on focus — the inbox plus the
+// (on top while focused), and resync on focus — the inbox plus the
 // GitHub account list (its own Pinia here). Throttled on the last ATTEMPT, not
 // the last success: a refresh is a GitHub search per account, and a failing
 // one must not re-fire on every focus.
-const floating = props.standalone ? useFloatingWindow() : null
+if (props.standalone) useFloatingWindow()
 const FOCUS_REFRESH_MS = 60_000
 let unlistenFocus: (() => void) | null = null
 if (props.standalone) {
@@ -231,7 +231,7 @@ function isCustomBot(login: string): boolean {
   return store.botLogins.includes(normalizeLogin(login))
 }
 
-// Card menu (⋯ button / right-click). Teleported ContextMenu, since the card's
+// Card menu (right-click). Teleported ContextMenu, since the card's
 // overflow-hidden would clip an anchored dropdown.
 const menu = ref<{ open: boolean; x: number; y: number; item: PrInboxItem | null }>({
   open: false, x: 0, y: 0, item: null,
@@ -344,61 +344,35 @@ async function reviewAll(group: PrGroup) {
       :count-title="grouped.visibleCount < store.items.length ? t('prInbox.visibleOfTotal', { visible: grouped.visibleCount, total: store.items.length }) : undefined"
     >
       <template #actions>
-        <!-- Standalone window: pin on top (same control as the Slack window) -->
-        <Button
-          v-if="floating"
-          :variant="floating.pinned.value ? 'primary' : 'outline'"
-          size="icon"
-          :aria-pressed="floating.pinned.value"
-          :title="floating.pinned.value ? t('item.unpin') : t('item.pin')"
-          :aria-label="floating.pinned.value ? t('item.unpin') : t('item.pin')"
-          @click="floating.togglePin()"
-        >
-          <component :is="floating.pinned.value ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button variant="outline" :disabled="store.loading || bulk !== null" @click="store.refresh()">
-          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
-          {{ t('common.refresh') }}
-        </Button>
-      </template>
-    </PageHeader>
-
-    <!-- Toolbar: search + Filters / Display popovers (patterned on
-         CalendarView's display-options popover). A size container so the
-         buttons drop to icon-only when the content pane — not the window — is
-         narrow (the sidebar eats into it). `relative z-10`: the size container
-         is its own stacking context, so lift it above the (positioned) cards
-         its popovers overlap. Everything but the search is persisted.
-         The @[30rem]/toolbar icon-only fallback rarely triggers: the window's
-         minWidth is 900px, leaving the content pane at roughly ≥ 680px; it
-         covers a wide sidebar or a future smaller minimum. -->
-    <div v-if="store.items.length > 0" class="@container/toolbar relative z-10 px-6 py-2 border-b border-border/60 shrink-0">
-      <div class="flex min-w-0 items-center gap-2">
-        <!-- Search: same icon + clear pattern as ItemSidebar / SlackSidebar -->
-        <div class="relative min-w-32 max-w-md flex-1">
-          <Search
-            class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-            :stroke-width="1.75"
-          />
-          <Input
-            v-model="search"
-            class="pl-8 pr-7"
-            :placeholder="t('prInbox.searchPlaceholder')"
-            :aria-label="t('prInbox.searchPlaceholder')"
-            @keydown.esc="search = ''"
-          />
-          <button
-            v-if="search"
-            type="button"
-            class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
-            :title="t('prInbox.clearSearch')"
-            :aria-label="t('prInbox.clearSearch')"
-            @click="search = ''"
-          >
-            <X class="h-3.5 w-3.5" :stroke-width="2" />
-          </button>
-        </div>
-        <div class="ml-auto flex shrink-0 items-center gap-2">
+        <!-- Search + Filters / Display popovers live in the header, same
+             compact pattern as Delivery Radar / Projects. The popover buttons
+             go icon-only on narrow windows. Everything but the search is
+             persisted. -->
+        <template v-if="store.items.length > 0">
+          <div class="relative">
+            <Search
+              class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+              :stroke-width="1.75"
+            />
+            <Input
+              v-model="search"
+              size="sm"
+              class="w-56 pl-7 pr-7"
+              :placeholder="t('prInbox.searchPlaceholder')"
+              :aria-label="t('prInbox.searchPlaceholder')"
+              @keydown.esc="search = ''"
+            />
+            <button
+              v-if="search"
+              type="button"
+              class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+              :title="t('prInbox.clearSearch')"
+              :aria-label="t('prInbox.clearSearch')"
+              @click="search = ''"
+            >
+              <X class="h-3.5 w-3.5" :stroke-width="2" />
+            </button>
+          </div>
           <PrInboxFiltersPopover
             :options="filterOptions"
             :model-value="store.filters"
@@ -408,9 +382,13 @@ async function reviewAll(group: PrGroup) {
             @clear="store.clearFilters()"
           />
           <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" @edit-prompt="editPrompt" />
-        </div>
-      </div>
-    </div>
+        </template>
+        <Button variant="outline" :disabled="store.loading || bulk !== null" @click="store.refresh()">
+          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
+          {{ t('common.refresh') }}
+        </Button>
+      </template>
+    </PageHeader>
 
     <!-- Active filters: one removable chip per applied value (chip look of
          SkillsView's group filter chips). -->

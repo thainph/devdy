@@ -83,7 +83,7 @@ function toggle(dimension: PrFilterDimension, value: string) {
       @click="open = !open"
     >
       <ListFilter class="h-3.5 w-3.5" :stroke-width="1.75" />
-      <span class="hidden @[30rem]/toolbar:inline">{{ t('prInbox.filters.button') }}</span>
+      <span class="hidden lg:inline">{{ t('prInbox.filters.button') }}</span>
       <span
         v-if="activeCount > 0"
         class="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"

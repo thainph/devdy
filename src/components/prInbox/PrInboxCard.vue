@@ -24,7 +24,7 @@ import { Button, Card, Badge } from '@/components/ui'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import PrAvatar from './PrAvatar.vue'
 import {
-  RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Users, Eye, Bot, MoreHorizontal, Tag, RotateCcw,
+  RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Users, Eye, Bot, Tag, RotateCcw,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -59,7 +59,7 @@ const emit = defineEmits<{
   /** "Add to devdy" on an unmapped PR — the host decides how to navigate
    * (router in the main window, a request to it from the PR Inbox window). */
   'add-to-devdy': []
-  /** Open the card menu at a viewport point (⋯ button or right-click). */
+  /** Open the card menu at a viewport point (right-click). */
   menu: [item: PrInboxItem, x: number, y: number]
 }>()
 
@@ -118,7 +118,7 @@ const runLabel = computed(() => (running.value ? t('prInbox.reviewingShort') : t
 const runTitle = computed(() => (statusText.value ? `${runLabel.value} · ${statusText.value}` : runLabel.value))
 const reviewLabel = computed(() => (props.reviewing ? t('prInbox.opening') : t('prInbox.aiReview')))
 // New commits since the finished review → a "Re-review" button next to it
-// (any finished review can also be re-run from the ⋯ menu).
+// (any finished review can also be re-run from the right-click menu).
 const showReReview = computed(() => !!props.item.existing_run_id && props.item.updated_since_review && !running.value)
 const reReviewLabel = computed(() => (props.reviewing ? t('prInbox.opening') : t('prInbox.reReview')))
 // Action labels show from this container width up; below it, icon-only.
@@ -126,11 +126,6 @@ const actionLabelClass = computed(() => (compact.value ? 'hidden @[44rem]/list:i
 
 function openPr() {
   openUrl(props.item.html_url).catch(() => { /* opener unavailable */ })
-}
-
-function openMenuFromButton(e: MouseEvent) {
-  const rect = (e.currentTarget as HTMLElement).getBoundingClientRect()
-  emit('menu', props.item, rect.left, rect.bottom + 4)
 }
 
 function relativeTime(iso: string): string {
@@ -259,7 +254,7 @@ function relativeTime(iso: string): string {
       </div>
     </div>
 
-    <!-- Right side: project (wide) · review-as account · action · ⋯ -->
+    <!-- Right side: project (wide) · review-as account · action -->
     <div class="flex items-center gap-2 shrink-0">
       <template v-if="item.mapped">
         <Badge
@@ -347,15 +342,6 @@ function relativeTime(iso: string): string {
         button-variant="ghost"
         :size="compact ? 'icon-sm' : 'icon'"
       />
-      <Button
-        variant="ghost"
-        :size="compact ? 'icon-sm' : 'icon'"
-        :title="t('prInbox.moreActions')"
-        :aria-label="t('prInbox.moreActions')"
-        @click="openMenuFromButton"
-      >
-        <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </Button>
     </div>
   </Card>
 </template>

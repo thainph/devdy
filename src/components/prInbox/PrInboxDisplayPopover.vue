@@ -95,7 +95,7 @@ function editPrompt(kind: PrPromptKind) {
       @click="open = !open"
     >
       <SlidersHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-      <span class="hidden @[30rem]/toolbar:inline">{{ t('prInbox.display.button') }}</span>
+      <span class="hidden lg:inline">{{ t('prInbox.display.button') }}</span>
     </Button>
 
     <div

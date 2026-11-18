@@ -302,6 +302,31 @@ async function handleOpenInFolder(project: { path: string }) {
         : null"
     >
       <template #actions>
+        <!-- Search beside the add button, same compact pattern as Delivery Radar -->
+        <div v-if="!store.loading && !store.error && store.projects.length > 0" class="relative">
+          <Search
+            class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
+            :stroke-width="1.75"
+          />
+          <Input
+            v-model="search"
+            size="sm"
+            class="w-56 pl-7 pr-7"
+            :placeholder="t('projects.searchPlaceholder')"
+            :aria-label="t('projects.searchPlaceholder')"
+            @keydown.esc="search = ''"
+          />
+          <button
+            v-if="search"
+            type="button"
+            class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
+            :title="t('projects.clearSearch')"
+            :aria-label="t('projects.clearSearch')"
+            @click="search = ''"
+          >
+            <X class="h-3.5 w-3.5" :stroke-width="2" />
+          </button>
+        </div>
         <Button
           :disabled="adding || detecting"
           @click="handleAdd"
@@ -338,31 +363,6 @@ async function handleOpenInFolder(project: { path: string }) {
       </div>
 
       <template v-else>
-      <!-- Search: same icon + clear pattern as PR Inbox -->
-      <div class="relative max-w-md mb-4">
-        <Search
-          class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-          :stroke-width="1.75"
-        />
-        <Input
-          v-model="search"
-          class="pl-8 pr-7"
-          :placeholder="t('projects.searchPlaceholder')"
-          :aria-label="t('projects.searchPlaceholder')"
-          @keydown.esc="search = ''"
-        />
-        <button
-          v-if="search"
-          type="button"
-          class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
-          :title="t('projects.clearSearch')"
-          :aria-label="t('projects.clearSearch')"
-          @click="search = ''"
-        >
-          <X class="h-3.5 w-3.5" :stroke-width="2" />
-        </button>
-      </div>
-
       <div
         v-if="visibleProjects.length === 0"
         class="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-3 py-3 text-xs text-muted-foreground"
