@@ -195,7 +195,8 @@ export function useRuntimeDashboard() {
     const e = s ? runningToolEntry(s.entries) : null
     if (e) return { kind: 'tool', tool: e.name, detail: toolSummary(e.name, e.input), since: seenAt(e, t0) }
     // Nothing known to be running (Codex reports tools once finished): the
-    // latest event instead of an empty line.
+    // latest tool call instead of an empty line.
+    if (r?.lastTool) return { kind: 'last', tool: r.lastTool.name, detail: r.lastTool.summary, since: null }
     const last = s ? lastEvent(s.entries) : null
     if (last) return { kind: 'last', tool: last.tool, detail: last.text, since: null }
     return { kind: 'none', tool: null, detail: '', since: null }
@@ -375,11 +376,15 @@ export function useRuntimeDashboard() {
   let inflight: Promise<void> | null = null
 
   /**
-   * Attach liveRuns listeners to live runs this window does not follow yet (e.g.
-   * after a reload). A conductor between turns is skipped: it is followed once a
-   * worker's finish resumes it and it shows up live.
+   * Fallback only (no runtime snapshot from the backend): attach liveRuns
+   * listeners to live runs this window does not follow yet, so their streams
+   * feed the "now" line. With the snapshot the dashboard reads no stream at all
+   * — following every run would make this window parse every session's output
+   * for as long as they run, dashboard open or not. A conductor between turns
+   * is skipped.
    */
   function follow(list: ActiveRun[]) {
+    if (hasSnapshot.value) return
     for (const r of list) {
       if (r.live !== false && !live.isListening(r.run_id)) live.startListening(r.run_id, r.project_id).catch(() => {})
     }
@@ -395,7 +400,6 @@ export function useRuntimeDashboard() {
       if (runs.status === 'fulfilled') {
         activeRuns.value = runs.value
         loadError.value = null
-        follow(runs.value)
       } else {
         loadError.value = String(runs.reason)
       }
@@ -417,6 +421,8 @@ export function useRuntimeDashboard() {
         hasSnapshot.value = false
         if (pollTimer) startBgWatch()
       }
+      // After the snapshot settled: only the fallback needs the streams.
+      if (runs.status === 'fulfilled') follow(runs.value)
       loaded.value = true
       rebuild()
     })().finally(() => {

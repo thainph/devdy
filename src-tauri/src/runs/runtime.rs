@@ -110,6 +110,9 @@ pub struct RunActivity {
     buckets: MinuteBuckets,
     /// Oldest first.
     open_tools: Vec<OpenTool>,
+    /// The latest tool call seen, finished or not — what the dashboard shows
+    /// when nothing is open (Codex reports its tools only once they finished).
+    last_tool: Option<OpenTool>,
     pub context_tokens: Option<u64>,
     /// A per-message assistant usage set `context_tokens` (the turn total of a
     /// `result` is then no longer used as a fallback).
@@ -242,23 +245,28 @@ impl RunActivity {
 
     fn open_tool(&mut self, block: &Value, now: DateTime<Utc>) {
         let name = str_of(block, "name").unwrap_or("tool");
-        if self.codex && name == "Edit" {
-            return;
-        }
-        let Some(id) = str_of(block, "id") else {
-            return;
-        };
+        let id = str_of(block, "id");
         let input = block.get("input").unwrap_or(&Value::Null);
-        self.open_tools.retain(|t| t.id != id);
-        if self.open_tools.len() >= MAX_OPEN_TOOLS {
-            self.open_tools.remove(0);
-        }
-        self.open_tools.push(OpenTool {
-            id: id.to_string(),
+        let tool = OpenTool {
+            id: id.unwrap_or_default().to_string(),
             name: truncate(name, 80),
             summary: tool_summary(name, input),
             started_at: now,
-        });
+        };
+        self.last_tool = Some(tool.clone());
+        if (self.codex && name == "Edit") || id.is_none() {
+            return;
+        }
+        self.open_tools.retain(|t| t.id != tool.id);
+        if self.open_tools.len() >= MAX_OPEN_TOOLS {
+            self.open_tools.remove(0);
+        }
+        self.open_tools.push(tool);
+    }
+
+    /// The latest tool call seen, finished or not.
+    pub fn last_tool(&self) -> Option<&OpenTool> {
+        self.last_tool.as_ref()
     }
 
     /// The latest tool call still without a result.
@@ -923,8 +931,13 @@ mod tests {
             at(0, 0),
         );
         assert!(a.current_tool().is_none());
+        // Still the latest thing it did.
+        assert_eq!(a.last_tool().unwrap().summary, "b.rs");
         a.observe(&tool_use("c1", "Bash", json!({"command": "ls"})), at(0, 1));
         assert_eq!(a.current_tool().unwrap().name, "Bash");
+        a.observe(&tool_result("c1"), at(0, 2));
+        assert!(a.current_tool().is_none());
+        assert_eq!(a.last_tool().unwrap().name, "Bash");
     }
 
     #[test]

@@ -43,6 +43,8 @@ pub struct RuntimeRun {
     pub run_id: String,
     pub last_event_at: Option<String>,
     pub current_tool: Option<RuntimeTool>,
+    /// The latest tool call, finished or not (shown when none is running).
+    pub last_tool: Option<RuntimeTool>,
     pub events_per_minute: Vec<u32>,
     pub context_tokens: Option<u64>,
     pub context_window: Option<u64>,
@@ -57,6 +59,14 @@ pub struct RuntimeTool {
     pub name: String,
     pub summary: String,
     pub started_at: String,
+}
+
+fn runtime_tool(t: &runtime::OpenTool) -> RuntimeTool {
+    RuntimeTool {
+        name: t.name.clone(),
+        summary: t.summary.clone(),
+        started_at: t.started_at.to_rfc3339(),
+    }
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -236,11 +246,8 @@ fn build_run(
     RuntimeRun {
         run_id: run_id.to_string(),
         last_event_at: a.last_event_at.map(|t| t.to_rfc3339()),
-        current_tool: a.current_tool().map(|t| RuntimeTool {
-            name: t.name.clone(),
-            summary: t.summary.clone(),
-            started_at: t.started_at.to_rfc3339(),
-        }),
+        current_tool: a.current_tool().map(runtime_tool),
+        last_tool: a.last_tool().map(runtime_tool),
         events_per_minute: a.events_per_minute(now),
         context_tokens: a.context_tokens,
         // The stream reports the model without its context variant (`[1m]`),

@@ -23,6 +23,8 @@ export interface RuntimeRun {
   lastEventAt: string | null
   /** tool_use without a tool_result yet (latest one); null when none. */
   currentTool: RuntimeTool | null
+  /** The latest tool call, finished or not (older backends omit it). */
+  lastTool?: RuntimeTool | null
   /** Exactly 20 buckets, oldest first, last = current minute. */
   eventsPerMinute: number[]
   /** Latest per-message assistant usage (input + cache read + cache creation), reset on compaction. */
