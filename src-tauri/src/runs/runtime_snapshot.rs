@@ -85,6 +85,17 @@ pub struct RuntimeToday {
     pub finished: usize,
     pub failed: usize,
     pub recent: Vec<RecentRun>,
+    /// Every run finished today (local day), oldest first.
+    pub timeline: Vec<TimelineRun>,
+}
+
+#[derive(Debug, Serialize, Clone, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct TimelineRun {
+    pub run_id: String,
+    pub title: Option<String>,
+    pub finished_at: String,
+    pub status: String,
 }
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
@@ -440,8 +451,8 @@ const DEVDY_FINISHED: &str =
     "r.status IN ('done', 'failed', 'cancelled') AND r.finished_at IS NOT NULL \
      AND r.started_at IS NOT NULL AND r.started_at <> r.created_at";
 
-/// Runs that finished / failed on `now`'s local day, plus the three latest
-/// finished, failed or cancelled runs.
+/// Runs that finished / failed on `now`'s local day (counts and a timeline,
+/// oldest first), plus the three latest finished, failed or cancelled runs.
 pub async fn today_stats<Tz: TimeZone>(
     db: &Db,
     now: DateTime<Tz>,
@@ -453,23 +464,37 @@ pub async fn today_stats<Tz: TimeZone>(
         .format("%Y-%m-%d")
         .to_string();
     let rows = sqlx::query(&format!(
-        "SELECT r.status, r.finished_at FROM runs r WHERE {DEVDY_FINISHED} AND r.finished_at >= ?"
+        "SELECT r.id, r.title, r.status, r.finished_at FROM runs r \
+         WHERE {DEVDY_FINISHED} AND r.finished_at >= ?"
     ))
     .bind(&coarse)
     .fetch_all(db)
     .await?;
     let mut today = RuntimeToday::default();
+    let mut timeline: Vec<(DateTime<Utc>, TimelineRun)> = Vec::new();
     for row in rows {
         let finished: String = row.get("finished_at");
-        if parse_ts(&finished).is_none_or(|t| t < start) {
+        let Some(at) = parse_ts(&finished).filter(|t| *t >= start) else {
             continue;
-        }
-        match row.get::<String, _>("status").as_str() {
+        };
+        let status: String = row.get("status");
+        match status.as_str() {
             "done" => today.finished += 1,
             "failed" => today.failed += 1,
             _ => {}
         }
+        timeline.push((
+            at,
+            TimelineRun {
+                run_id: row.get("id"),
+                title: row.get("title"),
+                finished_at: at.to_rfc3339(),
+                status,
+            },
+        ));
     }
+    timeline.sort_by(|a, b| a.0.cmp(&b.0).then_with(|| a.1.run_id.cmp(&b.1.run_id)));
+    today.timeline = timeline.into_iter().map(|(_, r)| r).collect();
 
     let recent = sqlx::query(&format!(
         "SELECT r.id, r.project_id, p.name AS project_name, r.title, r.status, r.finished_at \
@@ -1006,6 +1031,78 @@ mod tests {
         assert_eq!(t.recent[2].project_name, "proj");
         assert_eq!(t.recent[2].title.as_deref(), Some("Run d2"));
         assert!(t.recent[2].finished_at.starts_with("2026-11-17T02:00:00"));
+    }
+
+    #[tokio::test]
+    async fn today_timeline_lists_runs_finished_today_oldest_first() {
+        let db = memory_db().await;
+        let created = "2026-11-16T00:00:00+00:00";
+        let started = Some("2026-11-16T01:00:00+00:00");
+        // Inserted out of order; local zone UTC+7 (the day starts at 2026-11-16T17:00Z).
+        insert_run(
+            &db,
+            "f1",
+            "failed",
+            created,
+            started,
+            Some("2026-11-17T03:00:00+00:00"),
+        )
+        .await;
+        insert_run(
+            &db,
+            "d1",
+            "done",
+            created,
+            started,
+            Some("2026-11-16T18:00:00.5+00:00"),
+        )
+        .await;
+        insert_run(
+            &db,
+            "c1",
+            "cancelled",
+            created,
+            started,
+            Some("2026-11-17T04:00:00Z"),
+        )
+        .await;
+        insert_run(
+            &db,
+            "old",
+            "done",
+            created,
+            started,
+            Some("2026-11-16T16:59:00+00:00"),
+        )
+        .await;
+        insert_run(&db, "run", "running", created, started, None).await;
+        insert_run(
+            &db,
+            "imp",
+            "done",
+            "2026-11-17T01:00:00+00:00",
+            Some("2026-11-17T01:00:00+00:00"),
+            Some("2026-11-17T05:00:00+00:00"),
+        )
+        .await;
+
+        let tz = FixedOffset::east_opt(7 * 3600).unwrap();
+        let now = tz.with_ymd_and_hms(2026, 11, 17, 13, 0, 0).unwrap();
+        let t = today_stats(&db, now).await.unwrap();
+        let ids: Vec<&str> = t.timeline.iter().map(|r| r.run_id.as_str()).collect();
+        assert_eq!(
+            ids,
+            ["d1", "f1", "c1"],
+            "today only, no imports, oldest first"
+        );
+        let statuses: Vec<&str> = t.timeline.iter().map(|r| r.status.as_str()).collect();
+        assert_eq!(statuses, ["done", "failed", "cancelled"]);
+        assert_eq!(t.timeline[0].title.as_deref(), Some("Run d1"));
+        assert!(t.timeline[0]
+            .finished_at
+            .starts_with("2026-11-16T18:00:00.5"));
+        assert!(t.timeline[2].finished_at.starts_with("2026-11-17T04:00:00"));
+        assert_eq!((t.finished, t.failed), (1, 1));
     }
 
     #[tokio::test]

@@ -23,8 +23,16 @@
       "chip": {
         "wait": "{n} waiting for you",
         "quiet": "{n} quiet for long",
-        "ctx": "{n} context > 80%"
-      }
+        "ctx": "{n} context > 80%",
+        "run": "{n} running",
+        "idle": "{n} waiting on workers",
+        "ext": "{n} outside Devdy"
+      },
+      "running": "running",
+      "donutLabel": "Sessions by state: {parts}",
+      "activity": "Activity · last 20 minutes (events per minute, all sessions)",
+      "activityLabel": "Combined activity of every session over the last 20 minutes",
+      "rate": "{n} ev/min"
     },
     "quota": {
       "title": "5-hour limit",
@@ -34,7 +42,8 @@
       "full": "limit reached",
       "unknown": "pace not known yet",
       "reset": "resets {time}",
-      "default": "default"
+      "default": "default",
+      "resetIn": "resets in {time}"
     },
     "resources": {
       "title": "Resources",
@@ -47,7 +56,8 @@
       "clean": "Clean up",
       "cleanTitle": "Stop the processes left behind by ended sessions or a previous app run",
       "noData": "no data yet",
-      "cpuTitle": "Share of the whole machine used by Devdy's processes"
+      "cpuTitle": "Share of the whole machine used by Devdy's processes",
+      "history": "{name} over the last few minutes"
     },
     "today": {
       "title": "Today",
@@ -59,7 +69,11 @@
         "done": "done",
         "failed": "failed",
         "cancelled": "cancelled"
-      }
+      },
+      "busiest": "busiest {from}–{to}",
+      "now": "now",
+      "timelineLabel": "Runs finished today, from {from} to now",
+      "latest": "Latest"
     }
   },
   "toolbar": {
@@ -79,7 +93,8 @@
   "tree": {
     "show": "Show {n} worker | Show {n} workers",
     "hide": "Hide {n} worker | Hide {n} workers",
-    "needsYou": "{n} need you"
+    "needsYou": "{n} need you",
+    "pill": "{n} worker | {n} workers"
   },
   "state": {
     "waiting": "waiting for you",
@@ -113,5 +128,6 @@
   "contextUnknown": "Context use not known yet",
   "activityTitle": "Events per minute over the last 20 minutes",
   "activityStalled": "No events for the last few minutes",
-  "transcriptUnavailable": "This session isn't linked to a Devdy project yet, so its transcript can't be opened here."
+  "transcriptUnavailable": "This session isn't linked to a Devdy project yet, so its transcript can't be opened here.",
+  "emptyTitle": "Nothing running"
 }

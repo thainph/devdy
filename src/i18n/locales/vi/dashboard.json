@@ -23,8 +23,16 @@
       "chip": {
         "wait": "{n} chờ bạn",
         "quiet": "{n} im lâu",
-        "ctx": "{n} context > 80%"
-      }
+        "ctx": "{n} context > 80%",
+        "run": "{n} đang chạy",
+        "idle": "{n} chờ worker",
+        "ext": "{n} ngoài Devdy"
+      },
+      "running": "đang chạy",
+      "donutLabel": "Session theo trạng thái: {parts}",
+      "activity": "Nhịp hoạt động · 20 phút qua (event/phút, mọi session)",
+      "activityLabel": "Nhịp hoạt động gộp của mọi session trong 20 phút qua",
+      "rate": "{n} ev/ph"
     },
     "quota": {
       "title": "Hạn mức 5 giờ",
@@ -34,7 +42,8 @@
       "full": "đã hết hạn mức",
       "unknown": "chưa đủ dữ liệu để dự báo",
       "reset": "reset {time}",
-      "default": "mặc định"
+      "default": "mặc định",
+      "resetIn": "reset sau {time}"
     },
     "resources": {
       "title": "Tài nguyên",
@@ -47,7 +56,8 @@
       "clean": "Dọn",
       "cleanTitle": "Dừng các tiến trình còn sót lại từ session đã kết thúc hoặc lần chạy app trước",
       "noData": "chưa có dữ liệu",
-      "cpuTitle": "Phần CPU của cả máy mà các tiến trình Devdy đang dùng"
+      "cpuTitle": "Phần CPU của cả máy mà các tiến trình Devdy đang dùng",
+      "history": "{name} trong vài phút gần đây"
     },
     "today": {
       "title": "Hôm nay",
@@ -59,7 +69,11 @@
         "done": "xong",
         "failed": "lỗi",
         "cancelled": "đã huỷ"
-      }
+      },
+      "busiest": "bận nhất {from}–{to}",
+      "now": "bây giờ",
+      "timelineLabel": "Các session xong hôm nay, từ {from} tới bây giờ",
+      "latest": "Gần nhất"
     }
   },
   "toolbar": {
@@ -79,7 +93,8 @@
   "tree": {
     "show": "Hiện {n} worker | Hiện {n} worker",
     "hide": "Ẩn {n} worker | Ẩn {n} worker",
-    "needsYou": "{n} cần bạn"
+    "needsYou": "{n} cần bạn",
+    "pill": "{n} worker | {n} worker"
   },
   "state": {
     "waiting": "chờ bạn",
@@ -113,5 +128,6 @@
   "contextUnknown": "Chưa biết mức dùng context",
   "activityTitle": "Số event mỗi phút trong 20 phút gần đây",
   "activityStalled": "Vài phút gần đây không có event nào",
-  "transcriptUnavailable": "Session này chưa gắn với project nào trong Devdy nên chưa mở được transcript ở đây."
+  "transcriptUnavailable": "Session này chưa gắn với project nào trong Devdy nên chưa mở được transcript ở đây.",
+  "emptyTitle": "Không có gì đang chạy"
 }

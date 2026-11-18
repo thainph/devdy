@@ -1,30 +1,31 @@
 <script setup lang="ts">
-// Stat card "5-hour limit": Claude + Codex — % used, a gauge, when it runs out
-// at the current pace (when that can be told) and when it resets. With several
-// Claude accounts each gets one compact line (the forecast in its tooltip).
-import { computed } from 'vue'
+// Bento tile "5-hour limit": one ring per Claude account (or one for Claude)
+// plus Codex — % used in the centre, coloured by level, the account name, a
+// "default" badge and a live countdown to the reset. The forecast (when it runs
+// out at the current pace) is in the tooltip.
 import { useI18n } from 'vue-i18n'
 import { Clock } from 'lucide-vue-next'
-import { Card } from '@/components/ui'
 import type { QuotaView } from '@/composables/useRuntimeDashboard'
+import { formatCountdown, quotaLevel, ringDash, type QuotaLevel } from '@/lib/runtimeCharts'
+import BentoCard from './BentoCard.vue'
 import EngineMark from './EngineMark.vue'
 
-const props = defineProps<{ quotas: QuotaView[] }>()
+defineProps<{ quotas: QuotaView[]; now: number }>()
 const { t } = useI18n()
 
-const compact = computed(() => props.quotas.length > 2)
+const R = 29
+const LEVEL: Record<QuotaLevel, { text: string; stroke: string }> = {
+  none: { text: 'text-muted-foreground', stroke: 'stroke-muted-foreground/40' },
+  ok: { text: 'text-info', stroke: 'stroke-info' },
+  warning: { text: 'text-warning', stroke: 'stroke-warning' },
+  danger: { text: 'text-destructive', stroke: 'stroke-destructive' },
+}
+
 function name(q: QuotaView): string {
   return q.label ?? t(`dashboard.engine.${q.engine}`)
 }
-
 function hm(ms: number): string {
   return new Date(ms).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' })
-}
-function tone(pct: number | null): { text: string; bar: string } {
-  if (pct === null) return { text: 'text-muted-foreground', bar: 'bg-muted-foreground/30' }
-  if (pct >= 90) return { text: 'text-destructive', bar: 'bg-destructive' }
-  if (pct >= 70) return { text: 'text-warning', bar: 'bg-warning' }
-  return { text: 'text-foreground', bar: 'bg-primary' }
 }
 function note(q: QuotaView): string {
   if (q.pct === null) return t('dashboard.stat.quota.noData')
@@ -36,42 +37,54 @@ function note(q: QuotaView): string {
     : t('dashboard.stat.quota.unknown')
   return q.resetsAt !== null ? `${head} · ${t('dashboard.stat.quota.reset', { time: hm(q.resetsAt) })}` : head
 }
+function countdown(q: QuotaView, now: number): string {
+  return q.resetsAt !== null ? formatCountdown(q.resetsAt - now) : ''
+}
 </script>
 
 <template>
-  <Card body-class="flex h-full flex-col gap-2.5 p-4" :aria-label="t('dashboard.stat.quota.title')">
-    <div class="flex items-center gap-2 text-xs font-semibold text-muted-foreground">
-      <span class="grid h-6 w-6 place-items-center rounded-md bg-warning/15 text-warning">
-        <Clock class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
-      </span>
-      <span class="min-w-0 truncate">{{ t('dashboard.stat.quota.title') }}</span>
-    </div>
-    <ul v-if="compact" class="flex flex-col gap-2">
-      <li v-for="q in quotas" :key="q.key" class="flex min-w-0 items-center gap-2" :title="`${name(q)} · ${note(q)}`">
-        <EngineMark :engine="q.engine" size="sm" class="shrink-0" />
-        <span class="w-24 min-w-0 shrink-0 truncate text-xs font-semibold">{{ name(q) }}</span>
-        <span
-          v-if="q.isDefault"
-          class="shrink-0 rounded-full bg-muted px-1.5 text-[9px] font-semibold text-muted-foreground"
-        >{{ t('dashboard.stat.quota.default') }}</span>
-        <span class="h-1.5 min-w-8 flex-1 overflow-hidden rounded-full bg-muted">
-          <span class="block h-full rounded-full" :class="tone(q.pct).bar" :style="{ width: `${Math.min(100, q.pct ?? 0)}%` }" />
+  <BentoCard :title="t('dashboard.stat.quota.title')" :icon="Clock" tone="warning">
+    <ul class="grid flex-1 grid-cols-[repeat(auto-fit,minmax(76px,1fr))] content-center gap-x-2 gap-y-3">
+      <li
+        v-for="q in quotas"
+        :key="q.key"
+        class="flex min-w-0 flex-col items-center gap-1"
+        :title="`${name(q)} · ${q.pct !== null ? `${Math.round(q.pct)}% · ` : ''}${note(q)}`"
+      >
+        <div class="relative h-[70px] w-[70px]">
+          <svg viewBox="0 0 70 70" class="h-full w-full" aria-hidden="true">
+            <circle cx="35" cy="35" :r="R" fill="none" class="stroke-muted" stroke-width="7" />
+            <circle
+              v-if="q.pct"
+              cx="35"
+              cy="35"
+              :r="R"
+              fill="none"
+              stroke-width="7"
+              stroke-linecap="round"
+              :stroke-dasharray="ringDash(q.pct, R)"
+              transform="rotate(-90 35 35)"
+              class="rt-grow"
+              :class="LEVEL[quotaLevel(q.pct)].stroke"
+            />
+          </svg>
+          <span class="absolute inset-0 grid place-items-center text-[15px] font-extrabold tabular-nums" :class="LEVEL[quotaLevel(q.pct)].text">
+            {{ q.pct !== null ? `${Math.round(q.pct)}%` : '–' }}
+          </span>
+        </div>
+        <span class="flex max-w-full min-w-0 items-center gap-1">
+          <EngineMark :engine="q.engine" size="sm" />
+          <span class="min-w-0 truncate text-[11px] font-bold">{{ name(q) }}</span>
         </span>
-        <span class="w-10 shrink-0 text-right text-sm font-bold tabular-nums" :class="tone(q.pct).text">{{ q.pct !== null ? `${Math.round(q.pct)}%` : '–' }}</span>
+        <span class="font-mono text-[10px] whitespace-nowrap text-muted-foreground tabular-nums">
+          <template v-if="countdown(q, now)">
+            <span aria-hidden="true">↻ {{ countdown(q, now) }}</span>
+            <span class="sr-only">{{ t('dashboard.stat.quota.resetIn', { time: countdown(q, now) }) }}</span>
+          </template>
+          <template v-else>{{ t('dashboard.stat.quota.noData') }}</template>
+        </span>
+        <span v-if="q.isDefault" class="rounded-full bg-muted px-1.5 text-[9px] font-semibold text-muted-foreground">{{ t('dashboard.stat.quota.default') }}</span>
       </li>
     </ul>
-    <template v-else>
-      <div v-for="q in quotas" :key="q.key" class="flex min-w-0 flex-col gap-1">
-        <div class="flex min-w-0 items-baseline gap-2">
-          <EngineMark :engine="q.engine" size="sm" class="shrink-0" />
-          <span class="min-w-0 flex-1 truncate text-[13px] font-semibold">{{ t(`dashboard.engine.${q.engine}`) }}</span>
-          <span class="shrink-0 text-xl leading-tight font-bold whitespace-nowrap tabular-nums" :class="tone(q.pct).text">{{ q.pct !== null ? `${Math.round(q.pct)}%` : '–' }}</span>
-        </div>
-        <div class="h-1.5 overflow-hidden rounded-full bg-muted">
-          <div class="h-full rounded-full" :class="tone(q.pct).bar" :style="{ width: `${Math.min(100, q.pct ?? 0)}%` }" />
-        </div>
-        <div class="truncate text-[11px] text-muted-foreground" :title="note(q)">{{ note(q) }}</div>
-      </div>
-    </template>
-  </Card>
+  </BentoCard>
 </template>

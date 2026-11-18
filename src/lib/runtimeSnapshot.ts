@@ -73,6 +73,16 @@ export interface RuntimeToday {
   failed: number
   /** Latest 3 finished / failed, newest first. */
   recent: RecentRun[]
+  /** Every run finished today (local day), oldest first (optional: older backends omit it). */
+  timeline?: TimelineRun[]
+}
+
+export interface TimelineRun {
+  runId: string
+  title: string | null
+  /** RFC3339. */
+  finishedAt: string
+  status: 'done' | 'failed' | 'cancelled'
 }
 
 export interface RecentRun {
