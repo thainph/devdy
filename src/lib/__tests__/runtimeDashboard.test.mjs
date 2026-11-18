@@ -176,11 +176,11 @@ test('layoutGroups: open by default only when something needs you; external stay
 test('layoutGroups: running-fine sessions fold behind "+N" when something needs you', () => {
   const views = layoutGroups(buildGroups(sample()), noLayout)
   const c1 = views.find((v) => v.key === 'c1')
-  assert.deepEqual(c1.shown.map((x) => x.id), ['c1', 'w1'])
+  assert.deepEqual(c1.shown.map((x) => x.id), ['w1'])
   assert.equal(c1.hasFold, true)
   assert.equal(c1.foldN, 1)
   const unfolded = layoutGroups(buildGroups(sample()), { ...noLayout, showOk: { c1: true } }).find((v) => v.key === 'c1')
-  assert.deepEqual(unfolded.shown.map((x) => x.id), ['c1', 'w1', 'w2'])
+  assert.deepEqual(unfolded.shown.map((x) => x.id), ['w1', 'w2'])
   assert.equal(unfolded.hasFold, false)
   assert.equal(unfolded.canRefold, true)
 })
@@ -219,7 +219,8 @@ test('layoutGroups: matching a conductor shows its members', () => {
   list.find((x) => x.id === 'c2').title = 'Migrate billing'
   const views = layoutGroups(buildGroups(list), { ...noLayout, query: 'billing' })
   assert.deepEqual(views.map((v) => v.key), ['c2'])
-  assert.deepEqual(views[0].shown.map((x) => x.id), ['c2', 'w3'])
+  assert.deepEqual(views[0].shown.map((x) => x.id), ['w3'])
+  assert.equal(views[0].conductorShown, true)
 })
 
 test('layoutGroups: filter chips', () => {
@@ -228,14 +229,23 @@ test('layoutGroups: filter chips', () => {
   assert.deepEqual(views[0].shown.map((x) => x.id), ['w1'])
 })
 
-test('layoutGroups: the conductor heads its open group and never folds', () => {
+test('layoutGroups: the parent session is the group header, never a row', () => {
   const list = sample()
   const c1 = layoutGroups(buildGroups(list), noLayout).find((g) => g.key === 'c1')
-  assert.equal(c1.shown[0].id, 'c1')
-  assert.equal(c1.foldN, 1) // w2 only, not the conductor
-  // While filtering it shows only when it matches itself.
+  assert.ok(!c1.shown.some((x) => x.id === 'c1'))
+  assert.equal(c1.conductorShown, true)
+  assert.equal(c1.foldN, 1) // w2 only
+  // While filtering it counts only when it matches itself.
   const waiting = layoutGroups(buildGroups(list), { ...noLayout, filter: 'wait' }).find((g) => g.key === 'c1')
   assert.deepEqual(waiting.shown.map((x) => x.id), ['w1'])
+  assert.equal(waiting.conductorShown, false)
+})
+
+test('buildGroups: a session without workers sits with the standalone sessions', () => {
+  const list = [s('lone', { role: 'conductor' }), s('c1', { role: 'conductor' }), s('w1', { role: 'worker', conductorId: 'c1' })]
+  const groups = buildGroups(list)
+  assert.deepEqual(groups.map((g) => g.key), ['c1', 'solo'])
+  assert.deepEqual(groups[1].members.map((x) => x.id), ['lone'])
 })
 
 test('layoutGroups: a conductor that needs you opens its group', () => {
@@ -243,14 +253,14 @@ test('layoutGroups: a conductor that needs you opens its group', () => {
   list.find((x) => x.id === 'c2').state = 'waiting'
   const v = layoutGroups(buildGroups(list), noLayout).find((g) => g.key === 'c2')
   assert.equal(v.open, true)
-  assert.deepEqual(v.shown.map((x) => x.id), ['c2', 'w3'])
+  assert.deepEqual(v.shown.map((x) => x.id), ['w3'])
   assert.equal(v.counts.waiting, 1)
 })
 
 test('displayOrder walks open groups only; mapOrder lists everything', () => {
   const defs = buildGroups(sample())
   const views = layoutGroups(defs, noLayout)
-  assert.deepEqual(displayOrder(views), ['c1', 'w1'])
+  assert.deepEqual(displayOrder(views), ['c2', 'c1', 'w1']) // headers even when folded, rows of open groups
   assert.deepEqual(mapOrder(defs).map((x) => x.id), ['c2', 'w3', 'c1', 'w1', 'w2', 'orphan', 'solo1', 'e1'])
   assert.equal(groupKeyOf(defs, 'w2'), 'c1')
   assert.equal(groupKeyOf(defs, 'c2'), 'c2')

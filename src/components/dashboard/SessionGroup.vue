@@ -10,7 +10,7 @@ import { CheckCircle2, ChevronRight, ExternalLink, Folder, Layers } from 'lucide
 import type { GroupView } from '@/lib/runtimeDashboard'
 import SessionCard from './SessionCard.vue'
 import SessionRow from './SessionRow.vue'
-import { STATE_FILL, useRuntimeLabels } from './runtimeStyles'
+import { STATE_FILL, STATE_TAG, useRuntimeLabels } from './runtimeStyles'
 
 const props = defineProps<{
   group: GroupView
@@ -56,12 +56,12 @@ const FOLD_DOTS = 12
       g.kind !== 'conductor'
         ? 'border-dashed border-border/70'
         : conductorSelected
-          ? 'border-primary/50 bg-primary/[0.04]'
+          ? 'border-primary/40 bg-primary/[0.03]'
           : 'border-border/60 bg-muted/30'
     "
     :aria-label="title"
   >
-    <div class="flex min-h-[46px] flex-wrap items-center gap-2 px-2.5 py-1.5">
+    <div class="flex min-h-[46px] min-w-0 items-center gap-2 px-2.5 py-1.5">
       <button
         v-if="g.conductor"
         type="button"
@@ -80,7 +80,7 @@ const FOLD_DOTS = 12
       <button
         type="button"
         :data-session-id="g.conductor?.id"
-        class="flex min-w-0 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary"
+        class="flex min-w-0 flex-1 cursor-pointer items-center gap-2 rounded-md px-1.5 py-1 text-left hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary"
         :aria-expanded="g.conductor ? undefined : g.open"
         :aria-pressed="g.conductor ? conductorSelected : undefined"
         @click="g.conductor ? emit('select', g.conductor.id) : emit('toggle', g.key)"
@@ -99,10 +99,11 @@ const FOLD_DOTS = 12
           :stroke-width="1.75"
           aria-hidden="true"
         />
-        <span class="truncate text-sm font-semibold" :class="conductorSelected ? 'text-primary' : 'text-foreground'">{{ title }}</span>
-        <span class="truncate text-[11px] text-muted-foreground">{{ sub }}</span>
+        <span class="min-w-0 truncate text-sm font-semibold text-foreground" :title="title">{{ title }}</span>
+        <span class="max-w-[35%] shrink-0 truncate text-[11px] text-muted-foreground">{{ sub }}</span>
+        <span v-if="g.conductor" class="shrink-0 rounded-full px-2 py-0.5 text-[10px] font-semibold whitespace-nowrap" :class="STATE_TAG[g.conductor.state]">{{ L.stateLabel(g.conductor.state) }}</span>
       </button>
-      <span class="ml-auto flex flex-wrap items-center gap-1.5">
+      <span class="ml-auto flex shrink-0 items-center gap-1.5 whitespace-nowrap">
         <span v-if="g.counts.waiting" class="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{{ t('dashboard.group.waiting', { n: g.counts.waiting }) }}</span>
         <span v-if="g.counts.quiet" class="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{{ t('dashboard.group.quiet', { n: g.counts.quiet }) }}</span>
         <span v-if="g.counts.ctx" class="rounded-full bg-warning/15 px-2 py-0.5 text-[10px] font-semibold text-warning">{{ t('dashboard.group.ctx', { n: g.counts.ctx }) }}</span>

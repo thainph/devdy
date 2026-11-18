@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // One session as a card. Its height is FIXED: hovering, answering or a longer
 // "now" line never moves the grid. Waiting = warning tint, quiet = dashed
-// border, selected = primary ring.
+// border, selected = thin primary border + tint.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RtSession } from '@/lib/runtimeDashboard'

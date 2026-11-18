@@ -23,13 +23,13 @@ export const STATE_FILL: Record<SessionState, string> = {
   external: 'bg-info/60',
 }
 
-/** Card / row frame by state; the selected one gets the primary ring on top. */
+/** Card / row frame by state; the selected one gets a thin primary border and tint. */
 export function frameClass(s: Pick<RtSession, 'state'>, selected: boolean): string[] {
   const out: string[] = []
   if (s.state === 'waiting') out.push('border-warning/60 bg-warning/10')
   else if (s.state === 'quiet') out.push('border-dashed border-warning/70 bg-card')
   else out.push('border-border/70 bg-card')
-  if (selected) out.push('ring-2 ring-primary border-primary')
+  if (selected) out.push('border-primary/70! bg-primary/[0.06]!')
   else out.push('hover:border-primary/40')
   return out
 }

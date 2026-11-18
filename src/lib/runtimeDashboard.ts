@@ -230,8 +230,9 @@ export const SOLO_KEY = 'solo'
 export const EXTERNAL_KEY = 'external'
 
 /**
- * Fixed groups: one per running conductor (oldest first) → standalone sessions
- * (workers whose conductor is not running included) → outside Devdy. Empty
+ * Fixed groups: one per session with live workers (oldest first) → standalone
+ * sessions (sessions without workers, and workers whose parent is gone) →
+ * outside Devdy. Empty
  * standalone / external groups are left out.
  */
 export function buildGroups(list: readonly RtSession[]): GroupDef[] {
@@ -252,7 +253,13 @@ export function buildGroups(list: readonly RtSession[]): GroupDef[] {
     if (g) g.members.push(s)
     else solo.push(s)
   }
-  const out = [...byConductor.values()]
+  // Every session can spawn workers: only one that has live workers gets a
+  // group of its own, the others sit with the standalone sessions.
+  const out: GroupDef[] = []
+  for (const g of byConductor.values()) {
+    if (g.members.length) out.push(g)
+    else if (g.conductor) solo.push(g.conductor)
+  }
   if (solo.length) out.push({ key: SOLO_KEY, kind: 'solo', conductor: null, members: solo })
   if (external.length) out.push({ key: EXTERNAL_KEY, kind: 'external', conductor: null, members: external })
   return out
@@ -269,6 +276,8 @@ export interface LayoutOptions {
 
 export interface GroupView extends GroupDef {
   open: boolean
+  /** The group's own session (header) matches the search / filter. */
+  conductorShown: boolean
   /** Sessions listed in the open group, ordered. */
   shown: RtSession[]
   counts: { waiting: number; quiet: number; ctx: number }
@@ -296,8 +305,8 @@ export function layoutGroups(defs: readonly GroupDef[], o: LayoutOptions): Group
     const items = c ? [c, ...g.members] : g.members
     const condHit = !!c && matchesQuery(c, o.query)
     const visible = g.members.filter((s) => matchesFilter(s, o.filter) && (condHit || matchesQuery(s, o.query)))
-    // The conductor heads its open group (click = its log) and never folds;
-    // while filtering it shows only when it matches itself.
+    // The session that owns the workers is the group header (click = its log),
+    // never a row; while filtering it counts as a match only on its own.
     const condShown = !!c && (!filtering || (condHit && matchesFilter(c, o.filter)))
     if (filtering && !visible.length && !condShown) continue
     const attn = visible.filter(needsAttention)
@@ -315,7 +324,8 @@ export function layoutGroups(defs: readonly GroupDef[], o: LayoutOptions): Group
     out.push({
       ...g,
       open,
-      shown: [...(condShown && c ? [c] : []), ...sortSessions(showOk ? visible : attn)],
+      conductorShown: condShown,
+      shown: sortSessions(showOk ? visible : attn),
       counts,
       foldN: ok.length,
       foldStates: okSorted.map((s) => s.state),
@@ -326,10 +336,13 @@ export function layoutGroups(defs: readonly GroupDef[], o: LayoutOptions): Group
   return out
 }
 
-/** Session ids in on-screen order (open groups only) — what j / k walk. */
+/** Session ids in on-screen order — what j / k walk: each group header's own session, then its open rows. */
 export function displayOrder(views: readonly GroupView[]): string[] {
   const ids: string[] = []
-  for (const g of views) if (g.open) for (const s of g.shown) ids.push(s.id)
+  for (const g of views) {
+    if (g.conductor && g.conductorShown) ids.push(g.conductor.id)
+    if (g.open) for (const s of g.shown) ids.push(s.id)
+  }
   return ids
 }
 
