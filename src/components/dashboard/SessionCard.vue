@@ -68,8 +68,8 @@ const nowText = computed(() => L.nowText(s.value, props.now))
       class="pointer-events-none flex h-7 w-full min-w-0 items-center gap-1.5 rounded-md px-2"
       :class="s.state === 'waiting' ? 'bg-card' : 'bg-muted/60'"
     >
-      <span :class="alert ? 'text-warning' : 'text-primary'"><NowIcon :now="s.now" /></span>
-      <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90" :class="s.now.kind === 'tool' && 'rt-shimmer'">{{ nowText }}</span>
+      <span :class="[alert ? 'text-warning' : 'text-primary', s.now.kind === 'tool' && 'rt-busy']"><NowIcon :now="s.now" /></span>
+      <span class="min-w-0 flex-1 truncate font-mono text-[11px] text-foreground/90">{{ nowText }}</span>
       <span class="shrink-0 font-mono text-[10px] text-muted-foreground tabular-nums">{{ L.nowFor(s, now) }}</span>
     </span>
     <span class="pointer-events-none mt-auto flex w-full items-center gap-2">

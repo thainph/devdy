@@ -16,7 +16,6 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { Activity, Search } from 'lucide-vue-next'
 import { Banner, Button, Input, PageHeader, SegmentedControl } from '@/components/ui'
-import CyberFox from '@/components/CyberFoxCanvas.vue'
 import '@/components/dashboard/runtime.css'
 import StatSessions from '@/components/dashboard/StatSessions.vue'
 import StatQuota from '@/components/dashboard/StatQuota.vue'
@@ -221,7 +220,6 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 const today = computed(() =>
   new Date(dash.now.value).toLocaleDateString(locale.value, { weekday: 'long', day: '2-digit', month: '2-digit' }),
 )
-const reducedMotion = typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 const SHORTCUTS = [
   { keys: ['/'], label: 'search' },
   { keys: ['j', 'k'], label: 'pick' },
@@ -294,7 +292,6 @@ const SHORTCUTS = [
             v-if="dash.loaded.value && !total"
             class="flex flex-col items-center gap-2 rounded-lg border-[1.5px] border-dashed border-border px-5 py-8 text-center"
           >
-            <CyberFox state="sleep" size="sm" lite :reduced-motion="reducedMotion" />
             <p class="text-sm font-bold text-foreground">{{ t('dashboard.emptyTitle') }}</p>
             <p class="max-w-[46ch] text-xs text-muted-foreground">{{ t('dashboard.empty') }}</p>
           </div>

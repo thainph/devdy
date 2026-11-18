@@ -58,8 +58,8 @@ const nowText = computed(() => L.nowText(s.value, props.now))
       <span class="inline-block max-w-full truncate rounded-full px-2 py-0.5 align-middle text-[10px] font-bold" :class="STATE_TAG[s.state]">{{ L.stateLabel(s.state) }}</span>
     </span>
     <span class="pointer-events-none flex min-w-0 items-center gap-1.5">
-      <span :class="alert ? 'text-warning' : 'text-primary'"><NowIcon :now="s.now" /></span>
-      <span class="truncate font-mono text-[11px] text-foreground/90" :class="s.now.kind === 'tool' && 'rt-shimmer'">{{ nowText }}</span>
+      <span :class="[alert ? 'text-warning' : 'text-primary', s.now.kind === 'tool' && 'rt-busy']"><NowIcon :now="s.now" /></span>
+      <span class="truncate font-mono text-[11px] text-foreground/90">{{ nowText }}</span>
     </span>
     <span class="pointer-events-none flex items-center gap-1.5">
       <span class="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">

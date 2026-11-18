@@ -5,7 +5,9 @@
  * border), while a skin's `[data-theme] .ui-card` rules still win by
  * specificity. Every animation sits behind `prefers-reduced-motion:
  * no-preference` and is CSS-only (no per-frame script): charts and numbers
- * change on the dashboard's existing poll / tick and CSS eases between them. */
+ * change on the dashboard's existing poll / tick and CSS eases between them.
+ * The endless ones only animate opacity, which the compositor runs without
+ * repainting — no animated shadows, gradients or background positions. */
 
 @property --rt-n {
   syntax: '<integer>';
@@ -131,28 +133,15 @@
   }
   .rt-item[data-state='waiting']::after {
     opacity: 0;
+    will-change: opacity;
     animation: rt-breathe 2.6s ease-in-out infinite;
   }
 
-  /* The "now" text while a tool runs: a light sweeping across it. */
-  .rt-shimmer {
-    background: linear-gradient(
-      90deg,
-      hsl(var(--foreground)) 0%,
-      hsl(var(--foreground)) 40%,
-      hsl(var(--primary)) 50%,
-      hsl(var(--foreground)) 60%,
-      hsl(var(--foreground)) 100%
-    );
-    background-size: 250% 100%;
-    -webkit-background-clip: text;
-    background-clip: text;
-    color: transparent;
-    animation: rt-shimmer 2.4s linear infinite;
-  }
-
-  .rt-pulse {
-    animation: rt-pulse 1.6s ease-out infinite;
+  /* The "now" icon while a tool runs: a slow blink. */
+  .rt-busy {
+    display: inline-flex;
+    will-change: opacity;
+    animation: rt-blink 1.6s ease-in-out infinite;
   }
 }
 
@@ -178,11 +167,6 @@
 @keyframes rt-breathe {
   50% { opacity: 1; }
 }
-@keyframes rt-shimmer {
-  from { background-position: 100% 0; }
-  to { background-position: -150% 0; }
-}
-@keyframes rt-pulse {
-  from { box-shadow: 0 0 0 0 hsl(var(--success) / 0.6); }
-  to { box-shadow: 0 0 0 7px hsl(var(--success) / 0); }
+@keyframes rt-blink {
+  50% { opacity: 0.35; }
 }
