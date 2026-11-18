@@ -1,6 +1,6 @@
 {
   "title": "Running",
-  "subtitle": "{date} · live · grouped by session",
+  "subtitle": "{date} · live",
   "untitled": "Untitled session",
   "loadError": "Could not load the running sessions: {error}",
   "fallbackHint": "Limited live data: per-session activity, today's runs and sessions outside Devdy show once the app provides them.",
@@ -77,19 +77,10 @@
     "expandAll": "Expand all",
     "collapseAll": "Collapse all"
   },
-  "group": {
-    "solo": "Standalone sessions",
-    "soloSub": "without workers",
-    "external": "Outside Devdy",
-    "externalSub": "terminal / IDE · view only",
-    "workers": "{n} worker | {n} workers",
-    "sessions": "{n} session | {n} sessions",
-    "waiting": "{n} waiting for you",
-    "quiet": "{n} quiet for long",
-    "ctx": "{n} context full",
-    "fold": "+{n} running fine",
-    "show": "Show",
-    "refold": "Hide {n} session running fine | Hide {n} sessions running fine"
+  "tree": {
+    "show": "Show {n} worker | Show {n} workers",
+    "hide": "Hide {n} worker | Hide {n} workers",
+    "needsYou": "{n} need you"
   },
   "state": {
     "waiting": "waiting for you",

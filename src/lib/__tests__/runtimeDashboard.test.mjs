@@ -8,7 +8,7 @@ import {
   QUIET_AFTER_MS,
   answerKeyBlocked,
   activityBuckets,
-  buildGroups,
+  buildTree,
   classifyState,
   compareSessions,
   contextPercent,
@@ -16,12 +16,11 @@ import {
   effectiveMode,
   filterCounts,
   formatElapsed,
-  groupKeyOf,
   initialPick,
   isMissingCommandError,
   isWaitTool,
   lastEvent,
-  layoutGroups,
+  layoutTree,
   logLine,
   logLines,
   mapOrder,
@@ -29,6 +28,7 @@ import {
   needsAttention,
   nextAfterAnswer,
   noteActivity,
+  parentOf,
   parseViewMode,
   pushQuotaSample,
   pushSample,
@@ -152,119 +152,78 @@ function sample() {
   ]
 }
 
-test('buildGroups: conductors oldest first → solo (stray workers too) → external', () => {
-  const groups = buildGroups(sample())
-  assert.deepEqual(groups.map((g) => g.key), ['c2', 'c1', 'solo', 'external'])
-  assert.deepEqual(groups[1].members.map((m) => m.id), ['w1', 'w2'])
-  assert.deepEqual(groups[2].members.map((m) => m.id), ['orphan', 'solo1'])
-  assert.equal(groups[0].conductor.id, 'c2')
-  assert.deepEqual(buildGroups([s('x')]).map((g) => g.key), ['solo'])
+test('buildTree: workers under their parent, stray workers top-level, urgent first, external last', () => {
+  const nodes = buildTree(sample())
+  const ids = nodes.map((n) => n.session.id)
+  assert.equal(ids[0], 'c1') // its worker w1 waits for you
+  assert.equal(ids.at(-1), 'e1')
+  assert.deepEqual([...ids].sort(), ['c1', 'c2', 'e1', 'orphan', 'solo1'])
+  const by = Object.fromEntries(nodes.map((n) => [n.session.id, n]))
+  assert.deepEqual(by.c1.children.map((c) => c.id), ['w1', 'w2'])
+  assert.deepEqual(by.c2.children.map((c) => c.id), ['w3'])
+  assert.deepEqual(by.orphan.children, [])
 })
 
-const noLayout = { query: '', filter: null, open: {}, showOk: {} }
+const noLayout = { query: '', filter: null, open: {} }
 
-test('layoutGroups: open by default only when something needs you; external stays closed', () => {
-  const views = layoutGroups(buildGroups(sample()), noLayout)
-  const by = Object.fromEntries(views.map((v) => [v.key, v]))
-  assert.equal(by.c1.open, true)
-  assert.equal(by.c2.open, false)
-  assert.equal(by.solo.open, false)
-  assert.equal(by.external.open, false)
-  assert.equal(by.c1.counts.waiting, 1)
+test('layoutTree: workers show under their parent; few workers or one needing you open by default', () => {
+  const rows = layoutTree(buildTree(sample()), noLayout)
+  const ids = rows.map((r) => r.session.id)
+  assert.deepEqual(ids.slice(0, 3), ['c1', 'w1', 'w2'])
+  const c1 = rows[0]
+  assert.equal(c1.depth, 0)
+  assert.equal(c1.childCount, 2)
+  assert.equal(c1.open, true)
+  assert.equal(c1.childAttention, 1)
+  assert.equal(rows[1].depth, 1)
+  assert.equal(rows[1].last, false)
+  assert.equal(rows[2].last, true)
 })
 
-test('layoutGroups: running-fine sessions fold behind "+N" when something needs you', () => {
-  const views = layoutGroups(buildGroups(sample()), noLayout)
-  const c1 = views.find((v) => v.key === 'c1')
-  assert.deepEqual(c1.shown.map((x) => x.id), ['w1'])
-  assert.equal(c1.hasFold, true)
-  assert.equal(c1.foldN, 1)
-  const unfolded = layoutGroups(buildGroups(sample()), { ...noLayout, showOk: { c1: true } }).find((v) => v.key === 'c1')
-  assert.deepEqual(unfolded.shown.map((x) => x.id), ['w1', 'w2'])
-  assert.equal(unfolded.hasFold, false)
-  assert.equal(unfolded.canRefold, true)
+test('layoutTree: many calm workers start collapsed; hand choices win', () => {
+  const list = [s('p', { role: 'conductor' }), ...['a', 'b', 'c', 'd', 'e'].map((id) => s(id, { role: 'worker', conductorId: 'p' }))]
+  const nodes = buildTree(list)
+  const closed = layoutTree(nodes, noLayout)
+  assert.deepEqual(closed.map((r) => r.session.id), ['p'])
+  assert.equal(closed[0].open, false)
+  assert.equal(closed[0].childCount, 5)
+  const opened = layoutTree(nodes, { ...noLayout, open: { p: true } })
+  assert.equal(opened.length, 6)
+  const shut = layoutTree(buildTree(sample()), { ...noLayout, open: { c1: false } })
+  assert.ok(!shut.some((r) => r.session.id === 'w1'))
 })
 
-test('layoutGroups: a calm group shows up to 4 sessions unfolded, more fold', () => {
-  const small = [s('a'), s('b')]
-  const v1 = layoutGroups(buildGroups(small), noLayout)[0]
-  assert.equal(v1.hasFold, false)
-  assert.equal(v1.shown.length, 2)
-  const big = ['a', 'b', 'c', 'd', 'e'].map((id) => s(id))
-  const v2 = layoutGroups(buildGroups(big), noLayout)[0]
-  assert.equal(v2.hasFold, true)
-  assert.equal(v2.shown.length, 0)
-  assert.equal(v2.foldN, 5)
-})
-
-test('layoutGroups: hand choices win', () => {
-  const views = layoutGroups(buildGroups(sample()), { ...noLayout, open: { c1: false, c2: true } })
-  assert.equal(views.find((v) => v.key === 'c1').open, false)
-  assert.equal(views.find((v) => v.key === 'c2').open, true)
-})
-
-test('layoutGroups: search keeps only matching sessions and opens their groups', () => {
+test('layoutTree: search shows matching workers under their parent', () => {
   const list = sample()
   list.find((x) => x.id === 'w3').title = 'migrate invoice'
-  const views = layoutGroups(buildGroups(list), { ...noLayout, query: 'invoice' })
-  assert.deepEqual(views.map((v) => v.key), ['c2'])
-  assert.equal(views[0].open, true)
-  assert.deepEqual(views[0].shown.map((x) => x.id), ['w3'])
-  assert.equal(views[0].hasFold, false)
-  assert.equal(layoutGroups(buildGroups(list), { ...noLayout, query: 'zzz' }).length, 0)
+  const rows = layoutTree(buildTree(list), { ...noLayout, query: 'invoice' })
+  assert.deepEqual(rows.map((r) => r.session.id), ['c2', 'w3'])
+  assert.equal(rows[0].open, true)
+  assert.equal(layoutTree(buildTree(list), { ...noLayout, query: 'zzz' }).length, 0)
 })
 
-test('layoutGroups: matching a conductor shows its members', () => {
+test('layoutTree: matching a parent shows all its workers', () => {
   const list = sample()
   list.find((x) => x.id === 'c2').title = 'Migrate billing'
-  const views = layoutGroups(buildGroups(list), { ...noLayout, query: 'billing' })
-  assert.deepEqual(views.map((v) => v.key), ['c2'])
-  assert.deepEqual(views[0].shown.map((x) => x.id), ['w3'])
-  assert.equal(views[0].conductorShown, true)
+  const rows = layoutTree(buildTree(list), { ...noLayout, query: 'billing' })
+  assert.deepEqual(rows.map((r) => r.session.id), ['c2', 'w3'])
 })
 
-test('layoutGroups: filter chips', () => {
-  const views = layoutGroups(buildGroups(sample()), { ...noLayout, filter: 'wait' })
-  assert.deepEqual(views.map((v) => v.key), ['c1'])
-  assert.deepEqual(views[0].shown.map((x) => x.id), ['w1'])
+test('layoutTree: filter chips keep the parent as context', () => {
+  const rows = layoutTree(buildTree(sample()), { ...noLayout, filter: 'wait' })
+  assert.deepEqual(rows.map((r) => r.session.id), ['c1', 'w1'])
 })
 
-test('layoutGroups: the parent session is the group header, never a row', () => {
-  const list = sample()
-  const c1 = layoutGroups(buildGroups(list), noLayout).find((g) => g.key === 'c1')
-  assert.ok(!c1.shown.some((x) => x.id === 'c1'))
-  assert.equal(c1.conductorShown, true)
-  assert.equal(c1.foldN, 1) // w2 only
-  // While filtering it counts only when it matches itself.
-  const waiting = layoutGroups(buildGroups(list), { ...noLayout, filter: 'wait' }).find((g) => g.key === 'c1')
-  assert.deepEqual(waiting.shown.map((x) => x.id), ['w1'])
-  assert.equal(waiting.conductorShown, false)
-})
-
-test('buildGroups: a session without workers sits with the standalone sessions', () => {
-  const list = [s('lone', { role: 'conductor' }), s('c1', { role: 'conductor' }), s('w1', { role: 'worker', conductorId: 'c1' })]
-  const groups = buildGroups(list)
-  assert.deepEqual(groups.map((g) => g.key), ['c1', 'solo'])
-  assert.deepEqual(groups[1].members.map((x) => x.id), ['lone'])
-})
-
-test('layoutGroups: a conductor that needs you opens its group', () => {
-  const list = sample()
-  list.find((x) => x.id === 'c2').state = 'waiting'
-  const v = layoutGroups(buildGroups(list), noLayout).find((g) => g.key === 'c2')
-  assert.equal(v.open, true)
-  assert.deepEqual(v.shown.map((x) => x.id), ['w3'])
-  assert.equal(v.counts.waiting, 1)
-})
-
-test('displayOrder walks open groups only; mapOrder lists everything', () => {
-  const defs = buildGroups(sample())
-  const views = layoutGroups(defs, noLayout)
-  assert.deepEqual(displayOrder(views), ['c2', 'c1', 'w1']) // headers even when folded, rows of open groups
-  assert.deepEqual(mapOrder(defs).map((x) => x.id), ['c2', 'w3', 'c1', 'w1', 'w2', 'orphan', 'solo1', 'e1'])
-  assert.equal(groupKeyOf(defs, 'w2'), 'c1')
-  assert.equal(groupKeyOf(defs, 'c2'), 'c2')
-  assert.equal(groupKeyOf(defs, 'nope'), null)
+test('displayOrder follows the rows; mapOrder lists everything; parentOf', () => {
+  const nodes = buildTree(sample())
+  const rows = layoutTree(nodes, noLayout)
+  assert.deepEqual(displayOrder(rows), rows.map((r) => r.session.id))
+  const all = mapOrder(nodes).map((x) => x.id)
+  assert.equal(all.length, 8)
+  assert.ok(all.indexOf('w3') === all.indexOf('c2') + 1)
+  assert.equal(parentOf(nodes, 'w2'), 'c1')
+  assert.equal(parentOf(nodes, 'c1'), null)
+  assert.equal(parentOf(nodes, 'orphan'), null)
 })
 
 test('stepOrder clamps; stepQueue wraps', () => {

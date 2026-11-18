@@ -214,153 +214,103 @@ export function filterCounts(list: readonly RtSession[]): Record<QuickFilter, nu
   return out
 }
 
-// ── Groups ──────────────────────────────────────────────────────────────────
+// ── Session tree ────────────────────────────────────────────────────────────
 
-export type GroupKind = 'conductor' | 'solo' | 'external'
-
-export interface GroupDef {
-  /** Conductor run id, `solo` or `external`. */
-  key: string
-  kind: GroupKind
-  conductor: RtSession | null
-  members: RtSession[]
+/** A top-level session and the workers it spawned (still running). */
+export interface TreeNode {
+  session: RtSession
+  children: RtSession[]
 }
 
-export const SOLO_KEY = 'solo'
-export const EXTERNAL_KEY = 'external'
+function treeRank(n: TreeNode): RtSession {
+  // A parent sorts by the most urgent of itself and its workers.
+  return sortSessions([n.session, ...n.children])[0] ?? n.session
+}
 
 /**
- * Fixed groups: one per session with live workers (oldest first) → standalone
- * sessions (sessions without workers, and workers whose parent is gone) →
- * outside Devdy. Empty
- * standalone / external groups are left out.
+ * One list for every session: workers sit under the session that spawned them
+ * (a worker whose parent is gone becomes top-level). Top level: the most
+ * urgent first (counting the workers), sessions outside Devdy last.
  */
-export function buildGroups(list: readonly RtSession[]): GroupDef[] {
-  const conductors = list
-    .filter((s) => s.role === 'conductor')
-    .sort((a, b) => (a.startedAt ?? Infinity) - (b.startedAt ?? Infinity) || a.id.localeCompare(b.id))
-  const byConductor = new Map<string, GroupDef>()
-  for (const c of conductors) byConductor.set(c.id, { key: c.id, kind: 'conductor', conductor: c, members: [] })
-  const solo: RtSession[] = []
-  const external: RtSession[] = []
+export function buildTree(list: readonly RtSession[]): TreeNode[] {
+  const byId = new Map(list.map((s) => [s.id, s]))
+  const nodes = new Map<string, TreeNode>()
+  const roots: TreeNode[] = []
   for (const s of list) {
-    if (s.role === 'conductor') continue
-    if (s.role === 'external') {
-      external.push(s)
-      continue
-    }
-    const g = s.conductorId ? byConductor.get(s.conductorId) : undefined
-    if (g) g.members.push(s)
-    else solo.push(s)
+    if (s.role === 'worker' && s.conductorId && byId.has(s.conductorId)) continue
+    const n: TreeNode = { session: s, children: [] }
+    nodes.set(s.id, n)
+    roots.push(n)
   }
-  // Every session can spawn workers: only one that has live workers gets a
-  // group of its own, the others sit with the standalone sessions.
-  const out: GroupDef[] = []
-  for (const g of byConductor.values()) {
-    if (g.members.length) out.push(g)
-    else if (g.conductor) solo.push(g.conductor)
+  for (const s of list) {
+    if (s.role === 'worker' && s.conductorId) nodes.get(s.conductorId)?.children.push(s)
   }
-  if (solo.length) out.push({ key: SOLO_KEY, kind: 'solo', conductor: null, members: solo })
-  if (external.length) out.push({ key: EXTERNAL_KEY, kind: 'external', conductor: null, members: external })
-  return out
+  for (const n of roots) n.children = sortSessions(n.children)
+  return roots.sort((a, b) => compareSessions(treeRank(a), treeRank(b)) || compareSessions(a.session, b.session))
 }
 
-export interface LayoutOptions {
+export interface TreeOptions {
   query: string
   filter: QuickFilter | null
-  /** Groups the user opened / closed by hand (this app session). */
+  /** Parents the user expanded / collapsed by hand (this app session). */
   open: Readonly<Record<string, boolean>>
-  /** Groups whose "running fine" sessions the user unfolded / folded. */
-  showOk: Readonly<Record<string, boolean>>
 }
 
-export interface GroupView extends GroupDef {
+/** One visible line of the list. */
+export interface TreeRow {
+  session: RtSession
+  depth: 0 | 1
+  /** Top-level only: id of the session, how many workers it has, whether they show. */
+  childCount: number
   open: boolean
-  /** The group's own session (header) matches the search / filter. */
-  conductorShown: boolean
-  /** Sessions listed in the open group, ordered. */
-  shown: RtSession[]
-  counts: { waiting: number; quiet: number; ctx: number }
-  /** Folded "running fine" sessions. */
-  foldN: number
-  foldStates: SessionState[]
-  hasFold: boolean
-  canRefold: boolean
+  /** Its workers that need you (waiting / quiet / context full), for the collapsed badge. */
+  childAttention: number
+  /** A worker that is the last one shown under its parent (tree connector). */
+  last: boolean
 }
 
-/** Without a hand choice, an open group shows its "running fine" sessions only up to this many. */
-export const FOLD_SHOW_UP_TO = 4
+/** Without a hand choice, a parent shows its workers when there are at most this many, or one needs you. */
+export const AUTO_OPEN_UP_TO = 4
 
 /**
- * Apply search / filter and the fold rules. A group opens by default when
- * something in it needs you (the external group never does); while searching or
- * filtering only matching sessions show, every group with a match opens and the
- * others disappear.
+ * The visible rows. A parent with workers starts open when it has few of them
+ * or one needs you; the user's choice wins. While searching / filtering a
+ * session shows when it matches or one of its workers does (shown open, with
+ * only the matching workers — all of them when the parent matches the search).
  */
-export function layoutGroups(defs: readonly GroupDef[], o: LayoutOptions): GroupView[] {
+export function layoutTree(nodes: readonly TreeNode[], o: TreeOptions): TreeRow[] {
   const filtering = !!o.query.trim() || o.filter !== null
-  const out: GroupView[] = []
-  for (const g of defs) {
-    const c = g.conductor
-    const items = c ? [c, ...g.members] : g.members
-    const condHit = !!c && matchesQuery(c, o.query)
-    const visible = g.members.filter((s) => matchesFilter(s, o.filter) && (condHit || matchesQuery(s, o.query)))
-    // The session that owns the workers is the group header (click = its log),
-    // never a row; while filtering it counts as a match only on its own.
-    const condShown = !!c && (!filtering || (condHit && matchesFilter(c, o.filter)))
-    if (filtering && !visible.length && !condShown) continue
-    const attn = visible.filter(needsAttention)
-    const ok = visible.filter((s) => !needsAttention(s))
-    const defaultOpen = g.kind !== 'external' && items.some(needsAttention)
-    const open = filtering ? true : (o.open[g.key] ?? defaultOpen)
-    const showOk = filtering || (o.showOk[g.key] ?? (attn.length === 0 && ok.length <= FOLD_SHOW_UP_TO))
-    const counts = { waiting: 0, quiet: 0, ctx: 0 }
-    for (const s of items) {
-      if (s.state === 'waiting') counts.waiting++
-      if (s.state === 'quiet') counts.quiet++
-      if (ctxFull(s)) counts.ctx++
-    }
-    const okSorted = sortSessions(ok)
-    out.push({
-      ...g,
-      open,
-      conductorShown: condShown,
-      shown: sortSessions(showOk ? visible : attn),
-      counts,
-      foldN: ok.length,
-      foldStates: okSorted.map((s) => s.state),
-      hasFold: !showOk && ok.length > 0,
-      canRefold: showOk && !filtering && ok.length > 0 && (attn.length > 0 || ok.length > FOLD_SHOW_UP_TO),
-    })
+  const rows: TreeRow[] = []
+  for (const n of nodes) {
+    const p = n.session
+    const parentHit = matchesQuery(p, o.query)
+    const kids = filtering
+      ? n.children.filter((c) => matchesFilter(c, o.filter) && (parentHit || matchesQuery(c, o.query)))
+      : n.children
+    const selfShown = !filtering || (parentHit && matchesFilter(p, o.filter))
+    if (!selfShown && !kids.length) continue
+    const childAttention = n.children.filter(needsAttention).length
+    const defaultOpen = n.children.length <= AUTO_OPEN_UP_TO || childAttention > 0
+    const open = n.children.length > 0 && (filtering ? true : (o.open[p.id] ?? defaultOpen))
+    rows.push({ session: p, depth: 0, childCount: n.children.length, open, childAttention, last: false })
+    if (open) kids.forEach((c, i) => rows.push({ session: c, depth: 1, childCount: 0, open: false, childAttention: 0, last: i === kids.length - 1 }))
   }
-  return out
+  return rows
 }
 
-/** Session ids in on-screen order — what j / k walk: each group header's own session, then its open rows. */
-export function displayOrder(views: readonly GroupView[]): string[] {
-  const ids: string[] = []
-  for (const g of views) {
-    if (g.conductor && g.conductorShown) ids.push(g.conductor.id)
-    if (g.open) for (const s of g.shown) ids.push(s.id)
-  }
-  return ids
+/** Session ids in on-screen order — what j / k walk. */
+export function displayOrder(rows: readonly TreeRow[]): string[] {
+  return rows.map((r) => r.session.id)
 }
 
-/** Every session in group order (the Session card's map). */
-export function mapOrder(defs: readonly GroupDef[]): RtSession[] {
-  const out: RtSession[] = []
-  for (const g of defs) {
-    if (g.conductor) out.push(g.conductor)
-    out.push(...sortSessions(g.members))
-  }
-  return out
+/** Every session in list order, workers after their parent (the Session card's map). */
+export function mapOrder(nodes: readonly TreeNode[]): RtSession[] {
+  return nodes.flatMap((n) => [n.session, ...n.children])
 }
 
-/** The group a session lives in. */
-export function groupKeyOf(defs: readonly GroupDef[], id: string): string | null {
-  for (const g of defs) {
-    if (g.conductor?.id === id || g.members.some((s) => s.id === id)) return g.key
-  }
+/** The parent of a worker shown under it, else null. */
+export function parentOf(nodes: readonly TreeNode[], id: string): string | null {
+  for (const n of nodes) if (n.children.some((c) => c.id === id)) return n.session.id
   return null
 }
 

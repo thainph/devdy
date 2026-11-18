@@ -1,6 +1,6 @@
 {
   "title": "Đang chạy",
-  "subtitle": "{date} · trực tiếp · nhóm theo session",
+  "subtitle": "{date} · trực tiếp",
   "untitled": "Session chưa đặt tên",
   "loadError": "Không tải được các session đang chạy: {error}",
   "fallbackHint": "Dữ liệu trực tiếp còn hạn chế: nhịp hoạt động từng session, số session hôm nay và session ngoài Devdy sẽ hiện khi ứng dụng cung cấp.",
@@ -77,19 +77,10 @@
     "expandAll": "Mở hết",
     "collapseAll": "Thu hết"
   },
-  "group": {
-    "solo": "Session lẻ",
-    "soloSub": "không có worker",
-    "external": "Ngoài Devdy",
-    "externalSub": "terminal / IDE · chỉ xem",
-    "workers": "{n} worker | {n} worker",
-    "sessions": "{n} session | {n} session",
-    "waiting": "{n} chờ bạn",
-    "quiet": "{n} im lâu",
-    "ctx": "{n} context đầy",
-    "fold": "+{n} đang chạy ổn",
-    "show": "Hiện",
-    "refold": "Ẩn {n} session đang chạy ổn | Ẩn {n} session đang chạy ổn"
+  "tree": {
+    "show": "Hiện {n} worker | Hiện {n} worker",
+    "hide": "Ẩn {n} worker | Ẩn {n} worker",
+    "needsYou": "{n} cần bạn"
   },
   "state": {
     "waiting": "chờ bạn",

@@ -1,16 +1,14 @@
 <script lang="ts">
-// Hand choices (open / closed groups, unfolded "running fine" sessions) last
-// for the app session: kept at module level so leaving the screen and coming
-// back keeps them.
+// Hand choices (which sessions show their workers) last for the app session:
+// kept at module level so leaving the screen and coming back keeps them.
 const sessionOpen: Record<string, boolean> = {}
-const sessionShowOk: Record<string, boolean> = {}
 </script>
 
 <script setup lang="ts">
 // Runtime Dashboard — the app's start screen: everything running right now.
-// Four stat cards (sessions, 5-hour limits, resources, today), then the
-// sessions grouped by conductor (attention first, the ones running fine folded
-// behind "+N") next to a sticky detail panel with the selected session's live
+// Four stat cards (sessions, 5-hour limits, resources, today), then one list
+// of sessions as a tree (workers under the session that spawned them, the most
+// urgent first) next to a sticky detail panel with the selected session's live
 // log and what it needs from you (permission / question / message / stop).
 // Keyboard: / search · j k select · n next waiting · a allow · d deny ·
 // Enter open · Esc leave the search.
@@ -23,7 +21,7 @@ import StatSessions from '@/components/dashboard/StatSessions.vue'
 import StatQuota from '@/components/dashboard/StatQuota.vue'
 import StatResources from '@/components/dashboard/StatResources.vue'
 import StatToday from '@/components/dashboard/StatToday.vue'
-import SessionGroup from '@/components/dashboard/SessionGroup.vue'
+import SessionTree from '@/components/dashboard/SessionTree.vue'
 import SessionInspector from '@/components/dashboard/SessionInspector.vue'
 import { useRuntimeDashboard } from '@/composables/useRuntimeDashboard'
 import { useConfirm } from '@/composables/useConfirm'
@@ -34,15 +32,14 @@ import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { strayIds } from '@/lib/backgroundProcesses'
 import type { RecentRun } from '@/lib/runtimeSnapshot'
 import {
-  buildGroups,
+  buildTree,
   displayOrder,
   effectiveMode,
   filterCounts,
-  groupKeyOf,
   initialPick,
-  layoutGroups,
+  layoutTree,
   mapOrder,
-  needsAttention,
+  parentOf,
   answerKeyBlocked,
   nextAfterAnswer,
   parseViewMode,
@@ -82,39 +79,27 @@ const modeHint = computed(() => {
   return shownMode.value === 'rows' ? t('dashboard.toolbar.autoRows', { n: total.value }) : t('dashboard.toolbar.autoCards')
 })
 
-// ── Search / filter / groups ────────────────────────────────────────────────
+// ── Search / filter / tree ──────────────────────────────────────────────────
 const query = ref('')
 const filter = ref<QuickFilter | null>(null)
 const openMap = ref<Record<string, boolean>>({ ...sessionOpen })
-const showOkMap = ref<Record<string, boolean>>({ ...sessionShowOk })
 watch(openMap, (m) => Object.assign(sessionOpen, m), { deep: true })
-watch(showOkMap, (m) => Object.assign(sessionShowOk, m), { deep: true })
 
-const defs = computed(() => buildGroups(dash.sessions.value))
-const views = computed(() => layoutGroups(defs.value, { query: query.value, filter: filter.value, open: openMap.value, showOk: showOkMap.value }))
-const order = computed(() => displayOrder(views.value))
+const nodes = computed(() => buildTree(dash.sessions.value))
+const rows = computed(() => layoutTree(nodes.value, { query: query.value, filter: filter.value, open: openMap.value }))
+const order = computed(() => displayOrder(rows.value))
 const queue = computed(() => waitQueue(dash.sessions.value))
-const mapList = computed(() => mapOrder(defs.value))
+const mapList = computed(() => mapOrder(nodes.value))
 const counts = computed(() => filterCounts(dash.sessions.value))
 const filtering = computed(() => !!query.value.trim() || filter.value !== null)
+const parents = computed(() => nodes.value.filter((n) => n.children.length).map((n) => n.session.id))
 
-function toggleGroup(key: string) {
-  const v = views.value.find((g) => g.key === key)
-  openMap.value = { ...openMap.value, [key]: !(v?.open ?? false) }
+function toggleWorkers(id: string) {
+  const r = rows.value.find((x) => x.session.id === id)
+  openMap.value = { ...openMap.value, [id]: !(r?.open ?? false) }
 }
-function setShowOk(key: string, on: boolean) {
-  showOkMap.value = { ...showOkMap.value, [key]: on }
-}
-function expandAll() {
-  const keys = defs.value.map((g) => g.key)
-  openMap.value = { ...openMap.value, ...Object.fromEntries(keys.map((k) => [k, true])) }
-  showOkMap.value = { ...showOkMap.value, ...Object.fromEntries(keys.map((k) => [k, true])) }
-}
-function collapseAll() {
-  const keys = defs.value.map((g) => g.key)
-  openMap.value = { ...openMap.value, ...Object.fromEntries(keys.map((k) => [k, false])) }
-  showOkMap.value = {}
-  for (const k of Object.keys(sessionShowOk)) delete sessionShowOk[k]
+function setAllOpen(on: boolean) {
+  openMap.value = { ...openMap.value, ...Object.fromEntries(parents.value.map((id) => [id, on])) }
 }
 function toggleFilter(f: QuickFilter) {
   filter.value = filter.value === f ? null : f
@@ -131,17 +116,12 @@ const selectedExternal = computed(() =>
   selected.value?.role === 'external' ? dash.externalById.value.get(selected.value.id) ?? null : null,
 )
 
-/** Select a session: its group opens (and unfolds when it runs fine) and it scrolls into view. */
+/** Select a session: a worker's parent shows its workers, and it scrolls into view. */
 function select(id: string | null) {
   if (!id) return
   selectedId.value = id
-  const s = dash.sessions.value.find((x) => x.id === id)
-  const key = groupKeyOf(defs.value, id)
-  if (key && s) {
-    if (!views.value.find((g) => g.key === key)?.open) openMap.value = { ...openMap.value, [key]: true }
-    const isConductor = defs.value.find((g) => g.key === key)?.conductor?.id === id
-    if (!needsAttention(s) && !isConductor) setShowOk(key, true)
-  }
+  const parent = parentOf(nodes.value, id)
+  if (parent && !rows.value.find((r) => r.session.id === parent)?.open) openMap.value = { ...openMap.value, [parent]: true }
   void nextTick(() => {
     const el = document.querySelector<HTMLElement>(`[data-session-id="${CSS.escape(id)}"]`)
     const reduce = window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
@@ -327,8 +307,8 @@ const SHORTCUTS = [
               <SegmentedControl v-model="mode" :options="modeOptions" :stretch="false" :aria-label="t('dashboard.toolbar.mode.label')" />
               <span v-if="modeHint" class="text-[11px] text-muted-foreground">{{ modeHint }}</span>
               <span class="ml-auto flex gap-1.5">
-                <Button variant="outline" size="xs" :disabled="!defs.length" @click="expandAll">{{ t('dashboard.toolbar.expandAll') }}</Button>
-                <Button variant="outline" size="xs" :disabled="!defs.length" @click="collapseAll">{{ t('dashboard.toolbar.collapseAll') }}</Button>
+                <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(true)">{{ t('dashboard.toolbar.expandAll') }}</Button>
+                <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(false)">{{ t('dashboard.toolbar.collapseAll') }}</Button>
               </span>
             </div>
 
@@ -339,22 +319,19 @@ const SHORTCUTS = [
               {{ t('dashboard.empty') }}
             </p>
             <p
-              v-else-if="filtering && !views.length"
+              v-else-if="filtering && !rows.length"
               class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
             >
               {{ t('dashboard.noMatch') }}
             </p>
 
-            <SessionGroup
-              v-for="g in views"
-              :key="g.key"
-              :group="g"
+            <SessionTree
+              v-if="rows.length"
+              :rows="rows"
               :mode="shownMode"
               :selected-id="selectedId"
               :now="dash.now.value"
-              @toggle="toggleGroup"
-              @unfold="setShowOk($event, true)"
-              @refold="setShowOk($event, false)"
+              @toggle="toggleWorkers"
               @select="select"
             />
           </div>
