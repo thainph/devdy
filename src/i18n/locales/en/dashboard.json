@@ -54,8 +54,6 @@
       "title": "Today",
       "finished": "finished",
       "failed": "{n} failed",
-      "all": "All",
-      "allTitle": "Open the background processes",
       "empty": "Nothing finished yet today.",
       "noData": "Not available yet.",
       "status": {

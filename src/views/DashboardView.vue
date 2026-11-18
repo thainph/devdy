@@ -313,7 +313,7 @@ const SHORTCUTS = [
           />
           <StatQuota :quotas="dash.quotas.value" />
           <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
-          <StatToday :today="dash.today.value" @open="openRecent" @all="router.push('/processes')" />
+          <StatToday :today="dash.today.value" @open="openRecent" />
         </div>
 
         <div class="flex flex-wrap items-start gap-3.5">

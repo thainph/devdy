@@ -3,11 +3,11 @@
 // latest finished runs (not limited to today; click opens the run).
 import { useI18n } from 'vue-i18n'
 import { CheckCircle2, CircleCheckBig, XCircle } from 'lucide-vue-next'
-import { Button, Card } from '@/components/ui'
+import { Card } from '@/components/ui'
 import type { RecentRun, RuntimeToday } from '@/lib/runtimeSnapshot'
 
 defineProps<{ today: RuntimeToday | null }>()
-const emit = defineEmits<{ open: [run: RecentRun]; all: [] }>()
+const emit = defineEmits<{ open: [run: RecentRun] }>()
 const { t } = useI18n()
 
 /** Time of day; the date too when it is not today (the list is not limited to today). */
@@ -27,9 +27,6 @@ function when(iso: string): string {
         <CircleCheckBig class="h-3.5 w-3.5" :stroke-width="2" aria-hidden="true" />
       </span>
       <span class="min-w-0 truncate">{{ t('dashboard.stat.today.title') }}</span>
-      <Button variant="ghost" size="xs" class="ml-auto shrink-0 text-primary" :title="t('dashboard.stat.today.allTitle')" @click="emit('all')">
-        {{ t('dashboard.stat.today.all') }}
-      </Button>
     </div>
     <p v-if="!today" class="text-[11px] text-muted-foreground">{{ t('dashboard.stat.today.noData') }}</p>
     <template v-else>

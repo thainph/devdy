@@ -54,8 +54,6 @@
       "title": "Hôm nay",
       "finished": "xong",
       "failed": "{n} lỗi",
-      "all": "Tất cả",
-      "allTitle": "Mở màn tiến trình nền",
       "empty": "Hôm nay chưa có session nào xong.",
       "noData": "Chưa có dữ liệu.",
       "status": {
