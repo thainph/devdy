@@ -2,7 +2,8 @@
 // One GitHub mention (GithubMentionsView): who asked, where, why it reached
 // the user, and the comment waiting for an answer. "Check with AI" opens a
 // session on the issue / PR, like the PR Inbox's "AI review"; once one exists
-// the button opens it. Right-click opens the card menu (the view owns both).
+// the button opens it. Right-click or the "…" button opens the card menu
+// (the view owns both).
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -13,7 +14,7 @@ import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { isStale, mentionedAt, type MentionCheckStatus, type MentionItem } from '@/lib/githubMentions'
 import type { TodoPrefill } from '@/lib/focus'
 import {
-  AtSign, Check, CircleDot, ExternalLink, Eye, GitPullRequest, Loader2, MessageSquare, Reply, Sparkles, Users,
+  AtSign, Check, CircleDot, ExternalLink, Eye, GitPullRequest, Loader2, MessageSquare, MoreHorizontal, Reply, Sparkles, Users,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -87,6 +88,11 @@ function relativeTime(iso: string): string {
   const h = Math.round(min / 60)
   if (h < 24) return t('githubMentions.time.hours', { n: h })
   return t('githubMentions.time.days', { n: Math.round(h / 24) })
+}
+
+function openMenu(e: MouseEvent) {
+  const r = (e.currentTarget as HTMLElement).getBoundingClientRect()
+  emit('menu', props.item, r.left, r.bottom + 4)
 }
 
 function open() {
@@ -191,6 +197,17 @@ function open() {
         <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
       </Button>
       <AddTodoButton v-if="!item.answered" :prefill="todoPrefill" variant="icon" button-variant="ghost" size="icon" />
+      <Button
+        variant="ghost"
+        size="icon"
+        :disabled="starting"
+        :title="t('githubMentions.menu.more')"
+        :aria-label="t('githubMentions.menu.more')"
+        aria-haspopup="menu"
+        @click="openMenu"
+      >
+        <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+      </Button>
     </div>
   </Card>
 </template>
