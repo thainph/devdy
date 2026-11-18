@@ -1,0 +1,69 @@
+{
+  "title": "GitHub Mentions",
+  "pendingTitle": "Waiting for your answer",
+  "searchPlaceholder": "Search title, repo, who tagged you…",
+  "clearSearch": "Clear search",
+  "reason": {
+    "mention": "Tagged you",
+    "team_mention": "Tagged your team",
+    "comment": "Reply on your thread",
+    "author": "On your issue / PR"
+  },
+  "filters": {
+    "button": "Filters",
+    "reason": "Reason",
+    "account": "Account",
+    "repo": "Repository",
+    "noOptions": "Nothing to filter yet",
+    "clearAll": "Clear all",
+    "remove": "Remove filter {filter}"
+  },
+  "display": {
+    "button": "Display",
+    "groupBy": "Group by",
+    "repo": "Repository",
+    "person": "Who tagged you",
+    "none": "No grouping"
+  },
+  "partialFailTitle": "{count} account failed to load | {count} accounts failed to load",
+  "emptyTitle": "No one is waiting for you",
+  "emptyHint": "Mentions from the last 30 days across your GitHub accounts show up here until you answer them.",
+  "noMatch": "No mention matches the search or filters",
+  "clearSearchAndFilters": "Clear search and filters",
+  "allAnswered": "You have answered every mention.",
+  "groupPending": "{count} waiting | {count} waiting",
+  "unknownAuthor": "Unknown",
+  "answeredSection": "Answered in the last 7 days · {n}",
+  "answered": "You answered {time} ago",
+  "unread": "unread",
+  "onFile": "on",
+  "newerComments": "+{count} newer comment | +{count} newer comments",
+  "staleTitle": "Waiting for more than 3 days",
+  "time": {
+    "minutes": "{n}m",
+    "hours": "{n}h",
+    "days": "{n}d"
+  },
+  "reply": "Reply",
+  "replyTo": "Reply to {who}",
+  "replyPlaceholder": "Write your reply (Markdown)…",
+  "sendAs": "Posts as {account} · ⌘↵ to send",
+  "send": "Post comment",
+  "sent": "Reply posted on GitHub",
+  "sendFailed": "Could not post the reply: {error}",
+  "aiDraft": "AI draft",
+  "redraft": "Draft again",
+  "drafting": "Drafting from the thread…",
+  "draftReady": "AI draft",
+  "draftHint": "edit it before posting",
+  "draftFailed": "Could not draft a reply: {error}",
+  "openOnGithub": "Open on GitHub",
+  "todoText": "Answer: {title} ({ref})",
+  "menu": {
+    "markRead": "Mark as read",
+    "copyLink": "Copy link",
+    "copied": "Link copied",
+    "dismiss": "Ignore until someone replies again",
+    "dismissed": "Ignored"
+  }
+}

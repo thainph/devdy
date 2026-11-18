@@ -4,6 +4,7 @@ import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
 import { useFocusStore } from '@/stores/focus'
+import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { FOCUS_OPEN_WINDOW, type FocusOpenTodo } from '@/lib/focus'
 import { invoke } from '@/lib/tauri'
 import { useLiveRunsStore } from '@/stores/liveRuns'
@@ -111,6 +112,7 @@ const isPopoutWindow =
 const route = useRoute()
 const router = useRouter()
 const projectsStore = useProjectsStore()
+const mentionsStore = useGithubMentionsStore()
 // Focus board for the sidebar badge (number of overdue todos).
 const focusStore = useFocusStore()
 const appSettings = useAppSettingsStore()
@@ -605,6 +607,8 @@ onMounted(async () => {
     return
   }
   void focusStore.start()
+  // Sidebar badge: mentions waiting for an answer (the backend polls).
+  void mentionsStore.watchCache()
   // Tracked background processes: counts for the sidebar row + tray, and the
   // first snapshot the startup orphan prompt waits on.
   void bgProcs.start()
@@ -1011,6 +1015,13 @@ onMounted(async () => {
                   class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none"
                 >
                   {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
+                </span>
+                <span
+                  v-if="item.path === '/github-mentions' && mentionsStore.pendingCount > 0"
+                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
+                  :title="t('githubMentions.pendingTitle')"
+                >
+                  {{ mentionsStore.pendingCount }}
                 </span>
               </RouterLink>
             </template>

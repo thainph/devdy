@@ -6,6 +6,7 @@ mod db;
 mod device_sync;
 mod focus;
 mod github;
+mod github_mentions;
 mod gitlab;
 mod inbox_api;
 mod item_links;
@@ -324,6 +325,8 @@ pub fn run() {
             focus::scheduler::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
             // PR Inbox poller (pr_inbox): cache + "new PR to review" notifications.
             pr_inbox::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
+            // GitHub Mentions poller (github_mentions): cache of mentions waiting for an answer.
+            github_mentions::start(app.handle().clone(), app.state::<db::Db>().inner().clone());
             commands::secret_vault::spawn_auto_lock(app.handle().clone());
             app.manage(MascotSpeakState::default());
             app.manage(BalanceGuard::default());
@@ -602,6 +605,12 @@ pub fn run() {
             refetch_run,
             list_review_requested_prs,
             pr_inbox::get_cached_pr_inbox,
+            github_mentions::get_cached_github_mentions,
+            github_mentions::list_github_mentions,
+            github_mentions::mark_github_mention_read,
+            github_mentions::dismiss_github_mention,
+            github_mentions::reply_github_mention,
+            github_mentions::draft_github_mention_reply,
             pr_inbox::get_pr_inbox_poll_minutes,
             pr_inbox::set_pr_inbox_poll_minutes,
             pr_inbox::get_pr_inbox_rereview_prompt,

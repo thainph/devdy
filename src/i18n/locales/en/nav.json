@@ -1,6 +1,7 @@
 {
   "dashboard": "Dashboard",
   "projects": "Projects",
+  "githubMentions": "GitHub Mentions",
   "prInbox": "PR Reviews",
   "radar": "Delivery Radar",
   "focus": "Focus",

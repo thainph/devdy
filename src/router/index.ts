@@ -4,6 +4,7 @@ import RulesView from '../views/RulesView.vue'
 import McpServersView from '../views/McpServersView.vue'
 import ServersView from '../views/ServersView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
+import GithubMentionsView from '../views/GithubMentionsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
@@ -43,6 +44,7 @@ const router = createRouter({
     { path: '/servers', name: 'servers', component: ServersView },
     ...editorRedirects('/servers'),
     { path: '/projects', name: 'projects', component: ProjectsView },
+    { path: '/github-mentions', name: 'github-mentions', component: GithubMentionsView },
     // The PR Inbox lives in its own window (lib/prInboxWindow), like the Slack
     // threads window; the route only stays so old links / navigation open it.
     // PrInboxView is never rendered here — the guard always diverts.

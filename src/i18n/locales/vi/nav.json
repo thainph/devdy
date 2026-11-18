@@ -1,6 +1,7 @@
 {
   "dashboard": "Tổng quan",
   "projects": "Dự án",
+  "githubMentions": "GitHub Mentions",
   "prInbox": "Duyệt PR",
   "radar": "Delivery Radar",
   "focus": "Focus",

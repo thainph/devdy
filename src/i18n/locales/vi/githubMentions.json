@@ -1,0 +1,69 @@
+{
+  "title": "GitHub Mentions",
+  "pendingTitle": "Đang chờ bạn trả lời",
+  "searchPlaceholder": "Tìm theo tiêu đề, repo, người tag…",
+  "clearSearch": "Xoá tìm kiếm",
+  "reason": {
+    "mention": "Tag trực tiếp",
+    "team_mention": "Tag team",
+    "comment": "Trả lời thread của bạn",
+    "author": "Trên issue / PR của bạn"
+  },
+  "filters": {
+    "button": "Bộ lọc",
+    "reason": "Lý do",
+    "account": "Account",
+    "repo": "Repo",
+    "noOptions": "Chưa có gì để lọc",
+    "clearAll": "Xoá tất cả",
+    "remove": "Bỏ bộ lọc {filter}"
+  },
+  "display": {
+    "button": "Hiển thị",
+    "groupBy": "Nhóm theo",
+    "repo": "Repo",
+    "person": "Người tag",
+    "none": "Không nhóm"
+  },
+  "partialFailTitle": "{count} account tải thất bại",
+  "emptyTitle": "Không ai đang chờ bạn",
+  "emptyHint": "Các lần bạn bị tag trong 30 ngày qua trên các account GitHub sẽ hiện ở đây cho tới khi bạn trả lời.",
+  "noMatch": "Không có mention nào khớp tìm kiếm hoặc bộ lọc",
+  "clearSearchAndFilters": "Xoá tìm kiếm và bộ lọc",
+  "allAnswered": "Bạn đã trả lời hết các mention.",
+  "groupPending": "{count} chờ trả lời",
+  "unknownAuthor": "Không rõ",
+  "answeredSection": "Đã trả lời trong 7 ngày qua · {n}",
+  "answered": "Bạn đã trả lời {time} trước",
+  "unread": "chưa đọc",
+  "onFile": "trong",
+  "newerComments": "+{count} comment mới sau lần tag",
+  "staleTitle": "Chờ hơn 3 ngày",
+  "time": {
+    "minutes": "{n} phút",
+    "hours": "{n} giờ",
+    "days": "{n} ngày"
+  },
+  "reply": "Trả lời",
+  "replyTo": "Trả lời {who}",
+  "replyPlaceholder": "Viết câu trả lời (Markdown)…",
+  "sendAs": "Gửi bằng {account} · ⌘↵ để gửi",
+  "send": "Gửi comment",
+  "sent": "Đã gửi trả lời lên GitHub",
+  "sendFailed": "Không gửi được trả lời: {error}",
+  "aiDraft": "AI soạn nháp",
+  "redraft": "Soạn lại",
+  "drafting": "Đang soạn nháp từ thread…",
+  "draftReady": "AI soạn nháp",
+  "draftHint": "bạn sửa rồi mới gửi",
+  "draftFailed": "Không soạn được nháp: {error}",
+  "openOnGithub": "Mở trên GitHub",
+  "todoText": "Trả lời: {title} ({ref})",
+  "menu": {
+    "markRead": "Đánh dấu đã đọc",
+    "copyLink": "Copy link",
+    "copied": "Đã copy link",
+    "dismiss": "Bỏ qua cho tới khi có người trả lời tiếp",
+    "dismissed": "Đã bỏ qua"
+  }
+}
