@@ -1,6 +1,6 @@
 {
   "title": "Đang chạy",
-  "subtitle": "{date} · trực tiếp · nhóm theo conductor",
+  "subtitle": "{date} · trực tiếp · nhóm theo session",
   "untitled": "Session chưa đặt tên",
   "loadError": "Không tải được các session đang chạy: {error}",
   "fallbackHint": "Dữ liệu trực tiếp còn hạn chế: nhịp hoạt động từng session, số session hôm nay và session ngoài Devdy sẽ hiện khi ứng dụng cung cấp.",
@@ -20,7 +20,7 @@
     "sessions": {
       "title": "Session",
       "unit": "session | session",
-      "meta": "{conductors} conductor · {external} ngoài Devdy | {conductors} conductor · {external} ngoài Devdy",
+      "meta": "{conductors} session có worker · {external} ngoài Devdy | {conductors} session có worker · {external} ngoài Devdy",
       "mapLabel": "Bản đồ session: mỗi ô một session",
       "chip": {
         "wait": "{n} chờ bạn",
@@ -81,7 +81,7 @@
   },
   "group": {
     "solo": "Session lẻ",
-    "soloSub": "không thuộc conductor nào",
+    "soloSub": "không có worker",
     "external": "Ngoài Devdy",
     "externalSub": "terminal / IDE · chỉ xem",
     "workers": "{n} worker | {n} worker",
@@ -101,7 +101,7 @@
     "external": "bên ngoài"
   },
   "role": {
-    "conductor": "conductor",
+    "conductor": "session",
     "worker": "worker",
     "session": "session",
     "external": "ngoài Devdy"
@@ -152,7 +152,7 @@
     "msgPlaceholder": "Nhắn thêm cho session này…",
     "msgLabel": "Nhắn cho session",
     "hintCalm": "Session không cần bạn lúc này.",
-    "hintIdle": "Conductor đang đợi worker. Bạn vẫn có thể nhắn để đổi hướng.",
+    "hintIdle": "Session đang đợi các worker của nó. Bạn vẫn có thể nhắn để đổi hướng.",
     "hintExternal": "Session chạy ngoài Devdy: chỉ xem được log.",
     "externalNoLog": "Chưa có log của session này ở đây — mở transcript để đọc.",
     "stop": "Dừng session",

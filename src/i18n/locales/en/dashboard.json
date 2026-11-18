@@ -1,6 +1,6 @@
 {
   "title": "Running",
-  "subtitle": "{date} · live · grouped by conductor",
+  "subtitle": "{date} · live · grouped by session",
   "untitled": "Untitled session",
   "loadError": "Could not load the running sessions: {error}",
   "fallbackHint": "Limited live data: per-session activity, today's runs and sessions outside Devdy show once the app provides them.",
@@ -20,7 +20,7 @@
     "sessions": {
       "title": "Sessions",
       "unit": "session | sessions",
-      "meta": "{conductors} conductor · {external} outside Devdy | {conductors} conductors · {external} outside Devdy",
+      "meta": "{conductors} with workers · {external} outside Devdy | {conductors} with workers · {external} outside Devdy",
       "mapLabel": "Session map: one square per session",
       "chip": {
         "wait": "{n} waiting for you",
@@ -81,7 +81,7 @@
   },
   "group": {
     "solo": "Standalone sessions",
-    "soloSub": "not part of a conductor",
+    "soloSub": "without workers",
     "external": "Outside Devdy",
     "externalSub": "terminal / IDE · view only",
     "workers": "{n} worker | {n} workers",
@@ -101,7 +101,7 @@
     "external": "outside Devdy"
   },
   "role": {
-    "conductor": "conductor",
+    "conductor": "session",
     "worker": "worker",
     "session": "session",
     "external": "outside Devdy"
@@ -152,7 +152,7 @@
     "msgPlaceholder": "Send this session a message…",
     "msgLabel": "Message the session",
     "hintCalm": "This session doesn't need you right now.",
-    "hintIdle": "The conductor is waiting on its workers. You can still message it to change course.",
+    "hintIdle": "This session is waiting on its workers. You can still message it to change course.",
     "hintExternal": "This session runs outside Devdy: its log is view-only.",
     "externalNoLog": "No log for this session here — open the transcript to read it.",
     "stop": "Stop session",
