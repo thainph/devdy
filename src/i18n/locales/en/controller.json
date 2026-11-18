@@ -128,7 +128,9 @@
     "noneRecent": "No session you worked on in the last 3 days.",
     "activeAgo": "you {ago}",
     "running": "running",
-    "cancelledAgo": "stopped {ago}"
+    "cancelledAgo": "stopped {ago}",
+    "workers": "{count} worker | {count} workers",
+    "workersRunning": "{count} worker ({running} running) | {count} workers ({running} running)"
   },
   "data": {
     "allProjects": "All projects",

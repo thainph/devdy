@@ -128,7 +128,9 @@
     "noneRecent": "3 ngày qua bạn chưa thao tác session nào.",
     "activeAgo": "bạn thao tác {ago}",
     "running": "đang chạy",
-    "cancelledAgo": "đã dừng {ago}"
+    "cancelledAgo": "đã dừng {ago}",
+    "workers": "{count} worker",
+    "workersRunning": "{count} worker ({running} đang chạy)"
   },
   "data": {
     "allProjects": "Tất cả project",

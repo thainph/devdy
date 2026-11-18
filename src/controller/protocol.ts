@@ -382,6 +382,10 @@ export interface RunInfo {
   /** When the user last saw the run's result, on any device or the desktop
    * (host feature `seen`; an older Host omits it). Finished after = unread. */
   seen_at?: string | null
+  /** Conductor workers this run spawned / still running (omitted when 0 or
+   * from an older Host). Workers themselves are not listed. */
+  worker_count?: number
+  workers_running?: number
 }
 
 /** A snapshot of every run the Controller may browse/control (FR-004+). */

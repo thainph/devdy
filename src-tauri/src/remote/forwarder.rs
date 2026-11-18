@@ -433,7 +433,10 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
                 r.title AS title, r.type AS run_type, r.ref_number AS ref_number,
                 r.status AS status, r.engine AS engine, r.created_at AS created_at,
                 {ACTIVITY} AS updated_at, r.finished_at AS finished_at, r.pinned AS pinned,
-                r.seen_at AS seen_at
+                r.seen_at AS seen_at,
+                (SELECT COUNT(*) FROM runs w WHERE w.conductor_run_id = r.id) AS worker_count,
+                (SELECT COUNT(*) FROM runs w
+                  WHERE w.conductor_run_id = r.id AND w.status = 'running') AS workers_running
          FROM runs r JOIN projects p ON p.id = r.project_id"
     );
     let rows = match only_run_id {
@@ -471,6 +474,8 @@ pub async fn build_run_list(db: &Db, only_run_id: Option<&str>) -> Vec<RunInfo> 
             finished_at: r.get("finished_at"),
             pinned: r.get::<i64, _>("pinned") != 0,
             seen_at: r.get("seen_at"),
+            worker_count: r.get("worker_count"),
+            workers_running: r.get("workers_running"),
         })
         .collect()
 }
@@ -1172,6 +1177,9 @@ mod tests {
         assert_eq!(ids, ["old_pinned", "newest", "older"]);
         assert!(runs[0].pinned);
         assert!(!runs[1].pinned);
+        // ...but its conductor carries the count.
+        assert_eq!(runs[1].worker_count, 1);
+        assert_eq!(runs[0].worker_count, 0);
     }
 
     #[tokio::test]

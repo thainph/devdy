@@ -790,6 +790,16 @@ pub struct RunInfo {
     /// Finished after this = unread. Absent from an older Host.
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub seen_at: Option<String>,
+    /// Conductor workers this run spawned (0 for a plain run), and how many of
+    /// them are still running. Workers are not listed themselves.
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub worker_count: i64,
+    #[serde(default, skip_serializing_if = "is_zero")]
+    pub workers_running: i64,
+}
+
+fn is_zero(n: &i64) -> bool {
+    *n == 0
 }
 
 /// A command from the Controller (SRS §5.2). `action` is validated against the

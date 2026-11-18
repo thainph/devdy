@@ -101,6 +101,15 @@ function recentLabel(run: RunInfo): string {
     const stopped = parseHostTime(run.finished_at)
     if (stopped !== null) parts.push(t('controller.inbox.cancelledAgo', { ago: ago(stopped) }))
   }
+  const workers = run.worker_count ?? 0
+  if (workers > 0) {
+    const running = run.workers_running ?? 0
+    parts.push(
+      running > 0
+        ? t('controller.inbox.workersRunning', { count: workers, running }, workers)
+        : t('controller.inbox.workers', { count: workers }, workers),
+    )
+  }
   return parts.join(' · ')
 }
 </script>
