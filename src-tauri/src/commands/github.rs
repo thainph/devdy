@@ -278,8 +278,25 @@ pub async fn fetch_issue(
     project_id: String,
     repo_id: String,
     issue_number: u64,
+    github_account_id: Option<String>,
 ) -> Result<RunRecord, String> {
     use sqlx::Row;
+
+    // Optional GitHub account to pin the run to (GitHub Mentions passes the
+    // account that was tagged); blank = the project's default account.
+    let github_account_id = github_account_id
+        .map(|a| a.trim().to_string())
+        .filter(|a| !a.is_empty());
+    if let Some(account_id) = &github_account_id {
+        let exists = sqlx::query("SELECT 1 FROM github_accounts WHERE id = ?")
+            .bind(account_id)
+            .fetch_optional(db.inner())
+            .await
+            .map_err(|e| e.to_string())?;
+        if exists.is_none() {
+            return Err("GitHub account not found".to_string());
+        }
+    }
 
     let project_row = sqlx::query("SELECT path FROM projects WHERE id = ?")
         .bind(&project_id)
@@ -307,9 +324,11 @@ pub async fn fetch_issue(
                 .github_repo
                 .clone()
                 .ok_or("Repo has no GitHub repo configured")?;
-            let client = github::client_for_project(db.inner(), &project_id)
-                .await
-                .map_err(|e| e.to_string())?;
+            let client = match &github_account_id {
+                Some(account_id) => github::client_for_account(account_id),
+                None => github::client_for_project(db.inner(), &project_id).await,
+            }
+            .map_err(|e| e.to_string())?;
             build_issue_markdown(&client, &owner, &gh_repo, issue_number).await?
         }
     };
@@ -334,7 +353,7 @@ pub async fn fetch_issue(
     let now = chrono::Utc::now().to_rfc3339();
     let file_path_str = file_path.to_string_lossy().to_string();
     sqlx::query(
-        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, ref_title, ref_author) VALUES (?, ?, ?, 'analyze_issue', ?, 'fetched', ?, ?, ?, ?, ?, ?)"
+        "INSERT INTO runs (id, project_id, repo_id, type, ref_number, status, engine, input_path, output_path, created_at, ref_title, ref_author, github_account_id) VALUES (?, ?, ?, 'analyze_issue', ?, 'fetched', ?, ?, ?, ?, ?, ?, ?)"
     )
     .bind(&run_id)
     .bind(&project_id)
@@ -346,6 +365,7 @@ pub async fn fetch_issue(
     .bind(&now)
     .bind(&ref_title)
     .bind(&ref_author)
+    .bind(&github_account_id)
     .execute(db.inner())
     .await
     .map_err(|e| e.to_string())?;

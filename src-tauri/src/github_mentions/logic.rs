@@ -1,5 +1,5 @@
 //! Pure parts of GitHub Mentions: which comment is waiting for the user's
-//! answer, whether they answered it, and the draft-reply prompt.
+//! answer and whether they answered it.
 
 #[derive(Debug, Clone)]
 pub struct Comment {
@@ -68,67 +68,6 @@ pub fn pick_trigger(comments: &[Comment], login: &str, reason: &str) -> Option<T
     })
 }
 
-pub struct DraftInput<'a> {
-    pub login: &'a str,
-    pub kind: &'a str,
-    pub repo: &'a str,
-    pub number: u64,
-    pub title: &'a str,
-    pub description: &'a str,
-    pub description_author: &'a str,
-    /// (author, body, file path for diff comments), oldest first.
-    pub comments: &'a [(&'a str, &'a str, Option<&'a str>)],
-    /// (author, excerpt) of the comment to answer.
-    pub trigger: Option<(&'a str, &'a str)>,
-}
-
-const MAX_DESCRIPTION: usize = 4000;
-const MAX_COMMENT: usize = 1500;
-const MAX_COMMENTS: usize = 20;
-
-fn clip(s: &str, max: usize) -> String {
-    let s = s.trim();
-    if s.chars().count() <= max {
-        return s.to_string();
-    }
-    let mut out: String = s.chars().take(max).collect();
-    out.push_str(" […]");
-    out
-}
-
-pub fn draft_prompt(d: &DraftInput) -> String {
-    let kind = if d.kind == "PullRequest" { "pull request" } else { "issue" };
-    let mut p = format!(
-        "You are drafting a GitHub comment for the user @{login}, who was asked something on {repo}#{number} ({kind}).\n\
-         Write the reply @{login} would post. Rules:\n\
-         - Answer the latest comment addressed to @{login} (marked below). Be direct and concise; GitHub Markdown is fine.\n\
-         - Use the same language the thread uses (e.g. Vietnamese, English, Japanese).\n\
-         - Do not invent facts about the code or decisions. When the answer is not in the thread, say what you will check or ask a precise question.\n\
-         - Output ONLY the comment body: no preamble, no quotes around it, no signature.\n\n\
-         Title: {title}\n\nDescription by @{desc_author}:\n{description}\n",
-        login = d.login,
-        repo = d.repo,
-        number = d.number,
-        title = d.title,
-        desc_author = if d.description_author.is_empty() { "unknown" } else { d.description_author },
-        description = clip(d.description, MAX_DESCRIPTION),
-    );
-    let skip = d.comments.len().saturating_sub(MAX_COMMENTS);
-    if !d.comments.is_empty() {
-        p.push_str("\nRecent comments (oldest first):\n");
-        for (author, body, path) in &d.comments[skip..] {
-            match path {
-                Some(path) => p.push_str(&format!("\n@{author} (on {path}):\n{}\n", clip(body, MAX_COMMENT))),
-                None => p.push_str(&format!("\n@{author}:\n{}\n", clip(body, MAX_COMMENT))),
-            }
-        }
-    }
-    if let Some((author, body)) = d.trigger {
-        p.push_str(&format!("\n>>> Comment to answer, by @{author}:\n{}\n", clip(body, MAX_COMMENT)));
-    }
-    p
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -194,26 +133,5 @@ mod tests {
     fn mention_without_matching_comment_is_none() {
         let cs = vec![c("lam", "no handle here", "2026-11-10T01:00:00Z")];
         assert!(pick_trigger(&cs, "thainph", "mention").is_none());
-    }
-
-    #[test]
-    fn draft_prompt_marks_trigger_and_clips() {
-        let long = "x".repeat(5000);
-        let comments = [("lam", "question?", None), ("an", "on diff", Some("src/a.rs"))];
-        let p = draft_prompt(&DraftInput {
-            login: "thainph",
-            kind: "PullRequest",
-            repo: "o/r",
-            number: 7,
-            title: "T",
-            description: &long,
-            description_author: "lam",
-            comments: &comments,
-            trigger: Some(("lam", "question?")),
-        });
-        assert!(p.contains("o/r#7 (pull request)"));
-        assert!(p.contains("@an (on src/a.rs)"));
-        assert!(p.contains(">>> Comment to answer, by @lam"));
-        assert!(p.contains(" […]"));
     }
 }

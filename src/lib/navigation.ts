@@ -16,6 +16,7 @@ import {
   LayoutDashboard,
 } from 'lucide-vue-next'
 import { openPrInboxWindow } from '@/lib/prInboxWindow'
+import { openGithubMentionsWindow } from '@/lib/githubMentionsWindow'
 import { openCalendarWindow } from '@/lib/calendarWindow'
 import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
 
@@ -48,7 +49,7 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard, group: 'work' },
   { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work' },
   { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
-  { path: '/github-mentions', labelKey: 'nav.githubMentions', icon: AtSign, group: 'work' },
+  { path: '/github-mentions', labelKey: 'nav.githubMentions', icon: AtSign, group: 'work', openWindow: openGithubMentionsWindow },
   { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', openWindow: () => openCalendarWindow() },
   { path: '/radar', labelKey: 'nav.radar', icon: Radar, group: 'work', openWindow: () => openDeliveryRadarWindow() },
   { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config' },

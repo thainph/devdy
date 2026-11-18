@@ -5,9 +5,11 @@ import assert from 'node:assert/strict'
 import {
   activeFilters,
   applyFilters,
+  checkStatusOf,
   filterOptions,
   groupMentions,
   isStale,
+  quoteExcerpt,
   sanitizeFilters,
   splitAnswered,
 } from '../githubMentions.ts'
@@ -19,6 +21,7 @@ function item(over = {}) {
     title: 'Fix sync', html_url: 'https://github.com/org/api/issues/7', updated_at: '2026-11-10T00:00:00Z',
     trigger: { id: 9, author_login: 'lam', author_avatar_url: '', body: '@me check this', html_url: '', created_at: '2026-11-10T00:00:00Z', review_comment: false, path: null },
     newer_comments: 0, answered: false, answered_at: null,
+    project_id: 'p1', repo_id: 'r1', project_name: 'API', existing_run_id: null, existing_run_status: null,
     ...over,
   }
 }
@@ -67,4 +70,18 @@ test('stale only when waiting more than 3 days', () => {
   assert.equal(isStale(item(), now), true)
   assert.equal(isStale(item({ answered: true }), now), false)
   assert.equal(isStale(item(), Date.parse('2026-11-11T00:00:00Z')), false)
+})
+
+test('check status: unmapped, unavailable, startable, running, done', () => {
+  assert.equal(checkStatusOf(item(), null), 'none')
+  assert.equal(checkStatusOf(item({ project_id: null, repo_id: null }), null), 'unmapped')
+  assert.equal(checkStatusOf(item({ kind: 'Discussion', number: null }), null), 'unavailable')
+  assert.equal(checkStatusOf(item({ existing_run_id: 'run' }), 'running'), 'running')
+  assert.equal(checkStatusOf(item({ existing_run_id: 'run' }), 'fetched'), 'running')
+  assert.equal(checkStatusOf(item({ existing_run_id: 'run' }), 'completed'), 'done')
+})
+
+test('excerpt becomes a Markdown quote', () => {
+  assert.equal(quoteExcerpt('a\nb'), '> a\n> b')
+  assert.equal(quoteExcerpt('  '), '')
 })

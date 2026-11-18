@@ -23,17 +23,20 @@
     "groupBy": "Nhóm theo",
     "repo": "Repo",
     "person": "Người tag",
-    "none": "Không nhóm"
+    "none": "Không nhóm",
+    "lookback": "Khoảng thời gian",
+    "days": "{count} ngày"
   },
   "partialFailTitle": "{count} account tải thất bại",
   "emptyTitle": "Không ai đang chờ bạn",
-  "emptyHint": "Các lần bạn bị tag trong 30 ngày qua trên các account GitHub sẽ hiện ở đây cho tới khi bạn trả lời.",
+  "emptyHint": "Các lần bạn bị tag trong {days} ngày qua trên các account GitHub sẽ hiện ở đây cho tới khi bạn trả lời. Đổi khoảng thời gian trong Hiển thị.",
+  "firstLoadHint": "Đang đọc thông báo GitHub và comment của từng thread. Mất vài giây; các lần sau chỉ đọc lại thread có hoạt động mới.",
   "noMatch": "Không có mention nào khớp tìm kiếm hoặc bộ lọc",
   "clearSearchAndFilters": "Xoá tìm kiếm và bộ lọc",
   "allAnswered": "Bạn đã trả lời hết các mention.",
   "groupPending": "{count} chờ trả lời",
   "unknownAuthor": "Không rõ",
-  "answeredSection": "Đã trả lời trong 7 ngày qua · {n}",
+  "answeredSection": "Đã trả lời trong {days} ngày qua · {n}",
   "answered": "Bạn đã trả lời {time} trước",
   "unread": "chưa đọc",
   "onFile": "trong",
@@ -44,19 +47,6 @@
     "hours": "{n} giờ",
     "days": "{n} ngày"
   },
-  "reply": "Trả lời",
-  "replyTo": "Trả lời {who}",
-  "replyPlaceholder": "Viết câu trả lời (Markdown)…",
-  "sendAs": "Gửi bằng {account} · ⌘↵ để gửi",
-  "send": "Gửi comment",
-  "sent": "Đã gửi trả lời lên GitHub",
-  "sendFailed": "Không gửi được trả lời: {error}",
-  "aiDraft": "AI soạn nháp",
-  "redraft": "Soạn lại",
-  "drafting": "Đang soạn nháp từ thread…",
-  "draftReady": "AI soạn nháp",
-  "draftHint": "bạn sửa rồi mới gửi",
-  "draftFailed": "Không soạn được nháp: {error}",
   "openOnGithub": "Mở trên GitHub",
   "todoText": "Trả lời: {title} ({ref})",
   "menu": {
@@ -65,5 +55,19 @@
     "copied": "Đã copy link",
     "dismiss": "Bỏ qua cho tới khi có người trả lời tiếp",
     "dismissed": "Đã bỏ qua"
+  },
+  "check": {
+    "label": "Kiểm tra bằng AI",
+    "start": "Mở một phiên AI trên issue / PR này để tìm hiểu người ta hỏi gì và nên trả lời thế nào",
+    "unavailable": "Chỉ kiểm tra bằng AI được với issue và pull request — hãy mở trên GitHub",
+    "unmapped": "{repo} chưa thuộc project nào trong Devdy. Thêm repo vào một project để kiểm tra bằng AI.",
+    "running": "Đang kiểm tra bằng AI — mở phiên",
+    "runningLabel": "Đang kiểm tra",
+    "open": "Mở phiên kiểm tra bằng AI",
+    "openLabel": "Xem kết quả",
+    "sessionTitle": "Mention",
+    "started": "Đã bắt đầu kiểm tra bằng AI cho {ref}",
+    "failed": "Không bắt đầu được phiên kiểm tra: {error}",
+    "prompt": "Hãy giúp tôi ({me}) xử lý một lần được nhắc tới trên GitHub tại {ref}: \"{title}\".\n\n{who} viết ({url}):\n\n{excerpt}\n\nĐọc file task (nội dung issue / PR, comment, và diff nếu có) cùng code liên quan trong repo để hiểu người đó đang hỏi hoặc yêu cầu gì. Sau đó trả lời bằng tiếng Việt, gồm:\n1. Tóm tắt ngắn yêu cầu.\n2. Câu trả lời hoặc hướng xử lý, kèm dẫn chứng (file:dòng).\n3. Bản nháp comment để tôi đăng lên GitHub, viết cùng ngôn ngữ với thread.\n\nKhông tự đăng comment hay thay đổi gì trên GitHub."
   }
 }

@@ -23,17 +23,20 @@
     "groupBy": "Group by",
     "repo": "Repository",
     "person": "Who tagged you",
-    "none": "No grouping"
+    "none": "No grouping",
+    "lookback": "Look back",
+    "days": "{count} day | {count} days"
   },
   "partialFailTitle": "{count} account failed to load | {count} accounts failed to load",
   "emptyTitle": "No one is waiting for you",
-  "emptyHint": "Mentions from the last 30 days across your GitHub accounts show up here until you answer them.",
+  "emptyHint": "Mentions from the last {days} days across your GitHub accounts show up here until you answer them. Change the window under Display.",
+  "firstLoadHint": "Reading your GitHub notifications and their comments. This takes a few seconds; later loads only re-read threads with new activity.",
   "noMatch": "No mention matches the search or filters",
   "clearSearchAndFilters": "Clear search and filters",
   "allAnswered": "You have answered every mention.",
   "groupPending": "{count} waiting | {count} waiting",
   "unknownAuthor": "Unknown",
-  "answeredSection": "Answered in the last 7 days · {n}",
+  "answeredSection": "Answered in the last {days} days · {n}",
   "answered": "You answered {time} ago",
   "unread": "unread",
   "onFile": "on",
@@ -44,19 +47,6 @@
     "hours": "{n}h",
     "days": "{n}d"
   },
-  "reply": "Reply",
-  "replyTo": "Reply to {who}",
-  "replyPlaceholder": "Write your reply (Markdown)…",
-  "sendAs": "Posts as {account} · ⌘↵ to send",
-  "send": "Post comment",
-  "sent": "Reply posted on GitHub",
-  "sendFailed": "Could not post the reply: {error}",
-  "aiDraft": "AI draft",
-  "redraft": "Draft again",
-  "drafting": "Drafting from the thread…",
-  "draftReady": "AI draft",
-  "draftHint": "edit it before posting",
-  "draftFailed": "Could not draft a reply: {error}",
   "openOnGithub": "Open on GitHub",
   "todoText": "Answer: {title} ({ref})",
   "menu": {
@@ -65,5 +55,19 @@
     "copied": "Link copied",
     "dismiss": "Ignore until someone replies again",
     "dismissed": "Ignored"
+  },
+  "check": {
+    "label": "Check with AI",
+    "start": "Open an AI session on this issue / PR to work out what is being asked and how to answer",
+    "unavailable": "Only issues and pull requests can be checked with AI — open it on GitHub",
+    "unmapped": "{repo} is not in a Devdy project yet. Add it to a project to check it with AI.",
+    "running": "The AI check is running — open the session",
+    "runningLabel": "Checking",
+    "open": "Open the AI check session",
+    "openLabel": "View check",
+    "sessionTitle": "Mention",
+    "started": "AI check started for {ref}",
+    "failed": "Could not start the AI check: {error}",
+    "prompt": "Help me ({me}) with a GitHub mention on {ref}: \"{title}\".\n\n{who} wrote ({url}):\n\n{excerpt}\n\nRead the task file (issue / PR text, comments, and the diff when there is one) and the related code in this repo to understand what they are asking or requesting. Then reply with:\n1. A short summary of the request.\n2. The answer or proposed fix, with evidence (file:line).\n3. A draft comment I can post on GitHub, written in the thread's language.\n\nDo not post comments or change anything on GitHub yourself."
   }
 }

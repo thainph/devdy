@@ -1,18 +1,27 @@
 <script setup lang="ts">
-// "Display" header button + popover for GitHub Mentions: group by repo /
-// person / nothing. Same panel as PrInboxDisplayPopover.
+// "Display" header button + popover for GitHub Mentions: how many days back
+// to look, and group by repo / person / nothing. Same panel as
+// PrInboxDisplayPopover.
 import { ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
 import { Button } from '@/components/ui'
+import { useToast } from '@/composables/useToast'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { MENTION_GROUP_BYS } from '@/lib/githubMentions'
 import { Check, SlidersHorizontal } from 'lucide-vue-next'
 
 const { t } = useI18n()
+const { toast } = useToast()
 const store = useGithubMentionsStore()
+const LOOKBACK_CHOICES = [1, 3, 7, 14, 30]
+
+function setLookback(days: number) {
+  if (days === store.lookbackDays) return
+  store.setLookbackDays(days).catch(e => toast.error(String(e)))
+}
 const open = ref(false)
 const wrap = ref<HTMLElement | null>(null)
 const panel = ref<HTMLElement | null>(null)
@@ -43,6 +52,22 @@ usePopoverFocus(open, wrap, panel)
       :aria-label="t('githubMentions.display.button')"
       class="absolute right-0 top-full z-50 mt-2 w-56 max-w-[calc(100vw-2rem)] rounded-lg border border-border/60 bg-popover p-3 shadow-xl shadow-black/30"
     >
+      <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('githubMentions.display.lookback') }}</div>
+      <div class="mb-3 flex flex-wrap gap-1" role="radiogroup" :aria-label="t('githubMentions.display.lookback')">
+        <button
+          v-for="d in LOOKBACK_CHOICES"
+          :key="d"
+          type="button"
+          role="radio"
+          :aria-checked="store.lookbackDays === d"
+          class="rounded-md border px-2 py-1 text-xs tabular-nums cursor-pointer transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+          :class="store.lookbackDays === d ? 'border-primary bg-primary text-primary-foreground' : 'border-border text-muted-foreground hover:bg-accent/60 hover:text-foreground'"
+          @click="setLookback(d)"
+        >
+          {{ t('githubMentions.display.days', d) }}
+        </button>
+      </div>
+
       <div class="mb-1.5 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">{{ t('githubMentions.display.groupBy') }}</div>
       <div role="radiogroup" :aria-label="t('githubMentions.display.groupBy')">
         <button

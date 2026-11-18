@@ -35,6 +35,13 @@ export interface MentionItem {
   newer_comments: number
   answered: boolean
   answered_at: string | null
+  /** The Devdy project / repo tracking this GitHub repo, if any. */
+  project_id: string | null
+  repo_id: string | null
+  project_name: string | null
+  /** The "Check with AI" session started for this mention. */
+  existing_run_id: string | null
+  existing_run_status: string | null
 }
 
 export interface MentionAccountError {
@@ -159,4 +166,24 @@ export function splitAnswered(items: MentionItem[]): { pending: MentionItem[]; a
   const answered = items.filter(i => i.answered)
     .sort((a, b) => (b.answered_at ?? '').localeCompare(a.answered_at ?? ''))
   return { pending, answered }
+}
+
+/**
+ * "Check with AI" button state: `unavailable` (a discussion — no issue / PR
+ * to open a session on), `unmapped` (the repo is not in a Devdy project),
+ * `none` (can start), `running` / `done` (a session exists — opens it).
+ */
+export type MentionCheckStatus = 'unavailable' | 'unmapped' | 'none' | 'running' | 'done'
+
+export function checkStatusOf(item: MentionItem, runStatus: string | null): MentionCheckStatus {
+  if (item.existing_run_id) return runStatus === 'running' || runStatus === 'fetched' ? 'running' : 'done'
+  if (item.number === null || (item.kind !== 'PullRequest' && item.kind !== 'Issue')) return 'unavailable'
+  if (!item.project_id || !item.repo_id) return 'unmapped'
+  return 'none'
+}
+
+/** The trigger comment as a Markdown quote for the session's first message. */
+export function quoteExcerpt(body: string): string {
+  const text = body.trim()
+  return text ? text.split(/\r?\n/).map(l => `> ${l}`).join('\n') : ''
 }

@@ -8,6 +8,7 @@ import GithubMentionsView from '../views/GithubMentionsView.vue'
 import PrInboxView from '../views/PrInboxView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import { openPrInboxWindow } from '../lib/prInboxWindow'
+import { openGithubMentionsWindow } from '../lib/githubMentionsWindow'
 import { openCalendarWindow } from '../lib/calendarWindow'
 import { openDeliveryRadarWindow } from '../lib/deliveryRadarWindow'
 import { openItemListWindow } from '../lib/itemListWindow'
@@ -44,7 +45,17 @@ const router = createRouter({
     { path: '/servers', name: 'servers', component: ServersView },
     ...editorRedirects('/servers'),
     { path: '/projects', name: 'projects', component: ProjectsView },
-    { path: '/github-mentions', name: 'github-mentions', component: GithubMentionsView },
+    // GitHub Mentions lives in its own window (lib/githubMentionsWindow), like
+    // the PR Inbox; the route only diverts to it.
+    {
+      path: '/github-mentions',
+      name: 'github-mentions',
+      component: GithubMentionsView,
+      beforeEnter: (_to, from) => {
+        void openGithubMentionsWindow()
+        return from.matched.length > 0 ? false : '/dashboard'
+      },
+    },
     // The PR Inbox lives in its own window (lib/prInboxWindow), like the Slack
     // threads window; the route only stays so old links / navigation open it.
     // PrInboxView is never rendered here — the guard always diverts.

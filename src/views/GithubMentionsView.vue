@@ -3,10 +3,15 @@
 // direct @mention, a team mention, a reply on a thread they take part in),
 // across all linked GitHub accounts. Header layout follows the PR Inbox:
 // search + Filters / Display beside Refresh. Mentions answered in the last
-// week sit in a collapsed section at the bottom.
-import { computed, onMounted, ref } from 'vue'
+// week sit in a collapsed section at the bottom. "Check with AI" opens a
+// session on the issue / PR (like the PR Inbox's AI review); the user answers
+// on GitHub themselves.
+import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
+import { emit as emitEvent } from '@tauri-apps/api/event'
+import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Banner, Button, ContextMenu, DropdownItem, DropdownSeparator, Input, PageHeader, Skeleton } from '@/components/ui'
 import MentionCard from '@/components/githubMentions/MentionCard.vue'
 import MentionFiltersPopover from '@/components/githubMentions/MentionFiltersPopover.vue'
@@ -14,12 +19,22 @@ import MentionDisplayPopover from '@/components/githubMentions/MentionDisplayPop
 import PrAvatar from '@/components/prInbox/PrAvatar.vue'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { useToast } from '@/composables/useToast'
+import { useRunsStore } from '@/stores/runs'
+import { useConductorStore } from '@/stores/conductor'
+import { useAppSettingsStore } from '@/stores/appSettings'
+import { useLiveRunsStore } from '@/stores/liveRuns'
+import { resolvePermissionMode } from '@/lib/engineOptions'
+import { useFloatingWindow } from '@/composables/useFloatingWindow'
+import { useRunStatusEvents } from '@/composables/useRunStatusEvents'
+import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import {
   activeFilters,
   applyFilters,
+  checkStatusOf,
   filterOptions,
   groupMentions,
   MENTION_REASONS,
+  quoteExcerpt,
   splitAnswered,
   type MentionFilterDimension,
   type MentionFilterOption,
@@ -29,15 +44,51 @@ import {
   AtSign, Check, ChevronRight, Copy, EyeOff, ExternalLink, MailOpen, RefreshCw, Search, SearchX, X,
 } from 'lucide-vue-next'
 
+const props = withDefaults(defineProps<{
+  /** Rendered in its own OS window (views/GithubMentionsWindow) rather than the main one. */
+  standalone?: boolean
+}>(), { standalone: false })
+
 const { t } = useI18n()
 const { toast } = useToast()
 const store = useGithubMentionsStore()
+const router = useRouter()
+const runsStore = useRunsStore()
+const conductorStore = useConductorStore()
+const appSettings = useAppSettingsStore()
+const live = useLiveRunsStore()
 
 const search = ref('')
 const showAnswered = ref(false)
 const collapsed = ref<Set<string>>(new Set())
 
 onMounted(() => { void store.load() })
+
+// Standalone window: on top while focused (like the other pop-outs), a light
+// status feed for the linked AI-check sessions instead of the main window's
+// liveRuns, and a refresh on focus when the list is over a minute old.
+if (props.standalone) useFloatingWindow()
+const windowRuns = props.standalone
+  ? useRunStatusEvents(() => store.items
+    .filter(i => i.existing_run_id)
+    .map(i => ({ id: i.existing_run_id!, status: i.existing_run_status })))
+  : null
+const FOCUS_REFRESH_MS = 60_000
+let unlistenFocus: (() => void) | null = null
+if (props.standalone) {
+  onMounted(async () => {
+    try {
+      unlistenFocus = await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
+        if (!focused || store.loading) return
+        const at = store.fetchedAt ? Date.parse(store.fetchedAt) : 0
+        if (Date.now() - at > FOCUS_REFRESH_MS) void store.refresh()
+      })
+    } catch {
+      /* outside the Tauri shell */
+    }
+  })
+  onBeforeUnmount(() => unlistenFocus?.())
+}
 
 const options = computed(() => filterOptions(store.items))
 const effective = computed(() => activeFilters(store.filters, store.items))
@@ -69,6 +120,69 @@ function toggleGroup(key: string) {
   if (next.has(key)) next.delete(key)
   else next.add(key)
   collapsed.value = next
+}
+
+// ── Check with AI ────────────────────────────────────────────────────────────
+// Live status (the liveRuns store) wins over the snapshot taken at fetch time.
+function checkStatus(item: MentionItem) {
+  const id = item.existing_run_id
+  const liveStatus = !id ? null : windowRuns ? windowRuns.status(id) : live.get(id)?.status
+  const runStatus = id ? (liveStatus ?? item.existing_run_status) : null
+  return checkStatusOf(item, runStatus)
+}
+
+// From the standalone window this asks the main window to show the run
+// (WINDOW_OPEN_RUN, handled in App.vue), like the PR Inbox window.
+function openRun(item: MentionItem) {
+  if (!item.project_id || !item.existing_run_id) return
+  if (props.standalone) {
+    emitEvent(WINDOW_OPEN_RUN, { projectId: item.project_id, runId: item.existing_run_id } satisfies WindowOpenRun)
+      .catch(() => {})
+    return
+  }
+  live.markSeen(item.existing_run_id)
+  router.push(`/projects/${item.project_id}/run/${item.existing_run_id}`).catch(() => {})
+}
+
+/** First message of the session: what was asked, by whom, and what to deliver. */
+function checkGoal(item: MentionItem): string {
+  const kind = item.kind === 'PullRequest' ? 'PR' : 'Issue'
+  return t('githubMentions.check.prompt', {
+    me: `@${item.account_login}`,
+    ref: `${item.owner}/${item.repo} ${kind} #${item.number}`,
+    title: item.title,
+    who: item.trigger ? `@${item.trigger.author_login}` : t('githubMentions.unknownAuthor'),
+    url: item.trigger?.html_url || item.html_url,
+    excerpt: quoteExcerpt(item.trigger?.body ?? ''),
+  })
+}
+
+// Same path as the PR Inbox's AI review: fetch the issue / PR into a run (as
+// the account that was tagged), start it as a conductor with our goal, then
+// link it so the next click opens it. Stays on this screen.
+async function check(item: MentionItem) {
+  const status = checkStatus(item)
+  if (status === 'running' || status === 'done') { openRun(item); return }
+  if (status !== 'none' || item.number === null || !item.project_id || !item.repo_id) return
+  if (store.busyKeys.has(item.key)) return
+  const { project_id: projectId, repo_id: repoId, number } = item
+  try {
+    await store.withBusy(item.key, async () => {
+      const title = [t('githubMentions.check.sessionTitle'), `#${number}`, item.trigger && `@${item.trigger.author_login}`, item.title.trim()]
+        .filter(Boolean)
+        .join(' · ')
+      const run = item.kind === 'PullRequest'
+        ? await runsStore.fetchPr(projectId, repoId, number, undefined, true, title, item.account_id)
+        : await runsStore.fetchIssue(projectId, repoId, number, item.account_id)
+      await conductorStore.start(run.id, checkGoal(item), {
+        permissionModeOverride: resolvePermissionMode(null, appSettings.settings?.default_permission_mode),
+      })
+      await store.linkRun(item.key, run.id)
+    })
+    toast.success(t('githubMentions.check.started', { ref: `${item.repo}#${number}` }))
+  } catch (e) {
+    toast.error(t('githubMentions.check.failed', { error: String(e) }))
+  }
 }
 
 // Card menu (right-click). Teleported ContextMenu, like the PR Inbox.
@@ -184,6 +298,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss') {
       </Banner>
 
       <div v-if="store.loading && store.items.length === 0" class="flex flex-col gap-2">
+        <p class="mb-1 text-xs text-muted-foreground">{{ t('githubMentions.firstLoadHint') }}</p>
         <Skeleton v-for="i in 5" :key="i" class="h-20 rounded-lg" />
       </div>
 
@@ -195,7 +310,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss') {
           <AtSign class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
         </div>
         <p class="text-sm font-medium">{{ t('githubMentions.emptyTitle') }}</p>
-        <p class="mt-1 max-w-72 text-xs text-muted-foreground">{{ t('githubMentions.emptyHint') }}</p>
+        <p class="mt-1 max-w-72 text-xs text-muted-foreground">{{ t('githubMentions.emptyHint', { days: store.lookbackDays }) }}</p>
       </div>
 
       <div v-else class="flex flex-col gap-5">
@@ -234,7 +349,15 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss') {
             <span class="shrink-0 font-normal text-[11px] text-muted-foreground">{{ t('githubMentions.groupPending', g.items.length) }}</span>
           </button>
           <template v-if="!collapsed.has(g.key)">
-            <MentionCard v-for="item in g.items" :key="item.key" :item="item" @menu="openMenu" />
+            <MentionCard
+              v-for="item in g.items"
+              :key="item.key"
+              :item="item"
+              :check-status="checkStatus(item)"
+              :starting="store.busyKeys.has(item.key)"
+              @menu="openMenu"
+              @check="check"
+            />
           </template>
         </section>
 
@@ -246,11 +369,19 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss') {
             @click="showAnswered = !showAnswered"
           >
             <Check class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ t('githubMentions.answeredSection', { n: split.answered.length }) }}
+            {{ t('githubMentions.answeredSection', { n: split.answered.length, days: Math.min(7, store.lookbackDays) }) }}
             <ChevronRight class="ml-auto h-3.5 w-3.5 transition-transform" :class="{ 'rotate-90': showAnswered }" :stroke-width="2" />
           </button>
           <template v-if="showAnswered">
-            <MentionCard v-for="item in split.answered" :key="item.key" :item="item" @menu="openMenu" />
+            <MentionCard
+              v-for="item in split.answered"
+              :key="item.key"
+              :item="item"
+              :check-status="checkStatus(item)"
+              :starting="store.busyKeys.has(item.key)"
+              @menu="openMenu"
+              @check="check"
+            />
           </template>
         </section>
       </div>

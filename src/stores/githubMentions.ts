@@ -62,7 +62,9 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
   const fetchedAt = ref<string | null>(null)
   const filters = ref<MentionFilters>(initialFilters())
   const groupBy = ref<MentionGroupBy>(initialGroupBy())
-  /** Keys with a request in flight (reply / dismiss), to disable their buttons. */
+  /** Days of notifications looked at (backend setting, default 3). */
+  const lookbackDays = ref(3)
+  /** Keys with a request in flight (starting an AI check / dismiss), to disable their buttons. */
   const busyKeys = ref<Set<string>>(new Set())
 
   /** Mentions waiting for an answer (sidebar badge). */
@@ -86,8 +88,32 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
   }
 
   /** Show the cached list at once; re-fetch when it is missing or older than a minute. */
+  async function loadLookback() {
+    try {
+      lookbackDays.value = await invoke<number>('get_github_mentions_lookback_days')
+    } catch {
+      /* keep the default */
+    }
+  }
+
+  /** Change the window and fetch again with it. */
+  async function setLookbackDays(days: number) {
+    const prev = lookbackDays.value
+    lookbackDays.value = days
+    try {
+      await invoke('set_github_mentions_lookback_days', { days })
+    } catch (e) {
+      lookbackDays.value = prev
+      throw e
+    }
+    items.value = []
+    fetchedAt.value = null
+    await refresh()
+  }
+
   async function load() {
     void listenUpdates()
+    void loadLookback()
     if (!fetchedAt.value) {
       loading.value = true
       try {
@@ -140,13 +166,10 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
     }
   }
 
-  /** The backend patches its cache and broadcasts, which updates `items`. */
-  function reply(key: string, body: string) {
-    return withBusy(key, () => invoke<{ html_url: string }>('reply_github_mention', { key, body }))
-  }
-
-  function draft(key: string) {
-    return invoke<string>('draft_github_mention_reply', { key })
+  /** Remember the AI-check session started for a mention (the backend
+   * patches its cache and broadcasts, which updates `items`). */
+  function linkRun(key: string, runId: string) {
+    return invoke('link_github_mention_run', { key, runId })
   }
 
   function dismiss(key: string) {
@@ -173,7 +196,7 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
   }
 
   return {
-    items, warnings, loading, error, fetchedAt, filters, groupBy, busyKeys, pendingCount,
-    load, watchCache, refresh, reply, draft, dismiss, markRead, setFilter, clearFilters, setGroupBy,
+    items, warnings, loading, error, fetchedAt, filters, groupBy, lookbackDays, setLookbackDays, busyKeys, pendingCount,
+    load, watchCache, refresh, linkRun, withBusy, dismiss, markRead, setFilter, clearFilters, setGroupBy,
   }
 })

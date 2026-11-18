@@ -277,8 +277,18 @@ export const useRunsStore = defineStore('runs', () => {
     if (d.session?.project_id) await refreshMeta(d.session.project_id)
   }
 
-  async function fetchIssue(project_id: string, repo_id: string, issue_number: number): Promise<RunRecord> {
-    return invoke<RunRecord>('fetch_issue', { projectId: project_id, repoId: repo_id, issueNumber: issue_number })
+  async function fetchIssue(
+    project_id: string,
+    repo_id: string,
+    issue_number: number,
+    github_account_id?: string,
+  ): Promise<RunRecord> {
+    return invoke<RunRecord>('fetch_issue', {
+      projectId: project_id,
+      repoId: repo_id,
+      issueNumber: issue_number,
+      githubAccountId: github_account_id ?? null,
+    })
   }
 
   async function fetchPr(

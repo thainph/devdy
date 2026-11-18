@@ -2,10 +2,15 @@
 //! answer — a direct `@login`, a team mention, or a reply on an issue / PR the
 //! user takes part in — gathered across every linked GitHub account.
 //!
-//! Source is the Notifications API (`participating=true`, read ones included so
+//! Source is the Notifications API over the last few days (setting
+//! `LOOKBACK_KEY`, default 3) with `participating=true` (read ones included, so
 //! a mention the user only glanced at on github.com stays listed). For each
 //! thread the comments are read to find the one waiting for an answer (the
 //! "trigger") and whether the user commented / reviewed after it ("answered").
+//!
+//! "Check with AI" opens a session on the issue / PR (in the Devdy project
+//! that tracks the repo), like the PR Inbox's review; the link is remembered
+//! (`RUNS_KEY`) so a second click opens that session.
 //!
 //! Like the PR Inbox (`pr_inbox`) the last result is cached in memory and
 //! broadcast (`UPDATED_EVENT`) after each fetch, and a poller re-fetches every
@@ -13,7 +18,6 @@
 
 mod logic;
 
-use crate::commands::translate::{submit_prompt, TranslateState, TurnEvent};
 use crate::db::Db;
 use crate::{github, secrets};
 use futures_util::stream::{self, StreamExt};
@@ -26,28 +30,34 @@ use tauri::{AppHandle, Emitter, State};
 pub const UPDATED_EVENT: &str = "github-mentions-updated";
 const POLL_MINUTES_KEY: &str = "github_mentions.poll_minutes";
 const DISMISSED_KEY: &str = "github_mentions.dismissed";
+/// Mention key → the "Check with AI" session started for it.
+const RUNS_KEY: &str = "github_mentions.runs";
+const MAX_RUN_LINKS: usize = 500;
 const DEFAULT_POLL_MINUTES: u64 = 5;
 const FIRST_TICK: Duration = Duration::from_secs(20);
 const IDLE_TICK: Duration = Duration::from_secs(3600);
 const FETCH_TIMEOUT: Duration = Duration::from_secs(120);
-const DRAFT_TIMEOUT: Duration = Duration::from_secs(120);
 /// Notifications older than this are not looked at.
-const LOOKBACK_DAYS: i64 = 30;
+/// How far back notifications are looked at (setting `LOOKBACK_KEY`).
+const LOOKBACK_KEY: &str = "github_mentions.lookback_days";
+const DEFAULT_LOOKBACK_DAYS: i64 = 3;
+pub const LOOKBACK_CHOICES: &[i64] = &[1, 3, 7, 14, 30];
+/// Per-thread results, persisted so a restart only re-reads changed threads.
+const THREADS_KEY: &str = "github_mentions.threads";
 /// Answered mentions stay listed (collapsed) this long after the answer.
 const ANSWERED_KEEP_DAYS: i64 = 7;
 /// Threads whose comments are read at once, per account.
-const THREAD_CONCURRENCY: usize = 6;
+const THREAD_CONCURRENCY: usize = 16;
 const MAX_THREADS: usize = 150;
 /// Excerpt length sent to the UI.
 const EXCERPT_CHARS: usize = 600;
-const MAX_REPLY_CHARS: usize = 20_000;
 const MAX_DISMISSED: usize = 500;
 
 /// Notification reasons that can wait for an answer. Review requests have the
 /// PR Inbox; assignments, CI and state changes ask nothing of the user.
 const REASONS: &[&str] = &["mention", "team_mention", "comment", "author"];
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MentionComment {
     /// GitHub comment id; 0 when the trigger is the issue / PR body.
     pub id: u64,
@@ -56,15 +66,12 @@ pub struct MentionComment {
     pub body: String,
     pub html_url: String,
     pub created_at: String,
-    /// A PR review (diff) comment: replies go into its review thread.
+    /// A PR review (diff) comment.
     pub review_comment: bool,
     pub path: Option<String>,
-    /// First comment of the review thread (replies must target it).
-    #[serde(skip)]
-    pub thread_root_id: Option<u64>,
 }
 
-#[derive(Debug, Serialize, Clone)]
+#[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MentionItem {
     /// `{account_id}:{thread_id}` — stable across fetches.
     pub key: String,
@@ -88,6 +95,13 @@ pub struct MentionItem {
     pub newer_comments: u32,
     pub answered: bool,
     pub answered_at: Option<String>,
+    /// The Devdy project / repo tracking this GitHub repo, if any.
+    pub project_id: Option<String>,
+    pub repo_id: Option<String>,
+    pub project_name: Option<String>,
+    /// The "Check with AI" session started for this mention.
+    pub existing_run_id: Option<String>,
+    pub existing_run_status: Option<String>,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -162,9 +176,6 @@ struct GhComment {
     created_at: String,
     #[serde(default)]
     path: Option<String>,
-    /// Set on a reply inside a review thread: the thread's first comment.
-    #[serde(default)]
-    in_reply_to_id: Option<u64>,
 }
 
 #[derive(Deserialize)]
@@ -292,7 +303,6 @@ async fn thread_comments(
                     created_at: c.created_at,
                     review_comment,
                     path: c.path,
-                    thread_root_id: c.in_reply_to_id,
                 }),
             ));
         }
@@ -316,7 +326,6 @@ async fn thread_comments(
                 created_at: at,
                 review_comment: false,
                 path: None,
-                thread_root_id: None,
             }),
         ));
     }
@@ -336,7 +345,7 @@ async fn build_item(
     let owner = n.repository.owner.login.clone();
     let repo = n.repository.name.clone();
     let is_discussion = n.subject.kind == "Discussion";
-    // A discussion's number is not an issue number: never reply / draft there.
+    // A discussion's number is not an issue number: no AI check there.
     let number = n.subject.url.as_deref().and_then(number_from_url).filter(|_| !is_discussion);
     let is_pr = n.subject.kind == "PullRequest";
     let base_item = |html_url: String| MentionItem {
@@ -358,6 +367,11 @@ async fn build_item(
         newer_comments: 0,
         answered: false,
         answered_at: None,
+        project_id: None,
+        repo_id: None,
+        project_name: None,
+        existing_run_id: None,
+        existing_run_status: None,
     };
 
     // Discussions (GraphQL only) and other subjects: no comment lookup — listed
@@ -404,7 +418,6 @@ async fn build_item(
                     created_at: issue.created_at,
                     review_comment: false,
                     path: None,
-                    thread_root_id: None,
                 });
             }
         }
@@ -467,11 +480,11 @@ async fn memo_item(
     item.filter(|i| !i.answered_at.as_deref().is_some_and(|a| a < answered_cutoff))
 }
 
-async fn fetch_account(acct: &Account, dismissed: &HashSet<String>) -> Result<Vec<MentionItem>, String> {
+async fn fetch_account(acct: &Account, dismissed: &HashSet<String>, lookback_days: i64) -> Result<Vec<MentionItem>, String> {
     let client = github::client_for_account(&acct.id).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now();
-    let since = (now - chrono::Duration::days(LOOKBACK_DAYS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let answered_cutoff = (now - chrono::Duration::days(ANSWERED_KEEP_DAYS)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let since = (now - chrono::Duration::days(lookback_days)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
+    let answered_cutoff = (now - chrono::Duration::days(ANSWERED_KEEP_DAYS.min(lookback_days))).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
 
     let mut last_err = None;
     let mut notifications: Option<Vec<Notification>> = None;
@@ -526,7 +539,9 @@ fn dismiss_key(item: &MentionItem) -> String {
 async fn fetch_all(db: &Db) -> Result<MentionsResult, String> {
     let accounts = accounts(db).await?;
     let dismissed: HashSet<String> = load_dismissed(db).await.into_iter().collect();
-    let results = futures_util::future::join_all(accounts.iter().map(|a| fetch_account(a, &dismissed))).await;
+    restore_threads(db).await;
+    let lookback = lookback_days(db).await;
+    let results = futures_util::future::join_all(accounts.iter().map(|a| fetch_account(a, &dismissed, lookback))).await;
 
     let mut out = MentionsResult::default();
     let mut seen = HashSet::new();
@@ -548,9 +563,57 @@ async fn fetch_all(db: &Db) -> Result<MentionsResult, String> {
             }),
         }
     }
+    save_threads(db).await;
+    enrich(db, &mut out.items).await;
     let at = |i: &MentionItem| i.trigger.as_ref().map(|t| t.created_at.clone()).unwrap_or_else(|| i.updated_at.clone());
     out.items.sort_by(|a, b| a.answered.cmp(&b.answered).then_with(|| at(b).cmp(&at(a))));
     Ok(out)
+}
+
+/// Project mapping (repo tracked in Devdy) and the linked AI-check session.
+async fn enrich(db: &Db, items: &mut [MentionItem]) {
+    use sqlx::Row;
+    let mut repos: HashMap<(String, String), (String, String, String)> = HashMap::new();
+    if let Ok(rows) = sqlx::query(
+        "SELECT r.id AS repo_id, r.project_id AS project_id, p.name AS project_name,
+                r.github_owner AS owner, r.github_repo AS repo
+         FROM repos r JOIN projects p ON p.id = r.project_id
+         WHERE r.github_owner IS NOT NULL AND r.github_repo IS NOT NULL
+         ORDER BY r.created_at ASC",
+    )
+    .fetch_all(db)
+    .await
+    {
+        for row in rows {
+            let key = (row.get::<String, _>("owner").to_lowercase(), row.get::<String, _>("repo").to_lowercase());
+            repos.entry(key).or_insert((row.get("repo_id"), row.get("project_id"), row.get("project_name")));
+        }
+    }
+    let links = load_run_links(db).await;
+    for item in items.iter_mut() {
+        item.project_id = None;
+        item.repo_id = None;
+        item.project_name = None;
+        item.existing_run_id = None;
+        item.existing_run_status = None;
+        if let Some((repo_id, project_id, name)) = repos.get(&(item.owner.to_lowercase(), item.repo.to_lowercase())) {
+            item.repo_id = Some(repo_id.clone());
+            item.project_id = Some(project_id.clone());
+            item.project_name = Some(name.clone());
+        }
+        let Some(run_id) = links.get(&item.key) else { continue };
+        // A deleted session no longer counts.
+        let status = sqlx::query_scalar::<_, String>("SELECT status FROM runs WHERE id = ?")
+            .bind(run_id)
+            .fetch_optional(db)
+            .await
+            .ok()
+            .flatten();
+        if let Some(status) = status {
+            item.existing_run_id = Some(run_id.clone());
+            item.existing_run_status = Some(status);
+        }
+    }
 }
 
 // ---------------------------------------------------------------------------
@@ -579,6 +642,51 @@ async fn load_dismissed(db: &Db) -> Vec<String> {
     setting(db, DISMISSED_KEY).await.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
 }
 
+/// Kept in insertion order so the oldest links drop first past the cap.
+async fn load_run_links(db: &Db) -> HashMap<String, String> {
+    load_run_link_list(db).await.into_iter().collect()
+}
+
+async fn load_run_link_list(db: &Db) -> Vec<(String, String)> {
+    setting(db, RUNS_KEY).await.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+}
+
+type ThreadMemo = HashMap<String, (String, Option<MentionItem>)>;
+
+/// Load the per-thread results saved by a previous app run (first fetch only).
+async fn restore_threads(db: &Db) {
+    use std::sync::atomic::Ordering;
+    if state().threads_restored.swap(true, Ordering::SeqCst) {
+        return;
+    }
+    let Some(saved) = setting(db, THREADS_KEY).await.and_then(|v| serde_json::from_str::<ThreadMemo>(&v).ok()) else {
+        return;
+    };
+    if let Ok(mut m) = state().threads.lock() {
+        for (k, v) in saved {
+            m.entry(k).or_insert(v);
+        }
+    }
+}
+
+async fn save_threads(db: &Db) {
+    let json = match state().threads.lock() {
+        Ok(m) => serde_json::to_string(&*m).unwrap_or_default(),
+        Err(_) => return,
+    };
+    if let Err(e) = set_setting(db, THREADS_KEY, &json).await {
+        tracing::warn!(event = "github_mentions_save_threads_failed", error = %e);
+    }
+}
+
+async fn lookback_days(db: &Db) -> i64 {
+    setting(db, LOOKBACK_KEY)
+        .await
+        .and_then(|v| v.trim().parse().ok())
+        .filter(|d| LOOKBACK_CHOICES.contains(d))
+        .unwrap_or(DEFAULT_LOOKBACK_DAYS)
+}
+
 async fn poll_minutes(db: &Db) -> u64 {
     setting(db, POLL_MINUTES_KEY).await.and_then(|v| v.trim().parse().ok()).unwrap_or(DEFAULT_POLL_MINUTES)
 }
@@ -597,6 +705,8 @@ struct MentionsState {
     refresh_lock: tokio::sync::Mutex<()>,
     /// `{account_id}:{thread_id}` → (notification `updated_at`, built item).
     threads: std::sync::Mutex<HashMap<String, (String, Option<MentionItem>)>>,
+    /// The persisted per-thread results were loaded (once per app run).
+    threads_restored: std::sync::atomic::AtomicBool,
 }
 
 fn state() -> &'static MentionsState {
@@ -620,19 +730,12 @@ fn store(app: &AppHandle, result: MentionsResult) {
     let _ = app.emit(UPDATED_EVENT, &value);
 }
 
-/// Edit the cached list in place (after a reply / dismiss) and broadcast it,
+/// Edit the cached list in place (after a dismiss / linking a session) and broadcast it,
 /// so the UI updates without waiting for a full re-fetch.
 fn patch_cache(app: &AppHandle, f: impl FnOnce(&mut Vec<MentionItem>)) {
     let Some(mut value) = cached() else { return };
     f(&mut value.result.items);
     store(app, value.result);
-}
-
-/// The thread changed on our side (a reply): read it again on the next fetch.
-fn forget_thread(key: &str) {
-    if let Ok(mut m) = state().threads.lock() {
-        m.remove(key);
-    }
 }
 
 /// Single flight: a call made while another fetch runs waits for it and
@@ -652,9 +755,16 @@ pub async fn refresh(app: &AppHandle, db: &Db) -> Result<MentionsResult, String>
             g
         }
     };
+    let started = Instant::now();
     let result = tokio::time::timeout(FETCH_TIMEOUT, fetch_all(db))
         .await
         .map_err(|_| "Timed out fetching GitHub notifications".to_string())??;
+    tracing::info!(
+        event = "github_mentions_fetched",
+        items = result.items.len(),
+        errors = result.errors.len(),
+        ms = started.elapsed().as_millis() as u64,
+    );
     store(app, result.clone());
     Ok(result)
 }
@@ -685,6 +795,29 @@ pub fn start(app: AppHandle, db: Db) {
 
 // ---------------------------------------------------------------------------
 // Commands
+
+#[tauri::command]
+pub async fn get_github_mentions_lookback_days(db: State<'_, Db>) -> Result<i64, String> {
+    Ok(lookback_days(&db).await)
+}
+
+/// Change the window and forget the per-thread results: they were read with
+/// the old window's `since`. The caller refreshes.
+#[tauri::command]
+pub async fn set_github_mentions_lookback_days(db: State<'_, Db>, days: i64) -> Result<(), String> {
+    if !LOOKBACK_CHOICES.contains(&days) {
+        return Err(format!("Unsupported window: {days} days"));
+    }
+    set_setting(&db, LOOKBACK_KEY, &days.to_string()).await?;
+    if let Ok(mut m) = state().threads.lock() {
+        m.clear();
+    }
+    if let Ok(mut c) = state().cache.lock() {
+        *c = None;
+    }
+    save_threads(&db).await;
+    Ok(())
+}
 
 #[tauri::command]
 pub fn get_cached_github_mentions() -> Option<CachedMentions> {
@@ -749,105 +882,22 @@ pub async fn dismiss_github_mention(app: AppHandle, db: State<'_, Db>, key: Stri
     Ok(())
 }
 
-#[derive(Serialize)]
-pub struct PostedReply {
-    pub html_url: String,
-}
-
-/// Post a reply as the account the mention reached: into the review thread
-/// for a diff comment, otherwise as an issue / PR comment.
+/// Remember the "Check with AI" session started for a mention, so the card
+/// shows it and a second click opens it instead of starting another.
 #[tauri::command]
-pub async fn reply_github_mention(app: AppHandle, key: String, body: String) -> Result<PostedReply, String> {
-    let body = body.trim();
-    if body.is_empty() {
-        return Err("The reply is empty.".into());
+pub async fn link_github_mention_run(app: AppHandle, db: State<'_, Db>, key: String, run_id: String) -> Result<(), String> {
+    let mut list = load_run_link_list(&db).await;
+    list.retain(|(k, _)| k != &key);
+    list.push((key.clone(), run_id.clone()));
+    if list.len() > MAX_RUN_LINKS {
+        list.drain(..list.len() - MAX_RUN_LINKS);
     }
-    if body.chars().count() > MAX_REPLY_CHARS {
-        return Err(format!("The reply is longer than {MAX_REPLY_CHARS} characters."));
-    }
-    let item = cached_item(&key)?;
-    let number = item.number.ok_or("Replying is only supported on issues and pull requests.")?;
-    let client = github::client_for_account(&item.account_id).map_err(|e| e.to_string())?;
-
-    #[derive(Deserialize)]
-    struct Posted {
-        html_url: String,
-        created_at: String,
-    }
-    let payload = serde_json::json!({ "body": body });
-    let review_id = item.trigger.as_ref().filter(|t| t.review_comment).map(|t| t.thread_root_id.unwrap_or(t.id));
-    let route = match review_id {
-        Some(id) => format!("/repos/{}/{}/pulls/{number}/comments/{id}/replies", item.owner, item.repo),
-        None => format!("/repos/{}/{}/issues/{number}/comments", item.owner, item.repo),
-    };
-    let posted: Posted = client.post(route, Some(&payload)).await.map_err(|e| e.to_string())?;
-
-    if let Err(e) = mark_thread_read(&client, &item.thread_id).await {
-        tracing::warn!(event = "github_mentions_mark_read_failed", error = %e);
-    }
-    forget_thread(&key);
+    set_setting(&db, RUNS_KEY, &serde_json::to_string(&list).unwrap_or_default()).await?;
     patch_cache(&app, |items| {
         if let Some(i) = items.iter_mut().find(|i| i.key == key) {
-            i.answered = true;
-            i.unread = false;
-            i.answered_at = Some(posted.created_at.clone());
+            i.existing_run_id = Some(run_id);
+            i.existing_run_status = Some("running".into());
         }
     });
-    Ok(PostedReply { html_url: posted.html_url })
-}
-
-/// Draft a reply with the warm translate sidecar: the issue / PR text and the
-/// recent comments as context, answering the trigger comment.
-#[tauri::command]
-pub async fn draft_github_mention_reply(
-    app: AppHandle,
-    db: State<'_, Db>,
-    translate: State<'_, TranslateState>,
-    key: String,
-) -> Result<String, String> {
-    let item = cached_item(&key)?;
-    let number = item.number.ok_or("Drafting is only supported on issues and pull requests.")?;
-    let client = github::client_for_account(&item.account_id).map_err(|e| e.to_string())?;
-    let route = format!("/repos/{}/{}/issues/{number}", item.owner, item.repo);
-    let issue: GhIssue = client.get::<GhIssue, _, ()>(&route, None).await.map_err(|e| e.to_string())?;
-    let since = (chrono::Utc::now() - chrono::Duration::days(365)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
-    let comments = thread_comments(&client, &item.owner, &item.repo, number, item.kind == "PullRequest", &since)
-        .await
-        .unwrap_or_default();
-
-    let prompt = logic::draft_prompt(&logic::DraftInput {
-        login: &item.account_login,
-        kind: &item.kind,
-        repo: &format!("{}/{}", item.owner, item.repo),
-        number,
-        title: &item.title,
-        description: issue.body.as_deref().unwrap_or(""),
-        description_author: issue.user.as_ref().map(|u| u.login.as_str()).unwrap_or(""),
-        comments: &comments
-            .iter()
-            .filter(|(c, _)| !c.body.trim().is_empty())
-            .map(|(c, m)| (c.author.as_str(), c.body.as_str(), m.as_ref().and_then(|m| m.path.as_deref())))
-            .collect::<Vec<_>>(),
-        trigger: item.trigger.as_ref().map(|t| (t.author_login.as_str(), t.body.as_str())),
-    });
-
-    let (turn, rx) = submit_prompt(&app, &db, &translate, prompt, true).await?;
-    let mut rx = rx.ok_or("no result channel")?;
-    let wait = async {
-        loop {
-            match rx.recv().await {
-                Some(TurnEvent::Chunk(_)) => continue,
-                Some(TurnEvent::Done(t)) => return Ok(t),
-                Some(TurnEvent::Error(e)) => return Err(e),
-                None => return Err("The draft ended unexpectedly.".to_string()),
-            }
-        }
-    };
-    match tokio::time::timeout(DRAFT_TIMEOUT, wait).await {
-        Ok(r) => r.map(|t| t.trim().to_string()),
-        Err(_) => {
-            translate.abandon_turn(turn).await;
-            Err("Drafting took too long. Try again.".into())
-        }
-    }
+    Ok(())
 }

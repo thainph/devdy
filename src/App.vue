@@ -32,6 +32,7 @@ import ItemListWindow from '@/views/ItemListWindow.vue'
 import SecretNotesWindow from '@/views/SecretNotesWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import PrInboxWindow from '@/views/PrInboxWindow.vue'
+import GithubMentionsWindow from '@/views/GithubMentionsWindow.vue'
 import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, openPrInboxWindow, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
@@ -88,6 +89,7 @@ const isSecretNotesWindow = new URLSearchParams(window.location.search).get('sec
 const isRadarWindow = new URLSearchParams(window.location.search).get('radarWindow') === '1'
 const isSlackWindow = new URLSearchParams(window.location.search).get('slackWindow') === '1'
 const isPrInboxWindow = new URLSearchParams(window.location.search).get('prInboxWindow') === '1'
+const isGithubMentionsWindow = new URLSearchParams(window.location.search).get('githubMentionsWindow') === '1'
 const isCalendarWindow = new URLSearchParams(window.location.search).get('calendarWindow') === '1'
 const isMascotWindow = new URLSearchParams(window.location.search).get('mascotWindow') === '1'
 // A session pop-out is different from the bare pop-outs above: it reuses the full
@@ -106,6 +108,7 @@ const isPopoutWindow =
   isRadarWindow ||
   isSlackWindow ||
   isPrInboxWindow ||
+  isGithubMentionsWindow ||
   isCalendarWindow ||
   isMascotWindow
 
@@ -829,6 +832,9 @@ onMounted(async () => {
   <!-- THE PR Inbox window: the PR Inbox screen on its own OS window. -->
   <PrInboxWindow v-else-if="isPrInboxWindow" />
 
+  <!-- THE GitHub Mentions window: the mentions list on its own OS window. -->
+  <GithubMentionsWindow v-else-if="isGithubMentionsWindow" />
+
   <!-- THE Calendar window: the Calendar screen on its own OS window. -->
   <CalendarWindow v-else-if="isCalendarWindow" />
 
@@ -995,6 +1001,13 @@ onMounted(async () => {
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                 <span class="flex-1 truncate text-left">{{ item.label }}</span>
                 <span class="sr-only">({{ t('nav.opensInWindow') }})</span>
+                <span
+                  v-if="item.path === '/github-mentions' && mentionsStore.pendingCount > 0"
+                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
+                  :title="t('githubMentions.pendingTitle')"
+                >
+                  {{ mentionsStore.pendingCount }}
+                </span>
               </button>
               <RouterLink
                 v-else
@@ -1015,13 +1028,6 @@ onMounted(async () => {
                   class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none"
                 >
                   {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
-                </span>
-                <span
-                  v-if="item.path === '/github-mentions' && mentionsStore.pendingCount > 0"
-                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
-                  :title="t('githubMentions.pendingTitle')"
-                >
-                  {{ mentionsStore.pendingCount }}
                 </span>
               </RouterLink>
             </template>

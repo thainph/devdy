@@ -15,6 +15,7 @@
     "session-*",
     "slack-threads",
     "pr-inbox",
+    "github-mentions",
     "calendar"
   ],
   "permissions": [

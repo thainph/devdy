@@ -1,40 +1,38 @@
 <script setup lang="ts">
 // One GitHub mention (GithubMentionsView): who asked, where, why it reached
-// the user, and the comment waiting for an answer. "Reply" opens a composer
-// under the excerpt; "AI draft" opens it pre-filled. The reply is posted as
-// the account the mention reached (in the review thread for a diff comment).
-// Right-click opens the card menu (the view owns it).
-import { computed, nextTick, ref } from 'vue'
+// the user, and the comment waiting for an answer. "Check with AI" opens a
+// session on the issue / PR, like the PR Inbox's "AI review"; once one exists
+// the button opens it. Right-click opens the card menu (the view owns both).
+import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { Button, Card, Textarea } from '@/components/ui'
+import { Button, Card } from '@/components/ui'
 import PrAvatar from '@/components/prInbox/PrAvatar.vue'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
-import { useToast } from '@/composables/useToast'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
-import { isStale, mentionedAt, type MentionItem } from '@/lib/githubMentions'
+import { isStale, mentionedAt, type MentionCheckStatus, type MentionItem } from '@/lib/githubMentions'
 import type { TodoPrefill } from '@/lib/focus'
 import {
-  AtSign, Check, CircleDot, ExternalLink, GitPullRequest, Loader2, MessageSquare, Reply, Sparkles, Users,
+  AtSign, Check, CircleDot, ExternalLink, Eye, GitPullRequest, Loader2, MessageSquare, Reply, Sparkles, Users,
 } from 'lucide-vue-next'
 
-const props = defineProps<{ item: MentionItem }>()
-const emit = defineEmits<{ menu: [item: MentionItem, x: number, y: number] }>()
+const props = defineProps<{
+  item: MentionItem
+  /** State of the "Check with AI" session for this mention. */
+  checkStatus: MentionCheckStatus
+  /** A session is being created for it right now. */
+  starting: boolean
+}>()
+const emit = defineEmits<{
+  menu: [item: MentionItem, x: number, y: number]
+  check: [item: MentionItem]
+}>()
 
 const { t } = useI18n()
-const { toast } = useToast()
 const store = useGithubMentionsStore()
 
-const composing = ref(false)
-const text = ref('')
-const drafting = ref(false)
-const drafted = ref(false)
-const textarea = ref<InstanceType<typeof Textarea> | null>(null)
-
-const busy = computed(() => store.busyKeys.has(props.item.key))
-const canReply = computed(() => props.item.number !== null && !props.item.answered)
 const stale = computed(() => isStale(props.item))
-const ref_ = computed(() => {
+const refText = computed(() => {
   const repo = `${props.item.owner}/${props.item.repo}`
   if (props.item.kind === 'Discussion') return `${repo} · Discussion`
   return props.item.number !== null ? `${repo}#${props.item.number}` : repo
@@ -60,7 +58,8 @@ const reasonLabel = computed(() => {
 const author = computed(() => props.item.trigger?.author_login ?? '')
 
 const todoPrefill = computed<TodoPrefill>(() => ({
-  text: t('githubMentions.todoText', { title: props.item.title, ref: ref_.value }),
+  text: t('githubMentions.todoText', { title: props.item.title, ref: refText.value }),
+  projectId: props.item.project_id ?? undefined,
   sourceUrl: props.item.trigger?.html_url || props.item.html_url,
 }))
 
@@ -68,6 +67,16 @@ const todoPrefill = computed<TodoPrefill>(() => ({
 const excerptParts = computed(() => {
   const body = (props.item.trigger?.body ?? '').replace(/\s+/g, ' ').trim()
   return body.split(/(@[\w-]+(?:\/[\w-]+)?)/g).filter(Boolean).map(s => ({ text: s, at: s.startsWith('@') }))
+})
+
+const checkTitle = computed(() => {
+  switch (props.checkStatus) {
+    case 'unavailable': return t('githubMentions.check.unavailable')
+    case 'unmapped': return t('githubMentions.check.unmapped', { repo: `${props.item.owner}/${props.item.repo}` })
+    case 'running': return t('githubMentions.check.running')
+    case 'done': return t('githubMentions.check.open')
+    default: return t('githubMentions.check.start')
+  }
 })
 
 function relativeTime(iso: string): string {
@@ -84,59 +93,6 @@ function open() {
   const url = props.item.trigger?.html_url || props.item.html_url
   openUrl(url).catch(() => { /* opener unavailable */ })
   if (props.item.unread) store.markRead(props.item.key).catch(() => { /* stays unread */ })
-}
-
-async function startReply() {
-  composing.value = true
-  await nextTick()
-  ;(textarea.value?.$el as HTMLTextAreaElement | undefined)?.focus()
-}
-
-// Bumped by Cancel, so a draft that lands after it is dropped.
-let draftRun = 0
-
-async function draft() {
-  const run = ++draftRun
-  composing.value = true
-  drafting.value = true
-  try {
-    const result = await store.draft(props.item.key)
-    if (run !== draftRun) return
-    text.value = result
-    drafted.value = true
-  } catch (e) {
-    if (run === draftRun) toast.error(t('githubMentions.draftFailed', { error: String(e) }))
-  } finally {
-    if (run === draftRun) drafting.value = false
-  }
-}
-
-function cancel() {
-  draftRun++
-  drafting.value = false
-  composing.value = false
-  text.value = ''
-  drafted.value = false
-}
-
-async function send() {
-  if (!text.value.trim() || busy.value) return
-  try {
-    await store.reply(props.item.key, text.value)
-    toast.success(t('githubMentions.sent'))
-    cancel()
-  } catch (e) {
-    toast.error(t('githubMentions.sendFailed', { error: String(e) }))
-  }
-}
-
-function onKey(e: KeyboardEvent) {
-  if (e.key === 'Enter' && (e.metaKey || e.ctrlKey)) {
-    e.preventDefault()
-    void send()
-  } else if (e.key === 'Escape' && !text.value.trim()) {
-    cancel()
-  }
 }
 </script>
 
@@ -166,7 +122,7 @@ function onKey(e: KeyboardEvent) {
       </div>
 
       <div class="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-muted-foreground">
-        <span class="font-mono text-[10.5px]">{{ ref_ }}</span>
+        <span class="font-mono text-[10.5px]">{{ refText }}</span>
         <span v-if="item.answered" class="inline-flex items-center gap-1 rounded-[5px] bg-success/10 px-1.5 py-0.5 text-[10.5px] font-medium text-success">
           <Check class="h-3 w-3" :stroke-width="2" />
           {{ t('githubMentions.answered', { time: relativeTime(item.answered_at ?? item.updated_at) }) }}
@@ -176,6 +132,7 @@ function onKey(e: KeyboardEvent) {
           {{ reasonLabel }}
         </span>
         <span class="rounded-[5px] bg-muted px-1.5 py-0.5 text-[10.5px] font-medium">{{ item.account_label || item.account_login }}</span>
+        <span v-if="item.project_name" class="truncate">{{ item.project_name }}</span>
         <span v-if="item.trigger?.path" class="min-w-0 truncate">
           {{ t('githubMentions.onFile') }} <span class="font-mono text-[10.5px]">{{ item.trigger.path }}</span>
         </span>
@@ -191,49 +148,6 @@ function onKey(e: KeyboardEvent) {
       <span v-if="item.newer_comments > 0 && !item.answered" class="text-[11px] text-muted-foreground">
         {{ t('githubMentions.newerComments', item.newer_comments) }}
       </span>
-
-      <!-- Composer -->
-      <div v-if="composing" class="mt-1 overflow-hidden rounded-lg border border-border bg-background">
-        <div class="flex items-center gap-1.5 border-b border-border/60 px-2 py-1.5 text-[11px] text-muted-foreground">
-          <template v-if="drafting">
-            <Loader2 class="h-3 w-3 animate-spin text-primary" :stroke-width="2" />
-            {{ t('githubMentions.drafting') }}
-          </template>
-          <template v-else-if="drafted">
-            <Sparkles class="h-3 w-3 text-primary" :stroke-width="2" />
-            <span class="font-medium text-primary">{{ t('githubMentions.draftReady') }}</span>
-            · {{ t('githubMentions.draftHint') }}
-          </template>
-          <template v-else>
-            <Reply class="h-3 w-3" :stroke-width="2" />
-            {{ t('githubMentions.replyTo', { who: author || item.repo }) }}
-          </template>
-        </div>
-        <Textarea
-          ref="textarea"
-          v-model="text"
-          class="min-h-24 rounded-none border-0 focus:ring-0"
-          :disabled="drafting || busy"
-          :placeholder="t('githubMentions.replyPlaceholder')"
-          :aria-label="t('githubMentions.replyPlaceholder')"
-          @keydown="onKey"
-        />
-        <div class="flex items-center gap-2 border-t border-border/60 px-2 py-1.5">
-          <span class="mr-auto truncate text-[11px] text-muted-foreground">
-            {{ t('githubMentions.sendAs', { account: item.account_login }) }}
-          </span>
-          <Button variant="ghost" size="xs" :disabled="drafting || busy" @click="draft">
-            <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ drafted ? t('githubMentions.redraft') : t('githubMentions.aiDraft') }}
-          </Button>
-          <Button variant="ghost" size="xs" :disabled="busy" @click="cancel">{{ t('common.cancel') }}</Button>
-          <Button size="xs" :disabled="!text.trim() || drafting || busy" @click="send">
-            <Loader2 v-if="busy" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
-            <Reply v-else class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ t('githubMentions.send') }}
-          </Button>
-        </div>
-      </div>
     </div>
 
     <div class="flex shrink-0 items-start gap-1">
@@ -244,22 +158,29 @@ function onKey(e: KeyboardEvent) {
       >
         {{ relativeTime(mentionedAt(item)) }}
       </span>
-      <template v-if="!composing">
-        <Button v-if="canReply" size="sm" :title="t('githubMentions.reply')" @click="startReply">
-          <Reply class="h-3.5 w-3.5" :stroke-width="2" />
-          <span class="hidden xl:inline">{{ t('githubMentions.reply') }}</span>
-        </Button>
-        <Button
-          v-if="canReply"
-          variant="ghost"
-          size="icon"
-          :title="t('githubMentions.aiDraft')"
-          :aria-label="t('githubMentions.aiDraft')"
-          @click="draft"
-        >
-          <Sparkles class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-      </template>
+      <Button
+        v-if="checkStatus === 'running' || checkStatus === 'done'"
+        variant="outline"
+        size="sm"
+        :title="checkTitle"
+        @click="emit('check', item)"
+      >
+        <Loader2 v-if="checkStatus === 'running'" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+        <Eye v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <span class="hidden xl:inline">{{ checkStatus === 'running' ? t('githubMentions.check.runningLabel') : t('githubMentions.check.openLabel') }}</span>
+      </Button>
+      <Button
+        v-else-if="!item.answered"
+        size="sm"
+        :disabled="starting || checkStatus !== 'none'"
+        :title="checkTitle"
+        :aria-label="t('githubMentions.check.label')"
+        @click="emit('check', item)"
+      >
+        <Loader2 v-if="starting" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+        <Sparkles v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <span class="hidden xl:inline">{{ t('githubMentions.check.label') }}</span>
+      </Button>
       <Button
         variant="ghost"
         size="icon"
