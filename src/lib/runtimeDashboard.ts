@@ -189,7 +189,17 @@ export function sortSessions(list: readonly RtSession[]): RtSession[] {
 
 // ── Search / filter ─────────────────────────────────────────────────────────
 
-export type QuickFilter = 'wait' | 'quiet' | 'ctx'
+/** `wait` / `quiet` / `run` / `idle` / `ext` match a state; `ctx` a nearly full context. */
+export type QuickFilter = 'wait' | 'quiet' | 'ctx' | 'run' | 'idle' | 'ext'
+
+/** The filter of each state (the Session card's donut segments). */
+export const STATE_FILTER: Record<SessionState, QuickFilter> = {
+  waiting: 'wait',
+  quiet: 'quiet',
+  running: 'run',
+  idle: 'idle',
+  external: 'ext',
+}
 
 export function matchesQuery(s: Pick<RtSession, 'title' | 'projectName'>, query: string): boolean {
   const q = query.trim().toLowerCase()
@@ -200,15 +210,17 @@ export function matchesFilter(s: RtSession, filter: QuickFilter | null): boolean
   if (filter === 'wait') return s.state === 'waiting'
   if (filter === 'quiet') return s.state === 'quiet'
   if (filter === 'ctx') return ctxFull(s)
+  if (filter === 'run') return s.state === 'running'
+  if (filter === 'idle') return s.state === 'idle'
+  if (filter === 'ext') return s.state === 'external'
   return true
 }
 
-/** Counts behind the Session card's chips. */
+/** Counts behind the Session card's chips and donut. */
 export function filterCounts(list: readonly RtSession[]): Record<QuickFilter, number> {
-  const out = { wait: 0, quiet: 0, ctx: 0 }
+  const out = { wait: 0, quiet: 0, ctx: 0, run: 0, idle: 0, ext: 0 }
   for (const s of list) {
-    if (s.state === 'waiting') out.wait++
-    if (s.state === 'quiet') out.quiet++
+    out[STATE_FILTER[s.state]]++
     if (ctxFull(s)) out.ctx++
   }
   return out

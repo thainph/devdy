@@ -20,6 +20,7 @@ import {
   layoutTree,
   logLine,
   mapOrder,
+  matchesFilter,
   matchesQuery,
   needsAttention,
   noteActivity,
@@ -130,8 +131,23 @@ test('matchesQuery covers title and project', () => {
 })
 
 test('filterCounts', () => {
-  const c = filterCounts([s('a', { state: 'waiting' }), s('b', { state: 'quiet', ctxPercent: 85 }), s('c')])
-  assert.deepEqual(c, { wait: 1, quiet: 1, ctx: 1 })
+  const c = filterCounts([
+    s('a', { state: 'waiting' }),
+    s('b', { state: 'quiet', ctxPercent: 85 }),
+    s('c'),
+    s('d', { state: 'idle' }),
+    s('e', { state: 'external' }),
+  ])
+  assert.deepEqual(c, { wait: 1, quiet: 1, ctx: 1, run: 1, idle: 1, ext: 1 })
+})
+
+test('matchesFilter by state', () => {
+  assert.ok(matchesFilter(s('a'), 'run'))
+  assert.ok(!matchesFilter(s('a'), 'idle'))
+  assert.ok(matchesFilter(s('a', { state: 'idle' }), 'idle'))
+  assert.ok(matchesFilter(s('a', { state: 'external' }), 'ext'))
+  assert.ok(matchesFilter(s('a', { state: 'waiting' }), 'wait'))
+  assert.ok(matchesFilter(s('a'), null))
 })
 
 function sample() {
