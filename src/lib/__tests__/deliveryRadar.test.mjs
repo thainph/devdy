@@ -233,6 +233,17 @@ test('nestIssues survives a parent cycle and buildGroups exposes rows', () => {
   assert.deepEqual(groups[0].rows.map((r) => r.depth), [0, 1])
 })
 
+test('classifyAll leaves out people no longer followed', () => {
+  const mine = issue({ assignees: ['Khoa'] })
+  const shared = issue({ assignees: ['khoa', 'minh'] })
+  const loose = issue({ assignees: [] })
+  const out = classifyAll([mine, shared, loose], NOW, TH, { hidden: ['KHOA'], hideUnassigned: true })
+  assert.deepEqual(out.map((i) => i.number), [shared.number])
+  assert.deepEqual(out[0].activeAssignees, ['minh'])
+  assert.deepEqual(buildGroups(out, 'person').map((g) => g.key), ['minh'])
+  assert.equal(classifyAll([loose], NOW, TH, { hidden: ['khoa'] }).length, 1)
+})
+
 test('visibleRows hides the subtree of collapsed rows and counts it', () => {
   const epic = issue({ number: 1 })
   const story = issue({ number: 2, parent: parentOf(1) })

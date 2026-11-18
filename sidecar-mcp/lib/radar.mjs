@@ -77,18 +77,24 @@ export function classifyIssue(issue, now, th) {
 
 const issueKey = (projectId, repo, number) => `${projectId}::${repo.toLowerCase()}#${number}`;
 
-/** Open work only: an issue stays while one of its assignees still has something to do on it. */
+/**
+ * Open work only: an issue stays while one of its followed assignees still has
+ * something to do on it (`rules.hidden` / `rules.hideUnassigned` drop people).
+ */
 export function classifyAll(issues, now, th, rules = {}) {
   const testers = new Set((rules.testers ?? []).map((l) => l.toLowerCase()));
+  const hidden = new Set((rules.hidden ?? []).map((l) => l.toLowerCase()));
   const seen = new Set();
   const out = [];
   for (const issue of issues) {
     const doneFor = (role) => isDone(issue, rules.stages, role);
     let activeAssignees = [];
     if (issue.assignees.length) {
-      activeAssignees = issue.assignees.filter((a) => !doneFor(testers.has(a.toLowerCase()) ? 'tester' : 'dev'));
+      activeAssignees = issue.assignees.filter(
+        (a) => !hidden.has(a.toLowerCase()) && !doneFor(testers.has(a.toLowerCase()) ? 'tester' : 'dev'),
+      );
       if (!activeAssignees.length) continue;
-    } else if (doneFor('dev')) {
+    } else if (rules.hideUnassigned || doneFor('dev')) {
       continue;
     }
     const key = issueKey(issue.projectId, issue.repo, issue.number);

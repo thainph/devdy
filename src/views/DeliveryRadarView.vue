@@ -7,11 +7,13 @@ import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
-import { ChevronRight, CornerDownRight, ExternalLink, FolderOpen, ListPlus, Radar, RefreshCw, SearchX, Settings2 } from 'lucide-vue-next'
+import {
+  ChevronRight, CornerDownRight, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
+} from 'lucide-vue-next'
 import { useProjectsStore, type Project } from '@/stores/projects'
 import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
 import {
-  Banner, Button, Card, ContextMenu, DropdownItem, Input, PageHeader, SegmentedControl, Skeleton,
+  Banner, Button, Card, ContextMenu, DropdownItem, Input, SegmentedControl, Skeleton,
 } from '@/components/ui'
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
@@ -139,7 +141,9 @@ function toggleStatus(s: RadarStatus) {
 
 // Columns of the summary table (on-track only counts towards "Open").
 const COLUMNS: RadarStatus[] = ['overdue', 'due-soon', 'not-started', 'stale', 'no-deadline']
-const CARDS: RadarStatus[] = [...COLUMNS, 'on-track']
+// Status strip: what needs someone's attention, then what is fine.
+const HOT: RadarStatus[] = ['overdue', 'due-soon', 'not-started', 'stale']
+const CALM: RadarStatus[] = ['no-deadline', 'on-track']
 
 const TONE_TEXT: Record<RadarStatus, string> = {
   overdue: 'text-destructive',
@@ -149,13 +153,21 @@ const TONE_TEXT: Record<RadarStatus, string> = {
   'no-deadline': 'text-muted-foreground',
   'on-track': 'text-success',
 }
-const TONE_PILL: Record<RadarStatus, string> = {
-  overdue: 'bg-destructive/15 text-destructive border-destructive/30',
-  'due-soon': 'bg-warning/15 text-warning border-warning/30',
-  'not-started': 'bg-info/15 text-info border-info/30',
-  stale: 'bg-muted text-foreground border-border',
-  'no-deadline': 'bg-muted/60 text-muted-foreground border-border/70',
-  'on-track': 'bg-success/15 text-success border-success/30',
+const TONE_CHIP: Record<RadarStatus, string> = {
+  overdue: 'bg-destructive/12 text-destructive',
+  'due-soon': 'bg-warning/12 text-warning',
+  'not-started': 'bg-info/12 text-info',
+  stale: 'bg-muted text-foreground',
+  'no-deadline': 'bg-muted/70 text-muted-foreground',
+  'on-track': 'bg-success/12 text-success',
+}
+const TONE_BG: Record<RadarStatus, string> = {
+  overdue: 'bg-destructive',
+  'due-soon': 'bg-warning',
+  'not-started': 'bg-info',
+  stale: 'bg-foreground/70',
+  'no-deadline': 'bg-muted-foreground/60',
+  'on-track': 'bg-success',
 }
 
 function statusHint(s: RadarStatus): string {
@@ -211,6 +223,13 @@ watch(groupMode, () => {
 function groupLabel(g: RadarGroup): string {
   return g.key === null ? t('radar.unassigned') : g.label
 }
+function groupInitial(g: RadarGroup): string {
+  return g.key === null ? '?' : (g.label.replace(/^[^\p{L}\p{N}]+/u, '')[0] ?? '?').toUpperCase()
+}
+/** Worst status that needs attention in the group: the colour of its left stripe. */
+function groupSeverity(g: RadarGroup): RadarStatus | null {
+  return HOT.find((s) => g.counts[s] > 0) ?? null
+}
 function isTesterGroup(g: RadarGroup): boolean {
   return groupMode.value === 'person' && g.key !== null && store.roleOf(g.key) === 'tester'
 }
@@ -226,19 +245,66 @@ function deadlineDate(i: ClassifiedIssue): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(i.deadline ?? '')
   return m ? `${m[3]}/${m[2]}` : ''
 }
-/** Project (person mode) or assignees (project mode) shown on an issue row. */
-function issueContext(i: ClassifiedIssue, g: RadarGroup): string {
-  if (groupMode.value === 'project') return i.assignees.join(', ') || t('radar.unassigned')
-  const others = i.assignees.filter((a) => a !== g.key)
-  return others.length && g.key !== null
-    ? `${i.projectName} · ${t('radar.alsoAssigned', { names: others.join(', ') })}`
-    : i.projectName
+/** Second line of an issue row: project (person mode) or assignees (project mode), co-assignees, parent. */
+function issueMeta(i: ClassifiedIssue, g: RadarGroup, depth: number): string[] {
+  const out: string[] = []
+  if (groupMode.value === 'project') {
+    out.push(i.assignees.join(', ') || t('radar.unassigned'))
+  } else {
+    out.push(i.projectName)
+    const others = i.assignees.filter((a) => a !== g.key)
+    if (others.length && g.key !== null) out.push(t('radar.alsoAssigned', { names: others.join(', ') }))
+  }
+  // Parent not in this list (other assignee, done, …): say where the task belongs.
+  if (depth === 0 && i.parent) out.push(`↑ #${i.parent.number} ${i.parent.title}`)
+  return out
+}
+function deadlineTone(i: ClassifiedIssue): string {
+  if (i.daysLeft !== null && i.daysLeft < 0) return 'text-destructive font-medium'
+  if (i.radar === 'due-soon') return 'text-warning font-medium'
+  return 'text-muted-foreground'
 }
 
 
 function openIssue(i: ClassifiedIssue) {
   openUrl(i.htmlUrl).catch(() => {})
 }
+
+// ── Followed people ──────────────────────────────────────────────────────────
+// Group menu (right-click a person): stop following them.
+const groupMenu = ref<{ x: number, y: number, group: RadarGroup } | null>(null)
+function openGroupMenu(e: MouseEvent, g: RadarGroup) {
+  if (groupMode.value === 'person') groupMenu.value = { x: e.clientX, y: e.clientY, group: g }
+}
+function hideGroup() {
+  const g = groupMenu.value?.group
+  groupMenu.value = null
+  if (g) store.setHidden(g.key, true)
+}
+// Everyone the settings can switch on/off: assignees seen in scope (with their
+// open work, hidden or not) plus anyone already hidden.
+const members = computed(() => {
+  const open = classifyAll(store.issuesFor(scopeProjects.value), now.value, store.thresholds, {
+    stages: store.stages, testers: store.testers,
+  })
+  const counts = new Map<string, number>()
+  let unassigned = 0
+  for (const i of open) {
+    if (!i.assignees.length) unassigned++
+    for (const a of i.activeAssignees) counts.set(a.toLowerCase(), (counts.get(a.toLowerCase()) ?? 0) + 1)
+  }
+  const logins = new Map<string, string>()
+  for (const a of store.assigneesFor(scopeIds.value)) logins.set(a.toLowerCase(), a)
+  for (const h of store.hidden) if (h !== null && !logins.has(h)) logins.set(h, h)
+  return {
+    people: [...logins.entries()].map(([id, login]) => ({ login, count: counts.get(id) ?? 0 })),
+    unassigned,
+  }
+})
+const hiddenCount = computed(() => store.hidden.length)
+
+// Project warnings fold into one line once there are several.
+const warningsOpen = ref(false)
 
 // Row menu (right-click): "+ Todo" from the issue (title, project, link and
 // deadline prefilled), open it on GitHub.
@@ -303,21 +369,40 @@ function openSettings(p: Project) {
   emit(DELIVERY_RADAR_OPEN_ROUTE, { path: `/projects/${p.id}/settings` } satisfies DeliveryRadarOpenRoute).catch(() => {})
 }
 
-const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56px_76px_minmax(120px,1fr)] items-center gap-x-2'
+const GRID = 'grid grid-cols-[minmax(140px,1fr)_repeat(5,minmax(56px,92px))_minmax(48px,68px)_minmax(64px,84px)] items-center gap-x-1'
+// Narrow windows drop the board-status column (it moves to the row's second line).
+const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,132px)_64px_52px] md:grid-cols-[minmax(0,1fr)_minmax(88px,132px)_minmax(104px,132px)_minmax(64px,96px)_52px] items-center gap-x-3'
 </script>
 
 <template>
   <div class="flex flex-col h-full">
-    <PageHeader :title="t('radar.title')" :count="classified.length" :count-title="t('radar.openIssues')">
-      <template #leading>
+    <!-- One toolbar: title, scope, grouping, search, freshness, actions -->
+    <div class="shrink-0 border-b border-border/60 px-6 py-2.5 flex items-center gap-x-2 gap-y-2 flex-wrap">
+      <div class="flex items-center gap-2 mr-2">
         <Radar class="h-4 w-4 text-primary shrink-0" :stroke-width="2" />
+        <h1 class="text-sm font-semibold shrink-0">{{ t('radar.title') }}</h1>
+        <span
+          class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
+          :title="t('radar.openIssues')"
+        >{{ classified.length }}</span>
+      </div>
+      <template v-if="boardProjects.length > 0">
+        <RadarProjectPicker v-model:selected="selectedProjects" :projects="boardProjects" :loading="store.loading" />
+        <SegmentedControl v-model="groupMode" :options="groupModeOptions" :stretch="false" />
       </template>
-      <template #actions>
+      <div class="ml-auto flex items-center gap-2">
+        <div v-if="boardProjects.length > 0" class="relative">
+          <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
+          <Input v-model="query" size="sm" class="w-56 pl-7" :placeholder="t('radar.searchPlaceholder')" />
+        </div>
+        <span v-if="updatedAt" class="hidden lg:inline text-[11px] text-muted-foreground whitespace-nowrap">
+          {{ t('radar.updated', { time: relativeTime(updatedAt) }) }}
+        </span>
         <Button
           variant="outline"
           size="icon"
           :disabled="store.isLoading || scopeIds.length === 0"
-          :title="t('common.refresh')"
+          :title="updatedAt ? `${t('common.refresh')} · ${t('radar.updated', { time: relativeTime(updatedAt) })}` : t('common.refresh')"
           :aria-label="t('common.refresh')"
           @click="refresh(true)"
         >
@@ -332,8 +417,8 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
         >
           <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-      </template>
-    </PageHeader>
+      </div>
+    </div>
 
     <!-- No board-configured projects -->
     <div v-if="boardProjects.length === 0" class="flex flex-col items-center justify-center flex-1 min-h-0 p-6 text-center">
@@ -344,195 +429,267 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
       <p class="text-xs text-muted-foreground mt-1 max-w-80">{{ t('radar.noBoardHint') }}</p>
     </div>
 
-    <template v-else>
-      <!-- Toolbar: project scope, grouping, search -->
-      <div class="shrink-0 border-b border-border/60 px-6 py-2 flex items-center gap-x-4 gap-y-2 flex-wrap">
-        <RadarProjectPicker v-model:selected="selectedProjects" :projects="boardProjects" :loading="store.loading" />
-        <div class="ml-auto flex items-center gap-2">
-          <SegmentedControl v-model="groupMode" :options="groupModeOptions" :stretch="false" />
-          <Input v-model="query" size="sm" class="w-56" :placeholder="t('radar.searchPlaceholder')" />
+    <!-- First load: skeleton mirroring the strip + table -->
+    <div v-else-if="!hasAnyData && store.isLoading" class="flex-1 min-h-0 overflow-auto p-6 space-y-4">
+      <div class="grid grid-cols-3 lg:grid-cols-6 gap-3">
+        <div v-for="i in 6" :key="i" class="rounded-lg border border-border/60 bg-card p-3 space-y-2.5">
+          <Skeleton class="h-6 w-10 rounded" />
+          <Skeleton class="h-2.5 w-16 rounded" />
         </div>
       </div>
-
-      <!-- First load: skeleton mirroring cards + table -->
-      <div v-if="!hasAnyData && store.isLoading" class="flex-1 min-h-0 overflow-auto p-6 space-y-4">
-        <div class="grid grid-cols-3 lg:grid-cols-6 gap-3">
-          <div v-for="i in 6" :key="i" class="rounded-lg border border-border/60 bg-card p-3 space-y-2.5">
-            <Skeleton class="h-2.5 w-16 rounded" />
-            <Skeleton class="h-6 w-10 rounded" />
-          </div>
-        </div>
-        <div class="rounded-lg border border-border/60 overflow-hidden">
-          <div v-for="i in 6" :key="i" class="flex items-center gap-4 border-b border-border/30 last:border-b-0 px-3 h-10">
-            <Skeleton class="h-2.5 w-28 rounded" />
-            <Skeleton v-for="j in 5" :key="j" class="h-2.5 w-8 rounded" />
-          </div>
+      <div class="rounded-lg border border-border/60 overflow-hidden">
+        <div v-for="i in 6" :key="i" class="flex items-center gap-4 border-b border-border/30 last:border-b-0 px-3 h-12">
+          <Skeleton class="h-6 w-6 rounded-full" />
+          <Skeleton class="h-2.5 w-28 rounded" />
+          <Skeleton v-for="j in 5" :key="j" class="h-2.5 w-8 rounded" />
         </div>
       </div>
+    </div>
 
-      <div v-else class="flex-1 min-h-0 overflow-auto">
-        <div class="p-6 space-y-4">
-          <!-- Per-project problems -->
-          <Banner v-for="b in banners" :key="b.id" :tone="b.tone">
-            {{ b.text }}
-            <template v-if="b.retry || b.settings" #actions>
-              <Button v-if="b.retry" size="xs" variant="outline" @click="store.refresh([b.project.id], { force: true })">
-                {{ t('radar.retry') }}
-              </Button>
-              <Button v-if="b.settings" size="xs" variant="outline" @click="openSettings(b.project)">
-                {{ t('radar.bannerNoBoardLink') }}
-              </Button>
-            </template>
-          </Banner>
+    <div v-else class="flex-1 min-h-0 overflow-auto">
+      <div class="p-6 space-y-3">
+        <!-- Per-project problems: one line when there are several -->
+        <template v-if="banners.length">
+          <button
+            v-if="banners.length > 1"
+            class="flex w-full items-center gap-2 rounded-md border px-3 py-1.5 text-left text-[12px] font-medium transition-colors"
+            :class="banners.some((b) => b.tone === 'destructive')
+              ? 'border-destructive/35 bg-destructive/8 text-destructive hover:bg-destructive/12'
+              : 'border-warning/35 bg-warning/8 text-warning hover:bg-warning/12'"
+            :aria-expanded="warningsOpen"
+            @click="warningsOpen = !warningsOpen"
+          >
+            {{ t('radar.warningsCount', { n: banners.length }, banners.length) }}
+            <ChevronRight class="ml-auto h-3.5 w-3.5 transition-transform" :class="{ 'rotate-90': warningsOpen }" :stroke-width="2" />
+          </button>
+          <template v-if="banners.length === 1 || warningsOpen">
+            <Banner v-for="b in banners" :key="b.id" :tone="b.tone">
+              {{ b.text }}
+              <template v-if="b.retry || b.settings" #actions>
+                <Button v-if="b.retry" size="xs" variant="outline" @click="store.refresh([b.project.id], { force: true })">
+                  {{ t('radar.retry') }}
+                </Button>
+                <Button v-if="b.settings" size="xs" variant="outline" @click="openSettings(b.project)">
+                  {{ t('radar.bannerNoBoardLink') }}
+                </Button>
+              </template>
+            </Banner>
+          </template>
+        </template>
 
-          <!-- Summary cards (click = filter to that status) -->
-          <div class="grid grid-cols-3 lg:grid-cols-6 gap-3">
-            <Card
-              v-for="s in CARDS" :key="s"
-              body-class="p-3"
-              role="button"
-              tabindex="0"
-              class="cursor-pointer transition-colors hover:bg-accent/50"
-              :class="statusFilter === s ? 'ring-2 ring-primary/60' : ''"
-              :title="`${statusHint(s)} — ${t('radar.filterHint')}`"
-              :aria-pressed="statusFilter === s"
-              @click="toggleStatus(s)"
-              @keydown.enter.prevent="toggleStatus(s)"
-            >
-              <div class="text-[11px] text-muted-foreground">{{ t(`radar.status.${s}`) }}</div>
-              <div class="text-xl font-semibold mt-0.5" :class="counts[s] > 0 ? TONE_TEXT[s] : ''">{{ counts[s] }}</div>
-            </Card>
-          </div>
-
-          <!-- Empty -->
-          <div v-if="groups.length === 0" class="flex flex-col items-center justify-center min-h-60 text-center">
-            <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
-              <SearchX class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
-            </div>
-            <p class="text-sm font-medium">{{ t('radar.nothingTitle') }}</p>
-            <p class="text-xs text-muted-foreground mt-1">{{ t('radar.nothingHint') }}</p>
-          </div>
-
-          <!-- Rollup table -->
-          <Card v-else body-class="text-xs">
-            <div :class="GRID" class="px-3 h-8 border-b border-border/60 bg-muted/30 text-[11px] text-muted-foreground font-medium sticky top-0 z-10">
-              <button class="flex items-center gap-1 text-left hover:text-foreground" @click="toggleAll">
-                <ChevronRight class="h-3 w-3 transition-transform" :class="{ 'rotate-90': allExpanded }" :stroke-width="2" />
-                {{ groupMode === 'person' ? t('radar.colPerson') : t('radar.colProject') }}
-              </button>
-              <div v-for="s in COLUMNS" :key="s" class="text-center truncate" :title="statusHint(s)">{{ t(`radar.status.${s}`) }}</div>
-              <div class="text-center">{{ t('radar.colTotal') }}</div>
-              <div class="text-center">{{ t('radar.colWorst') }}</div>
-              <div class="truncate">{{ groupMode === 'person' ? t('radar.colRelatedProjects') : t('radar.colRelatedPeople') }}</div>
-            </div>
-
-            <div v-for="g in groups" :key="groupId(g)" class="border-b border-border/40 last:border-b-0">
+        <!-- Status strip: needs attention (big, coloured) | fine (quiet). Click = filter. -->
+        <Card body-class="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <section v-for="(part, pi) in [HOT, CALM]" :key="pi" :class="pi === 1 ? 'border-t md:border-t-0 md:border-l border-border/60 bg-muted/30' : ''">
+            <h3 class="px-3.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              {{ pi === 0 ? t('radar.needsAttention') : t('radar.fine') }}
+            </h3>
+            <div class="grid" :style="{ gridTemplateColumns: `repeat(${part.length}, minmax(0, 1fr))` }">
               <button
-                :class="GRID"
-                class="w-full px-3 h-10 text-left hover:bg-accent/50 transition-colors"
-                :aria-expanded="expanded.has(groupId(g))"
-                @click="toggleGroup(g)"
+                v-for="s in part" :key="s"
+                class="relative flex flex-col items-start gap-0.5 px-3.5 pt-1 pb-2.5 text-left transition-[background-color,opacity] hover:bg-accent/50"
+                :class="[TONE_TEXT[s], statusFilter && statusFilter !== s ? 'opacity-45' : '']"
+                :title="`${statusHint(s)} — ${t('radar.filterHint')}`"
+                :aria-pressed="statusFilter === s"
+                @click="toggleStatus(s)"
               >
-                <span class="flex items-center gap-1.5 min-w-0">
-                  <ChevronRight class="h-3 w-3 shrink-0 text-muted-foreground transition-transform" :class="{ 'rotate-90': expanded.has(groupId(g)) }" :stroke-width="2" />
-                  <span class="truncate text-[13px] font-medium" :class="{ 'italic text-muted-foreground': g.key === null }">{{ groupLabel(g) }}</span>
-                  <span
-                    v-if="isTesterGroup(g)"
-                    class="shrink-0 rounded border border-info/30 bg-info/15 px-1 text-[10px] font-medium text-info"
-                    :title="t('radar.testerHint')"
-                  >{{ t('radar.tester') }}</span>
+                <span
+                  class="font-semibold leading-tight tabular-nums"
+                  :class="[pi === 0 ? 'text-2xl' : 'text-xl', counts[s] > 0 ? '' : 'text-muted-foreground/40']"
+                >{{ counts[s] }}</span>
+                <span class="flex items-center gap-1.5 text-[12px] text-muted-foreground">
+                  <span class="h-1.5 w-1.5 rounded-full" :class="TONE_BG[s]" />
+                  {{ t(`radar.status.${s}`) }}
                 </span>
-                <span v-for="s in COLUMNS" :key="s" class="flex justify-center">
-                  <span
-                    v-if="g.counts[s] > 0"
-                    class="min-w-7 rounded-full border px-1.5 py-0.5 text-center text-[11px] font-semibold"
-                    :class="TONE_PILL[s]"
-                  >{{ g.counts[s] }}</span>
-                  <span v-else class="text-muted-foreground/40">–</span>
-                </span>
-                <span class="text-center font-medium">{{ g.total }}</span>
-                <span class="text-center" :class="g.worstLateDays ? 'text-destructive font-medium' : 'text-muted-foreground/40'">
-                  {{ g.worstLateDays ? t('radar.lateDays', { n: g.worstLateDays }) : '–' }}
-                </span>
-                <span class="truncate text-[11px] text-muted-foreground" :title="g.related.join(', ')">{{ g.related.join(', ') }}</span>
+                <span v-if="statusFilter === s" class="absolute inset-x-2.5 bottom-0 h-0.5 rounded-t" :class="TONE_BG[s]" />
               </button>
+            </div>
+          </section>
+        </Card>
 
-              <!-- Issues of the group -->
-              <div v-if="expanded.has(groupId(g))" class="bg-muted/20 border-t border-border/30 py-1">
-                <div
-                  v-for="{ issue: i, depth, hasChildren, hidden } in groupRows(g)" :key="i.key"
-                  class="group flex items-center gap-2 pr-3 h-8 hover:bg-accent/50 cursor-pointer"
-                  :style="{ paddingLeft: `${0.5 + depth * 1.25}rem` }"
-                  :title="i.parent ? `${i.title}\n${t('radar.parentHint', { title: `#${i.parent.number} ${i.parent.title}` })}` : i.title"
-                  @click="openIssue(i)"
-                  @contextmenu.prevent="openRowMenu($event, i)"
-                >
+        <!-- Filter state + table controls -->
+        <div class="flex items-center gap-2 min-h-6 text-[12px] text-muted-foreground">
+          <template v-if="statusFilter">
+            {{ t('radar.filtering') }}
+            <span class="inline-flex items-center gap-1 rounded-full py-0.5 pl-2 pr-1 font-medium" :class="TONE_CHIP[statusFilter]">
+              {{ t(`radar.status.${statusFilter}`) }}
+              <button class="rounded-full p-0.5 hover:bg-foreground/10" :title="t('radar.clearFilter')" :aria-label="t('radar.clearFilter')" @click="statusFilter = null">
+                <X class="h-3 w-3" :stroke-width="2" />
+              </button>
+            </span>
+          </template>
+          <span v-else-if="groups.length">
+            {{ groupMode === 'person' ? t('radar.groupsByPerson', { n: groups.length }, groups.length) : t('radar.groupsByProject', { n: groups.length }, groups.length) }}
+          </span>
+          <div class="ml-auto flex items-center gap-3">
+            <button
+              v-if="hiddenCount"
+              class="inline-flex items-center gap-1 hover:text-foreground"
+              :title="t('radar.settings.membersTitle')"
+              @click="settingsOpen = true"
+            >
+              <EyeOff class="h-3 w-3" :stroke-width="1.75" />
+              {{ t('radar.hiddenCount', { n: hiddenCount }) }}
+            </button>
+            <button v-if="groups.length" class="font-medium text-primary hover:underline" @click="toggleAll">
+              {{ allExpanded ? t('radar.collapseAll') : t('radar.expandAll') }}
+            </button>
+          </div>
+        </div>
+
+        <!-- Empty -->
+        <div v-if="groups.length === 0" class="flex flex-col items-center justify-center min-h-60 text-center">
+          <div class="flex h-12 w-12 items-center justify-center rounded-xl bg-muted mb-4">
+            <SearchX class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />
+          </div>
+          <p class="text-sm font-medium">{{ t('radar.nothingTitle') }}</p>
+          <p class="text-xs text-muted-foreground mt-1">{{ t('radar.nothingHint') }}</p>
+        </div>
+
+        <!-- Rollup table -->
+        <Card v-else body-class="text-xs">
+          <div :class="GRID" class="pl-4 pr-3 h-8 border-b border-border/60 bg-muted/30 text-[11px] text-muted-foreground font-medium">
+            <div class="truncate">{{ groupMode === 'person' ? t('radar.colPerson') : t('radar.colProject') }}</div>
+            <div v-for="s in COLUMNS" :key="s" class="text-center truncate" :title="statusHint(s)">{{ t(`radar.status.${s}`) }}</div>
+            <div class="text-center truncate">{{ t('radar.colTotal') }}</div>
+            <div class="text-center truncate">{{ t('radar.colWorst') }}</div>
+          </div>
+
+          <div v-for="g in groups" :key="groupId(g)" class="border-b border-border/50 last:border-b-0">
+            <button
+              :class="GRID"
+              class="relative w-full pl-4 pr-3 min-h-13 py-1.5 text-left hover:bg-accent/40 transition-colors"
+              :aria-expanded="expanded.has(groupId(g))"
+              @click="toggleGroup(g)"
+              @contextmenu.prevent="openGroupMenu($event, g)"
+            >
+              <!-- Severity stripe: worst status needing attention -->
+              <span v-if="groupSeverity(g)" class="absolute left-0 inset-y-2 w-[3px] rounded-r" :class="TONE_BG[groupSeverity(g)!]" />
+              <span class="flex items-center gap-2 min-w-0">
+                <ChevronRight
+                  class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
+                  :class="{ 'rotate-90': expanded.has(groupId(g)) }"
+                  :stroke-width="2"
+                />
+                <span class="flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground">
+                  {{ groupInitial(g) }}
+                </span>
+                <span class="flex min-w-0 flex-col">
+                  <span class="flex items-center gap-1.5 min-w-0">
+                    <span class="truncate text-[13px] font-semibold" :class="{ 'italic font-medium text-muted-foreground': g.key === null }">{{ groupLabel(g) }}</span>
+                    <span
+                      v-if="isTesterGroup(g)"
+                      class="shrink-0 rounded border border-info/30 bg-info/15 px-1 text-[10px] font-medium text-info"
+                      :title="t('radar.testerHint')"
+                    >{{ t('radar.tester') }}</span>
+                  </span>
+                  <span class="truncate text-[11px] text-muted-foreground" :title="g.related.join(', ')">{{ g.related.join(' · ') }}</span>
+                </span>
+              </span>
+              <span v-for="s in COLUMNS" :key="s" class="text-center tabular-nums">
+                <span v-if="g.counts[s] > 0" class="text-[15px] font-semibold" :class="TONE_TEXT[s]">{{ g.counts[s] }}</span>
+                <span v-else class="text-muted-foreground/35">·</span>
+              </span>
+              <span class="text-center font-semibold tabular-nums">{{ g.total }}</span>
+              <span class="text-center tabular-nums" :class="g.worstLateDays ? 'text-destructive font-semibold' : 'text-muted-foreground/40'">
+                {{ g.worstLateDays ? t('radar.nDays', { n: g.worstLateDays }, g.worstLateDays) : '–' }}
+              </span>
+            </button>
+
+            <!-- Issues of the group -->
+            <div v-if="expanded.has(groupId(g))" class="bg-muted/25 border-t border-border/40 pt-1 pb-1.5">
+              <div :class="IGRID" class="pl-12 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                <span>{{ t('radar.colIssue') }}</span>
+                <span class="hidden md:block truncate">{{ t('radar.colBoardStatus') }}</span>
+                <span class="truncate">{{ t('radar.colDeadline') }}</span>
+                <span class="truncate text-right">{{ t('radar.colUpdated') }}</span>
+                <span />
+              </div>
+              <div
+                v-for="{ issue: i, depth, hasChildren, hidden } in groupRows(g)" :key="i.key"
+                :class="IGRID"
+                class="mx-1.5 rounded-md pr-1.5 py-1 hover:bg-accent/50"
+                :title="i.parent ? `${i.title}\n${t('radar.parentHint', { title: `#${i.parent.number} ${i.parent.title}` })}` : i.title"
+                @contextmenu.prevent="openRowMenu($event, i)"
+              >
+                <div class="flex items-start gap-1.5 min-w-0" :style="{ paddingLeft: `${0.75 + depth * 1.4}rem` }">
                   <!-- Fold slot: chevron on parents, an elbow on leaf sub-issues. -->
-                  <span class="flex h-4 w-4 shrink-0 items-center justify-center">
+                  <span class="flex h-4.5 w-4.5 shrink-0 items-center justify-center">
                     <button
                       v-if="hasChildren"
-                      class="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                      class="flex h-4.5 w-4.5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
                       :title="hidden ? t('radar.expandChildren') : t('radar.collapseChildren')"
                       :aria-label="hidden ? t('radar.expandChildren') : t('radar.collapseChildren')"
                       :aria-expanded="!hidden"
-                      @click.stop="toggleChildren(g, i)"
+                      @click="toggleChildren(g, i)"
                     >
                       <ChevronRight class="h-3 w-3 transition-transform" :class="{ 'rotate-90': !hidden }" :stroke-width="2" />
                     </button>
                     <CornerDownRight v-else-if="depth > 0" class="h-3 w-3 text-muted-foreground/60" :stroke-width="1.75" />
                   </span>
-                  <span class="w-24 shrink-0 rounded border px-1.5 py-0.5 text-center text-[10px] font-medium truncate" :class="TONE_PILL[i.radar]">
+                  <span class="mt-px w-24 shrink-0 truncate rounded px-1.5 py-0.5 text-center text-[10.5px] font-semibold" :class="TONE_CHIP[i.radar]">
                     {{ t(`radar.status.${i.radar}`) }}
                   </span>
-                  <span class="font-mono text-[10px] text-muted-foreground/70 shrink-0">{{ i.repo }}#{{ i.number }}</span>
-                  <span class="flex min-w-0 flex-1 items-baseline gap-1.5">
-                    <span class="truncate">{{ i.title }}</span>
-                    <span
-                      v-if="hidden"
-                      class="shrink-0 rounded-full border border-border bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-                      :title="t('radar.hiddenChildren', { n: hidden })"
-                    >+{{ hidden }}</span>
-                    <!-- Parent not in this list (other assignee, done, …): say where the task belongs. -->
-                    <span v-if="depth === 0 && i.parent" class="hidden md:inline truncate shrink-[2] text-[10px] text-muted-foreground/70">
-                      ↑ #{{ i.parent.number }} {{ i.parent.title }}
+                  <span class="flex min-w-0 flex-col gap-px">
+                    <span class="flex min-w-0 items-center gap-1.5">
+                      <span class="truncate text-[12.5px]">{{ i.title }}</span>
+                      <span
+                        v-if="hidden"
+                        class="shrink-0 rounded-full border border-border bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
+                        :title="t('radar.hiddenChildren', { n: hidden })"
+                      >+{{ hidden }}</span>
+                    </span>
+                    <span class="truncate text-[11px] text-muted-foreground">
+                      <span class="font-mono text-[10.5px]">{{ i.repo }}#{{ i.number }}</span>
+                      <span class="md:hidden"> · {{ i.status || t('radar.noStatus') }}</span>
+                      <template v-for="(m, mi) in issueMeta(i, g, depth)" :key="mi"> · {{ m }}</template>
                     </span>
                   </span>
-                  <span class="hidden md:inline truncate max-w-48 text-[11px] text-muted-foreground">{{ issueContext(i, g) }}</span>
-                  <span class="flex items-center gap-1 shrink-0 w-28 text-[11px] text-muted-foreground truncate">
-                    <span class="h-2 w-2 rounded-full shrink-0" :class="statusDotClass(i.statusColor)" />
-                    <span class="truncate">{{ i.status || t('radar.noStatus') }}</span>
+                </div>
+                <span class="hidden md:flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
+                  <span class="h-2 w-2 rounded-full shrink-0" :class="statusDotClass(i.statusColor)" />
+                  <span class="truncate">{{ i.status || t('radar.noStatus') }}</span>
+                </span>
+                <span
+                  class="grid grid-cols-[38px_minmax(0,1fr)] items-baseline gap-x-2 whitespace-nowrap text-[11.5px]"
+                  :title="i.deadlineInherited ? t('radar.inheritedDeadline') : undefined"
+                >
+                  <span class="tabular-nums" :class="deadlineDate(i) ? 'text-foreground' : 'text-muted-foreground/60'">{{ deadlineDate(i) || '–' }}</span>
+                  <span class="truncate" :class="[deadlineTone(i), { italic: i.deadlineInherited }]">
+                    {{ i.daysLeft === null ? t('radar.noDeadlineShort') : deadlineText(i) }}
                   </span>
-                  <span
-                    class="shrink-0 w-28 text-right text-[11px]"
-                    :class="[i.daysLeft !== null && i.daysLeft < 0 ? 'text-destructive font-medium' : 'text-muted-foreground', { italic: i.deadlineInherited }]"
-                    :title="i.deadlineInherited ? t('radar.inheritedDeadline') : undefined"
-                  >
-                    {{ deadlineText(i) }}<span v-if="deadlineDate(i)" class="text-muted-foreground/60"> · {{ deadlineDate(i) }}</span>
-                  </span>
-                  <span class="hidden lg:inline shrink-0 w-28 text-right text-[10px] text-muted-foreground/70">
-                    {{ t('radar.updatedAgo', { time: relativeTime(i.updatedAt) }) }}
-                  </span>
+                </span>
+                <span
+                  class="truncate text-right text-[11px]"
+                  :class="i.radar === 'stale' ? 'text-foreground font-semibold' : 'text-muted-foreground'"
+                >{{ relativeTime(i.updatedAt) }}</span>
+                <span class="flex justify-end gap-0.5">
                   <Button
                     variant="ghost"
                     size="icon-xs"
-                    class="opacity-0 group-hover:opacity-100 shrink-0"
+                    class="text-muted-foreground/70 hover:text-foreground"
                     :title="t('focus.addTodoHint')"
                     :aria-label="t('focus.addTodoHint')"
-                    @click.stop="addTodo(i)"
+                    @click="addTodo(i)"
                   >
-                    <ListPlus class="h-3 w-3" :stroke-width="1.75" />
+                    <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
                   </Button>
-                </div>
+                  <Button
+                    variant="ghost"
+                    size="icon-xs"
+                    class="text-muted-foreground/70 hover:text-primary"
+                    :title="t('radar.openOnGithub')"
+                    :aria-label="t('radar.openOnGithub')"
+                    @click="openIssue(i)"
+                  >
+                    <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  </Button>
+                </span>
               </div>
             </div>
-          </Card>
-
-          <div v-if="updatedAt" class="text-[10px] text-muted-foreground/60 text-right">
-            {{ t('radar.updated', { time: relativeTime(updatedAt) }) }}
           </div>
-        </div>
+        </Card>
       </div>
-    </template>
+    </div>
 
     <ContextMenu :open="!!rowMenu" :x="rowMenu?.x ?? 0" :y="rowMenu?.y ?? 0" @close="rowMenu = null">
       <DropdownItem @click="rowMenu && addTodo(rowMenu.issue)">
@@ -544,10 +701,17 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
         {{ t('radar.openOnGithub') }}
       </DropdownItem>
     </ContextMenu>
+    <ContextMenu :open="!!groupMenu" :x="groupMenu?.x ?? 0" :y="groupMenu?.y ?? 0" @close="groupMenu = null">
+      <DropdownItem @click="hideGroup">
+        <EyeOff class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('radar.hideMember', { name: groupMenu ? groupLabel(groupMenu.group) : '' }) }}
+      </DropdownItem>
+    </ContextMenu>
     <TodoCaptureModal :open="!!todoPrefill" :prefill="todoPrefill" @close="todoPrefill = null" />
     <RadarSettingsModal
       :open="settingsOpen"
       :can-edit-done-rules="scopeIds.length > 0"
+      :members="members"
       @close="settingsOpen = false"
       @done-rules="openDoneRules"
     />

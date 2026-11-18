@@ -49,7 +49,12 @@ const ISSUES = [
   issue({ status: 'Testing', assignees: [] }),
   issue({ status: 'Custom column', deadline: ymd(-1), assignees: ['Carol'] }),
 ]
-const RULES = [{}, { testers: ['carol'] }, { testers: ['CAROL'], stages: { 'custom column': 'done', testing: 'dev' } }]
+const RULES = [
+  {},
+  { testers: ['carol'] },
+  { testers: ['CAROL'], stages: { 'custom column': 'done', testing: 'dev' } },
+  { hidden: ['Alice'], hideUnassigned: true },
+]
 
 test('classifyAll / buildGroups / filterIssues match the TypeScript radar', () => {
   for (const rules of RULES) {

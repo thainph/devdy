@@ -38,6 +38,7 @@ const PERSIST_PREFIX = 'devdy:radarBoard:'
 const THRESHOLDS_KEY = 'devdy:radarThresholds'
 const STAGES_KEY = 'devdy:radarStatusStages'
 const TESTERS_KEY = 'devdy:radarTesters'
+const HIDDEN_KEY = 'devdy:radarHidden'
 // Per-project done lists of earlier versions, superseded by the shared stages.
 const LEGACY_KEYS = ['devdy:radarDoneStatuses', 'devdy:radarQaDoneStatuses']
 // Snapshots newer than this are served as-is with no network call at all.
@@ -84,10 +85,24 @@ function readStages(): StageMap {
   }
 }
 
-function readTesters(): string[] {
+function readLogins(key: string): string[] {
   try {
-    const parsed = JSON.parse(localStorage.getItem(TESTERS_KEY) ?? 'null') as unknown
+    const parsed = JSON.parse(localStorage.getItem(key) ?? 'null') as unknown
     return Array.isArray(parsed) ? parsed.filter((l): l is string => typeof l === 'string') : []
+  } catch {
+    return []
+  }
+}
+
+function readTesters(): string[] {
+  return readLogins(TESTERS_KEY)
+}
+
+/** People no longer followed: lowercased logins, `null` = the unassigned bucket. */
+function readHidden(): (string | null)[] {
+  try {
+    const parsed = JSON.parse(localStorage.getItem(HIDDEN_KEY) ?? 'null') as unknown
+    return Array.isArray(parsed) ? parsed.filter((l): l is string | null => typeof l === 'string' || l === null) : []
   } catch {
     return []
   }
@@ -107,6 +122,8 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const stages = ref<StageMap>(readStages())
   // GitHub logins (lowercased) of the testers; every other assignee is a developer.
   const testers = ref<string[]>(readTesters())
+  // People no longer followed (see `readHidden`): their work drops out of the radar.
+  const hidden = ref<(string | null)[]>(readHidden())
 
   watch(thresholds, (v) => persist(THRESHOLDS_KEY, v), { deep: true })
   // The radar window and the main window share these settings
@@ -116,22 +133,30 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
       if (e.key === THRESHOLDS_KEY) thresholds.value = readThresholds()
       else if (e.key === STAGES_KEY) stages.value = readStages()
       else if (e.key === TESTERS_KEY) testers.value = readTesters()
+      else if (e.key === HIDDEN_KEY) hidden.value = readHidden()
     })
   } catch {
     /* no window (tests) */
   }
   watch(stages, (v) => persist(STAGES_KEY, v), { deep: true })
   watch(testers, (v) => persist(TESTERS_KEY, v), { deep: true })
+  watch(hidden, (v) => persist(HIDDEN_KEY, v), { deep: true })
+  const hiddenLogins = computed(() => hidden.value.filter((l): l is string => l !== null))
+  const hideUnassigned = computed(() => hidden.value.includes(null))
   // Mirrored to the app DB so the built-in MCP radar tools classify the same way.
   watch(
-    [thresholds, stages, testers],
-    ([t, s, l]) => {
-      invoke('set_radar_settings', { settings: { thresholds: t, stages: s, testers: l } }).catch(() => {})
+    [thresholds, stages, testers, hiddenLogins, hideUnassigned],
+    ([t, s, l, h, u]) => {
+      invoke('set_radar_settings', {
+        settings: { thresholds: t, stages: s, testers: l, hidden: h, hideUnassigned: u },
+      }).catch(() => {})
     },
     { deep: true, immediate: true },
   )
 
-  const doneRules = computed<DoneRules>(() => ({ stages: stages.value, testers: testers.value }))
+  const doneRules = computed<DoneRules>(() => ({
+    stages: stages.value, testers: testers.value, hidden: hiddenLogins.value, hideUnassigned: hideUnassigned.value,
+  }))
 
   /** Overrides keyed by status name; anything not listed falls back to the default. */
   function setStages(next: Record<string, RadarStage>) {
@@ -142,6 +167,17 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
 
   function roleOf(login: string): RadarRole {
     return testers.value.includes(login.toLowerCase()) ? 'tester' : 'dev'
+  }
+
+  /** Is this login (`null` = unassigned issues) left out of the radar? */
+  function isHidden(login: string | null): boolean {
+    return hidden.value.includes(login === null ? null : login.toLowerCase())
+  }
+
+  function setHidden(login: string | null, off: boolean) {
+    const id = login === null ? null : login.toLowerCase()
+    const rest = hidden.value.filter((l) => l !== id)
+    hidden.value = off ? [...rest, id] : rest
   }
 
   function setTesters(logins: string[]) {
@@ -293,7 +329,7 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
   const isLoading = computed(() => loading.value.size > 0)
 
   return {
-    boards, errors, loading, isLoading, thresholds, stages, testers, doneRules,
-    refresh, issuesFor, oldestSavedAt, setStages, statusOptionsFor, roleOf, setTesters, assigneesFor,
+    boards, errors, loading, isLoading, thresholds, stages, testers, hidden, doneRules,
+    refresh, issuesFor, oldestSavedAt, setStages, statusOptionsFor, roleOf, setTesters, assigneesFor, isHidden, setHidden,
   }
 })

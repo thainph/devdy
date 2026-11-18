@@ -193,6 +193,17 @@ out = await drive([['denied', 'radar_issues', { refresh: true }]], { DEVDY_BROKE
 check(out.denied.includes('Could not refresh from GitHub (no live run for this request)') && out.denied.includes('Pay button broken'),
   'refresh: denied → cached data', out.denied);
 
+// People switched off in the app: their work leaves the counts, shared issues stay.
+db.prepare("UPDATE settings SET value = ? WHERE key = 'radar_settings'").run(
+  JSON.stringify({ thresholds: { dueSoonDays: 2, staleDays: 5 }, stages: { 'in progress': 'dev' }, testers: ['carol'], hidden: ['Bob', 'alice'], hideUnassigned: true }),
+);
+out = await drive([['summary', 'radar_summary', {}], ['carol', 'radar_issues', { assignee: 'carol' }], ['settings', 'radar_settings', {}]]);
+check(!out.summary.includes('## @bob') && !out.summary.includes('## @alice') && !out.summary.includes('## (unassigned)') &&
+  out.summary.includes('## @carol (tester)'), 'hidden: groups of people not followed are gone', out.summary);
+check(out.summary.includes('not followed (left out): Bob, alice, unassigned issues'), 'hidden: listed in the rules line', out.summary);
+check(out.carol.includes('@alice (not followed), @carol (tester)'), 'hidden: shared issue kept, hidden assignee marked', out.carol);
+check(out.settings.includes('- not followed (their work is left out): Bob, alice, unassigned issues'), 'hidden: radar_settings', out.settings);
+
 broker.close();
 db.close();
 rmSync(appData, { recursive: true, force: true });

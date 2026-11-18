@@ -13,7 +13,8 @@ use crate::commands::github::{load_milestone_board, MilestoneBoard};
 use crate::db::Db;
 
 /// `settings` key holding the radar settings JSON
-/// (`{ thresholds: {dueSoonDays, staleDays}, stages: {status: stage}, testers: [login] }`).
+/// (`{ thresholds: {dueSoonDays, staleDays}, stages: {status: stage}, testers: [login],
+/// hidden: [login], hideUnassigned: bool }`).
 pub const SETTINGS_KEY: &str = "radar_settings";
 
 /// Same cap as the radar window: projects fetched from GitHub at once.

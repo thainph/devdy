@@ -184,6 +184,10 @@ export interface DoneRules {
   stages?: StageMap
   /** Logins of the testers (case-insensitive); everyone else is a developer. */
   testers?: string[]
+  /** Logins no longer followed (case-insensitive): their work drops out of the radar. */
+  hidden?: string[]
+  /** Drop unassigned issues too. */
+  hideUnassigned?: boolean
 }
 
 function issueKey(projectId: string, repo: string, number: number): string {
@@ -191,9 +195,9 @@ function issueKey(projectId: string, repo: string, number: number): string {
 }
 
 /**
- * Classify the open work: an issue stays while at least one assignee still has
- * something to do on it (judged by their role); an unassigned one while it is
- * not done for a developer.
+ * Classify the open work: an issue stays while at least one followed assignee
+ * still has something to do on it (judged by their role); an unassigned one
+ * while it is not done for a developer (and unassigned work is followed).
  */
 export function classifyAll(
   issues: RadarIssue[],
@@ -202,15 +206,18 @@ export function classifyAll(
   rules: DoneRules = {},
 ): ClassifiedIssue[] {
   const testers = new Set((rules.testers ?? []).map((l) => l.toLowerCase()))
+  const hidden = new Set((rules.hidden ?? []).map((l) => l.toLowerCase()))
   const seen = new Set<string>()
   const out: ClassifiedIssue[] = []
   for (const issue of issues) {
     const doneFor = (role: RadarRole) => isDone(issue, rules.stages, role)
     let activeAssignees: string[] = []
     if (issue.assignees.length) {
-      activeAssignees = issue.assignees.filter((a) => !doneFor(testers.has(a.toLowerCase()) ? 'tester' : 'dev'))
+      activeAssignees = issue.assignees.filter(
+        (a) => !hidden.has(a.toLowerCase()) && !doneFor(testers.has(a.toLowerCase()) ? 'tester' : 'dev'),
+      )
       if (!activeAssignees.length) continue
-    } else if (doneFor('dev')) {
+    } else if (rules.hideUnassigned || doneFor('dev')) {
       continue
     }
     const key = issueKey(issue.projectId, issue.repo, issue.number)

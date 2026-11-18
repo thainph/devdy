@@ -37,12 +37,14 @@ export function readSettings() {
     parsed = null;
   }
   const stages = parsed?.stages && typeof parsed.stages === 'object' && !Array.isArray(parsed.stages) ? parsed.stages : {};
-  const testers = Array.isArray(parsed?.testers) ? parsed.testers.filter((l) => typeof l === 'string') : [];
+  const logins = (v) => (Array.isArray(v) ? v.filter((l) => typeof l === 'string') : []);
   return {
     saved: !!parsed,
     thresholds: { ...DEFAULT_THRESHOLDS, ...(parsed?.thresholds ?? {}) },
     stages,
-    testers,
+    testers: logins(parsed?.testers),
+    hidden: logins(parsed?.hidden),
+    hideUnassigned: parsed?.hideUnassigned === true,
   };
 }
 

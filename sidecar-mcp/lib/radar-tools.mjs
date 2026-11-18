@@ -44,12 +44,12 @@ function radarLabel(i) {
   return i.radar;
 }
 
-function issueLine(i, { depth = 0, testers }) {
+function issueLine(i, { depth = 0, testers, hidden }) {
   const people = i.assignees.length
     ? i.assignees
         .map((a) => {
           const role = testers.has(a.toLowerCase()) ? ' (tester)' : '';
-          const done = i.activeAssignees.includes(a) ? '' : ' (done)';
+          const done = i.activeAssignees.includes(a) ? '' : hidden.has(a.toLowerCase()) ? ' (not followed)' : ' (done)';
           return `@${a}${role}${done}`;
         })
         .join(', ')
@@ -107,16 +107,23 @@ function header(radar, open, now) {
     `Totals: ${countsLine(countByStatus(open))}`,
     `Rules: due-soon = deadline within ${th.dueSoonDays}d · stale = no update for more than ${th.staleDays}d · ` +
       `milestone behind = time used − issues closed > ${th.milestoneLagPct} points · ` +
-      `testers: ${radar.settings.testers.join(', ') || 'none'}`,
+      `testers: ${radar.settings.testers.join(', ') || 'none'}` +
+      (notFollowed(radar.settings) ? ` · not followed (left out): ${notFollowed(radar.settings)}` : ''),
   ].join('\n');
+}
+
+/** People switched off in the radar settings, for the tool output. */
+function notFollowed({ hidden, hideUnassigned }) {
+  return [...hidden, ...(hideUnassigned ? ['unassigned issues'] : [])].join(', ');
 }
 
 async function classified(a) {
   const now = Date.now();
   const radar = await loadRadar({ project: a.project, scope: a.scope, refresh: !!a.refresh, now });
-  const { thresholds, stages, testers } = radar.settings;
-  const open = classifyAll(radar.issues, now, thresholds, { stages, testers });
-  return { now, radar, open, testers: new Set(testers.map((t) => t.toLowerCase())) };
+  const { thresholds, stages, testers, hidden, hideUnassigned } = radar.settings;
+  const open = classifyAll(radar.issues, now, thresholds, { stages, testers, hidden, hideUnassigned });
+  const lower = (l) => new Set(l.map((x) => x.toLowerCase()));
+  return { now, radar, open, testers: lower(testers), hidden: lower(hidden) };
 }
 
 const intIn = (v, def, min, max) => {
@@ -143,7 +150,7 @@ export function radarTools() {
         },
       },
       handler: async (a) => {
-        const { now, radar, open, testers } = await classified(a);
+        const { now, radar, open, testers, hidden } = await classified(a);
         const mode = a.group_by === 'project' ? 'project' : 'person';
         const top = intIn(a.top, 3, 0, 10);
         const groups = buildGroups(open, mode);
@@ -152,7 +159,7 @@ export function radarTools() {
           const name = g.key === null ? '(unassigned)' : mode === 'person' ? `@${g.label}${testers.has(g.label.toLowerCase()) ? ' (tester)' : ''}` : g.label;
           const late = g.worstLateDays ? ` · worst ${g.worstLateDays}d late` : '';
           const related = g.related.length ? ` · ${mode === 'person' ? 'projects' : 'people'}: ${g.related.join(', ')}` : '';
-          const urgent = g.issues.slice(0, top).map((i) => `  ${issueLine(i, { testers }).replace(/\n/g, '\n  ')}`);
+          const urgent = g.issues.slice(0, top).map((i) => `  ${issueLine(i, { testers, hidden }).replace(/\n/g, '\n  ')}`);
           return [`## ${name} — ${g.total} issue(s): ${countsLine(g.counts)}${late}${related}`, ...urgent].join('\n');
         });
         const more = groups.length > limit ? `\n\n… ${groups.length - limit} more group(s).` : '';
@@ -185,7 +192,7 @@ export function radarTools() {
         },
       },
       handler: async (a) => {
-        const { now, radar, open, testers } = await classified(a);
+        const { now, radar, open, testers, hidden } = await classified(a);
         const statuses = Array.isArray(a.status) ? a.status.filter((s) => RADAR_STATUSES.includes(s)) : [];
         let list = filterIssues(open, { query: a.query });
         if (statuses.length) list = list.filter((i) => statuses.includes(i.radar));
@@ -196,7 +203,7 @@ export function radarTools() {
         const limit = intIn(a.limit, 50, 1, 500);
         const rows = nestIssues(list).slice(0, limit);
         const head = `${header(radar, open, now)}\nMatching: ${list.length}${list.length ? ` (${countsLine(countByStatus(list))})` : ''}`;
-        const body = rows.map((r) => issueLine(r.issue, { depth: r.depth, testers })).join('\n');
+        const body = rows.map((r) => issueLine(r.issue, { depth: r.depth, testers, hidden })).join('\n');
         const more = list.length > limit ? `\n\n… ${list.length - limit} more — narrow the filters or raise limit.` : '';
         return `${head}\n\n${body || 'No matching open issues.'}${more}${footer(radar, now)}`;
       },
@@ -205,7 +212,7 @@ export function radarTools() {
     radar_settings: {
       description:
         'Delivery Radar settings as set in the app: the due-soon / stale / milestone-lag thresholds, the stage (dev → qa → done) of each ' +
-        'board status, the testers, and how fresh each project\'s board is.',
+        'board status, the testers, the people no longer followed, and how fresh each project\'s board is.',
       inputSchema: { type: 'object', properties: { ...SCOPE } },
       handler: async (a) => {
         const now = Date.now();
@@ -228,6 +235,7 @@ export function radarTools() {
           `- stale: no update for more than ${thresholds.staleDays} day(s)`,
           `- milestone behind schedule (estimate): time used % − issues closed % above ${thresholds.milestoneLagPct} points`,
           `- testers: ${testers.join(', ') || 'none (everyone counts as a developer)'}`,
+          `- not followed (their work is left out): ${notFollowed(radar.settings) || 'none'}`,
           '',
           'Stage per board status (developer is done from qa on, tester only at done):',
           ...(stageLines.length ? stageLines : ['- (no statuses seen yet)']),
