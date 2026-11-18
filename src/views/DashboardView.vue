@@ -6,8 +6,8 @@ const sessionOpen: Record<string, boolean> = {}
 
 <script setup lang="ts">
 // Runtime Dashboard — the app's start screen: everything running right now.
-// Four stat cards (sessions, 5-hour limits, resources, today), then one list
-// of sessions as a tree (workers under the session that spawned them, the most
+// A bento of four tiles (the sessions hero, 5-hour limits, resources, today),
+// then one list of sessions as a tree (workers under the session that spawned them, the most
 // urgent first). An overview only: clicking a session opens its own view, where
 // it is answered / messaged / stopped.
 // Keyboard: / search · j k select · n next waiting · Enter open · Esc leave the search.
@@ -16,6 +16,8 @@ import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import { Activity, Search } from 'lucide-vue-next'
 import { Banner, Button, Input, PageHeader, SegmentedControl } from '@/components/ui'
+import CyberFox from '@/components/CyberFoxCanvas.vue'
+import '@/components/dashboard/runtime.css'
 import StatSessions from '@/components/dashboard/StatSessions.vue'
 import StatQuota from '@/components/dashboard/StatQuota.vue'
 import StatResources from '@/components/dashboard/StatResources.vue'
@@ -219,6 +221,7 @@ onBeforeUnmount(() => window.removeEventListener('keydown', onKey))
 const today = computed(() =>
   new Date(dash.now.value).toLocaleDateString(locale.value, { weekday: 'long', day: '2-digit', month: '2-digit' }),
 )
+const reducedMotion = typeof window !== 'undefined' && !!window.matchMedia?.('(prefers-reduced-motion: reduce)').matches
 const SHORTCUTS = [
   { keys: ['/'], label: 'search' },
   { keys: ['j', 'k'], label: 'pick' },
@@ -253,18 +256,23 @@ const SHORTCUTS = [
         <p v-else-if="dash.loaded.value && !dash.hasSnapshot.value" class="text-[11px] text-muted-foreground">{{ t('dashboard.fallbackHint') }}</p>
         <p v-else-if="dash.snapshotStale.value" class="text-[11px] text-warning">{{ t('dashboard.staleHint') }}</p>
 
-        <div class="grid grid-cols-[repeat(auto-fit,minmax(min(100%,270px),1fr))] gap-3">
-          <StatSessions
-            :sessions="mapList"
-            :counts="counts"
-            :filter="filter"
-            :selected-id="selectedId"
-            @pick="select"
-            @filter="toggleFilter"
-          />
-          <StatQuota :quotas="dash.quotas.value" />
-          <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
-          <StatToday :today="dash.today.value" @open="openRecent" />
+        <!-- Bento: the hero takes 2 × 2 on wide screens, Today spans 2 columns. -->
+        <div class="@container">
+          <div class="grid grid-cols-1 gap-3.5 @min-[720px]:grid-cols-2 @min-[1180px]:grid-cols-4">
+            <StatSessions
+              class="@min-[720px]:col-span-2 @min-[1180px]:row-span-2"
+              :sessions="mapList"
+              :counts="counts"
+              :filter="filter"
+              :selected-id="selectedId"
+              :activity="dash.activity.value"
+              @pick="select"
+              @filter="toggleFilter"
+            />
+            <StatQuota :quotas="dash.quotas.value" :now="dash.now.value" />
+            <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
+            <StatToday class="@min-[720px]:col-span-2" :today="dash.today.value" :now="dash.now.value" @open="openRecent" />
+          </div>
         </div>
 
         <div class="flex min-w-0 flex-col gap-2.5">
@@ -282,12 +290,14 @@ const SHORTCUTS = [
             </span>
           </div>
 
-          <p
+          <div
             v-if="dash.loaded.value && !total"
-            class="rounded-lg border border-dashed border-border/70 px-4 py-8 text-center text-xs text-muted-foreground"
+            class="flex flex-col items-center gap-2 rounded-lg border-[1.5px] border-dashed border-border px-5 py-8 text-center"
           >
-            {{ t('dashboard.empty') }}
-          </p>
+            <CyberFox state="sleep" size="sm" lite :reduced-motion="reducedMotion" />
+            <p class="text-sm font-bold text-foreground">{{ t('dashboard.emptyTitle') }}</p>
+            <p class="max-w-[46ch] text-xs text-muted-foreground">{{ t('dashboard.empty') }}</p>
+          </div>
           <p
             v-else-if="filtering && !rows.length"
             class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"

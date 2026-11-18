@@ -1,0 +1,188 @@
+/* Runtime Dashboard — card surface, session rows / cards and their motion.
+ *
+ * Theme tokens only, so every color theme and light / dark read right. Unlayered
+ * on purpose: it beats Tailwind utilities on the same element (Card's glass and
+ * border), while a skin's `[data-theme] .ui-card` rules still win by
+ * specificity. Every animation sits behind `prefers-reduced-motion:
+ * no-preference` and is CSS-only (no per-frame script): charts and numbers
+ * change on the dashboard's existing poll / tick and CSS eases between them. */
+
+@property --rt-n {
+  syntax: '<integer>';
+  inherits: false;
+  initial-value: 0;
+}
+
+/* ── Bento card: opaque, with a border tinted from `primary` ─────────────── */
+.rt-card {
+  border-color: transparent;
+  background:
+    linear-gradient(hsl(var(--card)), hsl(var(--card))) padding-box,
+    linear-gradient(
+        140deg,
+        color-mix(in srgb, hsl(var(--primary)) 45%, hsl(var(--border))),
+        hsl(var(--border)) 40%,
+        hsl(var(--border)) 70%,
+        color-mix(in srgb, hsl(var(--primary)) 25%, hsl(var(--border)))
+      )
+      border-box;
+  -webkit-backdrop-filter: none;
+  backdrop-filter: none;
+  box-shadow:
+    0 1px 2px hsl(var(--foreground) / 0.04),
+    0 8px 24px -12px hsl(var(--primary) / 0.3);
+}
+
+/* ── Count-up number: a registered integer eased by CSS ───────────────────── */
+.rt-count {
+  counter-reset: rt-n var(--rt-n);
+  font-variant-numeric: tabular-nums;
+}
+.rt-count::after {
+  content: counter(rt-n);
+}
+
+/* ── Session row / card ───────────────────────────────────────────────────── */
+.rt-item {
+  position: relative;
+  --rt-accent: hsl(var(--border));
+}
+.rt-item[data-state='running'] { --rt-accent: hsl(var(--success)); }
+.rt-item[data-state='waiting'],
+.rt-item[data-state='quiet'] { --rt-accent: hsl(var(--warning)); }
+.rt-item[data-state='idle'] { --rt-accent: hsl(var(--muted-foreground) / 0.45); }
+.rt-item[data-state='external'] { --rt-accent: hsl(var(--info)); }
+
+/* Status accent bar on the left edge. */
+.rt-item::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 8px;
+  bottom: 8px;
+  width: 3px;
+  border-radius: 0 3px 3px 0;
+  background: var(--rt-accent);
+  pointer-events: none;
+}
+
+/* Waiting for you: a warning glow (static here, breathing below). */
+.rt-item[data-state='waiting']::after {
+  content: '';
+  position: absolute;
+  inset: -1px;
+  border-radius: inherit;
+  box-shadow:
+    0 0 0 3px hsl(var(--warning) / 0.22),
+    0 0 22px -4px hsl(var(--warning) / 0.55);
+  opacity: 0.5;
+  pointer-events: none;
+}
+
+/* Tree connector of a worker: a rounded └ from its parent, a │ on to the next. */
+.rt-conn {
+  position: relative;
+  width: 34px;
+  margin-left: 20px;
+  flex: none;
+}
+.rt-conn::before {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: -6px;
+  width: 16px;
+  height: calc(50% + 6px);
+  border-left: 1.5px solid hsl(var(--border));
+  border-bottom: 1.5px solid hsl(var(--border));
+  border-bottom-left-radius: 10px;
+}
+.rt-conn:not(.is-last)::after {
+  content: '';
+  position: absolute;
+  left: 0;
+  top: 50%;
+  bottom: -6px;
+  border-left: 1.5px solid hsl(var(--border));
+}
+
+/* ── Motion ───────────────────────────────────────────────────────────────── */
+@media (prefers-reduced-motion: no-preference) {
+  .rt-count {
+    transition: --rt-n 0.7s cubic-bezier(0.22, 1, 0.36, 1);
+    animation: rt-count-in 0.9s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+  }
+
+  /* Donut segments / quota rings grow in on mount, then ease between readings. */
+  .rt-grow {
+    animation: rt-grow 0.9s cubic-bezier(0.22, 1, 0.36, 1) backwards;
+    transition:
+      stroke-dasharray 0.6s ease,
+      stroke-dashoffset 0.6s ease,
+      opacity 0.15s ease;
+  }
+
+  .rt-item {
+    animation: rt-fade-in 0.35s ease backwards;
+    transition:
+      transform 0.15s ease,
+      box-shadow 0.15s ease,
+      border-color 0.15s ease;
+  }
+  .rt-item[data-state='waiting']::after {
+    opacity: 0;
+    animation: rt-breathe 2.6s ease-in-out infinite;
+  }
+
+  /* The "now" text while a tool runs: a light sweeping across it. */
+  .rt-shimmer {
+    background: linear-gradient(
+      90deg,
+      hsl(var(--foreground)) 0%,
+      hsl(var(--foreground)) 40%,
+      hsl(var(--primary)) 50%,
+      hsl(var(--foreground)) 60%,
+      hsl(var(--foreground)) 100%
+    );
+    background-size: 250% 100%;
+    -webkit-background-clip: text;
+    background-clip: text;
+    color: transparent;
+    animation: rt-shimmer 2.4s linear infinite;
+  }
+
+  .rt-pulse {
+    animation: rt-pulse 1.6s ease-out infinite;
+  }
+}
+
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  .rt-item:hover {
+    transform: translateY(-1px);
+    box-shadow: 0 6px 18px -8px hsl(var(--primary) / 0.35);
+  }
+}
+
+@keyframes rt-count-in {
+  from { --rt-n: 0; }
+}
+@keyframes rt-grow {
+  from { stroke-dasharray: 0 1000; }
+}
+@keyframes rt-fade-in {
+  from {
+    opacity: 0;
+    transform: translateY(4px);
+  }
+}
+@keyframes rt-breathe {
+  50% { opacity: 1; }
+}
+@keyframes rt-shimmer {
+  from { background-position: 100% 0; }
+  to { background-position: -150% 0; }
+}
+@keyframes rt-pulse {
+  from { box-shadow: 0 0 0 0 hsl(var(--success) / 0.6); }
+  to { box-shadow: 0 0 0 7px hsl(var(--success) / 0); }
+}
