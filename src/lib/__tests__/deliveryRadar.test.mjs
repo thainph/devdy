@@ -14,6 +14,7 @@ import {
   isDone,
   nestIssues,
   stageOf,
+  visibleRows,
 } from '../deliveryRadar.ts'
 
 // 2026-11-07 10:00 local time.
@@ -230,6 +231,25 @@ test('nestIssues survives a parent cycle and buildGroups exposes rows', () => {
   assert.equal(nestIssues(classifyAll([a, b], NOW, TH)).length, 2)
   const groups = buildGroups(classifyAll([issue({ number: 7 }), issue({ number: 8, parent: parentOf(7) })], NOW, TH), 'person')
   assert.deepEqual(groups[0].rows.map((r) => r.depth), [0, 1])
+})
+
+test('visibleRows hides the subtree of collapsed rows and counts it', () => {
+  const epic = issue({ number: 1 })
+  const story = issue({ number: 2, parent: parentOf(1) })
+  const task = issue({ number: 3, parent: parentOf(2) })
+  const other = issue({ number: 4, parent: parentOf(1) })
+  const loose = issue({ number: 5 })
+  const rows = nestIssues(classifyAll([epic, story, task, other, loose], NOW, TH))
+  const shape = (collapsed) =>
+    visibleRows(rows, (k) => collapsed.includes(k)).map((r) => [r.issue.number, r.hidden])
+  const key = (n) => rows.find((r) => r.issue.number === n).issue.key
+
+  assert.deepEqual(shape([]), [[1, 0], [2, 0], [3, 0], [4, 0], [5, 0]])
+  assert.deepEqual(shape([key(2)]), [[1, 0], [2, 1], [4, 0], [5, 0]])
+  // Collapsing the root hides everything below, whatever its children say.
+  assert.deepEqual(shape([key(1), key(2)]), [[1, 3], [5, 0]])
+  // A leaf cannot be collapsed.
+  assert.deepEqual(shape([key(5)]), [[1, 0], [2, 0], [3, 0], [4, 0], [5, 0]])
 })
 
 test('filterIssues matches the parent title', () => {

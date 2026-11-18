@@ -26,6 +26,7 @@ import {
   countByStatus,
   filterIssues,
   statusDotClass,
+  visibleRows,
   type ClassifiedIssue,
   type RadarGroup,
   type RadarGroupMode,
@@ -178,11 +179,34 @@ const allExpanded = computed(() => groups.value.length > 0 && groups.value.every
 function toggleAll() {
   expanded.value = allExpanded.value ? new Set() : new Set(groups.value.map(groupId))
 }
+// Parent issues whose sub-issues are folded, per group (the same issue can sit
+// in several person groups). Everything starts unfolded.
+const collapsed = ref<Set<string>>(new Set())
+function treeId(g: RadarGroup, i: ClassifiedIssue): string {
+  return `${groupId(g)}\u0001${i.key}`
+}
+function toggleChildren(g: RadarGroup, i: ClassifiedIssue) {
+  const next = new Set(collapsed.value)
+  const id = treeId(g, i)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  collapsed.value = next
+}
+function groupRows(g: RadarGroup) {
+  return visibleRows(g.rows, (key) => collapsed.value.has(`${groupId(g)}\u0001${key}`))
+}
+
 // Narrowing to one status or a search means "show me those issues": open everything.
 watch([statusFilter, query], ([s, q]) => {
-  if (s || q.trim()) expanded.value = new Set(groups.value.map(groupId))
+  if (s || q.trim()) {
+    expanded.value = new Set(groups.value.map(groupId))
+    collapsed.value = new Set()
+  }
 })
-watch(groupMode, () => { expanded.value = new Set() })
+watch(groupMode, () => {
+  expanded.value = new Set()
+  collapsed.value = new Set()
+})
 
 function groupLabel(g: RadarGroup): string {
   return g.key === null ? t('radar.unassigned') : g.label
@@ -436,20 +460,38 @@ const GRID = 'grid grid-cols-[minmax(150px,1.2fr)_repeat(5,minmax(64px,80px))_56
               <!-- Issues of the group -->
               <div v-if="expanded.has(groupId(g))" class="bg-muted/20 border-t border-border/30 py-1">
                 <div
-                  v-for="{ issue: i, depth } in g.rows" :key="i.key"
+                  v-for="{ issue: i, depth, hasChildren, hidden } in groupRows(g)" :key="i.key"
                   class="group flex items-center gap-2 pr-3 h-8 hover:bg-accent/50 cursor-pointer"
-                  :style="{ paddingLeft: `${2 + depth * 1.25}rem` }"
+                  :style="{ paddingLeft: `${0.5 + depth * 1.25}rem` }"
                   :title="i.parent ? `${i.title}\n${t('radar.parentHint', { title: `#${i.parent.number} ${i.parent.title}` })}` : i.title"
                   @click="openIssue(i)"
                   @contextmenu.prevent="openRowMenu($event, i)"
                 >
-                  <CornerDownRight v-if="depth > 0" class="h-3 w-3 shrink-0 -ml-1 text-muted-foreground/60" :stroke-width="1.75" />
+                  <!-- Fold slot: chevron on parents, an elbow on leaf sub-issues. -->
+                  <span class="flex h-4 w-4 shrink-0 items-center justify-center">
+                    <button
+                      v-if="hasChildren"
+                      class="flex h-4 w-4 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
+                      :title="hidden ? t('radar.expandChildren') : t('radar.collapseChildren')"
+                      :aria-label="hidden ? t('radar.expandChildren') : t('radar.collapseChildren')"
+                      :aria-expanded="!hidden"
+                      @click.stop="toggleChildren(g, i)"
+                    >
+                      <ChevronRight class="h-3 w-3 transition-transform" :class="{ 'rotate-90': !hidden }" :stroke-width="2" />
+                    </button>
+                    <CornerDownRight v-else-if="depth > 0" class="h-3 w-3 text-muted-foreground/60" :stroke-width="1.75" />
+                  </span>
                   <span class="w-24 shrink-0 rounded border px-1.5 py-0.5 text-center text-[10px] font-medium truncate" :class="TONE_PILL[i.radar]">
                     {{ t(`radar.status.${i.radar}`) }}
                   </span>
                   <span class="font-mono text-[10px] text-muted-foreground/70 shrink-0">{{ i.repo }}#{{ i.number }}</span>
                   <span class="flex min-w-0 flex-1 items-baseline gap-1.5">
                     <span class="truncate">{{ i.title }}</span>
+                    <span
+                      v-if="hidden"
+                      class="shrink-0 rounded-full border border-border bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
+                      :title="t('radar.hiddenChildren', { n: hidden })"
+                    >+{{ hidden }}</span>
                     <!-- Parent not in this list (other assignee, done, …): say where the task belongs. -->
                     <span v-if="depth === 0 && i.parent" class="hidden md:inline truncate shrink-[2] text-[10px] text-muted-foreground/70">
                       ↑ #{{ i.parent.number }} {{ i.parent.title }}

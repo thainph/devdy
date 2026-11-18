@@ -100,5 +100,8 @@
   "tester": "QA",
   "testerHint": "Tester — done only at Ready for release / Done",
   "parentHint": "Sub-issue of {title}",
-  "inheritedDeadline": "Deadline taken from the parent issue"
+  "inheritedDeadline": "Deadline taken from the parent issue",
+  "collapseChildren": "Collapse sub-issues",
+  "expandChildren": "Expand sub-issues",
+  "hiddenChildren": "{n} sub-issue(s) hidden"
 }

@@ -100,5 +100,8 @@
   "tester": "QA",
   "testerHint": "Tester — chỉ xong khi Ready for release / Done",
   "parentHint": "Task con của {title}",
-  "inheritedDeadline": "Deadline lấy từ task cha"
+  "inheritedDeadline": "Deadline lấy từ task cha",
+  "collapseChildren": "Thu gọn task con",
+  "expandChildren": "Mở rộng task con",
+  "hiddenChildren": "Đang ẩn {n} task con"
 }

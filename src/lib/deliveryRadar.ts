@@ -327,6 +327,28 @@ export function nestIssues(issues: ClassifiedIssue[]): RadarRow[] {
   return rows
 }
 
+export interface VisibleRadarRow extends RadarRow {
+  /** Issues hidden under this row because it is collapsed (0 when expanded / a leaf). */
+  hidden: number
+}
+
+/**
+ * Drop the subtrees of collapsed rows from a `nestIssues` layout. A collapsed
+ * row keeps how many issues it hides so the UI can say so.
+ */
+export function visibleRows(rows: RadarRow[], isCollapsed: (key: string) => boolean): VisibleRadarRow[] {
+  const out: VisibleRadarRow[] = []
+  for (let i = 0; i < rows.length; i++) {
+    const row = rows[i]
+    let end = i + 1
+    while (end < rows.length && rows[end].depth > row.depth) end++
+    const collapsed = row.hasChildren && isCollapsed(row.issue.key)
+    out.push({ ...row, hidden: collapsed ? end - i - 1 : 0 })
+    if (collapsed) i = end - 1
+  }
+  return out
+}
+
 /**
  * Roll issues up per assignee (an issue with several assignees counts for each
  * of them; unassigned issues share one bucket, sorted last) or per project.
