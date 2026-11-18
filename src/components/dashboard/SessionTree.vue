@@ -20,6 +20,9 @@ const emit = defineEmits<{ select: [id: string]; toggle: [id: string] }>()
 
 const { t } = useI18n()
 
+/** The toggle column is only reserved when some session has workers. */
+const anyParent = computed(() => props.rows.some((r) => r.depth === 0 && r.childCount > 0))
+
 /** Cards mode: a top-level row with the worker rows that follow it. */
 const blocks = computed(() => {
   const out: { parent: TreeRow; kids: TreeRow[] }[] = []
@@ -43,7 +46,7 @@ function toggleLabel(r: TreeRow): string {
         <button
           v-if="r.childCount"
           type="button"
-          class="mr-1 flex w-12 shrink-0 cursor-pointer items-center justify-center gap-0.5 rounded-md text-[11px] font-semibold tabular-nums transition-colors hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary"
+          class="mr-1 flex w-10 shrink-0 cursor-pointer items-center justify-center gap-0.5 rounded-md text-[11px] font-semibold tabular-nums transition-colors hover:bg-accent/50 focus-visible:outline-2 focus-visible:outline-primary"
           :class="!r.open && r.childAttention ? 'text-warning' : 'text-muted-foreground'"
           :aria-expanded="r.open"
           :aria-label="toggleLabel(r)"
@@ -53,11 +56,11 @@ function toggleLabel(r: TreeRow): string {
           <ChevronRight class="h-3.5 w-3.5 transition-transform motion-reduce:transition-none" :class="r.open && 'rotate-90'" :stroke-width="2" aria-hidden="true" />
           {{ r.childCount }}
         </button>
-        <span v-else class="mr-1 w-12 shrink-0" aria-hidden="true" />
+        <span v-else-if="anyParent" class="mr-1 w-10 shrink-0" aria-hidden="true" />
       </template>
       <template v-else>
         <!-- └ / ├ connector from the parent's toggle column -->
-        <span class="relative ml-6 w-6 shrink-0" aria-hidden="true">
+        <span class="relative ml-5 w-6 shrink-0" aria-hidden="true">
           <span class="absolute -top-1 left-0 w-px bg-border" :class="r.last ? 'h-[calc(50%+4px)]' : 'bottom-0'" />
           <span class="absolute top-1/2 left-0 h-px w-4 bg-border" />
         </span>
