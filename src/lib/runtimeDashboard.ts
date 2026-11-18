@@ -340,23 +340,6 @@ export function stepQueue(queue: readonly string[], current: string | null, dir:
   return queue[(i + dir + queue.length) % queue.length]
 }
 
-/**
- * After answering `answered`, the waiting session to move to: the next one in
- * the queue (wrapping), null when nobody else waits.
- */
-export function nextAfterAnswer(queue: readonly string[], answered: string): string | null {
-  const rest = queue.filter((id) => id !== answered)
-  if (!rest.length) return null
-  const i = queue.indexOf(answered)
-  if (i < 0) return rest[0]
-  return queue.slice(i + 1).find((id) => id !== answered) ?? rest[0]
-}
-
-/** On open: the longest waiting session, else the first one on screen. */
-export function initialPick(queue: readonly string[], order: readonly string[]): string | null {
-  return queue[0] ?? order[0] ?? null
-}
-
 // ── View mode ───────────────────────────────────────────────────────────────
 
 export type ViewMode = 'auto' | 'cards' | 'rows'
@@ -603,7 +586,7 @@ export function toolSummary(name: string, input: unknown): string {
   return ''
 }
 
-// ── Detail log ──────────────────────────────────────────────────────────────
+// ── Log lines (the "now" line's latest event) ─────────────────────────────
 
 export type LogKind = 'tool' | 'ok' | 'ask' | 'err' | 'text' | 'user' | 'note'
 
@@ -666,16 +649,6 @@ export function logLine(e: LogEntryLite): LogLine | null {
   }
 }
 
-/** Log lines of the last `max` entries. */
-export function logLines(entries: readonly LogEntryLite[], max = 150): LogLine[] {
-  const out: LogLine[] = []
-  for (const e of entries.slice(-max)) {
-    const l = logLine(e)
-    if (l) out.push(l)
-  }
-  return out
-}
-
 /**
  * The latest meaningful event of a session (looking back `within` entries), for
  * the "now" line when no running step is known — Codex reports tools only once
@@ -702,20 +675,6 @@ export function runningTool(entries: readonly LogEntryLite[]): { name: string; i
     }
   }
   return null
-}
-
-// ── Keyboard answers ────────────────────────────────────────────────────────
-
-/** After moving on to the next waiting session, `a` / `d` stay ignored this long. */
-export const ANSWER_KEY_GUARD_MS = 400
-
-/**
- * Whether an `a` / `d` key press must be ignored: a held key (auto-repeat), or
- * one landing right after the dashboard moved on to the next waiting session —
- * a double press must not answer a prompt the user has not seen yet.
- */
-export function answerKeyBlocked(repeat: boolean, advancedAt: number | null, now: number): boolean {
-  return repeat || (advancedAt !== null && now - advancedAt < ANSWER_KEY_GUARD_MS)
 }
 
 // ── Backend availability ────────────────────────────────────────────────────

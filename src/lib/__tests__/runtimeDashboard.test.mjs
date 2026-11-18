@@ -4,9 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  ANSWER_KEY_GUARD_MS,
   QUIET_AFTER_MS,
-  answerKeyBlocked,
   activityBuckets,
   buildTree,
   classifyState,
@@ -16,17 +14,14 @@ import {
   effectiveMode,
   filterCounts,
   formatElapsed,
-  initialPick,
   isMissingCommandError,
   isWaitTool,
   lastEvent,
   layoutTree,
   logLine,
-  logLines,
   mapOrder,
   matchesQuery,
   needsAttention,
-  nextAfterAnswer,
   noteActivity,
   parentOf,
   parseViewMode,
@@ -236,7 +231,7 @@ test('stepOrder clamps; stepQueue wraps', () => {
   assert.equal(stepQueue(['a', 'b'], 'x', -1), 'b')
 })
 
-test('waitQueue: longest waiting first; nextAfterAnswer moves on', () => {
+test('waitQueue: longest waiting first', () => {
   const list = [
     s('a', { state: 'waiting', waitingSince: NOW - 100 }),
     s('b', { state: 'waiting', waitingSince: NOW - 900 }),
@@ -245,12 +240,6 @@ test('waitQueue: longest waiting first; nextAfterAnswer moves on', () => {
   ]
   const q = waitQueue(list)
   assert.deepEqual(q, ['b', 'd', 'a'])
-  assert.equal(nextAfterAnswer(q, 'd'), 'a')
-  assert.equal(nextAfterAnswer(q, 'a'), 'b')
-  assert.equal(nextAfterAnswer(['a'], 'a'), null)
-  assert.equal(initialPick(q, ['c']), 'b')
-  assert.equal(initialPick([], ['c']), 'c')
-  assert.equal(initialPick([], []), null)
 })
 
 test('effectiveMode / parseViewMode', () => {
@@ -368,8 +357,6 @@ test('logLine maps entries to compact kinds', () => {
   assert.deepEqual(logLine({ kind: 'result', text: 'boom', is_error: true }), { kind: 'err', text: 'boom' })
   assert.equal(logLine({ kind: 'log', level: 'debug', text: 'x' }), null)
   assert.deepEqual(logLine({ kind: 'command', name: 'compact' }), { kind: 'note', text: '/compact' })
-  const many = Array.from({ length: 10 }, (_, i) => ({ kind: 'text', text: `t${i}` }))
-  assert.deepEqual(logLines(many, 2).map((l) => l.text), ['t8', 't9'])
 })
 
 test('runningTool: the last tool without a result in the current turn', () => {
@@ -404,13 +391,6 @@ test('toolSummary masks credentials shown on cards and in the log', () => {
   assert.equal(toolSummary('Bash', { command: 'GH_TOKEN=abc gh pr list' }), 'GH_TOKEN=*** gh pr list')
   assert.equal(toolSummary('WebFetch', { url: 'https://x.io/a?token=1' }), 'https://x.io/a')
   assert.deepEqual(logLine({ kind: 'tool', name: 'Bash', input: { command: 'sshpass -p pw ssh h' } }), { kind: 'tool', text: 'Bash sshpass -p *** ssh h' })
-})
-
-test('answerKeyBlocked: auto-repeat and the moment after moving on', () => {
-  assert.equal(answerKeyBlocked(true, null, NOW), true)
-  assert.equal(answerKeyBlocked(false, null, NOW), false)
-  assert.equal(answerKeyBlocked(false, NOW - ANSWER_KEY_GUARD_MS + 1, NOW), true)
-  assert.equal(answerKeyBlocked(false, NOW - ANSWER_KEY_GUARD_MS, NOW), false)
 })
 
 test('isMissingCommandError tells a missing command from a transient failure', () => {

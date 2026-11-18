@@ -8,10 +8,9 @@ const sessionOpen: Record<string, boolean> = {}
 // Runtime Dashboard — the app's start screen: everything running right now.
 // Four stat cards (sessions, 5-hour limits, resources, today), then one list
 // of sessions as a tree (workers under the session that spawned them, the most
-// urgent first) next to a sticky detail panel with the selected session's live
-// log and what it needs from you (permission / question / message / stop).
-// Keyboard: / search · j k select · n next waiting · a allow · d deny ·
-// Enter open · Esc leave the search.
+// urgent first). An overview only: clicking a session opens its own view, where
+// it is answered / messaged / stopped.
+// Keyboard: / search · j k select · n next waiting · Enter open · Esc leave the search.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -22,7 +21,6 @@ import StatQuota from '@/components/dashboard/StatQuota.vue'
 import StatResources from '@/components/dashboard/StatResources.vue'
 import StatToday from '@/components/dashboard/StatToday.vue'
 import SessionTree from '@/components/dashboard/SessionTree.vue'
-import SessionInspector from '@/components/dashboard/SessionInspector.vue'
 import { useRuntimeDashboard } from '@/composables/useRuntimeDashboard'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -36,12 +34,9 @@ import {
   displayOrder,
   effectiveMode,
   filterCounts,
-  initialPick,
   layoutTree,
   mapOrder,
   parentOf,
-  answerKeyBlocked,
-  nextAfterAnswer,
   parseViewMode,
   stepOrder,
   stepQueue,
@@ -109,14 +104,12 @@ watch(() => counts.value.wait, (n) => {
   if (!n && filter.value === 'wait') filter.value = null
 })
 
-// ── Selection ────────────────────────────────────────────────────────────────
+// ── Selection (keyboard) ────────────────────────────────────────────────────
+// j / k / n move a highlight; Enter or a click opens the session's own view.
 const selectedId = ref<string | null>(null)
 const selected = computed<RtSession | null>(() => dash.sessions.value.find((s) => s.id === selectedId.value) ?? null)
-const selectedExternal = computed(() =>
-  selected.value?.role === 'external' ? dash.externalById.value.get(selected.value.id) ?? null : null,
-)
 
-/** Select a session: a worker's parent shows its workers, and it scrolls into view. */
+/** Highlight a session: a worker's parent shows its workers, and it scrolls into view. */
 function select(id: string | null) {
   if (!id) return
   selectedId.value = id
@@ -129,36 +122,23 @@ function select(id: string | null) {
   })
 }
 
-// First load: the session waiting longest, else the first on screen. A
-// selected session that ended hands over the same way.
-watch(
-  () => [dash.loaded.value, dash.sessions.value] as const,
-  ([loaded]) => {
-    if (!loaded) return
-    if (selectedId.value && dash.sessions.value.some((s) => s.id === selectedId.value)) return
-    selectedId.value = initialPick(queue.value, order.value) ?? mapList.value[0]?.id ?? null
-  },
-)
-
-/** When the panel last moved on by itself to the next waiting session. */
-let advancedAt: number | null = null
-function onAnswered(id: string) {
-  const next = nextAfterAnswer(queue.value, id)
-  dash.rebuild()
-  if (next) {
-    advancedAt = Date.now()
-    select(next)
-  }
-}
-
 // ── Opening things ───────────────────────────────────────────────────────────
 function openRun(projectId: string, runId: string) {
   live.markSeen(runId)
   tabs.open(projectId, runId)
   router.push({ name: 'project-run-detail', params: { projectId, runId } }).catch(() => {})
 }
+/** A session outside Devdy opens the run its transcript was mirrored into, when there is one. */
 function openSession(s: RtSession) {
-  if (s.runId && s.projectId) openRun(s.projectId, s.runId)
+  if (s.runId && s.projectId) return openRun(s.projectId, s.runId)
+  const e = s.role === 'external' ? dash.externalById.value.get(s.id) : null
+  if (e?.runId && e.projectId) openRun(e.projectId, e.runId)
+  else toast.info(t('dashboard.transcriptUnavailable'))
+}
+function openById(id: string) {
+  selectedId.value = id
+  const s = dash.sessions.value.find((x) => x.id === id)
+  if (s) openSession(s)
 }
 function openRecent(r: RecentRun) {
   openRun(r.projectId, r.runId)
@@ -197,7 +177,6 @@ async function cleanUp() {
 
 // ── Keyboard ─────────────────────────────────────────────────────────────────
 const searchBox = ref<HTMLElement | null>(null)
-const inspector = ref<InstanceType<typeof SessionInspector> | null>(null)
 
 function typingIn(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false
@@ -220,12 +199,6 @@ function onKey(e: KeyboardEvent) {
       break
     case 'n':
       select(stepQueue(queue.value, selectedId.value, 1))
-      break
-    case 'a':
-    case 'd':
-      // Not a prompt the user has not seen yet (a double press right after moving on).
-      if (answerKeyBlocked(e.repeat, advancedAt, Date.now())) return
-      void (e.key === 'a' ? inspector.value?.allow() : inspector.value?.deny())
       break
     case 'Enter':
       // A focused button handles Enter itself.
@@ -250,8 +223,6 @@ const SHORTCUTS = [
   { keys: ['/'], label: 'search' },
   { keys: ['j', 'k'], label: 'pick' },
   { keys: ['n'], label: 'next' },
-  { keys: ['a'], label: 'allow' },
-  { keys: ['d'], label: 'deny' },
   { keys: ['Enter'], label: 'open' },
 ] as const
 </script>
@@ -296,60 +267,43 @@ const SHORTCUTS = [
           <StatToday :today="dash.today.value" @open="openRecent" />
         </div>
 
-        <div class="flex flex-wrap items-start gap-3.5">
-          <div class="flex min-w-0 flex-[999_1_640px] flex-col gap-2.5">
-            <div class="flex flex-wrap items-center gap-2">
-              <label ref="searchBox" class="relative min-w-0 flex-[1_1_220px] sm:max-w-[340px]">
-                <span class="sr-only">{{ t('dashboard.toolbar.searchLabel') }}</span>
-                <Search class="pointer-events-none absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" aria-hidden="true" />
-                <Input v-model="query" size="xs" class="w-full pl-7" :placeholder="t('dashboard.toolbar.search')" @keydown="onSearchKey" />
-              </label>
-              <SegmentedControl v-model="mode" :options="modeOptions" :stretch="false" :aria-label="t('dashboard.toolbar.mode.label')" />
-              <span v-if="modeHint" class="text-[11px] text-muted-foreground">{{ modeHint }}</span>
-              <span class="ml-auto flex gap-1.5">
-                <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(true)">{{ t('dashboard.toolbar.expandAll') }}</Button>
-                <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(false)">{{ t('dashboard.toolbar.collapseAll') }}</Button>
-              </span>
-            </div>
-
-            <p
-              v-if="dash.loaded.value && !total"
-              class="rounded-lg border border-dashed border-border/70 px-4 py-8 text-center text-xs text-muted-foreground"
-            >
-              {{ t('dashboard.empty') }}
-            </p>
-            <p
-              v-else-if="filtering && !rows.length"
-              class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
-            >
-              {{ t('dashboard.noMatch') }}
-            </p>
-
-            <SessionTree
-              v-if="rows.length"
-              :rows="rows"
-              :mode="shownMode"
-              :selected-id="selectedId"
-              :now="dash.now.value"
-              @toggle="toggleWorkers"
-              @select="select"
-            />
+        <div class="flex min-w-0 flex-col gap-2.5">
+          <div class="flex flex-wrap items-center gap-2">
+            <label ref="searchBox" class="relative min-w-0 flex-[1_1_220px] sm:max-w-[340px]">
+              <span class="sr-only">{{ t('dashboard.toolbar.searchLabel') }}</span>
+              <Search class="pointer-events-none absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" aria-hidden="true" />
+              <Input v-model="query" size="xs" class="w-full pl-7" :placeholder="t('dashboard.toolbar.search')" @keydown="onSearchKey" />
+            </label>
+            <SegmentedControl v-model="mode" :options="modeOptions" :stretch="false" :aria-label="t('dashboard.toolbar.mode.label')" />
+            <span v-if="modeHint" class="text-[11px] text-muted-foreground">{{ modeHint }}</span>
+            <span class="ml-auto flex gap-1.5">
+              <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(true)">{{ t('dashboard.toolbar.expandAll') }}</Button>
+              <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(false)">{{ t('dashboard.toolbar.collapseAll') }}</Button>
+            </span>
           </div>
 
-          <div class="sticky top-0 max-w-full min-w-0 flex-[1_1_400px] self-start">
-            <SessionInspector
-              ref="inspector"
-              :session="selected"
-              :external="selectedExternal"
-              :queue="queue"
-              :now="dash.now.value"
-              @prev="select(stepQueue(queue, selectedId, -1))"
-              @next="select(stepQueue(queue, selectedId, 1))"
-              @answered="onAnswered"
-              @open="openSession"
-              @open-run="openRun"
-            />
-          </div>
+          <p
+            v-if="dash.loaded.value && !total"
+            class="rounded-lg border border-dashed border-border/70 px-4 py-8 text-center text-xs text-muted-foreground"
+          >
+            {{ t('dashboard.empty') }}
+          </p>
+          <p
+            v-else-if="filtering && !rows.length"
+            class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
+          >
+            {{ t('dashboard.noMatch') }}
+          </p>
+
+          <SessionTree
+            v-if="rows.length"
+            :rows="rows"
+            :mode="shownMode"
+            :selected-id="selectedId"
+            :now="dash.now.value"
+            @toggle="toggleWorkers"
+            @select="openById"
+          />
         </div>
       </div>
     </div>

@@ -8,18 +8,16 @@
 // background-processes snapshot; what has no source stays empty.
 //
 // Performance: the cards never read the stream directly. `sessions` is a
-// summary rebuilt at most once a second (and right after a poll or an action);
-// only the selected session streams its log (`useSessionLog`).
-import { computed, onBeforeUnmount, onMounted, ref, shallowRef, toRaw, watch, type Ref } from 'vue'
+// summary rebuilt at most once a second (and right after a poll or an action).
+import { computed, onBeforeUnmount, onMounted, ref, shallowRef, watch } from 'vue'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useI18n } from 'vue-i18n'
 import { invoke } from '@/lib/tauri'
 import { useLiveRunsStore, type LiveSession } from '@/stores/liveRuns'
 import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { useAppSettingsStore } from '@/stores/appSettings'
-import { useRunsStore } from '@/stores/runs'
 import { mergeContextModel, resolveContextLimit } from '@/lib/contextLimits'
-import { entryKey, parseStreamLogWindow, type StreamEntry } from '@/lib/streamEvents'
+import type { StreamEntry } from '@/lib/streamEvents'
 import {
   CMD_RUNTIME_SNAPSHOT,
   type ExternalSession,
@@ -34,7 +32,6 @@ import {
   contextPercent,
   isMissingCommandError,
   lastEvent,
-  logLine,
   noteActivity,
   parseTime,
   pushQuotaSample,
@@ -44,7 +41,6 @@ import {
   toolSummary,
   type ActiveRun,
   type ActivityTrack,
-  type LogLine,
   type NowLine,
   type QuotaForecast,
   type QuotaSample,
@@ -476,118 +472,4 @@ export function useRuntimeDashboard() {
     refresh: poll,
     rebuild,
   }
-}
-
-/** A line of the detail log; `at` is null when the time is unknown (older entries). */
-export interface TimedLogLine extends LogLine {
-  key: string
-  at: number | null
-}
-
-const HISTORY_RECORDS = 80
-const LIVE_LINES = 150
-
-/**
- * The selected session's log: its live entries (streaming), preceded — when the
- * live store holds little of it (a run followed only since a reload, a run
- * first seen on a resume, an external session) — by the tail of its on-disk
- * log, loaded once per selection. Only this session is read, so the other
- * runs' streams never touch the dashboard.
- */
-export function useSessionLog(runId: Ref<string | null>) {
-  const live = useLiveRunsStore()
-  const runsStore = useRunsStore()
-  const history = shallowRef<StreamEntry[]>([])
-  const loading = ref(false)
-  // An entry has no timestamp of its own: lines get the time they first
-  // showed up here; the ones already there on selection stay without one.
-  const stamps = new WeakMap<object, number>()
-  let baseline = 0
-  let token = 0
-  /**
-   * Live entries before this index are not shown: when the disk tail was read
-   * while the session already streamed, what arrived meanwhile may be in that
-   * tail too — skipping it avoids printing those lines twice.
-   */
-  const liveFrom = ref(0)
-
-  async function loadHistory(id: string, before?: number, overlapsLive = false) {
-    const mine = ++token
-    loading.value = true
-    try {
-      const page = await runsStore.getRunLogPage(id, before, HISTORY_RECORDS)
-      if (mine !== token) return
-      history.value = parseStreamLogWindow(page.records).entries
-      if (overlapsLive) liveFrom.value = live.sessions.get(id)?.entries.length ?? 0
-    } catch {
-      if (mine === token) history.value = []
-    } finally {
-      if (mine === token) loading.value = false
-    }
-  }
-
-  function select(id: string | null) {
-    history.value = []
-    token++
-    loading.value = false
-    baseline = 0
-    liveFrom.value = 0
-    if (!id) return
-    const s = live.sessions.get(id)
-    baseline = s?.entries.length ?? 0
-    if (!s) {
-      void loadHistory(id) // not followed live (an external session's mirror)
-    } else if (s.historyEnd !== null) {
-      void loadHistory(id, s.historyEnd) // earlier turns, before what streams live
-    } else if (s.entries.length === 0) {
-      void loadHistory(id, undefined, true) // nothing live yet: the disk tail, without overlap
-    }
-  }
-  watch(runId, select, { immediate: true })
-
-  // A mirrored transcript changed: reload the tail of a session not streamed live.
-  let unlisten: UnlistenFn | null = null
-  let disposed = false
-  onMounted(async () => {
-    try {
-      const off = await listen<{ run_id?: string }>('sessions:changed', (e) => {
-        const id = runId.value
-        if (id && e.payload?.run_id === id && !live.sessions.has(id)) void loadHistory(id)
-      })
-      if (disposed) off()
-      else unlisten = off
-    } catch {
-      /* outside the Tauri shell */
-    }
-  })
-  onBeforeUnmount(() => {
-    disposed = true
-    unlisten?.()
-  })
-
-  const lines = computed<TimedLogLine[]>(() => {
-    const id = runId.value
-    const out: TimedLogLine[] = []
-    if (!id) return out
-    for (const e of history.value) {
-      const l = logLine(e)
-      if (l) out.push({ ...l, key: `h${entryKey(e)}`, at: null })
-    }
-    const entries = live.sessions.get(id)?.entries ?? []
-    const t0 = Date.now()
-    for (let i = Math.max(liveFrom.value, entries.length - LIVE_LINES); i < entries.length; i++) {
-      const raw = toRaw(entries[i])
-      const l = logLine(raw)
-      if (!l) continue
-      let at = stamps.get(raw) ?? null
-      if (at === null && i >= baseline) {
-        at = t0
-        stamps.set(raw, t0)
-      }
-      out.push({ ...l, key: `l${entryKey(raw)}`, at })
-    }
-    return out
-  })
-
-  return { lines, loading }
 }
