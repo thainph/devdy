@@ -33,7 +33,8 @@
       "safe": "còn dư",
       "full": "đã hết hạn mức",
       "unknown": "chưa đủ dữ liệu để dự báo",
-      "reset": "reset {time}"
+      "reset": "reset {time}",
+      "default": "mặc định"
     },
     "resources": {
       "title": "Tài nguyên",

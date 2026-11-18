@@ -33,7 +33,8 @@
       "safe": "enough left",
       "full": "limit reached",
       "unknown": "pace not known yet",
-      "reset": "resets {time}"
+      "reset": "resets {time}",
+      "default": "default"
     },
     "resources": {
       "title": "Resources",

@@ -59,7 +59,8 @@ const CPU_HISTORY = 12
 const tracks = new Map<string, ActivityTrack>()
 const firstSeen = new WeakMap<object, number>()
 let cpuHistoryFallback: number[] = []
-const quotaSamples: Record<'claude' | 'codex', QuotaSample[]> = { claude: [], codex: [] }
+/** Readings per quota key: `codex`, `claude` (default account) or `claude:<account id>`. */
+const quotaSamples: Record<string, QuotaSample[]> = {}
 
 function seenAt(o: object, now: number): number {
   const t = firstSeen.get(o)
@@ -78,8 +79,22 @@ interface PlanUsageData {
   windows: { five_hour: PlanWindowData }
 }
 
+/** The fields of `list_claude_accounts` the quota card needs. */
+interface ClaudeAccountLite {
+  id: string
+  label: string
+  email: string | null
+  is_default: boolean
+}
+
 export interface QuotaView {
+  /** `codex`, `claude`, or `claude:<account id>` when several Claude accounts are set up. */
+  key: string
   engine: 'claude' | 'codex'
+  /** The Claude account's name when several are set up, else null. */
+  label: string | null
+  /** That account is the default one. */
+  isDefault: boolean
   /** 0-100, null = no data yet. */
   pct: number | null
   resetsAt: number | null
@@ -125,6 +140,8 @@ export function useRuntimeDashboard() {
   const now = ref(Date.now())
   const planClaude = shallowRef<PlanUsageData | null>(null)
   const planCodex = shallowRef<PlanUsageData | null>(null)
+  /** One entry per Claude account when there are several (each has its own 5-hour window). */
+  const planAccounts = shallowRef<{ id: string; label: string; isDefault: boolean; plan: PlanUsageData | null }[]>([])
 
   const contextOverride = computed(() => {
     const v = Number(appSettings.settings?.context_limit_override)
@@ -282,20 +299,48 @@ export function useRuntimeDashboard() {
 
   // ── Quotas ──────────────────────────────────────────────────────────────
   async function loadQuotas() {
-    const [c, x] = await Promise.allSettled([
+    const [c, x, a] = await Promise.allSettled([
       invoke<PlanUsageData | null>('get_plan_usage'),
       invoke<PlanUsageData | null>('get_plan_usage_codex'),
+      invoke<ClaudeAccountLite[]>('list_claude_accounts'),
     ])
     if (c.status === 'fulfilled') planClaude.value = c.value
     if (x.status === 'fulfilled') planCodex.value = x.value
+    const accounts = a.status === 'fulfilled' ? a.value : []
+    if (accounts.length > 1) {
+      const plans = await Promise.allSettled(accounts.map((acc) => invoke<PlanUsageData | null>('get_plan_usage', { accountId: acc.id })))
+      planAccounts.value = accounts.map((acc, i) => {
+        const r = plans[i]
+        const prev = planAccounts.value.find((p) => p.id === acc.id)?.plan ?? null
+        return {
+          id: acc.id,
+          label: acc.label || acc.email || acc.id,
+          isDefault: acc.is_default,
+          plan: r?.status === 'fulfilled' ? r.value : prev,
+        }
+      })
+    } else if (a.status === 'fulfilled') {
+      planAccounts.value = []
+    }
     const at = Date.now()
-    for (const [engine, plan] of [['claude', planClaude.value], ['codex', planCodex.value]] as const) {
+    const readings: [string, PlanUsageData | null][] = [
+      ['claude', planClaude.value],
+      ['codex', planCodex.value],
+      ...planAccounts.value.map((p) => [`claude:${p.id}`, p.plan] as [string, PlanUsageData | null]),
+    ]
+    for (const [key, plan] of readings) {
       const pct = plan?.windows?.five_hour?.utilization
-      if (typeof pct === 'number') quotaSamples[engine] = pushQuotaSample(quotaSamples[engine], { at, pct })
+      if (typeof pct === 'number') quotaSamples[key] = pushQuotaSample(quotaSamples[key] ?? [], { at, pct })
     }
   }
 
-  function quotaOf(engine: 'claude' | 'codex', plan: PlanUsageData | null): QuotaView {
+  function quotaOf(
+    engine: 'claude' | 'codex',
+    plan: PlanUsageData | null,
+    key: string = engine,
+    label: string | null = null,
+    isDefault = false,
+  ): QuotaView {
     const w = plan?.rate_limits_available === false ? null : plan?.windows?.five_hour
     const pct = typeof w?.utilization === 'number' ? w.utilization : null
     let resetsAt = parseTime(w?.resets_at)
@@ -303,9 +348,14 @@ export function useRuntimeDashboard() {
     const stale = resetsAt !== null && resetsAt <= now.value
     if (stale) resetsAt = null
     const shown = stale ? null : pct
-    return { engine, pct: shown, resetsAt, forecast: quotaForecast(shown, resetsAt, quotaSamples[engine], now.value) }
+    return { key, engine, label, isDefault, pct: shown, resetsAt, forecast: quotaForecast(shown, resetsAt, quotaSamples[key] ?? [], now.value) }
   }
-  const quotas = computed<QuotaView[]>(() => [quotaOf('claude', planClaude.value), quotaOf('codex', planCodex.value)])
+  const quotas = computed<QuotaView[]>(() => {
+    const claude = planAccounts.value.length > 1
+      ? planAccounts.value.map((p) => quotaOf('claude', p.plan, `claude:${p.id}`, p.label, p.isDefault))
+      : [quotaOf('claude', planClaude.value)]
+    return [...claude, quotaOf('codex', planCodex.value)]
+  })
 
   // ── Polling ─────────────────────────────────────────────────────────────
   let inflight: Promise<void> | null = null
