@@ -18,7 +18,9 @@ import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { mergeContextModel, resolveContextLimit } from '@/lib/contextLimits'
 import type { StreamEntry } from '@/lib/streamEvents'
+import { sumBuckets } from '@/lib/runtimeCharts'
 import {
+  ACTIVITY_BUCKETS,
   CMD_RUNTIME_SNAPSHOT,
   type ExternalSession,
   type RuntimeResources,
@@ -52,13 +54,16 @@ const TICK_MS = 1000
 const QUOTA_POLL_MS = 60_000
 const EVENT_DEBOUNCE_MS = 300
 const CPU_HISTORY = 12
+const RAM_HISTORY = 40
 
-// Kept across visits (module state): the fallback activity tracks, CPU history
-// and quota readings only grow while the screen is shown, so a remount should
-// not start them over.
+// Kept across visits (module state): the fallback activity tracks, CPU / RAM
+// history and quota readings only grow while the screen is shown, so a remount
+// should not start them over.
 const tracks = new Map<string, ActivityTrack>()
 const firstSeen = new WeakMap<object, number>()
 let cpuHistoryFallback: number[] = []
+/** RAM of Devdy's processes (KB), one sample per poll — the snapshot keeps no RAM history. */
+let ramHistory: number[] = []
 /** Readings per quota key: `codex`, `claude` (default account) or `claude:<account id>`. */
 const quotaSamples: Record<string, QuotaSample[]> = {}
 
@@ -104,6 +109,10 @@ export interface QuotaView {
 export interface ResourcesView extends RuntimeResources {
   /** CPU as a share of the whole machine (0-100). */
   cpuShare: number
+  /** `cpuHistory` as shares of the whole machine (0-100), oldest first. */
+  cpuShareHistory: number[]
+  /** RAM samples (KB) kept by this window, oldest first. */
+  ramHistory: number[]
   /** True when built from the background-processes snapshot. */
   fallback: boolean
 }
@@ -279,7 +288,8 @@ export function useRuntimeDashboard() {
   const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency > 0 ? navigator.hardwareConcurrency : 1
   const resources = computed<ResourcesView | null>(() => {
     const r = snapshot.value?.resources
-    if (r) return { ...r, cpuShare: Math.min(100, r.cpuPercent / cores), fallback: false }
+    const share = (v: number) => Math.min(100, v / cores)
+    if (r) return { ...r, cpuShare: share(r.cpuPercent), cpuShareHistory: r.cpuHistory.map(share), ramHistory, fallback: false }
     const bg = bgProcs.snapshot
     if (!bg) return null
     const cpu = bg.entries.reduce((n, e) => n + e.cpu, 0)
@@ -291,11 +301,15 @@ export function useRuntimeDashboard() {
       orphanCount: bg.counts.orphan + bg.counts.leftover,
       staleWorktreeCount: null,
       cpuHistory: cpuHistoryFallback,
-      cpuShare: Math.min(100, cpu / cores),
+      cpuShare: share(cpu),
+      cpuShareHistory: cpuHistoryFallback.map(share),
+      ramHistory,
       fallback: true,
     }
   })
   const today = computed<RuntimeToday | null>(() => snapshot.value?.today ?? null)
+  /** Events per minute of every session added up, the last 20 minutes (oldest first). */
+  const activity = computed(() => sumBuckets(sessions.value.map((s) => s.spark), ACTIVITY_BUCKETS))
 
   // ── Quotas ──────────────────────────────────────────────────────────────
   async function loadQuotas() {
@@ -386,6 +400,7 @@ export function useRuntimeDashboard() {
         loadError.value = String(runs.reason)
       }
       if (snap.status === 'fulfilled' && snap.value) {
+        ramHistory = pushSample(ramHistory, snap.value.resources.rssKb, RAM_HISTORY)
         snapshot.value = snap.value
         snapshotStale.value = false
         if (!hasSnapshot.value) {
@@ -425,6 +440,7 @@ export function useRuntimeDashboard() {
     (snap) => {
       if (!snap || hasSnapshot.value) return
       cpuHistoryFallback = pushSample(cpuHistoryFallback, snap.entries.reduce((n, e) => n + e.cpu, 0), CPU_HISTORY)
+      ramHistory = pushSample(ramHistory, snap.entries.reduce((n, e) => n + e.rss_kb, 0), RAM_HISTORY)
     },
   )
 
@@ -517,6 +533,7 @@ export function useRuntimeDashboard() {
     snapshotStale,
     resources,
     today,
+    activity,
     quotas,
     externalById,
     refresh: poll,
