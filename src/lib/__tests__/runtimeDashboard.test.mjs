@@ -63,9 +63,8 @@ function s(id, over = {}) {
 
 const base = { pending: 0, conductor: false, currentTool: null, lastEventAt: NOW, attention: [], now: NOW }
 
-test('classifyState: waiting beats everything but external', () => {
+test('classifyState: waiting beats everything', () => {
   assert.equal(classifyState({ ...base, pending: 1, attention: ['quiet'] }), 'waiting')
-  assert.equal(classifyState({ ...base, external: true, pending: 1 }), 'external')
 })
 
 test('classifyState: a conductor between turns is idle, even when quiet', () => {
@@ -108,9 +107,8 @@ test('contextPercent and needsAttention', () => {
   assert.ok(!needsAttention(s('a', { state: 'idle' })))
 })
 
-test('compareSessions: waiting (longest first) → quiet → context full → running → idle → external', () => {
+test('compareSessions: waiting (longest first) → quiet → context full → running → idle', () => {
   const list = [
-    s('ext', { state: 'external' }),
     s('idle', { state: 'idle' }),
     s('run', {}),
     s('ctx', { ctxPercent: 90 }),
@@ -118,7 +116,7 @@ test('compareSessions: waiting (longest first) → quiet → context full → ru
     s('w2', { state: 'waiting', waitingSince: NOW - 1000 }),
     s('w1', { state: 'waiting', waitingSince: NOW - 5000 }),
   ]
-  assert.deepEqual(list.sort(compareSessions).map((x) => x.id), ['w1', 'w2', 'quiet', 'ctx', 'run', 'idle', 'ext'])
+  assert.deepEqual(list.sort(compareSessions).map((x) => x.id), ['w1', 'w2', 'quiet', 'ctx', 'run', 'idle'])
 })
 
 test('matchesQuery covers title and project', () => {
@@ -134,16 +132,14 @@ test('filterCounts', () => {
     s('b', { state: 'quiet', ctxPercent: 85 }),
     s('c'),
     s('d', { state: 'idle' }),
-    s('e', { state: 'external' }),
   ])
-  assert.deepEqual(c, { wait: 1, quiet: 1, ctx: 1, run: 1, idle: 1, ext: 1 })
+  assert.deepEqual(c, { wait: 1, quiet: 1, ctx: 1, run: 1, idle: 1 })
 })
 
 test('matchesFilter by state', () => {
   assert.ok(matchesFilter(s('a'), 'run'))
   assert.ok(!matchesFilter(s('a'), 'idle'))
   assert.ok(matchesFilter(s('a', { state: 'idle' }), 'idle'))
-  assert.ok(matchesFilter(s('a', { state: 'external' }), 'ext'))
   assert.ok(matchesFilter(s('a', { state: 'waiting' }), 'wait'))
   assert.ok(matchesFilter(s('a'), null))
 })
@@ -157,16 +153,14 @@ function sample() {
     s('w3', { role: 'worker', conductorId: 'c2' }),
     s('orphan', { role: 'worker', conductorId: 'gone' }),
     s('solo1', {}),
-    s('e1', { role: 'external', state: 'external', runId: null }),
   ]
 }
 
-test('buildTree: workers under their parent, stray workers top-level, urgent first, external last', () => {
+test('buildTree: workers under their parent, stray workers top-level, urgent first', () => {
   const nodes = buildTree(sample())
   const ids = nodes.map((n) => n.session.id)
   assert.equal(ids[0], 'c1') // its worker w1 waits for you
-  assert.equal(ids.at(-1), 'e1')
-  assert.deepEqual([...ids].sort(), ['c1', 'c2', 'e1', 'orphan', 'solo1'])
+  assert.deepEqual([...ids].sort(), ['c1', 'c2', 'orphan', 'solo1'])
   const by = Object.fromEntries(nodes.map((n) => [n.session.id, n]))
   assert.deepEqual(by.c1.children.map((c) => c.id), ['w1', 'w2'])
   assert.deepEqual(by.c2.children.map((c) => c.id), ['w3'])
@@ -228,7 +222,7 @@ test('displayOrder follows the rows; mapOrder lists everything; parentOf', () =>
   const rows = layoutTree(nodes, noLayout)
   assert.deepEqual(displayOrder(rows), rows.map((r) => r.session.id))
   const all = mapOrder(nodes).map((x) => x.id)
-  assert.equal(all.length, 8)
+  assert.equal(all.length, 7)
   assert.ok(all.indexOf('w3') === all.indexOf('c2') + 1)
   assert.equal(parentOf(nodes, 'w2'), 'c1')
   assert.equal(parentOf(nodes, 'c1'), null)
@@ -394,10 +388,9 @@ test('isMissingCommandError tells a missing command from a transient failure', (
   assert.equal(isMissingCommandError('timeout'), false)
 })
 
-test('sessionKind: issue / PR by run type, conductor, external, else session', () => {
+test('sessionKind: issue / PR by run type, conductor, else session', () => {
   assert.equal(sessionKind({ role: 'session', runType: 'review_pr' }), 'pr')
   assert.equal(sessionKind({ role: 'worker', runType: 'analyze_issue' }), 'issue')
   assert.equal(sessionKind({ role: 'conductor', runType: 'session' }), 'conductor')
-  assert.equal(sessionKind({ role: 'external', runType: null }), 'external')
   assert.equal(sessionKind({ role: 'worker', runType: 'session' }), 'session')
 })

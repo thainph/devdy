@@ -3,7 +3,7 @@
   "subtitle": "{date} · trực tiếp",
   "untitled": "Session chưa đặt tên",
   "loadError": "Không tải được các session đang chạy: {error}",
-  "fallbackHint": "Dữ liệu trực tiếp còn hạn chế: nhịp hoạt động từng session, số session hôm nay và session ngoài Devdy sẽ hiện khi ứng dụng cung cấp.",
+  "fallbackHint": "Dữ liệu trực tiếp còn hạn chế: nhịp hoạt động từng session và số session hôm nay sẽ hiện khi ứng dụng cung cấp.",
   "staleHint": "Vừa rồi không cập nhật được dữ liệu trực tiếp; đang hiện dữ liệu nhận được lần trước.",
   "empty": "Hiện không có gì đang chạy. Bắt đầu một session từ một project, nó sẽ hiện ở đây.",
   "noMatch": "Không có session nào khớp.",
@@ -22,8 +22,7 @@
         "quiet": "{n} im lâu",
         "ctx": "{n} context > 80%",
         "run": "{n} đang chạy",
-        "idle": "{n} chờ worker",
-        "ext": "{n} ngoài Devdy"
+        "idle": "{n} chờ worker"
       },
       "donutLabel": "Session theo trạng thái: {parts}",
       "activityLabel": "Nhịp hoạt động gộp của mọi session trong 20 phút qua",
@@ -33,8 +32,7 @@
         "quiet": "Im lâu",
         "ctx": "Context > 80%",
         "run": "Đang chạy",
-        "idle": "Chờ worker",
-        "ext": "Ngoài Devdy"
+        "idle": "Chờ worker"
       },
       "none": "Không có gì đang chạy",
       "activityShort": "Hoạt động 20p",
@@ -97,14 +95,12 @@
     "waiting": "chờ bạn",
     "quiet": "im lâu",
     "running": "đang chạy",
-    "idle": "chờ worker",
-    "external": "bên ngoài"
+    "idle": "chờ worker"
   },
   "role": {
     "conductor": "session",
     "worker": "worker",
-    "session": "session",
-    "external": "ngoài Devdy"
+    "session": "session"
   },
   "engine": {
     "claude": "Claude",
@@ -117,12 +113,10 @@
     "question": "Hỏi: {detail}",
     "questionBare": "Có câu hỏi cho bạn",
     "wait": "Đang đợi các worker",
-    "working": "Đang làm…",
-    "lastActivity": "hoạt động {age} trước"
+    "working": "Đang làm…"
   },
   "contextTitle": "Context đã dùng {pct}%",
   "contextUnknown": "Chưa biết mức dùng context",
-  "transcriptUnavailable": "Session này chưa gắn với project nào trong Devdy nên chưa mở được transcript ở đây.",
   "emptyTitle": "Không có gì đang chạy",
   "running": {
     "title": "Đang chạy"
@@ -177,7 +171,6 @@
     "session": "Session",
     "pr": "Review PR",
     "issue": "Phân tích issue",
-    "conductor": "Conductor (có worker)",
-    "external": "Ngoài Devdy"
+    "conductor": "Conductor (có worker)"
   }
 }

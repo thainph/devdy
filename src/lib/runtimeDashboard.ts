@@ -51,10 +51,9 @@ export function runTitle(r: Pick<ActiveRun, 'title' | 'run_type' | 'ref_number'>
 }
 
 /** What a session is, for its kind tile (same tiles as the Dashboard History). */
-export type SessionKind = 'session' | 'pr' | 'issue' | 'conductor' | 'external'
+export type SessionKind = 'session' | 'pr' | 'issue' | 'conductor'
 
 export function sessionKind(s: Pick<RtSession, 'role' | 'runType'>): SessionKind {
-  if (s.role === 'external') return 'external'
   if (s.runType === 'review_pr') return 'pr'
   if (s.runType === 'analyze_issue') return 'issue'
   return s.role === 'conductor' ? 'conductor' : 'session'
@@ -67,11 +66,10 @@ export function sessionKind(s: Pick<RtSession, 'role' | 'runType'>): SessionKind
  * quiet    = running but nothing new for a while (or the watchdog flagged it)
  * running  = streaming normally
  * idle     = a conductor blocked in `session_wait` on its workers
- * external = a CLI / IDE session outside Devdy (read-only)
  */
-export type SessionState = 'waiting' | 'quiet' | 'running' | 'idle' | 'external'
+export type SessionState = 'waiting' | 'quiet' | 'running' | 'idle'
 
-export type SessionRole = 'conductor' | 'worker' | 'session' | 'external'
+export type SessionRole = 'conductor' | 'worker' | 'session'
 
 export type Engine = 'claude' | 'codex'
 
@@ -89,19 +87,18 @@ export interface NowLine {
 
 /** One session as the dashboard shows it (rebuilt on a throttled tick). */
 export interface RtSession {
-  /** Run id, or `ext:<id>` for an external session. */
+  /** Run id. */
   id: string
-  /** Null for an external session. */
-  runId: string | null
-  projectId: string | null
+  runId: string
+  projectId: string
   projectName: string
   title: string
   engine: Engine
   role: SessionRole
-  /** `session` | `analyze_issue` | `review_pr`; null for an external session. */
+  /** `session` | `analyze_issue` | `review_pr`; null when unknown. */
   runType: string | null
   refNumber: number | null
-  /** Label of its Claude account; null for Codex / external / unknown. */
+  /** Label of its Claude account; null for Codex / unknown. */
   accountName: string | null
   /** `github` | `gitlab` for an issue / PR run with a repo. */
   repoProvider: string | null
@@ -112,8 +109,7 @@ export interface RtSession {
   /** Conductor run id of a worker. */
   conductorId: string | null
   /**
-   * Its sidecar is alive. False for an external session and for a conductor
-   * between turns (no Stop; a message resumes it first).
+   * Its sidecar is alive. False for a conductor between turns (no Stop; a message resumes it first).
    */
   live: boolean
   state: SessionState
@@ -144,7 +140,6 @@ export function isWaitTool(name: string | null | undefined): boolean {
 }
 
 export interface StateInput {
-  external?: boolean
   /** Open permission / question prompts. */
   pending: number
   conductor: boolean
@@ -162,7 +157,6 @@ export interface StateInput {
 }
 
 export function classifyState(i: StateInput): SessionState {
-  if (i.external) return 'external'
   if (i.pending > 0) return 'waiting'
   if (i.conductor && i.ended) return 'idle'
   if (i.conductor && isWaitTool(i.currentTool)) return 'idle'
@@ -194,12 +188,11 @@ function rank(s: RtSession): number {
     case 'waiting': return 0
     case 'quiet': return 1
     case 'running': return ctxFull(s) ? 2 : 3
-    case 'idle': return 4
-    default: return 5
+    default: return 4
   }
 }
 
-/** Waiting (longest first) → quiet → context full → running → idle → external. */
+/** Waiting (longest first) → quiet → context full → running → idle. */
 export function compareSessions(a: RtSession, b: RtSession): number {
   return (
     rank(a) - rank(b) ||
@@ -216,8 +209,8 @@ export function sortSessions(list: readonly RtSession[]): RtSession[] {
 
 // ── Search / filter ─────────────────────────────────────────────────────────
 
-/** `wait` / `quiet` / `run` / `idle` / `ext` match a state; `ctx` a nearly full context. */
-export type QuickFilter = 'wait' | 'quiet' | 'ctx' | 'run' | 'idle' | 'ext'
+/** `wait` / `quiet` / `run` / `idle` match a state; `ctx` a nearly full context. */
+export type QuickFilter = 'wait' | 'quiet' | 'ctx' | 'run' | 'idle'
 
 /** The filter of each state (the Session card's donut segments). */
 export const STATE_FILTER: Record<SessionState, QuickFilter> = {
@@ -225,7 +218,6 @@ export const STATE_FILTER: Record<SessionState, QuickFilter> = {
   quiet: 'quiet',
   running: 'run',
   idle: 'idle',
-  external: 'ext',
 }
 
 export function matchesQuery(s: Pick<RtSession, 'title' | 'projectName'>, query: string): boolean {
@@ -239,13 +231,12 @@ export function matchesFilter(s: RtSession, filter: QuickFilter | null): boolean
   if (filter === 'ctx') return ctxFull(s)
   if (filter === 'run') return s.state === 'running'
   if (filter === 'idle') return s.state === 'idle'
-  if (filter === 'ext') return s.state === 'external'
   return true
 }
 
 /** Counts behind the Session card's chips and donut. */
 export function filterCounts(list: readonly RtSession[]): Record<QuickFilter, number> {
-  const out = { wait: 0, quiet: 0, ctx: 0, run: 0, idle: 0, ext: 0 }
+  const out = { wait: 0, quiet: 0, ctx: 0, run: 0, idle: 0 }
   for (const s of list) {
     out[STATE_FILTER[s.state]]++
     if (ctxFull(s)) out.ctx++
@@ -269,7 +260,7 @@ function treeRank(n: TreeNode): RtSession {
 /**
  * One list for every session: workers sit under the session that spawned them
  * (a worker whose parent is gone becomes top-level). Top level: the most
- * urgent first (counting the workers), sessions outside Devdy last.
+ * urgent first (counting the workers).
  */
 export function buildTree(list: readonly RtSession[]): TreeNode[] {
   const byId = new Map(list.map((s) => [s.id, s]))

@@ -3,7 +3,7 @@
   "subtitle": "{date} · live",
   "untitled": "Untitled session",
   "loadError": "Could not load the running sessions: {error}",
-  "fallbackHint": "Limited live data: per-session activity, today's runs and sessions outside Devdy show once the app provides them.",
+  "fallbackHint": "Limited live data: per-session activity and today's runs show once the app provides them.",
   "staleHint": "Live details could not be refreshed just now; showing the last ones received.",
   "empty": "Nothing is running right now. Start a session from a project and it shows up here.",
   "noMatch": "No session matches.",
@@ -22,8 +22,7 @@
         "quiet": "{n} quiet for long",
         "ctx": "{n} context > 80%",
         "run": "{n} running",
-        "idle": "{n} waiting on workers",
-        "ext": "{n} outside Devdy"
+        "idle": "{n} waiting on workers"
       },
       "donutLabel": "Sessions by state: {parts}",
       "activityLabel": "Combined activity of every session over the last 20 minutes",
@@ -33,8 +32,7 @@
         "quiet": "Quiet for long",
         "ctx": "Context > 80%",
         "run": "Running",
-        "idle": "Waiting on workers",
-        "ext": "Outside Devdy"
+        "idle": "Waiting on workers"
       },
       "none": "Nothing running",
       "activityShort": "Activity 20m",
@@ -97,14 +95,12 @@
     "waiting": "waiting for you",
     "quiet": "quiet for long",
     "running": "running",
-    "idle": "waiting on workers",
-    "external": "outside Devdy"
+    "idle": "waiting on workers"
   },
   "role": {
     "conductor": "session",
     "worker": "worker",
-    "session": "session",
-    "external": "outside Devdy"
+    "session": "session"
   },
   "engine": {
     "claude": "Claude",
@@ -117,12 +113,10 @@
     "question": "Asks: {detail}",
     "questionBare": "Has a question for you",
     "wait": "Waiting on workers",
-    "working": "Working…",
-    "lastActivity": "last activity {age} ago"
+    "working": "Working…"
   },
   "contextTitle": "Context window {pct}% full",
   "contextUnknown": "Context use not known yet",
-  "transcriptUnavailable": "This session isn't linked to a Devdy project yet, so its transcript can't be opened here.",
   "emptyTitle": "Nothing running",
   "running": {
     "title": "Running"
@@ -177,7 +171,6 @@
     "session": "Session",
     "pr": "PR review",
     "issue": "Issue analysis",
-    "conductor": "Conductor (with workers)",
-    "external": "Outside Devdy"
+    "conductor": "Conductor (with workers)"
   }
 }

@@ -1,5 +1,5 @@
 // Runtime Dashboard data: the live runs, their per-run activity, resources,
-// today's finished runs, sessions outside Devdy and the 5-hour / weekly quotas.
+// today's finished runs and the 5-hour / weekly quotas.
 //
 // Sources: `get_runtime_snapshot` (polled ~3 s while the screen is visible) +
 // `list_active_runs` + the liveRuns store. While the backend does not provide
@@ -22,7 +22,6 @@ import { sumBuckets, weeklyWindow } from '@/lib/runtimeCharts'
 import {
   ACTIVITY_BUCKETS,
   CMD_RUNTIME_SNAPSHOT,
-  type ExternalSession,
   type RuntimeResources,
   type RuntimeRun,
   type RuntimeSnapshot,
@@ -263,49 +262,15 @@ export function useRuntimeDashboard() {
     }
   }
 
-  function buildExternal(e: ExternalSession): RtSession {
-    const projectName = e.projectName ?? (e.cwd ? e.cwd.split('/').filter(Boolean).pop() ?? '' : '')
-    return {
-      id: `ext:${e.id}`,
-      runId: null,
-      projectId: e.projectId,
-      projectName,
-      title: e.title,
-      engine: e.engine === 'codex' ? 'codex' : 'claude',
-      role: 'external',
-      runType: null,
-      refNumber: null,
-      accountName: null,
-      repoProvider: null,
-      repoPath: null,
-      pinned: false,
-      protected: false,
-      conductorId: null,
-      live: false,
-      state: 'external',
-      waitingSince: null,
-      startedAt: null,
-      now: { kind: 'none', tool: null, detail: '', since: parseTime(e.lastActivityAt) },
-      ctxPercent: null,
-      spark: [],
-      cpuPercent: null,
-      rssKb: null,
-    }
-  }
-
   function rebuild() {
     const t0 = Date.now()
     now.value = t0
     const snap = new Map((snapshot.value?.runs ?? []).map((r) => [r.runId, r]))
     const bg = bgByRun()
     const out = activeRuns.value.map((ar) => buildRun(ar, snap, bg, t0))
-    for (const e of snapshot.value?.external ?? []) out.push(buildExternal(e))
     for (const id of tracks.keys()) if (!activeRuns.value.some((r) => r.run_id === id)) tracks.delete(id)
     sessions.value = out
   }
-
-  // ── External sessions (detail panel) ────────────────────────────────────
-  const externalById = computed(() => new Map((snapshot.value?.external ?? []).map((e) => [`ext:${e.id}`, e])))
 
   // ── Resources / today ───────────────────────────────────────────────────
   const cores = typeof navigator !== 'undefined' && navigator.hardwareConcurrency > 0 ? navigator.hardwareConcurrency : 1
@@ -574,7 +539,6 @@ export function useRuntimeDashboard() {
     today,
     activity,
     quotas,
-    externalById,
     refresh: poll,
     rebuild,
   }

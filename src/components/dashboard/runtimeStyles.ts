@@ -2,7 +2,6 @@
 // and light / dark mode read correctly) and the localized labels shared by the
 // cards, rows, groups and the detail panel.
 import { useI18n } from 'vue-i18n'
-import { formatAge } from '@/lib/backgroundProcesses'
 import { formatElapsed, toolLabel, type RtSession, type SessionState } from '@/lib/runtimeDashboard'
 
 /** Status pill. */
@@ -11,7 +10,6 @@ export const STATE_TAG: Record<SessionState, string> = {
   quiet: 'bg-warning/15 text-warning',
   running: 'bg-success/15 text-success',
   idle: 'bg-muted text-muted-foreground',
-  external: 'bg-info/15 text-info',
 }
 
 /** Small filled square / dot (session map, group dots). Quiet is hatched. */
@@ -20,7 +18,6 @@ export const STATE_FILL: Record<SessionState, string> = {
   quiet: 'bg-[repeating-linear-gradient(135deg,var(--color-warning)_0_2px,transparent_2px_4px)] ring-1 ring-inset ring-warning/70',
   running: 'bg-success',
   idle: 'bg-muted-foreground/40',
-  external: 'bg-info/60',
 }
 
 /** Card / row frame by state; the selected one gets a thin primary border and tint. */
@@ -52,7 +49,7 @@ export function useRuntimeLabels() {
   }
 
   /** The "now" line: what the session is doing / asking. */
-  function nowText(s: RtSession, now: number): string {
+  function nowText(s: RtSession): string {
     const n = s.now
     switch (n.kind) {
       case 'permission':
@@ -69,17 +66,13 @@ export function useRuntimeLabels() {
       case 'last':
         return n.detail
       default:
-        if (s.state === 'external') {
-          const age = n.since !== null ? formatAge(new Date(n.since).toISOString(), now) : ''
-          return age ? t('dashboard.now.lastActivity', { age }) : ''
-        }
         return t('dashboard.now.working')
     }
   }
 
   /** How long the current step has lasted (empty when unknown). */
   function nowFor(s: RtSession, now: number): string {
-    return s.now.since !== null && s.state !== 'external' ? formatElapsed(now - s.now.since) : ''
+    return s.now.since !== null ? formatElapsed(now - s.now.since) : ''
   }
 
   function elapsed(s: RtSession, now: number): string {

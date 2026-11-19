@@ -95,7 +95,6 @@ pub fn start(db: Pool<Sqlite>, app: AppHandle) {
             }
 
             for path in files {
-                note_write(&path);
                 // At most one pass per file at a time: a change landing while a
                 // pass runs only marks it dirty, and that pass reruns once.
                 {
@@ -126,41 +125,6 @@ pub fn start(db: Pool<Sqlite>, app: AppHandle) {
             }
         }
     });
-}
-
-/// Transcripts written lately (path → when the watcher saw the write), for the
-/// Runtime Dashboard's sessions running outside Devdy. Bounded: entries older
-/// than [`RECENT_KEEP`] are dropped whenever the map grows past [`MAX_RECENT`].
-static RECENT_WRITES: OnceLock<Mutex<HashMap<PathBuf, chrono::DateTime<chrono::Utc>>>> = OnceLock::new();
-const RECENT_KEEP: Duration = Duration::from_secs(10 * 60);
-const MAX_RECENT: usize = 256;
-
-fn recent_writes_map() -> &'static Mutex<HashMap<PathBuf, chrono::DateTime<chrono::Utc>>> {
-    RECENT_WRITES.get_or_init(Mutex::default)
-}
-
-fn note_write(path: &Path) {
-    let now = chrono::Utc::now();
-    let mut map = recent_writes_map().lock().unwrap_or_else(|e| e.into_inner());
-    map.insert(path.to_path_buf(), now);
-    if map.len() > MAX_RECENT {
-        let keep = chrono::Duration::from_std(RECENT_KEEP).unwrap_or_default();
-        map.retain(|_, t| now - *t <= keep);
-    }
-}
-
-/// Transcripts written within `window` of now, newest first.
-pub fn recent_writes(window: Duration) -> Vec<(PathBuf, chrono::DateTime<chrono::Utc>)> {
-    let now = chrono::Utc::now();
-    let window = chrono::Duration::from_std(window).unwrap_or_default();
-    let map = recent_writes_map().lock().unwrap_or_else(|e| e.into_inner());
-    let mut out: Vec<_> = map
-        .iter()
-        .filter(|(_, t)| now - **t <= window)
-        .map(|(p, t)| (p.clone(), *t))
-        .collect();
-    out.sort_by_key(|w| std::cmp::Reverse(w.1));
-    out
 }
 
 /// Paths with a pass in flight → whether another change arrived during it.

@@ -53,7 +53,6 @@
 .rt-item[data-state='waiting'],
 .rt-item[data-state='quiet'] { --rt-accent: hsl(var(--warning)); }
 .rt-item[data-state='idle'] { --rt-accent: hsl(var(--muted-foreground) / 0.45); }
-.rt-item[data-state='external'] { --rt-accent: hsl(var(--info)); }
 
 /* Status accent bar on the left edge. */
 .rt-item::before {

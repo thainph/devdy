@@ -31,7 +31,7 @@ const emit = defineEmits<{ select: [id: string]; toggle: [id: string]; menu: [id
 const { t } = useI18n()
 const L = useRuntimeLabels()
 const s = computed(() => props.session)
-const nowText = computed(() => L.nowText(s.value, props.now))
+const nowText = computed(() => L.nowText(s.value))
 const repoRef = computed(() => historyRepoRef({ runType: s.value.runType ?? 'session', repoPath: s.value.repoPath, refNumber: s.value.refNumber }))
 const account = computed(() => (s.value.engine === 'codex' || !s.value.accountName ? t(`dashboard.engine.${s.value.engine}`) : s.value.accountName))
 /** Radius of the context ring (36×36 box, 3.5px stroke). */

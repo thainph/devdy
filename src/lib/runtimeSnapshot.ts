@@ -14,7 +14,6 @@ export interface RuntimeSnapshot {
   runs: RuntimeRun[]
   resources: RuntimeResources
   today: RuntimeToday
-  external: ExternalSession[]
 }
 
 export interface RuntimeRun {
@@ -96,24 +95,6 @@ export interface RecentRun {
   /** Short reason for failed, no secrets. */
   error: string | null
   finishedAt: string
-}
-
-export interface ExternalSession {
-  /** Stable id (transcript path hash or session id). */
-  id: string
-  engine: 'claude' | 'codex'
-  /** e.g. "claude · lunchbox" (cwd basename). */
-  title: string
-  cwd: string | null
-  /** Matched Devdy project if cwd is inside one. */
-  projectId: string | null
-  projectName: string | null
-  /** Only sessions with activity in the last ~2 minutes are "running". */
-  lastActivityAt: string
-  /** For "Open transcript"; read-only. */
-  transcriptPath: string
-  /** The Devdy run this session is mirrored into, if any (optional: older backends omit it). */
-  runId?: string | null
 }
 
 /** Number of per-minute activity buckets in {@link RuntimeRun.eventsPerMinute}. */

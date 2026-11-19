@@ -1,11 +1,11 @@
 <script setup lang="ts">
 // A session's kind as a tinted tile with an icon — plain session, PR review,
-// issue analysis, conductor, or a CLI session outside Devdy. Shared by the
+// issue analysis or conductor. Shared by the
 // Dashboard's running rows, its History and the project's session list, so a
 // kind reads the same everywhere.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { CircleDot, GitPullRequest, MessageSquare, Network, SquareTerminal } from 'lucide-vue-next'
+import { CircleDot, GitPullRequest, MessageSquare, Network } from 'lucide-vue-next'
 import type { SessionKind } from '@/lib/runtimeDashboard'
 
 const props = withDefaults(defineProps<{ kind: SessionKind; size?: 'xs' | 'sm' | 'md' | 'lg' }>(), { size: 'lg' })
@@ -16,7 +16,6 @@ const KIND = {
   pr: { icon: GitPullRequest, tile: 'bg-info/14 text-info' },
   issue: { icon: CircleDot, tile: 'bg-success/13 text-success' },
   conductor: { icon: Network, tile: 'bg-accent text-accent-foreground' },
-  external: { icon: SquareTerminal, tile: 'bg-muted text-muted-foreground' },
 } as const
 
 const k = computed(() => KIND[props.kind])

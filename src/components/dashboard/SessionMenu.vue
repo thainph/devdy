@@ -20,8 +20,6 @@ export interface SessionMenuTarget {
   deletable: boolean
   /** Read state; null = none (a running session). */
   unread: boolean | null
-  /** Only the "open" items (a session outside Devdy mirrored into a run). */
-  openOnly?: boolean
 }
 
 /** Where to anchor the menu: the pointer, or (Menu key / Shift+F10 fire at 0,0) the row. */
@@ -171,56 +169,54 @@ async function remove(s: SessionMenuTarget) {
         <AppWindow class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('dashboard.history.menu.openMain') }}
       </DropdownItem>
-      <template v-if="!target.openOnly">
-        <DropdownItem v-if="webUrl" @click="act(() => openUrl(webUrl ?? ''))">
-          <CircleDot v-if="isIssue" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <GitPullRequest v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ webLabel }}
-        </DropdownItem>
-        <template v-if="target.unread !== null">
-          <DropdownSeparator />
-          <DropdownItem v-if="target.unread" @click="act((s) => setRead(s, true))">
-            <Eye class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('dashboard.history.menu.markRead') }}
-          </DropdownItem>
-          <DropdownItem v-else @click="act((s) => setRead(s, false))">
-            <EyeOff class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('dashboard.history.menu.markUnread') }}
-          </DropdownItem>
-        </template>
+      <DropdownItem v-if="webUrl" @click="act(() => openUrl(webUrl ?? ''))">
+        <CircleDot v-if="isIssue" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <GitPullRequest v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ webLabel }}
+      </DropdownItem>
+      <template v-if="target.unread !== null">
         <DropdownSeparator />
-        <DropdownItem @click="act(rename)">
-          <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('run.rename') }}
+        <DropdownItem v-if="target.unread" @click="act((s) => setRead(s, true))">
+          <Eye class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('dashboard.history.menu.markRead') }}
         </DropdownItem>
-        <DropdownItem @click="act(togglePin)">
-          <component :is="target.pinned ? PinOff : Pin" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ target.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
+        <DropdownItem v-else @click="act((s) => setRead(s, false))">
+          <EyeOff class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('dashboard.history.menu.markUnread') }}
         </DropdownItem>
-        <DropdownItem @click="act(toggleProtect)">
-          <component :is="target.protected ? ShieldOff : Shield" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ target.protected ? t('run.unprotect') : t('run.protect') }}
-        </DropdownItem>
+      </template>
+      <DropdownSeparator />
+      <DropdownItem @click="act(rename)">
+        <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('run.rename') }}
+      </DropdownItem>
+      <DropdownItem @click="act(togglePin)">
+        <component :is="target.pinned ? PinOff : Pin" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ target.pinned ? t('run.unpinFromTop') : t('run.pinToTop') }}
+      </DropdownItem>
+      <DropdownItem @click="act(toggleProtect)">
+        <component :is="target.protected ? ShieldOff : Shield" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ target.protected ? t('run.unprotect') : t('run.protect') }}
+      </DropdownItem>
+      <DropdownSeparator />
+      <DropdownItem v-if="webUrl" @click="act(() => copy(webUrl ?? '', t('dashboard.history.menu.linkCopied')))">
+        <Link class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ isIssue ? t('dashboard.history.menu.copyIssueLink') : t('dashboard.history.menu.copyPrLink') }}
+      </DropdownItem>
+      <DropdownItem @click="act((s) => copy(s.runId, t('run.sessionIdCopied')))">
+        <Hash class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('run.copySessionId') }}
+      </DropdownItem>
+      <template v-if="target.live || target.deletable">
         <DropdownSeparator />
-        <DropdownItem v-if="webUrl" @click="act(() => copy(webUrl ?? '', t('dashboard.history.menu.linkCopied')))">
-          <Link class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ isIssue ? t('dashboard.history.menu.copyIssueLink') : t('dashboard.history.menu.copyPrLink') }}
+        <DropdownItem v-if="target.live" variant="destructive" @click="act(stop)">
+          <CircleStop class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('dashboard.history.menu.stop') }}…
         </DropdownItem>
-        <DropdownItem @click="act((s) => copy(s.runId, t('run.sessionIdCopied')))">
-          <Hash class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('run.copySessionId') }}
+        <DropdownItem v-else variant="destructive" @click="act(remove)">
+          <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('dashboard.history.menu.delete') }}…
         </DropdownItem>
-        <template v-if="target.live || target.deletable">
-          <DropdownSeparator />
-          <DropdownItem v-if="target.live" variant="destructive" @click="act(stop)">
-            <CircleStop class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('dashboard.history.menu.stop') }}…
-          </DropdownItem>
-          <DropdownItem v-else variant="destructive" @click="act(remove)">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('dashboard.history.menu.delete') }}…
-          </DropdownItem>
-        </template>
       </template>
     </template>
   </ContextMenu>

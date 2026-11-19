@@ -26,13 +26,12 @@ const { t } = useI18n()
 const L = useRuntimeLabels()
 
 // ── Donut ────────────────────────────────────────────────────────────────────
-const STATES: SessionState[] = ['running', 'waiting', 'quiet', 'idle', 'external']
+const STATES: SessionState[] = ['running', 'waiting', 'quiet', 'idle']
 const SEG_STROKE: Record<SessionState, string> = {
   running: 'stroke-success',
   waiting: 'stroke-warning',
   quiet: 'stroke-warning/55',
   idle: 'stroke-muted-foreground/45',
-  external: 'stroke-info',
 }
 const R = 50
 const segments = computed(() =>
@@ -102,7 +101,7 @@ const rate = computed(() => props.activity[props.activity.length - 1] ?? 0)
         </div>
       </div>
 
-      <!-- Two columns: at most 6 entries (5 states + context), so 3 rows always fit. -->
+      <!-- Two columns: at most 5 entries (4 states + context), so 3 rows always fit. -->
       <ul class="grid min-w-0 flex-1 grid-cols-2 content-center gap-x-1.5 gap-y-px" :aria-label="t('dashboard.stat.sessions.legendLabel')">
         <li v-for="r in legend" :key="r.key" class="min-w-0">
           <button

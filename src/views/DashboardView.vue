@@ -128,22 +128,10 @@ function openRun(projectId: string, runId: string, where: 'window' | 'main' = 'w
   tabs.open(projectId, runId)
   router.push({ name: 'project-run-detail', params: { projectId, runId } }).catch(() => {})
 }
-/** The run a session's row stands for: its own, or the one an outside session was mirrored into. */
-function runOf(s: RtSession): { projectId: string; runId: string } | null {
-  if (s.runId && s.projectId) return { projectId: s.projectId, runId: s.runId }
-  const e = s.role === 'external' ? dash.externalById.value.get(s.id) : null
-  return e?.runId && e.projectId ? { projectId: e.projectId, runId: e.runId } : null
-}
-/** A session outside Devdy opens the run its transcript was mirrored into, when there is one. */
-function openSession(s: RtSession) {
-  const run = runOf(s)
-  if (run) openRun(run.projectId, run.runId)
-  else toast.info(t('dashboard.transcriptUnavailable'))
-}
 function openById(id: string) {
   selectedId.value = id
   const s = dash.sessions.value.find((x) => x.id === id)
-  if (s) openSession(s)
+  if (s) openRun(s.projectId, s.runId)
 }
 function openHistory(r: HistoryRun, where: 'window' | 'main') {
   openRun(r.projectId, r.runId, where)
@@ -153,16 +141,14 @@ function openHistory(r: HistoryRun, where: 'window' | 'main') {
 const menu = ref<{ open: boolean; x: number; y: number; target: SessionMenuTarget | null }>({ open: false, x: 0, y: 0, target: null })
 function openMenu(id: string, e: MouseEvent) {
   const s = dash.sessions.value.find((x) => x.id === id)
-  const run = s && runOf(s)
-  // An outside session with no Devdy run to open has nothing to offer.
-  if (!s || !run) return
+  if (!s) return
   selectedId.value = id
   menu.value = {
     open: true,
     ...menuPoint(e),
     target: {
-      runId: run.runId,
-      projectId: run.projectId,
+      runId: s.runId,
+      projectId: s.projectId,
       name: s.title,
       runType: s.runType ?? 'session',
       refNumber: s.refNumber,
@@ -174,7 +160,6 @@ function openMenu(id: string, e: MouseEvent) {
       live: s.live,
       deletable: false,
       unread: null,
-      openOnly: s.role === 'external',
     },
   }
 }
@@ -241,7 +226,7 @@ function onKey(e: KeyboardEvent) {
     case 'Enter':
       // A focused button handles Enter itself.
       if (e.target instanceof HTMLElement && ['BUTTON', 'A'].includes(e.target.tagName)) return
-      if (selected.value) openSession(selected.value)
+      if (selected.value) openRun(selected.value.projectId, selected.value.runId)
       break
   }
 }
