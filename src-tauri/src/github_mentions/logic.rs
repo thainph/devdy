@@ -32,33 +32,14 @@ pub fn mentions_login(body: &str, login: &str) -> bool {
     })
 }
 
-/// `@org/team`.
-pub fn mentions_team(body: &str) -> bool {
-    body.split('@').skip(1).any(|rest| {
-        let handle: String = rest.chars().take_while(|c| c.is_ascii_alphanumeric() || matches!(c, '-' | '_' | '/')).collect();
-        let mut parts = handle.split('/');
-        matches!((parts.next(), parts.next()), (Some(a), Some(b)) if !a.is_empty() && !b.is_empty())
-    })
-}
-
-/// The comment waiting for an answer, for a notification `reason`:
-/// - `mention`: the last comment by someone else that `@`s the user;
-/// - `team_mention`: the last one that `@`s a team;
-/// - `comment` / `author`: the last comment by someone else.
-///
-/// Bots and empty bodies never count. `None` when nothing matches (for
-/// mentions the caller then looks at the description).
-pub fn pick_trigger(comments: &[Comment], login: &str, reason: &str) -> Option<Trigger> {
+/// The comment waiting for an answer: the last comment by someone else that
+/// `@`s the user directly. Team mentions and plain replies never count, nor
+/// do bots and empty bodies. `None` when nothing matches (the caller then
+/// looks at the description).
+pub fn pick_trigger(comments: &[Comment], login: &str) -> Option<Trigger> {
     let mine = |c: &Comment| c.author.eq_ignore_ascii_case(login);
     let other = |c: &Comment| !mine(c) && !c.bot && !c.body.trim().is_empty();
-    let index = comments.iter().rposition(|c| {
-        other(c)
-            && match reason {
-                "mention" => mentions_login(&c.body, login),
-                "team_mention" => mentions_team(&c.body),
-                _ => true,
-            }
-    })?;
+    let index = comments.iter().rposition(|c| other(c) && mentions_login(&c.body, login))?;
     let at = &comments[index].created_at;
     let after = || comments[index + 1..].iter().filter(|c| &c.created_at >= at);
     Some(Trigger {
@@ -86,20 +67,13 @@ mod tests {
     }
 
     #[test]
-    fn team_mention_needs_org_and_team() {
-        assert!(mentions_team("ping @sora-tech/backend"));
-        assert!(!mentions_team("ping @thainph"));
-        assert!(!mentions_team("a@b/"));
-    }
-
-    #[test]
     fn mention_trigger_and_answer() {
         let cs = vec![
             c("lam", "@thainph look at this?", "2026-11-10T01:00:00Z"),
             c("an", "+1", "2026-11-10T02:00:00Z"),
             c("thainph", "done", "2026-11-10T03:00:00Z"),
         ];
-        let t = pick_trigger(&cs, "thainph", "mention").unwrap();
+        let t = pick_trigger(&cs, "thainph").unwrap();
         assert_eq!(t.index, 0);
         assert_eq!(t.newer_comments, 1);
         assert_eq!(t.answered_at.as_deref(), Some("2026-11-10T03:00:00Z"));
@@ -112,26 +86,37 @@ mod tests {
             c("thainph", "ok", "2026-11-10T02:00:00Z"),
             c("lam", "@thainph again", "2026-11-10T03:00:00Z"),
         ];
-        let t = pick_trigger(&cs, "thainph", "mention").unwrap();
+        let t = pick_trigger(&cs, "thainph").unwrap();
         assert_eq!(t.index, 2);
         assert_eq!(t.answered_at, None);
     }
 
     #[test]
-    fn comment_reason_skips_bots_and_self() {
-        let mut bot = c("ci[bot]", "build failed", "2026-11-10T03:00:00Z");
+    fn skips_bots_self_and_plain_replies() {
+        let mut bot = c("ci[bot]", "@thainph build failed", "2026-11-10T04:00:00Z");
         bot.bot = true;
-        let cs = vec![c("hoa", "fixed, please recheck", "2026-11-10T01:00:00Z"), c("thainph", "", "2026-11-10T02:00:00Z"), bot];
-        let t = pick_trigger(&cs, "thainph", "comment").unwrap();
+        let cs = vec![
+            c("hoa", "@thainph please recheck", "2026-11-10T01:00:00Z"),
+            c("thainph", "", "2026-11-10T02:00:00Z"),
+            c("an", "fixed, no tag", "2026-11-10T03:00:00Z"),
+            bot,
+        ];
+        let t = pick_trigger(&cs, "thainph").unwrap();
         assert_eq!(t.index, 0);
         // An empty-bodied review by the user still answers.
         assert_eq!(t.answered_at.as_deref(), Some("2026-11-10T02:00:00Z"));
-        assert!(pick_trigger(&[c("thainph", "mine", "2026-11-10T01:00:00Z")], "thainph", "author").is_none());
+        assert!(pick_trigger(&[c("thainph", "@thainph mine", "2026-11-10T01:00:00Z")], "thainph").is_none());
+    }
+
+    #[test]
+    fn team_mention_and_plain_reply_are_not_mentions() {
+        let cs = vec![c("lam", "ping @sora-tech/backend", "2026-11-10T01:00:00Z"), c("an", "lgtm", "2026-11-10T02:00:00Z")];
+        assert!(pick_trigger(&cs, "thainph").is_none());
     }
 
     #[test]
     fn mention_without_matching_comment_is_none() {
         let cs = vec![c("lam", "no handle here", "2026-11-10T01:00:00Z")];
-        assert!(pick_trigger(&cs, "thainph", "mention").is_none());
+        assert!(pick_trigger(&cs, "thainph").is_none());
     }
 }

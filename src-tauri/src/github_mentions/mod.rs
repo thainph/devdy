@@ -1,11 +1,11 @@
-//! GitHub Mentions: places on GitHub where someone is waiting for the user's
-//! answer — a direct `@login`, a team mention, or a reply on an issue / PR the
-//! user takes part in — gathered across every linked GitHub account.
+//! GitHub Mentions: comments on GitHub that `@` the user directly and wait for
+//! their answer, gathered across every linked GitHub account. Team mentions
+//! and plain replies on threads the user takes part in are left out (noise).
 //!
 //! Source is the Notifications API over the last few days (setting
 //! `LOOKBACK_KEY`, default 3) with `participating=true` (read ones included, so
 //! a mention the user only glanced at on github.com stays listed). For each
-//! thread the comments are read to find the one waiting for an answer (the
+//! thread the comments are read to find the last one `@`-ing the user (the
 //! "trigger") and whether the user commented / reviewed after it ("answered").
 //!
 //! "Check with AI" opens a session on the issue / PR (in the Devdy project
@@ -21,7 +21,7 @@ mod logic;
 use crate::db::Db;
 use crate::{github, secrets};
 use futures_util::stream::{self, StreamExt};
-use logic::{mentions_login, mentions_team, pick_trigger, Comment, Trigger};
+use logic::{mentions_login, pick_trigger, Comment, Trigger};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
 use std::time::{Duration, Instant};
@@ -43,7 +43,8 @@ const LOOKBACK_KEY: &str = "github_mentions.lookback_days";
 const DEFAULT_LOOKBACK_DAYS: i64 = 3;
 pub const LOOKBACK_CHOICES: &[i64] = &[1, 3, 7, 14, 30];
 /// Per-thread results, persisted so a restart only re-reads changed threads.
-const THREADS_KEY: &str = "github_mentions.threads";
+/// (v2: only direct mentions; older entries also held replies / team tags.)
+const THREADS_KEY: &str = "github_mentions.threads.v2";
 /// Answered mentions stay listed (collapsed) this long after the answer.
 const ANSWERED_KEEP_DAYS: i64 = 7;
 /// Threads whose comments are read at once, per account.
@@ -53,9 +54,12 @@ const MAX_THREADS: usize = 150;
 const EXCERPT_CHARS: usize = 600;
 const MAX_DISMISSED: usize = 500;
 
-/// Notification reasons that can wait for an answer. Review requests have the
-/// PR Inbox; assignments, CI and state changes ask nothing of the user.
-const REASONS: &[&str] = &["mention", "team_mention", "comment", "author"];
+/// Notification reasons whose threads may hold a direct `@login`: a mention on
+/// a thread the user already follows can arrive as `comment` / `author`, so
+/// those are read too, but only a comment that `@`s the user is listed. Team
+/// mentions, review requests (PR Inbox), assignments, CI and state changes are
+/// not.
+const REASONS: &[&str] = &["mention", "comment", "author"];
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
 pub struct MentionComment {
@@ -79,7 +83,7 @@ pub struct MentionItem {
     pub account_id: String,
     pub account_label: String,
     pub account_login: String,
-    /// mention | team_mention | comment | author
+    /// Always `mention` (only direct mentions are listed).
     pub reason: String,
     pub unread: bool,
     /// PullRequest | Issue | Discussion
@@ -354,7 +358,7 @@ async fn build_item(
         account_id: acct.id.clone(),
         account_label: acct.label.clone(),
         account_login: acct.login.clone(),
-        reason: n.reason.clone(),
+        reason: "mention".into(),
         unread: n.unread,
         kind: n.subject.kind.clone(),
         owner: owner.clone(),
@@ -374,11 +378,11 @@ async fn build_item(
         existing_run_status: None,
     };
 
-    // Discussions (GraphQL only) and other subjects: no comment lookup — listed
-    // while unread, so the user can open them on GitHub.
+    // Discussions (GraphQL only): no comment lookup — listed while unread when
+    // GitHub says the user was mentioned, so they can open it on GitHub.
     if is_discussion {
         let url = format!("{}/discussions", n.repository.html_url);
-        return Ok(n.unread.then(|| base_item(url)));
+        return Ok((n.unread && n.reason == "mention").then(|| base_item(url)));
     }
     let (Some(number), true) = (number, n.subject.kind == "Issue" || is_pr) else {
         return Ok(None);
@@ -388,16 +392,15 @@ async fn build_item(
 
     let comments = thread_comments(client, &owner, &repo, number, is_pr, since).await?;
     let plain: Vec<Comment> = comments.iter().map(|(c, _)| c.clone()).collect();
-    let mut found = pick_trigger(&plain, &acct.login, &n.reason);
+    let mut found = pick_trigger(&plain, &acct.login);
 
     // A mention in the issue / PR description itself (no comment carries it).
     let mut body_trigger: Option<MentionComment> = None;
-    if found.is_none() && (n.reason == "mention" || n.reason == "team_mention") {
+    if found.is_none() && n.reason == "mention" {
         let route = format!("/repos/{owner}/{repo}/issues/{number}");
         let issue = client.get::<GhIssue, _, ()>(&route, None).await.map_err(|e| e.to_string())?;
         let body = issue.body.clone().unwrap_or_default();
-        let mentioned = if n.reason == "mention" { mentions_login(&body, &acct.login) } else { mentions_team(&body) };
-        if mentioned {
+        if mentions_login(&body, &acct.login) {
             if let Some(user) = issue.user.filter(|u| !u.login.eq_ignore_ascii_case(&acct.login)) {
                 let mine_after = plain
                     .iter()
