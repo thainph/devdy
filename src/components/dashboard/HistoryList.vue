@@ -2,7 +2,8 @@
 // Dashboard History: every session that ran, in every project, latest activity
 // first, one continuous list that loads older pages as it scrolls to the end.
 // Search is by session name; "Unread" keeps only runs that finished since the
-// user last saw them. A click asks the parent to open the run (in its own
+// user last saw them. Laid out like Running: a tray (`.rt-tray`) with the
+// header inside and every run a card on it; a read run's card sits back. A click asks the parent to open the run (in its own
 // window); the row stops reading as unread right away. A right-click (or the
 // Menu key / Shift+F10) opens the shared session menu (`SessionMenu`).
 //
@@ -276,9 +277,11 @@ defineExpose({ focusSearch })
 </script>
 
 <template>
-  <section class="flex min-h-0 min-w-0 flex-col gap-2" :aria-label="t('dashboard.history.title')">
-    <div class="flex min-h-7 flex-wrap items-center gap-2">
-      <History class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="2" aria-hidden="true" />
+  <section class="rt-tray flex min-h-0 min-w-0 flex-col gap-1.5 p-1.5" :aria-label="t('dashboard.history.title')">
+    <div class="flex min-h-7 flex-wrap items-center gap-2 pt-1 pr-1 pb-0.5 pl-2">
+      <span class="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-primary/15 text-primary" aria-hidden="true">
+        <History class="h-3.5 w-3.5" :stroke-width="2" />
+      </span>
       <h2 class="text-[13px] font-bold">{{ t('dashboard.history.title') }}</h2>
       <span v-if="unreadCount" class="rounded-full bg-primary/15 px-2 text-[11px] font-bold text-primary">{{ t('dashboard.history.unreadCount', { n: unreadCount }) }}</span>
       <span class="ml-auto flex min-w-0 items-center gap-1.5">
@@ -291,23 +294,21 @@ defineExpose({ focusSearch })
       </span>
     </div>
 
-    <div ref="scroller" class="min-h-[240px] overflow-y-auto rounded-lg border border-border/70 bg-card" style="max-height: max(320px, calc(100vh - 330px))">
+    <div ref="scroller" class="min-h-[240px] overflow-y-auto" style="max-height: max(320px, calc(100vh - 330px))">
       <p v-if="error && !items.length" class="px-4 py-5 text-center text-xs text-destructive">{{ t('dashboard.history.loadError', { error }) }}</p>
-      <p v-else-if="loaded && !rows.length && !loading" class="px-4 py-5 text-center text-xs text-muted-foreground">
+      <p v-else-if="loaded && !rows.length && !loading" class="rounded-[9px] border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground">
         {{ query.trim() ? t('dashboard.history.noMatch') : show === 'unread' ? t('dashboard.history.noUnread') : t('dashboard.history.empty') }}
       </p>
-      <ul class="flex flex-col px-1 py-0.5" role="list">
-        <!-- A hairline between rows, starting after the kind tile; it steps aside on hover. -->
-        <li
-          v-for="(r, i) in rows"
-          :key="r.runId"
-          class="relative"
-          :class="i > 0 && 'before:absolute before:top-0 before:right-2.5 before:left-[54px] before:h-px before:bg-border/55 hover:before:opacity-0 [&:hover+li]:before:opacity-0'"
-        >
+      <ul class="flex flex-col gap-1.5" role="list">
+        <!-- Unread: a raised card; read: a quieter one, flat on the tray. -->
+        <li v-for="r in rows" :key="r.runId">
           <button
             type="button"
-            class="relative flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-md py-[9px] pr-2.5 pl-3 text-left hover:bg-accent/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
-            :class="menu.open && menu.target?.runId === r.runId && 'bg-accent/60'"
+            class="relative flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-lg border py-[9px] pr-2.5 pl-3 text-left transition-colors hover:border-primary/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary motion-reduce:transition-none"
+            :class="[
+              isUnread(r) ? 'border-border/50 bg-card shadow-sm shadow-black/5' : 'border-transparent bg-card/60 hover:bg-card',
+              menu.open && menu.target?.runId === r.runId && 'border-primary/40! bg-card!',
+            ]"
             :title="`${name(r)} — ${statusLabel(r)}`"
             @click="open(r)"
             @contextmenu.prevent="openMenu(r, $event)"
@@ -349,7 +350,7 @@ defineExpose({ focusSearch })
         </li>
       </ul>
       <div ref="sentinel" class="h-px" aria-hidden="true" />
-      <p v-if="loading && items.length" class="border-t border-border/60 py-2 text-center text-[11px] text-muted-foreground" aria-live="polite">{{ t('dashboard.history.loadingMore') }}</p>
+      <p v-if="loading && items.length" class="py-2 text-center text-[11px] text-muted-foreground" aria-live="polite">{{ t('dashboard.history.loadingMore') }}</p>
     </div>
 
     <SessionMenu

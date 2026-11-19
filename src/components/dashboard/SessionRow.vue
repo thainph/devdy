@@ -5,7 +5,8 @@
 // (conductor) · account · the context ring with its % inside · elapsed.
 // The whole row is one button that opens the session (a right-click asks for
 // the session menu); the workers toggle sits above it. What it is doing now
-// is in the tooltip. Status accent bar, waiting glow, hover lift and fade-in
+// is in the tooltip. A card raised on the list tray (`frameClass`, like a
+// History row). Status accent bar, waiting glow, hover lift and fade-in
 // come from `.rt-item` (runtime.css). In a narrow list (under 640px, a
 // container query on SessionTree) the context ring drops out.
 import { computed } from 'vue'

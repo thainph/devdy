@@ -35,6 +35,16 @@
     0 8px 24px -12px hsl(var(--primary) / 0.3);
 }
 
+/* ── List tray: a recessed panel (Running, History) whose rows are cards ───── */
+/* A hair off the page ground toward the foreground: darker than the page in a
+ * light theme, between the page and a card in a dark one, so the cards inside
+ * read as raised in every color theme. */
+.rt-tray {
+  border: 1px solid hsl(var(--border) / 0.7);
+  border-radius: 14px;
+  background: color-mix(in srgb, hsl(var(--foreground)) 3%, hsl(var(--background)));
+}
+
 /* ── Count-up number: a registered integer eased by CSS ───────────────────── */
 .rt-count {
   counter-reset: rt-n var(--rt-n);

@@ -20,13 +20,17 @@ export const STATE_FILL: Record<SessionState, string> = {
   idle: 'bg-muted-foreground/40',
 }
 
-/** Card / row frame by state; the selected one gets a thin primary border and tint. */
+/**
+ * Row card by state (raised on the list tray, `.rt-tray`); the selected one
+ * gets a thin primary border and tint.
+ */
 export function frameClass(s: Pick<RtSession, 'state'>, selected: boolean): string[] {
   const out: string[] = []
-  if (s.state === 'waiting') out.push('border-warning/60 bg-warning/10')
+  // The tint mixed into the card, so it stays opaque on the tray.
+  if (s.state === 'waiting') out.push('border-warning/60 bg-[color-mix(in_srgb,var(--color-warning)_10%,var(--color-card))]')
   else if (s.state === 'quiet') out.push('border-dashed border-warning/70 bg-card')
-  else out.push('border-border/70 bg-card')
-  if (selected) out.push('border-primary/70! bg-primary/[0.06]!')
+  else out.push('border-border/50 bg-card shadow-sm shadow-black/5')
+  if (selected) out.push('border-primary/70! bg-[color-mix(in_srgb,var(--color-primary)_6%,var(--color-card))]!')
   else out.push('hover:border-primary/40')
   return out
 }

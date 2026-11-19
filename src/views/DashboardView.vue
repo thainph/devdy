@@ -279,8 +279,12 @@ const SHORTCUTS = [
         </div>
 
         <div class="grid grid-cols-1 items-start gap-4 @min-[1000px]:grid-cols-[minmax(0,1.55fr)_minmax(320px,1fr)]">
-          <section class="flex min-w-0 flex-col gap-2" :aria-label="t('dashboard.running.title')">
-            <div class="flex min-h-7 flex-wrap items-center gap-2">
+          <!-- A tray like History's: the header inside, every session a card on it. -->
+          <section class="rt-tray flex min-w-0 flex-col gap-1.5 p-1.5" :aria-label="t('dashboard.running.title')">
+            <div class="flex min-h-7 flex-wrap items-center gap-2 pt-1 pr-1 pb-0.5 pl-2">
+              <span class="grid h-6 w-6 shrink-0 place-items-center rounded-md bg-success/15 text-success" aria-hidden="true">
+                <Activity class="h-3.5 w-3.5" :stroke-width="2" />
+              </span>
               <h2 class="text-[13px] font-bold">{{ t('dashboard.running.title') }}</h2>
               <span class="rounded-full bg-muted px-2 text-[11px] font-bold text-muted-foreground tabular-nums">{{ total }}</span>
               <span class="ml-auto flex gap-1.5">
@@ -291,14 +295,14 @@ const SHORTCUTS = [
 
             <div
               v-if="dash.loaded.value && !total"
-              class="flex flex-col items-center gap-2 rounded-lg border-[1.5px] border-dashed border-border px-5 py-8 text-center"
+              class="flex flex-col items-center gap-2 rounded-[9px] border-[1.5px] border-dashed border-border px-5 py-8 text-center"
             >
               <p class="text-sm font-bold text-foreground">{{ t('dashboard.emptyTitle') }}</p>
               <p class="max-w-[46ch] text-xs text-muted-foreground">{{ t('dashboard.empty') }}</p>
             </div>
             <p
               v-else-if="filter !== null && !rows.length"
-              class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
+              class="rounded-[9px] border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
             >
               {{ t('dashboard.noMatch') }}
             </p>
