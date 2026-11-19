@@ -2,13 +2,13 @@
 // "Display" header button + popover for GitHub Mentions: how many days back
 // to look, group by repo / person / nothing, and the muted threads / repos
 // ("Not interested") with a way to unmute them, and the "Check with AI"
-// prompt editor entry. Same panel as PrInboxDisplayPopover.
+// prompt editor entry, and the background AI sorting switch. Same panel as PrInboxDisplayPopover.
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
-import { Button } from '@/components/ui'
+import { Button, ToggleSwitch } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { MENTION_GROUP_BYS, type MentionMute } from '@/lib/githubMentions'
@@ -36,6 +36,10 @@ watch(open, o => { if (o) void store.loadMutes() })
 function editPrompt() {
   open.value = false
   emit('edit-prompt')
+}
+
+function toggleAiTriage() {
+  store.setAiTriage(!store.aiTriage).catch(e => toast.error(String(e)))
 }
 
 function unmute(m: MentionMute) {
@@ -98,6 +102,15 @@ function unmute(m: MentionMute) {
           <span class="min-w-0 flex-1 truncate">{{ t(`githubMentions.display.${g}`) }}</span>
           <Check v-if="store.groupBy === g" class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
         </button>
+      </div>
+
+      <!-- Background AI sorting into reply / FYI / done -->
+      <div class="mt-3 flex items-start gap-2 px-1">
+        <div class="min-w-0 flex-1">
+          <p class="text-sm text-foreground">{{ t('githubMentions.display.aiTriage') }}</p>
+          <p class="mt-0.5 text-[11px] text-muted-foreground">{{ t('githubMentions.display.aiTriageHint') }}</p>
+        </div>
+        <ToggleSwitch :checked="store.aiTriage" :label="t('githubMentions.display.aiTriage')" @toggle="toggleAiTriage" />
       </div>
 
       <!-- Prompt a "Check with AI" session starts with -->

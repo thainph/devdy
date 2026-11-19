@@ -15,15 +15,24 @@
 //! Like the PR Inbox (`pr_inbox`) the last result is cached in memory and
 //! broadcast (`UPDATED_EVENT`) after each fetch, and a poller re-fetches every
 //! `github_mentions.poll_minutes` (default 5, "0" = off).
+//!
+//! Each mention is sorted into `reply` / `fyi` / `done` (`triage`): the user's
+//! own choice wins, then what the thread settles (answered, closed / merged, a
+//! 👍 on the comment), then the AI's verdict (sorted in the background after a
+//! fetch, `AI_TRIAGE_KEY`, cached per trigger comment), else `cc` / crowd
+//! tags. Only `reply` counts as waiting.
 
 mod logic;
+mod triage;
 
+use crate::commands::translate::{submit_prompt_as, TranslateState, TurnEvent};
 use crate::db::Db;
 use crate::{github, secrets};
 use futures_util::stream::{self, StreamExt};
 use logic::{mentions_login, pick_trigger, Comment, Trigger};
 use serde::{Deserialize, Serialize};
 use std::collections::{HashMap, HashSet};
+use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::{Duration, Instant};
 use tauri::{AppHandle, Emitter, State};
 
@@ -43,8 +52,28 @@ const LOOKBACK_KEY: &str = "github_mentions.lookback_days";
 const DEFAULT_LOOKBACK_DAYS: i64 = 3;
 pub const LOOKBACK_CHOICES: &[i64] = &[1, 3, 7, 14, 30];
 /// Per-thread results, persisted so a restart only re-reads changed threads.
-/// (v2: only direct mentions; older entries also held replies / team tags.)
-const THREADS_KEY: &str = "github_mentions.threads.v2";
+/// (v3: + thread state, reactions and later comments for the triage.)
+const THREADS_KEY: &str = "github_mentions.threads.v3";
+const OLD_THREADS_KEYS: &[&str] = &["github_mentions.threads.v2"];
+/// A waiting mention's thread state / reactions are re-read this often: a
+/// reaction or a close does not always move the notification.
+const RECHECK_AFTER: chrono::Duration = chrono::Duration::minutes(15);
+/// Comments after the trigger kept for the triage.
+const LATER_KEPT: usize = 3;
+const LATER_CHARS: usize = 300;
+/// AI sorting after each fetch ("true" by default).
+const AI_TRIAGE_KEY: &str = "github_mentions.ai_triage";
+/// `triage_key` → the AI's verdict.
+const TRIAGE_KEY: &str = "github_mentions.triage.v1";
+const MAX_TRIAGE: usize = 1000;
+/// Mentions per AI prompt.
+const TRIAGE_BATCH: usize = 10;
+/// A batch the AI failed on is not retried before this.
+const TRIAGE_RETRY_AFTER: Duration = Duration::from_secs(30 * 60);
+const TRIAGE_TIMEOUT: Duration = Duration::from_secs(180);
+/// `dismiss_key` → the category the user chose.
+const OVERRIDES_KEY: &str = "github_mentions.overrides.v1";
+const MAX_OVERRIDES: usize = 500;
 /// Answered mentions stay listed (collapsed) this long after the answer.
 const ANSWERED_KEEP_DAYS: i64 = 7;
 /// Threads whose comments are read at once, per account.
@@ -84,6 +113,19 @@ pub struct MentionComment {
     /// A PR review (diff) comment.
     pub review_comment: bool,
     pub path: Option<String>,
+    /// comment | review_comment | review | body — where its reactions live.
+    #[serde(default)]
+    pub source: String,
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+pub struct LaterComment {
+    pub author_login: String,
+    pub body: String,
+}
+
+fn open_state() -> String {
+    "open".into()
 }
 
 #[derive(Debug, Serialize, Deserialize, Clone)]
@@ -117,6 +159,42 @@ pub struct MentionItem {
     /// The "Check with AI" session started for this mention.
     pub existing_run_id: Option<String>,
     pub existing_run_status: Option<String>,
+    /// open | closed | merged.
+    #[serde(default = "open_state")]
+    pub state: String,
+    /// The user reacted to the trigger (👍 ❤️ 🎉 🚀 😄).
+    #[serde(default)]
+    pub reacted: bool,
+    /// The user opened the issue / PR.
+    #[serde(default)]
+    pub user_is_author: bool,
+    /// Distinct handles tagged in the trigger.
+    #[serde(default)]
+    pub audience: u32,
+    /// The user is only on `cc` / `fyi` lines of the trigger.
+    #[serde(default)]
+    pub cc: bool,
+    /// The last few comments by others after the trigger.
+    #[serde(default)]
+    pub later: Vec<LaterComment>,
+    /// When `state` / `reacted` were last read (RFC 3339; empty = never).
+    #[serde(default)]
+    pub checked_at: String,
+    /// reply | fyi | done (set on every fetch, see `categorize`).
+    #[serde(default)]
+    pub category: String,
+    /// user | rule | ai | auto
+    #[serde(default)]
+    pub category_source: String,
+    /// answered | merged | closed | reacted | cc | crowd
+    #[serde(default)]
+    pub category_reason: Option<String>,
+    /// The AI's one line on what is wanted.
+    #[serde(default)]
+    pub summary: Option<String>,
+    /// The AI is sorting it right now.
+    #[serde(default)]
+    pub triage_pending: bool,
 }
 
 /// A muted thread (`scope` "thread", `target` = mention key) or repository
@@ -250,6 +328,22 @@ struct GhIssue {
     body: Option<String>,
     html_url: String,
     created_at: String,
+    #[serde(default)]
+    state: String,
+    #[serde(default)]
+    pull_request: Option<GhIssuePr>,
+}
+
+#[derive(Deserialize)]
+struct GhIssuePr {
+    #[serde(default)]
+    merged_at: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct GhReaction {
+    user: Option<GhUser>,
+    content: String,
 }
 
 // ---------------------------------------------------------------------------
@@ -286,13 +380,64 @@ fn is_bot(u: &GhUser) -> bool {
 }
 
 fn excerpt(s: &str) -> String {
+    truncate_chars(s, EXCERPT_CHARS)
+}
+
+fn truncate_chars(s: &str, max: usize) -> String {
     let s = s.trim();
-    if s.chars().count() <= EXCERPT_CHARS {
+    if s.chars().count() <= max {
         return s.to_string();
     }
-    let mut out: String = s.chars().take(EXCERPT_CHARS).collect();
+    let mut out: String = s.chars().take(max).collect();
     out.push('…');
     out
+}
+
+fn now_rfc3339() -> String {
+    chrono::Utc::now().to_rfc3339_opts(chrono::SecondsFormat::Secs, true)
+}
+
+/// What the thread settles on its own: open / closed / merged, who opened it,
+/// and whether the user acknowledged the trigger with a reaction.
+async fn read_signals(client: &octocrab::Octocrab, acct: &Account, item: &mut MentionItem) -> Result<(), String> {
+    let Some(number) = item.number.filter(|_| item.kind == "Issue" || item.kind == "PullRequest") else {
+        return Ok(());
+    };
+    let base = format!("/repos/{}/{}", item.owner, item.repo);
+    let issue = client
+        .get::<GhIssue, _, ()>(format!("{base}/issues/{number}"), None)
+        .await
+        .map_err(|e| e.to_string())?;
+    item.state = if issue.pull_request.as_ref().is_some_and(|p| p.merged_at.is_some()) {
+        "merged".into()
+    } else if issue.state == "closed" {
+        "closed".into()
+    } else {
+        "open".into()
+    };
+    item.user_is_author = issue.user.as_ref().is_some_and(|u| u.login.eq_ignore_ascii_case(&acct.login));
+    let route = item.trigger.as_ref().and_then(|t| match t.source.as_str() {
+        "comment" => Some(format!("{base}/issues/comments/{}/reactions", t.id)),
+        "review_comment" => Some(format!("{base}/pulls/comments/{}/reactions", t.id)),
+        "body" => Some(format!("{base}/issues/{number}/reactions")),
+        _ => None,
+    });
+    if let (Some(route), "open") = (route, item.state.as_str()) {
+        let reactions = get_all::<GhReaction>(client, &route, &[("per_page", "100")]).await?;
+        item.reacted = reactions.iter().any(|r| {
+            triage::acknowledges(&r.content) && r.user.as_ref().is_some_and(|u| u.login.eq_ignore_ascii_case(&acct.login))
+        });
+    }
+    item.checked_at = now_rfc3339();
+    Ok(())
+}
+
+/// A waiting, still-open mention whose signals were read long enough ago.
+fn needs_recheck(item: &MentionItem) -> bool {
+    let stale = chrono::DateTime::parse_from_rfc3339(&item.checked_at)
+        .map(|at| chrono::Utc::now().signed_duration_since(at) > RECHECK_AFTER)
+        .unwrap_or(true);
+    !item.answered && item.state == "open" && !item.reacted && stale
 }
 
 async fn get_all<T: serde::de::DeserializeOwned>(
@@ -356,6 +501,7 @@ async fn thread_comments(
                     created_at: c.created_at,
                     review_comment,
                     path: c.path,
+                    source: if review_comment { "review_comment" } else { "comment" }.into(),
                 }),
             ));
         }
@@ -379,6 +525,7 @@ async fn thread_comments(
                 created_at: at,
                 review_comment: false,
                 path: None,
+                source: "review".into(),
             }),
         ));
     }
@@ -425,6 +572,18 @@ async fn build_item(
         project_name: None,
         existing_run_id: None,
         existing_run_status: None,
+        state: open_state(),
+        reacted: false,
+        user_is_author: false,
+        audience: 0,
+        cc: false,
+        later: Vec::new(),
+        checked_at: String::new(),
+        category: String::new(),
+        category_source: String::new(),
+        category_reason: None,
+        summary: None,
+        triage_pending: false,
     };
 
     // Discussions (GraphQL only): no comment lookup — listed while unread when
@@ -445,10 +604,12 @@ async fn build_item(
 
     // A mention in the issue / PR description itself (no comment carries it).
     let mut body_trigger: Option<MentionComment> = None;
+    let mut description = String::new();
     if found.is_none() && n.reason == "mention" {
         let route = format!("/repos/{owner}/{repo}/issues/{number}");
         let issue = client.get::<GhIssue, _, ()>(&route, None).await.map_err(|e| e.to_string())?;
         let body = issue.body.clone().unwrap_or_default();
+        description = body.clone();
         if mentions_login(&body, &acct.login) {
             if let Some(user) = issue.user.filter(|u| !u.login.eq_ignore_ascii_case(&acct.login)) {
                 let mine_after = plain
@@ -470,19 +631,37 @@ async fn build_item(
                     created_at: issue.created_at,
                     review_comment: false,
                     path: None,
+                    source: "body".into(),
                 });
             }
         }
     }
 
     let Some(t) = found else { return Ok(None) };
-    let trigger = if t.index == usize::MAX { body_trigger } else { comments[t.index].1.clone() };
+    let (trigger, trigger_body, after) = if t.index == usize::MAX {
+        (body_trigger, description, &plain[..])
+    } else {
+        (comments[t.index].1.clone(), plain[t.index].body.clone(), &plain[t.index + 1..])
+    };
     let answered = t.answered_at.is_some();
     let mut item = base_item(html_url);
     item.trigger = trigger;
     item.newer_comments = t.newer_comments;
     item.answered = answered;
     item.answered_at = t.answered_at;
+    item.audience = triage::handles(&trigger_body).len() as u32;
+    item.cc = triage::is_cc(&trigger_body, &acct.login);
+    let others: Vec<&Comment> =
+        after.iter().filter(|c| !c.bot && !c.body.trim().is_empty() && !c.author.eq_ignore_ascii_case(&acct.login)).collect();
+    item.later = others[others.len().saturating_sub(LATER_KEPT)..]
+        .iter()
+        .map(|c| LaterComment { author_login: c.author.clone(), body: truncate_chars(&c.body, LATER_CHARS) })
+        .collect();
+    if !answered {
+        if let Err(e) = read_signals(client, acct, &mut item).await {
+            tracing::warn!(event = "github_mentions_signals_failed", repo = %format!("{owner}/{repo}"), error = %e);
+        }
+    }
     Ok(Some(item))
 }
 
@@ -504,13 +683,21 @@ async fn memo_item(
         .ok()
         .and_then(|m| m.get(&memo_key).filter(|(at, _)| *at == n.updated_at).map(|(_, item)| item.clone()));
     let item = match hit {
-        Some(item) => {
-            let unread = n.unread;
-            item.map(|mut i| {
-                i.unread = unread;
-                i
-            })
+        Some(Some(mut i)) => {
+            i.unread = n.unread;
+            if needs_recheck(&i) {
+                match read_signals(client, acct, &mut i).await {
+                    Ok(()) => {
+                        if let Ok(mut m) = state().threads.lock() {
+                            m.insert(memo_key, (n.updated_at.clone(), Some(i.clone())));
+                        }
+                    }
+                    Err(e) => tracing::warn!(event = "github_mentions_signals_failed", error = %e),
+                }
+            }
+            Some(i)
         }
+        Some(None) => None,
         None => {
             let updated_at = n.updated_at.clone();
             let thread = format!("{}/{}", n.repository.owner.login, n.repository.name);
@@ -627,7 +814,8 @@ async fn fetch_all(db: &Db) -> Result<MentionsResult, String> {
     }
     save_threads(db).await;
     enrich(db, &mut out.items).await;
-    let at = |i: &MentionItem| i.trigger.as_ref().map(|t| t.created_at.clone()).unwrap_or_else(|| i.updated_at.clone());
+    categorize(db, &mut out.items).await;
+    let at =|i: &MentionItem| i.trigger.as_ref().map(|t| t.created_at.clone()).unwrap_or_else(|| i.updated_at.clone());
     out.items.sort_by(|a, b| a.answered.cmp(&b.answered).then_with(|| at(b).cmp(&at(a))));
     Ok(out)
 }
@@ -679,6 +867,233 @@ async fn enrich(db: &Db, items: &mut [MentionItem]) {
 }
 
 // ---------------------------------------------------------------------------
+// Triage (reply / fyi / done)
+
+/// The AI's verdict is tied to the trigger comment and how many replies
+/// followed it: a new reply can settle a question, so it is sorted again.
+fn triage_key(item: &MentionItem) -> String {
+    format!("{}:{}", dismiss_key(item), item.newer_comments)
+}
+
+#[derive(Debug, Serialize, Deserialize, Clone)]
+struct Verdict {
+    category: String,
+    summary: String,
+}
+
+async fn load_pairs<T: serde::de::DeserializeOwned>(db: &Db, key: &str) -> Vec<(String, T)> {
+    setting(db, key).await.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+}
+
+/// Insert / replace entries, dropping the oldest past `max`.
+async fn save_pairs<T: Serialize + serde::de::DeserializeOwned>(
+    db: &Db,
+    key: &str,
+    max: usize,
+    updates: Vec<(String, Option<T>)>,
+) -> Result<(), String> {
+    let mut list = load_pairs::<T>(db, key).await;
+    for (k, v) in updates {
+        list.retain(|(x, _)| x != &k);
+        if let Some(v) = v {
+            list.push((k, v));
+        }
+    }
+    if list.len() > max {
+        list.drain(..list.len() - max);
+    }
+    set_setting(db, key, &serde_json::to_string(&list).unwrap_or_default()).await
+}
+
+/// Sort every item (see the module doc for the order of precedence).
+async fn categorize(db: &Db, items: &mut [MentionItem]) {
+    let overrides: HashMap<String, String> = load_pairs(db, OVERRIDES_KEY).await.into_iter().collect();
+    let verdicts: HashMap<String, Verdict> = load_pairs(db, TRIAGE_KEY).await.into_iter().collect();
+    let pending = state().triage_keys.lock().map(|s| s.clone()).unwrap_or_default();
+    for item in items.iter_mut() {
+        let verdict = verdicts.get(&triage_key(item));
+        item.summary = verdict.map(|v| v.summary.clone()).filter(|s| !s.is_empty());
+        item.triage_pending = pending.contains(&item.key);
+        let (category, source, reason): (&str, &str, Option<&str>) = if item.answered {
+            (triage::DONE, "rule", Some("answered"))
+        } else if let Some(c) = overrides.get(&dismiss_key(item)).filter(|c| triage::CATEGORIES.contains(&c.as_str())) {
+            (c.as_str(), "user", None)
+        } else if let Some(r) = triage::hard_rule(&item.state, item.reacted) {
+            (triage::DONE, "rule", Some(r))
+        } else if let Some(v) = verdict {
+            (v.category.as_str(), "ai", None)
+        } else {
+            match triage::fallback(item.cc, item.audience) {
+                (c, Some(r)) => (c, "rule", Some(r)),
+                (c, None) => (c, "auto", None),
+            }
+        };
+        item.category = category.into();
+        item.category_source = source.into();
+        item.category_reason = reason.map(Into::into);
+    }
+}
+
+/// Left for the AI: waiting, not settled by the thread or the user, not
+/// sorted yet, and not failed recently.
+fn needs_ai(item: &MentionItem) -> bool {
+    let failed = state()
+        .triage_failed
+        .lock()
+        .ok()
+        .and_then(|m| m.get(&triage_key(item)).copied())
+        .is_some_and(|at| at.elapsed() < TRIAGE_RETRY_AFTER);
+    item.trigger.is_some()
+        && !failed
+        && (item.category_source == "auto" || (item.category_source == "rule" && matches!(item.category_reason.as_deref(), Some("cc" | "crowd"))))
+}
+
+async fn ai_triage_enabled(db: &Db) -> bool {
+    setting(db, AI_TRIAGE_KEY).await.map(|v| v.trim() != "false").unwrap_or(true)
+}
+
+/// Its own warm engine (one fresh session per prompt), so sorting never queues
+/// behind translations or Focus AI.
+fn triage_engine() -> &'static TranslateState {
+    static S: std::sync::OnceLock<TranslateState> = std::sync::OnceLock::new();
+    S.get_or_init(|| {
+        TranslateState::default().with_recycle_after(1).silent().tracked_as(crate::procs::ProcKind::FocusAi)
+    })
+}
+
+async fn complete(app: &AppHandle, db: &Db, prompt: String, engine: &str, model: &str) -> Result<String, String> {
+    let st = triage_engine();
+    let (turn, rx) = submit_prompt_as(app, db, st, prompt, engine, model).await?;
+    let mut rx = rx.ok_or("no result channel")?;
+    let wait = async {
+        loop {
+            match rx.recv().await {
+                Some(TurnEvent::Chunk(_)) => continue,
+                Some(TurnEvent::Done(text)) => return Ok(text),
+                Some(TurnEvent::Error(e)) => return Err(e),
+                None => return Err("the AI engine stopped unexpectedly".to_string()),
+            }
+        }
+    };
+    match tokio::time::timeout(TRIAGE_TIMEOUT, wait).await {
+        Ok(r) => r,
+        Err(_) => {
+            st.abandon_turn(turn).await;
+            Err("timeout".into())
+        }
+    }
+}
+
+/// One attempt + one retry carrying the validation error.
+async fn ask_batch(
+    app: &AppHandle,
+    db: &Db,
+    prompt: String,
+    count: usize,
+    engine: &str,
+    model: &str,
+) -> Result<HashMap<usize, (String, String)>, String> {
+    let first = complete(app, db, prompt.clone(), engine, model).await?;
+    let err = match triage::parse(&first, count) {
+        Ok(v) => return Ok(v),
+        Err(e) => e,
+    };
+    let retry = format!("{prompt}\nYour previous answer was rejected: {err}. Reply again with ONLY the corrected JSON object.\n");
+    let second = complete(app, db, retry, engine, model).await?;
+    triage::parse(&second, count)
+}
+
+/// Re-sort the cached list and broadcast it. Holds the refresh lock so a fetch
+/// running meanwhile is not overwritten with an older list.
+async fn recategorize(app: &AppHandle, db: &Db) {
+    let _guard = state().refresh_lock.lock().await;
+    let Some(mut value) = cached() else { return };
+    categorize(db, &mut value.result.items).await;
+    store(app, value.result);
+}
+
+/// Sort what the AI has not seen yet, in the background (one run at a time).
+pub fn spawn_triage(app: AppHandle, db: Db) {
+    tauri::async_runtime::spawn(async move {
+        if !ai_triage_enabled(&db).await || state().triaging.swap(true, Ordering::SeqCst) {
+            return;
+        }
+        run_triage(&app, &db).await;
+        state().triaging.store(false, Ordering::SeqCst);
+    });
+}
+
+async fn run_triage(app: &AppHandle, db: &Db) {
+    let todo: Vec<MentionItem> = cached().map(|c| c.result.items.into_iter().filter(needs_ai).collect()).unwrap_or_default();
+    if todo.is_empty() {
+        return;
+    }
+    if let Ok(mut keys) = state().triage_keys.lock() {
+        keys.extend(todo.iter().map(|i| i.key.clone()));
+    }
+    recategorize(app, db).await;
+
+    let settings = crate::focus::settings::load(db).await.unwrap_or_default();
+    let lang = setting(db, "language").await.unwrap_or_default();
+    let mut by_login: HashMap<String, Vec<MentionItem>> = HashMap::new();
+    for i in todo {
+        by_login.entry(i.account_login.clone()).or_default().push(i);
+    }
+    let started = Instant::now();
+    let mut sorted = 0usize;
+    for (login, items) in by_login {
+        for batch in items.chunks(TRIAGE_BATCH) {
+            let entries: Vec<triage::Entry> = batch
+                .iter()
+                .map(|i| triage::Entry {
+                    kind: i.kind.clone(),
+                    repo: format!("{}/{}", i.owner, i.repo),
+                    title: i.title.clone(),
+                    user_is_author: i.user_is_author,
+                    trigger_author: i.trigger.as_ref().map(|t| t.author_login.clone()).unwrap_or_default(),
+                    trigger_body: i.trigger.as_ref().map(|t| t.body.clone()).unwrap_or_default(),
+                    file: i.trigger.as_ref().and_then(|t| t.path.clone()),
+                    later: i.later.iter().map(|c| (c.author_login.clone(), c.body.clone())).collect(),
+                })
+                .collect();
+            let prompt = triage::prompt(&entries, &login, &lang);
+            match ask_batch(app, db, prompt, batch.len(), &settings.ai_engine, &settings.ai_model).await {
+                Ok(answers) => {
+                    let updates = batch
+                        .iter()
+                        .enumerate()
+                        .filter_map(|(n, i)| {
+                            let (category, summary) = answers.get(&(n + 1))?.clone();
+                            Some((triage_key(i), Some(Verdict { category, summary })))
+                        })
+                        .collect::<Vec<_>>();
+                    sorted += updates.len();
+                    if let Err(e) = save_pairs(db, TRIAGE_KEY, MAX_TRIAGE, updates).await {
+                        tracing::warn!(event = "github_mentions_triage_save_failed", error = %e);
+                    }
+                }
+                Err(e) => {
+                    tracing::warn!(event = "github_mentions_triage_failed", items = batch.len(), error = %e);
+                    if let Ok(mut failed) = state().triage_failed.lock() {
+                        failed.retain(|_, at| at.elapsed() < TRIAGE_RETRY_AFTER);
+                        for i in batch {
+                            failed.insert(triage_key(i), Instant::now());
+                        }
+                    }
+                }
+            }
+            if let Ok(mut keys) = state().triage_keys.lock() {
+                for i in batch {
+                    keys.remove(&i.key);
+                }
+            }
+            recategorize(app, db).await;
+        }
+    }
+    tracing::info!(event = "github_mentions_triaged", items = sorted, ms = started.elapsed().as_millis() as u64);
+}
+
+// ---------------------------------------------------------------------------
 // Settings-backed state
 
 async fn setting(db: &Db, key: &str) -> Option<String> {
@@ -725,9 +1140,11 @@ type ThreadMemo = HashMap<String, (String, Option<MentionItem>)>;
 
 /// Load the per-thread results saved by a previous app run (first fetch only).
 async fn restore_threads(db: &Db) {
-    use std::sync::atomic::Ordering;
     if state().threads_restored.swap(true, Ordering::SeqCst) {
         return;
+    }
+    for key in OLD_THREADS_KEYS {
+        let _ = sqlx::query("DELETE FROM settings WHERE key = ?").bind(key).execute(db).await;
     }
     let Some(saved) = setting(db, THREADS_KEY).await.and_then(|v| serde_json::from_str::<ThreadMemo>(&v).ok()) else {
         return;
@@ -776,7 +1193,13 @@ struct MentionsState {
     /// `{account_id}:{thread_id}` → (notification `updated_at`, built item).
     threads: std::sync::Mutex<HashMap<String, (String, Option<MentionItem>)>>,
     /// The persisted per-thread results were loaded (once per app run).
-    threads_restored: std::sync::atomic::AtomicBool,
+    threads_restored: AtomicBool,
+    /// An AI sorting run is in progress.
+    triaging: AtomicBool,
+    /// Mention keys the running AI sort is working on.
+    triage_keys: std::sync::Mutex<HashSet<String>>,
+    /// `triage_key` → when the AI failed on it.
+    triage_failed: std::sync::Mutex<HashMap<String, Instant>>,
 }
 
 fn state() -> &'static MentionsState {
@@ -836,6 +1259,7 @@ pub async fn refresh(app: &AppHandle, db: &Db) -> Result<MentionsResult, String>
         ms = started.elapsed().as_millis() as u64,
     );
     store(app, result.clone());
+    spawn_triage(app.clone(), db.clone());
     Ok(result)
 }
 
@@ -1014,6 +1438,39 @@ pub async fn unmute_github_mention(db: State<'_, Db>, scope: String, target: Str
     let mut list = load_muted(&db).await;
     list.retain(|m| !(m.scope == scope && m.target == target));
     save_muted(&db, &list).await
+}
+
+/// Put a mention in `reply` / `fyi` / `done` by hand (`None`: let Devdy sort
+/// it again). Tied to the trigger comment: a new mention is sorted afresh.
+#[tauri::command]
+pub async fn set_github_mention_category(
+    app: AppHandle,
+    db: State<'_, Db>,
+    key: String,
+    category: Option<String>,
+) -> Result<(), String> {
+    if let Some(c) = category.as_deref().filter(|c| !triage::CATEGORIES.contains(c)) {
+        return Err(format!("Unknown category: {c}"));
+    }
+    let item = cached_item(&key)?;
+    save_pairs(&db, OVERRIDES_KEY, MAX_OVERRIDES, vec![(dismiss_key(&item), category)]).await?;
+    recategorize(&app, &db).await;
+    Ok(())
+}
+
+#[tauri::command]
+pub async fn get_github_mentions_ai_triage(db: State<'_, Db>) -> Result<bool, String> {
+    Ok(ai_triage_enabled(&db).await)
+}
+
+/// Turn the background AI sorting on / off (on: sorts the current list now).
+#[tauri::command]
+pub async fn set_github_mentions_ai_triage(app: AppHandle, db: State<'_, Db>, enabled: bool) -> Result<(), String> {
+    set_setting(&db, AI_TRIAGE_KEY, if enabled { "true" } else { "false" }).await?;
+    if enabled {
+        spawn_triage(app, db.inner().clone());
+    }
+    Ok(())
 }
 
 /// Remember the "Check with AI" session started for a mention, so the card

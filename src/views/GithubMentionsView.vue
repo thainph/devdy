@@ -1,8 +1,10 @@
 <script setup lang="ts">
 // GitHub Mentions: comments on GitHub that @-mention the user directly and
 // wait for their answer, across all linked GitHub accounts. Header layout follows the PR Inbox:
-// search + Filters / Display beside Refresh. Mentions answered in the last
-// week sit in a collapsed section at the bottom. "Check with AI" opens a
+// search + Filters / Display beside Refresh. Mentions are split into tabs by
+// what they need: "Needs reply" (the badge), "FYI" and "Done" (answered in the
+// last week, closed / merged, acknowledged) — sorted by the backend's rules
+// and AI, movable by hand from the card menu. "Check with AI" opens a
 // session on the issue / PR (like the PR Inbox's AI review), starting with the
 // configurable check prompt; the user answers on GitHub themselves.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
@@ -11,7 +13,7 @@ import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { emit as emitEvent } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Banner, Button, ContextMenu, DropdownItem, DropdownSeparator, Input, PageHeader, Skeleton } from '@/components/ui'
+import { Banner, Button, ContextMenu, DropdownItem, DropdownSeparator, Input, PageHeader, SegmentedControl, Skeleton } from '@/components/ui'
 import MentionCard from '@/components/githubMentions/MentionCard.vue'
 import MentionFiltersPopover from '@/components/githubMentions/MentionFiltersPopover.vue'
 import MentionDisplayPopover from '@/components/githubMentions/MentionDisplayPopover.vue'
@@ -30,18 +32,22 @@ import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import {
   activeFilters,
   applyFilters,
+  categoryOf,
   checkGoal,
   checkStatusOf,
   filterOptions,
   groupMentions,
+  MENTION_CATEGORIES,
   MENTION_REASONS,
-  splitAnswered,
+  splitByCategory,
+  type MentionCategory,
   type MentionFilterDimension,
   type MentionFilterOption,
   type MentionItem,
 } from '@/lib/githubMentions'
 import {
-  AtSign, BellOff, Check, ChevronRight, Copy, EyeOff, ExternalLink, FolderX, MailOpen, RefreshCw, Search, SearchX, X,
+  AtSign, BellOff, Check, CheckCheck, ChevronRight, Copy, EyeOff, ExternalLink, FolderX, Info, Loader2, MailOpen, RefreshCw, Reply,
+  Search, SearchX, Undo2, X,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -59,7 +65,6 @@ const appSettings = useAppSettingsStore()
 const live = useLiveRunsStore()
 
 const search = ref('')
-const showAnswered = ref(false)
 const collapsed = ref<Set<string>>(new Set())
 
 onMounted(() => {
@@ -97,8 +102,16 @@ const options = computed(() => filterOptions(store.items))
 const effective = computed(() => activeFilters(store.filters, store.items))
 const activeCount = computed(() => Object.values(effective.value).reduce((n, v) => n + v.length, 0))
 const visible = computed(() => applyFilters(store.items, effective.value, search.value))
-const split = computed(() => splitAnswered(visible.value))
-const groups = computed(() => groupMentions(split.value.pending, store.groupBy))
+const split = computed(() => splitByCategory(visible.value))
+const groups = computed(() => groupMentions(split.value[store.tab], store.groupBy))
+
+const CATEGORY_ICONS = { reply: Reply, fyi: Info, done: CheckCheck } as const
+const tabOptions = computed(() => MENTION_CATEGORIES.map(c => ({
+  value: c,
+  label: `${t(`githubMentions.tab.${c}`)} · ${split.value[c].length}`,
+  icon: CATEGORY_ICONS[c],
+  title: t(`githubMentions.tab.${c}Hint`),
+})))
 
 function optionLabel(d: MentionFilterDimension, o: MentionFilterOption): string {
   if (d === 'reasons' && (MENTION_REASONS as string[]).includes(o.value)) return t(`githubMentions.reason.${o.value}`)
@@ -187,6 +200,23 @@ function closeMenu() {
   menu.value = { ...menu.value, open: false }
 }
 
+const menuMoves = computed<MentionCategory[]>(() => {
+  const item = menu.value.item
+  return item && !item.answered ? MENTION_CATEGORIES.filter(c => c !== categoryOf(item)) : []
+})
+
+async function moveTo(category: MentionCategory | null) {
+  const item = menu.value.item
+  closeMenu()
+  if (!item) return
+  try {
+    await store.setCategory(item.key, category)
+    toast.success(category ? t('githubMentions.menu.moved', { tab: t(`githubMentions.tab.${category}`) }) : t('githubMentions.menu.autoSorted'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
 async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteThread' | 'muteRepo') {
   const item = menu.value.item
   closeMenu()
@@ -218,7 +248,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
   <div class="flex h-full flex-col">
     <PageHeader
       :title="t('githubMentions.title')"
-      :count="store.items.length > 0 ? split.pending.length : null"
+      :count="store.items.length > 0 ? store.pendingCount : null"
       :count-title="t('githubMentions.pendingTitle')"
     >
       <template #leading>
@@ -325,64 +355,55 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
           </button>
         </div>
 
-        <p v-else-if="split.pending.length === 0" class="flex items-center gap-2 text-xs text-muted-foreground">
-          <Check class="h-4 w-4 text-success" :stroke-width="2" />
-          {{ t('githubMentions.allAnswered') }}
-        </p>
+        <template v-else>
+          <div class="flex flex-wrap items-center gap-3">
+            <SegmentedControl
+              :model-value="store.tab"
+              :options="tabOptions"
+              :stretch="false"
+              @update:model-value="store.setTab"
+            />
+            <span v-if="store.triaging > 0" class="inline-flex items-center gap-1.5 text-[11px] text-muted-foreground">
+              <Loader2 class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
+              {{ t('githubMentions.triaging', store.triaging) }}
+            </span>
+          </div>
 
-        <section v-for="g in groups" :key="g.key" class="flex flex-col gap-2">
-          <button
-            v-if="store.groupBy !== 'none'"
-            type="button"
-            class="flex min-w-0 items-center gap-2 text-left text-xs font-semibold cursor-pointer"
-            :aria-expanded="!collapsed.has(g.key)"
-            @click="toggleGroup(g.key)"
-          >
-            <ChevronRight
-              class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
-              :class="{ 'rotate-90': !collapsed.has(g.key) }"
-              :stroke-width="2"
-            />
-            <PrAvatar v-if="store.groupBy === 'person'" :url="g.avatarUrl" :name="g.label || '?'" :size="16" />
-            <span class="min-w-0 truncate" :class="{ 'font-mono font-medium': store.groupBy === 'repo' }">{{ g.label || t('githubMentions.unknownAuthor') }}</span>
-            <span class="shrink-0 font-normal text-[11px] text-muted-foreground">{{ t('githubMentions.groupPending', g.items.length) }}</span>
-          </button>
-          <template v-if="!collapsed.has(g.key)">
-            <MentionCard
-              v-for="item in g.items"
-              :key="item.key"
-              :item="item"
-              :check-status="checkStatus(item)"
-              :starting="store.busyKeys.has(item.key)"
-              @menu="openMenu"
-              @check="check"
-            />
-          </template>
-        </section>
+          <p v-if="split[store.tab].length === 0" class="flex items-center gap-2 text-xs text-muted-foreground">
+            <Check v-if="store.tab === 'reply'" class="h-4 w-4 text-success" :stroke-width="2" />
+            {{ t(`githubMentions.tabEmpty.${store.tab}`, { days: Math.min(7, store.lookbackDays) }) }}
+          </p>
 
-        <section v-if="split.answered.length > 0" class="flex flex-col gap-2">
-          <button
-            type="button"
-            class="flex items-center gap-2 rounded-lg border border-dashed border-border px-3 py-2 text-xs text-muted-foreground cursor-pointer transition-colors hover:text-foreground"
-            :aria-expanded="showAnswered"
-            @click="showAnswered = !showAnswered"
-          >
-            <Check class="h-3.5 w-3.5" :stroke-width="2" />
-            {{ t('githubMentions.answeredSection', { n: split.answered.length, days: Math.min(7, store.lookbackDays) }) }}
-            <ChevronRight class="ml-auto h-3.5 w-3.5 transition-transform" :class="{ 'rotate-90': showAnswered }" :stroke-width="2" />
-          </button>
-          <template v-if="showAnswered">
-            <MentionCard
-              v-for="item in split.answered"
-              :key="item.key"
-              :item="item"
-              :check-status="checkStatus(item)"
-              :starting="store.busyKeys.has(item.key)"
-              @menu="openMenu"
-              @check="check"
-            />
-          </template>
-        </section>
+          <section v-for="g in groups" :key="g.key" class="flex flex-col gap-2">
+            <button
+              v-if="store.groupBy !== 'none'"
+              type="button"
+              class="flex min-w-0 items-center gap-2 text-left text-xs font-semibold cursor-pointer"
+              :aria-expanded="!collapsed.has(g.key)"
+              @click="toggleGroup(g.key)"
+            >
+              <ChevronRight
+                class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
+                :class="{ 'rotate-90': !collapsed.has(g.key) }"
+                :stroke-width="2"
+              />
+              <PrAvatar v-if="store.groupBy === 'person'" :url="g.avatarUrl" :name="g.label || '?'" :size="16" />
+              <span class="min-w-0 truncate" :class="{ 'font-mono font-medium': store.groupBy === 'repo' }">{{ g.label || t('githubMentions.unknownAuthor') }}</span>
+              <span class="shrink-0 font-normal text-[11px] text-muted-foreground">{{ g.items.length }}</span>
+            </button>
+            <template v-if="!collapsed.has(g.key)">
+              <MentionCard
+                v-for="item in g.items"
+                :key="item.key"
+                :item="item"
+                :check-status="checkStatus(item)"
+                :starting="store.busyKeys.has(item.key)"
+                @menu="openMenu"
+                @check="check"
+              />
+            </template>
+          </section>
+        </template>
       </div>
     </div>
 
@@ -399,6 +420,17 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
         <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('githubMentions.menu.copyLink') }}
       </DropdownItem>
+      <template v-if="menuMoves.length > 0">
+        <DropdownSeparator />
+        <DropdownItem v-for="c in menuMoves" :key="c" @click="moveTo(c)">
+          <component :is="CATEGORY_ICONS[c]" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('githubMentions.menu.moveTo', { tab: t(`githubMentions.tab.${c}`) }) }}
+        </DropdownItem>
+        <DropdownItem v-if="menu.item?.category_source === 'user'" @click="moveTo(null)">
+          <Undo2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('githubMentions.menu.autoSort') }}
+        </DropdownItem>
+      </template>
       <DropdownSeparator />
       <DropdownItem @click="menuAction('dismiss')">
         <EyeOff class="h-3.5 w-3.5" :stroke-width="1.75" />

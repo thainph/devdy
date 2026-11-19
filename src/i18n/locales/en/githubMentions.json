@@ -1,6 +1,6 @@
 {
   "title": "GitHub Mentions",
-  "pendingTitle": "Waiting for your answer",
+  "pendingTitle": "Needs your reply",
   "searchPlaceholder": "Search title, repo, who tagged you…",
   "clearSearch": "Clear search",
   "reason": {
@@ -25,7 +25,9 @@
     "person": "Who tagged you",
     "none": "No grouping",
     "lookback": "Look back",
-    "days": "{count} day | {count} days"
+    "days": "{count} day | {count} days",
+    "aiTriage": "Sort with AI",
+    "aiTriageHint": "After each load, AI reads new mentions to sort them into Needs reply / FYI / Done and sums up what is wanted. Uses the Focus AI engine."
   },
   "partialFailTitle": "{count} account failed to load | {count} accounts failed to load",
   "emptyTitle": "No one is waiting for you",
@@ -33,10 +35,7 @@
   "firstLoadHint": "Reading your GitHub notifications and their comments. This takes a few seconds; later loads only re-read threads with new activity.",
   "noMatch": "No mention matches the search or filters",
   "clearSearchAndFilters": "Clear search and filters",
-  "allAnswered": "You have answered every mention.",
-  "groupPending": "{count} waiting | {count} waiting",
   "unknownAuthor": "Unknown",
-  "answeredSection": "Answered in the last {days} days · {n}",
   "answered": "You answered {time} ago",
   "unread": "unread",
   "onFile": "on",
@@ -59,7 +58,11 @@
     "muteThread": "Not interested in this thread",
     "muteRepo": "Mute everything from {repo}",
     "mutedThread": "Thread muted — unmute it under Display",
-    "mutedRepo": "{repo} muted — unmute it under Display"
+    "mutedRepo": "{repo} muted — unmute it under Display",
+    "moveTo": "Move to “{tab}”",
+    "moved": "Moved to “{tab}”",
+    "autoSort": "Let Devdy sort it again",
+    "autoSorted": "Devdy will sort this mention"
   },
   "check": {
     "label": "Check with AI",
@@ -86,5 +89,33 @@
     "button": "Check with AI prompt",
     "title": "Check with AI prompt",
     "hint": "The instruction a “Check with AI” session starts with. The mention (issue / PR, who tagged you, link and comment) is always appended."
+  },
+  "tab": {
+    "reply": "Needs reply",
+    "fyi": "FYI",
+    "done": "Done",
+    "replyHint": "Questions or requests waiting on you",
+    "fyiHint": "For your information: cc, many people tagged, announcements",
+    "doneHint": "You answered, the thread is closed / merged, you reacted, or someone else handled it"
+  },
+  "tabEmpty": {
+    "reply": "Nothing needs your reply.",
+    "fyi": "No FYI mentions.",
+    "done": "Nothing settled in the last {days} days."
+  },
+  "triaging": "AI is sorting {count} mention… | AI is sorting {count} mentions…",
+  "sorting": "AI is reading…",
+  "summaryLabel": "AI summary",
+  "why": {
+    "mention": "Tagged you",
+    "ai_reply": "AI: needs your reply",
+    "ai_fyi": "AI: just FYI",
+    "ai_done": "AI: already handled",
+    "cc": "Only cc",
+    "crowd": "{n} people tagged",
+    "merged": "Merged",
+    "closed": "Closed",
+    "reacted": "You reacted",
+    "user": "Moved by you"
   }
 }

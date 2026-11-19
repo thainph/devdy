@@ -1,6 +1,7 @@
 <script setup lang="ts">
-// One GitHub mention (GithubMentionsView): who asked, where, why it reached
-// the user, and the comment waiting for an answer. "Check with AI" opens a
+// One GitHub mention (GithubMentionsView): who asked, where, why it sits in
+// its tab (reply / FYI / done), the AI's one line on what is wanted, and the
+// comment that tagged the user. "Check with AI" opens a
 // session on the issue / PR, like the PR Inbox's "AI review"; once one exists
 // the button opens it. Right-click or the "…" button opens the card menu
 // (the view owns both).
@@ -11,10 +12,11 @@ import { Button, Card } from '@/components/ui'
 import PrAvatar from '@/components/prInbox/PrAvatar.vue'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
-import { isStale, mentionedAt, type MentionCheckStatus, type MentionItem } from '@/lib/githubMentions'
+import { categoryOf, isStale, mentionedAt, whyKey, type MentionCheckStatus, type MentionItem } from '@/lib/githubMentions'
 import type { TodoPrefill } from '@/lib/focus'
 import {
-  AtSign, Check, CircleDot, ExternalLink, Eye, GitPullRequest, Loader2, MessageSquare, MoreHorizontal, Reply, Sparkles, Users,
+  AtSign, Check, CircleDot, ExternalLink, Eye, GitMerge, GitPullRequest, Hand, Info, Loader2, MessageSquare, MoreHorizontal, Sparkles,
+  ThumbsUp, UserCheck, Users, XCircle,
 } from 'lucide-vue-next'
 
 const props = defineProps<{
@@ -32,7 +34,7 @@ const emit = defineEmits<{
 const { t } = useI18n()
 const store = useGithubMentionsStore()
 
-const stale = computed(() => isStale(props.item))
+const stale = computed(() => categoryOf(props.item) === 'reply' && isStale(props.item))
 const refText = computed(() => {
   const repo = `${props.item.owner}/${props.item.repo}`
   if (props.item.kind === 'Discussion') return `${repo} · Discussion`
@@ -44,17 +46,23 @@ const kindIcon = computed(() =>
 const kindClass = computed(() =>
   props.item.kind === 'PullRequest' ? 'text-success' : props.item.kind === 'Issue' ? 'text-info' : 'text-warning',
 )
-const reasonChip = computed(() => {
-  switch (props.item.reason) {
-    case 'mention': return { icon: AtSign, cls: 'bg-primary/10 text-primary' }
-    case 'team_mention': return { icon: Users, cls: 'bg-info/10 text-info' }
-    case 'comment': return { icon: Reply, cls: 'bg-warning/10 text-warning' }
-    default: return { icon: MessageSquare, cls: 'bg-success/10 text-success' }
-  }
-})
-const reasonLabel = computed(() => {
-  const r = props.item.reason
-  return ['mention', 'team_mention', 'comment', 'author'].includes(r) ? t(`githubMentions.reason.${r}`) : r
+const settled = computed(() => categoryOf(props.item) === 'done')
+const WHY_STYLE: Record<string, { icon: unknown; cls: string }> = {
+  mention: { icon: AtSign, cls: 'bg-primary/10 text-primary' },
+  ai_reply: { icon: Hand, cls: 'bg-primary/10 text-primary' },
+  ai_fyi: { icon: Info, cls: 'bg-info/10 text-info' },
+  ai_done: { icon: Check, cls: 'bg-success/10 text-success' },
+  cc: { icon: Info, cls: 'bg-info/10 text-info' },
+  crowd: { icon: Users, cls: 'bg-info/10 text-info' },
+  merged: { icon: GitMerge, cls: 'bg-success/10 text-success' },
+  closed: { icon: XCircle, cls: 'bg-muted text-muted-foreground' },
+  reacted: { icon: ThumbsUp, cls: 'bg-success/10 text-success' },
+  user: { icon: UserCheck, cls: 'bg-muted text-muted-foreground' },
+}
+const why = computed(() => {
+  const key = whyKey(props.item)
+  if (!key) return null
+  return { ...(WHY_STYLE[key] ?? WHY_STYLE.mention), label: t(`githubMentions.why.${key}`, { n: props.item.audience }) }
 })
 const author = computed(() => props.item.trigger?.author_login ?? '')
 
@@ -106,7 +114,7 @@ function open() {
   <Card
     class="transition-colors hover:border-primary/40"
     body-class="flex gap-3 px-3.5 py-3"
-    :class="[item.unread && !item.answered ? 'shadow-[inset_3px_0_0_0_hsl(var(--primary))]' : '', item.answered ? 'opacity-70' : '']"
+    :class="[item.unread && !settled ? 'shadow-[inset_3px_0_0_0_hsl(var(--primary))]' : '', settled ? 'opacity-70' : '']"
     @contextmenu.prevent="emit('menu', item, $event.clientX, $event.clientY)"
   >
     <span :title="author || item.title">
@@ -124,7 +132,7 @@ function open() {
         >
           {{ item.title }}
         </button>
-        <span v-if="item.unread && !item.answered" class="sr-only">({{ t('githubMentions.unread') }})</span>
+        <span v-if="item.unread && !settled" class="sr-only">({{ t('githubMentions.unread') }})</span>
       </div>
 
       <div class="flex min-w-0 flex-wrap items-center gap-x-2.5 gap-y-1 text-[11px] text-muted-foreground">
@@ -133,9 +141,13 @@ function open() {
           <Check class="h-3 w-3" :stroke-width="2" />
           {{ t('githubMentions.answered', { time: relativeTime(item.answered_at ?? item.updated_at) }) }}
         </span>
-        <span v-else class="inline-flex items-center gap-1 rounded-[5px] px-1.5 py-0.5 text-[10.5px] font-medium" :class="reasonChip.cls">
-          <component :is="reasonChip.icon" class="h-3 w-3" :stroke-width="2" />
-          {{ reasonLabel }}
+        <span v-else-if="why" class="inline-flex items-center gap-1 rounded-[5px] px-1.5 py-0.5 text-[10.5px] font-medium" :class="why.cls">
+          <component :is="why.icon" class="h-3 w-3" :stroke-width="2" />
+          {{ why.label }}
+        </span>
+        <span v-if="item.triage_pending" class="inline-flex items-center gap-1">
+          <Loader2 class="h-3 w-3 animate-spin" :stroke-width="2" />
+          {{ t('githubMentions.sorting') }}
         </span>
         <span class="rounded-[5px] bg-muted px-1.5 py-0.5 text-[10.5px] font-medium">{{ item.account_label || item.account_login }}</span>
         <span v-if="item.project_name" class="truncate">{{ item.project_name }}</span>
@@ -144,14 +156,19 @@ function open() {
         </span>
       </div>
 
+      <p v-if="item.summary" class="flex min-w-0 items-start gap-1.5 text-[12.5px] font-medium leading-relaxed text-foreground">
+        <Sparkles class="mt-[3px] h-3.5 w-3.5 shrink-0 text-primary" :stroke-width="1.75" :aria-label="t('githubMentions.summaryLabel')" />
+        <span class="min-w-0">{{ item.summary }}</span>
+      </p>
       <p
         v-if="item.trigger && excerptParts.length"
-        class="line-clamp-2 border-l-2 border-border pl-2.5 text-[12.5px] leading-relaxed text-foreground/85"
+        :class="item.summary ? 'line-clamp-1' : 'line-clamp-2'"
+        class="border-l-2 border-border pl-2.5 text-[12.5px] leading-relaxed text-foreground/85"
       >
         <span class="font-semibold text-foreground">{{ author }}:</span>
         {{ ' ' }}<template v-for="(p, i) in excerptParts" :key="i"><span v-if="p.at" class="rounded-sm bg-primary/10 px-0.5 font-semibold text-primary">{{ p.text }}</span><template v-else>{{ p.text }}</template></template>
       </p>
-      <span v-if="item.newer_comments > 0 && !item.answered" class="text-[11px] text-muted-foreground">
+      <span v-if="item.newer_comments > 0 && !settled" class="text-[11px] text-muted-foreground">
         {{ t('githubMentions.newerComments', item.newer_comments) }}
       </span>
     </div>
@@ -176,7 +193,7 @@ function open() {
         <span class="hidden xl:inline">{{ checkStatus === 'running' ? t('githubMentions.check.runningLabel') : t('githubMentions.check.openLabel') }}</span>
       </Button>
       <Button
-        v-else-if="!item.answered"
+        v-else-if="!settled"
         size="sm"
         :disabled="starting || checkStatus !== 'none'"
         :title="checkTitle"
@@ -196,7 +213,7 @@ function open() {
       >
         <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
       </Button>
-      <AddTodoButton v-if="!item.answered" :prefill="todoPrefill" variant="icon" button-variant="ghost" size="icon" />
+      <AddTodoButton v-if="!settled" :prefill="todoPrefill" variant="icon" button-variant="ghost" size="icon" />
       <Button
         variant="ghost"
         size="icon"

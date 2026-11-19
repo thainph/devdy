@@ -1,6 +1,6 @@
 {
   "title": "GitHub Mentions",
-  "pendingTitle": "Đang chờ bạn trả lời",
+  "pendingTitle": "Cần bạn trả lời",
   "searchPlaceholder": "Tìm theo tiêu đề, repo, người tag…",
   "clearSearch": "Xoá tìm kiếm",
   "reason": {
@@ -25,7 +25,9 @@
     "person": "Người tag",
     "none": "Không nhóm",
     "lookback": "Khoảng thời gian",
-    "days": "{count} ngày"
+    "days": "{count} ngày",
+    "aiTriage": "Phân loại bằng AI",
+    "aiTriageHint": "Sau mỗi lần tải, AI đọc mention mới để xếp vào Cần trả lời / FYI / Đã xong và tóm tắt họ cần gì. Dùng engine của Focus AI."
   },
   "partialFailTitle": "{count} account tải thất bại",
   "emptyTitle": "Không ai đang chờ bạn",
@@ -33,10 +35,7 @@
   "firstLoadHint": "Đang đọc thông báo GitHub và comment của từng thread. Mất vài giây; các lần sau chỉ đọc lại thread có hoạt động mới.",
   "noMatch": "Không có mention nào khớp tìm kiếm hoặc bộ lọc",
   "clearSearchAndFilters": "Xoá tìm kiếm và bộ lọc",
-  "allAnswered": "Bạn đã trả lời hết các mention.",
-  "groupPending": "{count} chờ trả lời",
   "unknownAuthor": "Không rõ",
-  "answeredSection": "Đã trả lời trong {days} ngày qua · {n}",
   "answered": "Bạn đã trả lời {time} trước",
   "unread": "chưa đọc",
   "onFile": "trong",
@@ -59,7 +58,11 @@
     "muteThread": "Không quan tâm thread này",
     "muteRepo": "Ẩn mọi mention từ {repo}",
     "mutedThread": "Đã ẩn thread — bỏ ẩn trong mục Hiển thị",
-    "mutedRepo": "Đã ẩn {repo} — bỏ ẩn trong mục Hiển thị"
+    "mutedRepo": "Đã ẩn {repo} — bỏ ẩn trong mục Hiển thị",
+    "moveTo": "Chuyển sang “{tab}”",
+    "moved": "Đã chuyển sang “{tab}”",
+    "autoSort": "Để Devdy tự phân loại lại",
+    "autoSorted": "Devdy sẽ tự phân loại mention này"
   },
   "check": {
     "label": "Kiểm tra bằng AI",
@@ -86,5 +89,33 @@
     "button": "Prompt kiểm tra bằng AI",
     "title": "Prompt kiểm tra bằng AI",
     "hint": "Lời dặn gửi khi bắt đầu phiên “Kiểm tra bằng AI”. Thông tin lần được tag (issue / PR, người tag, link và nội dung comment) luôn được thêm vào cuối."
+  },
+  "tab": {
+    "reply": "Cần trả lời",
+    "fyi": "FYI",
+    "done": "Đã xong",
+    "replyHint": "Câu hỏi hoặc yêu cầu đang chờ chính bạn",
+    "fyiHint": "Chỉ để bạn biết: cc, tag nhiều người, thông báo",
+    "doneHint": "Bạn đã trả lời, thread đã đóng / merge, bạn đã react, hoặc người khác đã xử lý"
+  },
+  "tabEmpty": {
+    "reply": "Không còn mention nào cần bạn trả lời.",
+    "fyi": "Không có mention FYI nào.",
+    "done": "Chưa có mention nào xong trong {days} ngày qua."
+  },
+  "triaging": "AI đang phân loại {count} mention…",
+  "sorting": "AI đang đọc…",
+  "summaryLabel": "Tóm tắt của AI",
+  "why": {
+    "mention": "Tag trực tiếp",
+    "ai_reply": "AI: cần bạn trả lời",
+    "ai_fyi": "AI: chỉ để biết",
+    "ai_done": "AI: đã được xử lý",
+    "cc": "Chỉ cc",
+    "crowd": "Tag {n} người",
+    "merged": "Đã merge",
+    "closed": "Đã đóng",
+    "reacted": "Bạn đã react",
+    "user": "Bạn đã chuyển"
   }
 }

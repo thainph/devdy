@@ -3,11 +3,14 @@ import { computed, ref } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { invoke } from '@/lib/tauri'
 import {
+  categoryOf,
   EMPTY_MENTION_FILTERS,
+  MENTION_CATEGORIES,
   MENTION_GROUP_BYS,
   sanitizeFilters,
   type CachedMentions,
   type MentionAccountError,
+  type MentionCategory,
   type MentionFilterDimension,
   type MentionFilters,
   type MentionGroupBy,
@@ -26,6 +29,7 @@ const UPDATED_EVENT = 'github-mentions-updated'
 const CACHE_FRESH_MS = 60_000
 const FILTERS_KEY = 'devdy.githubMentions.filters'
 const GROUP_BY_KEY = 'devdy.githubMentions.groupBy'
+const TAB_KEY = 'devdy.githubMentions.tab'
 
 function readStorage(key: string): string | null {
   try {
@@ -56,6 +60,11 @@ function initialGroupBy(): MentionGroupBy {
   return MENTION_GROUP_BYS.includes(v as MentionGroupBy) ? (v as MentionGroupBy) : 'repo'
 }
 
+function initialTab(): MentionCategory {
+  const v = readStorage(TAB_KEY)
+  return MENTION_CATEGORIES.includes(v as MentionCategory) ? (v as MentionCategory) : 'reply'
+}
+
 export const useGithubMentionsStore = defineStore('githubMentions', () => {
   const items = ref<MentionItem[]>([])
   const warnings = ref<MentionAccountError[]>([])
@@ -71,8 +80,15 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
   /** Muted threads / repos ("Not interested"), newest first. */
   const mutes = ref<MentionMute[]>([])
 
-  /** Mentions waiting for an answer (sidebar badge). */
-  const pendingCount = computed(() => items.value.filter(i => !i.answered).length)
+  /** Category shown (reply / fyi / done). */
+  const tab = ref<MentionCategory>(initialTab())
+  /** Background AI sorting (backend setting, on by default). */
+  const aiTriage = ref(true)
+
+  /** Mentions that need an answer (sidebar badge); FYI and settled ones don't count. */
+  const pendingCount = computed(() => items.value.filter(i => categoryOf(i) === 'reply').length)
+  /** The AI is sorting some mentions right now. */
+  const triaging = computed(() => items.value.filter(i => i.triage_pending).length)
 
   function apply(c: CachedMentions) {
     items.value = c.items
@@ -118,6 +134,7 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
   async function load() {
     void listenUpdates()
     void loadLookback()
+    void loadAiTriage()
     if (!fetchedAt.value) {
       loading.value = true
       try {
@@ -215,6 +232,35 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
     writeStorage(FILTERS_KEY, JSON.stringify(filters.value))
   }
 
+  function setTab(value: MentionCategory) {
+    tab.value = value
+    writeStorage(TAB_KEY, value)
+  }
+
+  /** Move a mention to another category by hand; null lets Devdy sort it again. */
+  function setCategory(key: string, category: MentionCategory | null) {
+    return withBusy(key, () => invoke('set_github_mention_category', { key, category }))
+  }
+
+  async function loadAiTriage() {
+    try {
+      aiTriage.value = await invoke<boolean>('get_github_mentions_ai_triage')
+    } catch {
+      /* keep the default */
+    }
+  }
+
+  async function setAiTriage(enabled: boolean) {
+    const prev = aiTriage.value
+    aiTriage.value = enabled
+    try {
+      await invoke('set_github_mentions_ai_triage', { enabled })
+    } catch (e) {
+      aiTriage.value = prev
+      throw e
+    }
+  }
+
   function setGroupBy(value: MentionGroupBy) {
     groupBy.value = value
     writeStorage(GROUP_BY_KEY, value)
@@ -244,6 +290,7 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
     loadCheckPrompt, loadPromptConfig, savePrompt, savePromptId,
     items, warnings, loading, error, fetchedAt, filters, groupBy, lookbackDays, setLookbackDays, busyKeys, pendingCount,
     mutes, loadMutes, mute, unmute,
+    tab, setTab, setCategory, triaging, aiTriage, loadAiTriage, setAiTriage,
     load, watchCache, refresh, linkRun, withBusy, dismiss, markRead, setFilter, clearFilters, setGroupBy,
   }
 })

@@ -14,7 +14,13 @@ export interface MentionComment {
   created_at: string
   review_comment: boolean
   path: string | null
+  /** comment | review_comment | review | body */
+  source?: string
 }
+
+/** What a mention needs from the user (backend `github_mentions::triage`). */
+export type MentionCategory = 'reply' | 'fyi' | 'done'
+export const MENTION_CATEGORIES: MentionCategory[] = ['reply', 'fyi', 'done']
 
 export interface MentionItem {
   key: string
@@ -42,6 +48,25 @@ export interface MentionItem {
   /** The "Check with AI" session started for this mention. */
   existing_run_id: string | null
   existing_run_status: string | null
+  /** open | closed | merged */
+  state: string
+  /** The user reacted to the trigger (👍 ❤️ 🎉 🚀 😄). */
+  reacted: boolean
+  user_is_author: boolean
+  /** Distinct handles tagged in the trigger. */
+  audience: number
+  cc: boolean
+  later: { author_login: string; body: string }[]
+  checked_at: string
+  category: MentionCategory | string
+  /** user | rule | ai | auto */
+  category_source: string
+  /** answered | merged | closed | reacted | cc | crowd */
+  category_reason: string | null
+  /** The AI's one line on what is wanted. */
+  summary: string | null
+  /** The AI is sorting it right now. */
+  triage_pending: boolean
 }
 
 export type MentionMuteScope = 'thread' | 'repo'
@@ -170,12 +195,37 @@ export function groupMentions(items: MentionItem[], by: MentionGroupBy): Mention
   return [...groups.values()]
 }
 
-/** Split into waiting (newest mention first) and answered (newest answer first). */
-export function splitAnswered(items: MentionItem[]): { pending: MentionItem[]; answered: MentionItem[] } {
-  const pending = items.filter(i => !i.answered).sort((a, b) => mentionedAt(b).localeCompare(mentionedAt(a)))
-  const answered = items.filter(i => i.answered)
-    .sort((a, b) => (b.answered_at ?? '').localeCompare(a.answered_at ?? ''))
-  return { pending, answered }
+/** The category, defaulting to `reply` (waiting) / `done` (answered) for an item the backend has not sorted. */
+export function categoryOf(item: MentionItem): MentionCategory {
+  if ((MENTION_CATEGORIES as string[]).includes(item.category)) return item.category as MentionCategory
+  return item.answered ? 'done' : 'reply'
+}
+
+/**
+ * Items per category: `reply` / `fyi` newest mention first, `done` newest
+ * activity first (the answer, else the mention).
+ */
+export function splitByCategory(items: MentionItem[]): Record<MentionCategory, MentionItem[]> {
+  const out: Record<MentionCategory, MentionItem[]> = { reply: [], fyi: [], done: [] }
+  for (const i of items) out[categoryOf(i)].push(i)
+  out.reply.sort((a, b) => mentionedAt(b).localeCompare(mentionedAt(a)))
+  out.fyi.sort((a, b) => mentionedAt(b).localeCompare(mentionedAt(a)))
+  const doneAt = (i: MentionItem) => i.answered_at ?? mentionedAt(i)
+  out.done.sort((a, b) => doneAt(b).localeCompare(doneAt(a)))
+  return out
+}
+
+/**
+ * Why the card sits where it is, as an i18n key under `githubMentions.why`
+ * (`null` for an answered one — the card shows when instead).
+ */
+export function whyKey(item: MentionItem): string | null {
+  if (item.answered) return null
+  if (item.category_source === 'user') return 'user'
+  const r = item.category_reason
+  if (r && ['merged', 'closed', 'reacted', 'cc', 'crowd'].includes(r)) return r
+  if (item.category_source === 'ai') return `ai_${categoryOf(item)}`
+  return 'mention'
 }
 
 /**

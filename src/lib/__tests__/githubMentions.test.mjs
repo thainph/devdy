@@ -12,7 +12,8 @@ import {
   isStale,
   quoteExcerpt,
   sanitizeFilters,
-  splitAnswered,
+  splitByCategory,
+  whyKey,
 } from '../githubMentions.ts'
 
 function item(over = {}) {
@@ -55,15 +56,28 @@ test('groups by repo / person keep first-seen order', () => {
   assert.equal(groupMentions([], 'none').length, 0)
 })
 
-test('split puts answered apart, newest first', () => {
+test('split by category, newest first; unsorted items fall back on answered', () => {
   const items = [
-    item({ key: 'old', trigger: { ...item().trigger, created_at: '2026-11-01T00:00:00Z' } }),
-    item({ key: 'new', trigger: { ...item().trigger, created_at: '2026-11-12T00:00:00Z' } }),
-    item({ key: 'done', answered: true, answered_at: '2026-11-11T00:00:00Z' }),
+    item({ key: 'old', category: 'reply', trigger: { ...item().trigger, created_at: '2026-11-01T00:00:00Z' } }),
+    item({ key: 'new', category: '', trigger: { ...item().trigger, created_at: '2026-11-12T00:00:00Z' } }),
+    item({ key: 'cc', category: 'fyi' }),
+    item({ key: 'answered', category: 'done', answered: true, answered_at: '2026-11-11T00:00:00Z' }),
+    item({ key: 'merged', category: 'done', trigger: { ...item().trigger, created_at: '2026-11-13T00:00:00Z' } }),
+    item({ key: 'legacy', answered: true, answered_at: '2026-11-01T00:00:00Z' }),
   ]
-  const { pending, answered } = splitAnswered(items)
-  assert.deepEqual(pending.map(i => i.key), ['new', 'old'])
-  assert.deepEqual(answered.map(i => i.key), ['done'])
+  const s = splitByCategory(items)
+  assert.deepEqual(s.reply.map(i => i.key), ['new', 'old'])
+  assert.deepEqual(s.fyi.map(i => i.key), ['cc'])
+  assert.deepEqual(s.done.map(i => i.key), ['merged', 'answered', 'legacy'])
+})
+
+test('why a mention is where it is', () => {
+  assert.equal(whyKey(item({ answered: true })), null)
+  assert.equal(whyKey(item({ category: 'fyi', category_source: 'user' })), 'user')
+  assert.equal(whyKey(item({ category: 'done', category_source: 'rule', category_reason: 'merged' })), 'merged')
+  assert.equal(whyKey(item({ category: 'fyi', category_source: 'rule', category_reason: 'crowd' })), 'crowd')
+  assert.equal(whyKey(item({ category: 'fyi', category_source: 'ai' })), 'ai_fyi')
+  assert.equal(whyKey(item({ category: 'reply', category_source: 'auto' })), 'mention')
 })
 
 test('stale only when waiting more than 3 days', () => {
