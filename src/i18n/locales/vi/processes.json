@@ -1,18 +1,15 @@
 {
   "title": "Tiến trình nền",
-  "subtitle": "Mọi thứ Devdy đã khởi chạy và vẫn đang chạy: phiên làm việc, dịch vụ của ứng dụng và các tiến trình còn sót lại.",
   "refresh": "Làm mới",
   "stopAllLeftovers": "Dừng mọi tiến trình sót",
   "stopAll": "Dừng tất cả",
   "processCount": "{n} tiến trình | {n} tiến trình",
   "sections": {
-    "orphan": "Sót lại từ phiên trước",
-    "orphanHint": "Do Devdy khởi chạy trước lần thoát gần nhất. Hiện không còn ai quản lý.",
-    "leftover": "Còn sót lại",
-    "leftoverHint": "Phiên đã kết thúc nhưng các tiến trình nó khởi chạy vẫn còn sống.",
     "sessions": "Phiên làm việc",
     "services": "Dịch vụ ứng dụng",
-    "servicesHint": "Các tiến trình hỗ trợ của Devdy (dịch, mascot, kiểm tra model, kiểm tra MCP, ssh-agent)."
+    "servicesHint": "Các tiến trình hỗ trợ của Devdy (dịch, mascot, kiểm tra model, kiểm tra MCP, ssh-agent).",
+    "leftovers": "Còn sót lại",
+    "leftoversHint": "Phiên đã kết thúc hoặc Devdy đã khởi động lại. Không có gì tự dừng chúng."
   },
   "kind": {
     "run": "Phiên",
@@ -29,7 +26,12 @@
     "command": "Lệnh",
     "cpu": "CPU",
     "ram": "RAM",
-    "age": "Thời gian"
+    "age": "Thời gian",
+    "name": "Tên",
+    "kind": "Loại",
+    "state": "Trạng thái",
+    "procs": "Số TT",
+    "sortBy": "Sắp xếp theo {col}"
   },
   "noProject": "Không thuộc dự án",
   "rootProcess": "gốc",
@@ -82,5 +84,34 @@
     "keepQuit": "Thoát, giữ tiến trình nền",
     "cancel": "Huỷ",
     "dontAsk": "Không hỏi lại"
+  },
+  "backToDashboard": "Dashboard",
+  "search": "Tìm theo tên, dự án, PID hoặc lệnh",
+  "autoRefresh": "Tự làm mới mỗi 3 giây",
+  "noMatch": "Không có tiến trình nào khớp “{q}”.",
+  "noneInFilter": "Hiện không có gì ở đây.",
+  "signalsHint": "Dừng = SIGTERM, sau 3 giây thì SIGKILL · Buộc dừng = SIGKILL ngay",
+  "filter": {
+    "all": "Tất cả",
+    "leftovers": "Còn sót",
+    "sessions": "Phiên làm việc",
+    "services": "Dịch vụ ứng dụng"
+  },
+  "state": {
+    "active": "Đang chạy",
+    "leftover": "Còn sót",
+    "orphan": "Từ lần chạy trước"
+  },
+  "summary": {
+    "cpuOf": "trên {n} nhân",
+    "cpuOneCore": "{pct} của một nhân",
+    "ramOf": "trên {total}",
+    "ramShare": "{pct} RAM của máy",
+    "processes": "Tiến trình",
+    "groups": "trong {n} nhóm | trong {n} nhóm",
+    "leftovers": "Còn sót lại",
+    "held": "đang giữ {size}",
+    "none": "Không có gì sót lại",
+    "review": "Xem"
   }
 }

@@ -14,6 +14,10 @@ import {
   type BgSnapshot,
   type QuitAction,
 } from '@/lib/backgroundProcesses'
+import { pushSample } from '@/lib/runtimeDashboard'
+
+/** Samples kept for the Processes screen's CPU / RAM charts (one per refresh). */
+const HISTORY = 40
 
 // The startup orphan prompt shows at most once per app launch. Module state (not
 // component state) so a component HMR swap or a remount can't bring it back.
@@ -39,6 +43,9 @@ export const useBackgroundProcessesStore = defineStore('backgroundProcesses', ()
   const snapshot = ref<BgSnapshot | null>(null)
   const loading = ref(false)
   const error = ref<string | null>(null)
+  /** Total CPU (percent of one core) and RAM (KB) per snapshot, oldest first. */
+  const cpuHistory = ref<number[]>([])
+  const rssHistory = ref<number[]>([])
 
   /** Leftover + orphan: processes nobody owns any more. */
   const stray = computed(() => strayCount(counts.value))
@@ -58,6 +65,8 @@ export const useBackgroundProcessesStore = defineStore('backgroundProcesses', ()
         const snap = await invoke<BgSnapshot>(CMD_LIST)
         snapshot.value = snap
         counts.value = snap.counts
+        cpuHistory.value = pushSample(cpuHistory.value, snap.entries.reduce((n, e) => n + e.cpu, 0), HISTORY)
+        rssHistory.value = pushSample(rssHistory.value, snap.entries.reduce((n, e) => n + e.rss_kb, 0), HISTORY)
         error.value = null
       } catch (e) {
         error.value = String(e)
@@ -139,6 +148,8 @@ export const useBackgroundProcessesStore = defineStore('backgroundProcesses', ()
     snapshot,
     loading,
     error,
+    cpuHistory,
+    rssHistory,
     stray,
     start,
     stop,

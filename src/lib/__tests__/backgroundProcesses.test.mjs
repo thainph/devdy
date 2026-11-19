@@ -6,7 +6,11 @@ import {
   formatAge,
   formatCpu,
   formatRss,
-  groupEntries,
+  groupProcessCounts,
+  matchesQuery,
+  parseProcFilter,
+  procSections,
+  sortEntries,
   strayCount,
   strayIds,
   totals,
@@ -63,20 +67,51 @@ test('formatAge renders compact durations', () => {
   assert.equal(formatAge('2026-10-26T12:00:30Z', now), '0s')
 })
 
-test('groupEntries splits by state, separating infra from sessions', () => {
-  const g = groupEntries([
+test('procSections groups leftover + orphan together, drops empty sections', () => {
+  const list = [
     entry('a', 'active', false, 10),
     entry('b', 'active', true, 10),
     entry('c', 'leftover', false, 10),
     entry('d', 'leftover', true, 50),
-    entry('e', 'orphan', true, 10),
+    entry('e', 'orphan', true, 30),
     entry('f', 'active', false, 99),
-  ])
-  assert.deepEqual(g.sessions.map((e) => e.id), ['f', 'a'])
-  assert.deepEqual(g.services.map((e) => e.id), ['b'])
-  // Stray infra stays in the stray sections, heaviest first.
-  assert.deepEqual(g.leftover.map((e) => e.id), ['d', 'c'])
-  assert.deepEqual(g.orphan.map((e) => e.id), ['e'])
+  ]
+  const all = procSections(list, 'all', '', 'rss')
+  assert.deepEqual(all.map((s) => s.key), ['leftovers', 'sessions', 'services'])
+  // Stray infra stays with the leftovers, heaviest first.
+  assert.deepEqual(all[0].items.map((e) => e.id), ['d', 'e', 'c'])
+  assert.deepEqual(all[1].items.map((e) => e.id), ['f', 'a'])
+  assert.deepEqual(procSections(list, 'services', '', 'rss').map((s) => s.key), ['services'])
+  assert.deepEqual(procSections(list, 'sessions', 'zzz', 'rss'), [])
+})
+
+test('matchesQuery looks at label, project, pid and command', () => {
+  const e = { ...entry('Fix sidebar', 'active', false, 1), project_name: 'Devdy' }
+  e.processes[0] = { ...e.processes[0], pid: 48211, command: 'node vite --port 1420' }
+  assert.ok(matchesQuery(e, ''))
+  assert.ok(matchesQuery(e, 'SIDEBAR'))
+  assert.ok(matchesQuery(e, 'devdy'))
+  assert.ok(matchesQuery(e, '4821'))
+  assert.ok(matchesQuery(e, 'vite'))
+  assert.ok(!matchesQuery(e, 'codex'))
+})
+
+test('sortEntries orders by cpu / procs / age, label breaks ties', () => {
+  const a = { ...entry('a', 'active', false, 5, 1), cpu: 3, created_at: '2026-10-26T10:00:00Z' }
+  const b = { ...entry('b', 'active', false, 5, 3), cpu: 9, created_at: '2026-10-26T11:00:00Z' }
+  const c = { ...entry('c', 'active', false, 5, 1), cpu: 3, created_at: '2026-10-25T10:00:00Z' }
+  assert.deepEqual(sortEntries([a, b, c], 'cpu').map((e) => e.id), ['b', 'a', 'c'])
+  assert.deepEqual(sortEntries([a, b, c], 'procs').map((e) => e.id), ['b', 'a', 'c'])
+  assert.deepEqual(sortEntries([a, b, c], 'age').map((e) => e.id), ['c', 'a', 'b'])
+  assert.deepEqual(sortEntries([a, b, c], 'rss').map((e) => e.id), ['a', 'b', 'c'])
+})
+
+test('groupProcessCounts / parseProcFilter', () => {
+  const list = [entry('a', 'active', false, 1, 2), entry('b', 'orphan', false, 1, 3), entry('c', 'active', true, 1)]
+  assert.deepEqual(groupProcessCounts(list), { all: 6, leftovers: 3, sessions: 2, services: 1 })
+  assert.equal(parseProcFilter('leftovers'), 'leftovers')
+  assert.equal(parseProcFilter('nope'), 'all')
+  assert.equal(parseProcFilter(undefined), 'all')
 })
 
 test('strayIds / totals / counts', () => {

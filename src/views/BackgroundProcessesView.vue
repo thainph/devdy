@@ -1,16 +1,23 @@
 <script setup lang="ts">
 // Background processes manager: every process Devdy tracks (sessions, its own
-// helpers, and processes left behind by ended sessions or a previous app run),
-// with graceful stop / force kill per entry or per process and bulk cleanup.
+// helpers, and processes left behind by ended sessions or a previous app run).
+// A summary strip (the Dashboard's Resources tile, in full) over one table
+// grouped Leftovers / Sessions / App services, with filter tabs (`?filter=`),
+// search and sortable columns; graceful stop / force kill per entry or per
+// process, and bulk cleanup. Opened from the sidebar, the tray, or the
+// Dashboard's Resources tile (`?from=dashboard` adds the way back).
 //
 // Not in App.vue's KeepAlive list: it polls while shown, so the timer must end
 // on unmount.
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
-import { ChevronRight, Cpu, RefreshCw, Trash2 } from 'lucide-vue-next'
-import { Button, Card, PageHeader, Banner } from '@/components/ui'
+import { useRoute, useRouter } from 'vue-router'
+import { ChevronRight, Cpu, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
+import { Button, Input, PageHeader, Banner, SegmentedControl, type SegmentedOption } from '@/components/ui'
 import ProcessEntryRow from '@/components/processes/ProcessEntryRow.vue'
+import ProcessSummary from '@/components/processes/ProcessSummary.vue'
+import { PROC_GRID } from '@/components/processes/grid'
+import '@/components/dashboard/runtime.css'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
@@ -18,11 +25,22 @@ import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useRunsStore } from '@/stores/runs'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { focusSessionWindow } from '@/lib/sessionWindow'
-import { groupEntries, strayIds, type BgEntry } from '@/lib/backgroundProcesses'
+import { invoke } from '@/lib/tauri'
+import { CMD_RUNTIME_SNAPSHOT, type RuntimeSnapshot } from '@/lib/runtimeSnapshot'
+import {
+  groupProcessCounts,
+  parseProcFilter,
+  procSections,
+  strayIds,
+  type BgEntry,
+  type ProcFilter,
+  type ProcSort,
+} from '@/lib/backgroundProcesses'
 
 defineOptions({ name: 'BackgroundProcessesView' })
 
 const { t } = useI18n()
+const route = useRoute()
 const router = useRouter()
 const store = useBackgroundProcessesStore()
 const live = useLiveRunsStore()
@@ -32,15 +50,48 @@ const { confirm } = useConfirm()
 const { toast } = useToast()
 
 const entries = computed(() => store.snapshot?.entries ?? [])
-const groups = computed(() => groupEntries(entries.value))
 const strays = computed(() => strayIds(entries.value))
-const totalProcesses = computed(() => entries.value.reduce((n, e) => n + e.processes.length, 0))
-const strayProcesses = computed(() =>
-  entries.value.filter((e) => e.state !== 'active').reduce((n, e) => n + e.processes.length, 0),
-)
+const counts = computed(() => groupProcessCounts(entries.value))
+const totalCpu = computed(() => entries.value.reduce((n, e) => n + e.cpu, 0))
+const totalRss = computed(() => entries.value.reduce((n, e) => n + e.rss_kb, 0))
+const leftoverRss = computed(() => entries.value.filter((e) => e.state !== 'active').reduce((n, e) => n + e.rss_kb, 0))
+const cpuMax = computed(() => Math.max(0, ...entries.value.map((e) => e.cpu)))
+const rssMax = computed(() => Math.max(0, ...entries.value.map((e) => e.rss_kb)))
 
-// App services are plumbing: collapsed unless the user asks.
-const servicesOpen = ref(false)
+// ── Filter (kept in the URL so the Dashboard can deep-link), search, sort ──
+const filter = computed<ProcFilter>({
+  get: () => parseProcFilter(route.query.filter),
+  set: (v) => {
+    router.replace({ query: { ...route.query, filter: v === 'all' ? undefined : v } }).catch(() => {})
+  },
+})
+const filterOptions = computed<SegmentedOption<ProcFilter>[]>(() =>
+  (['all', 'leftovers', 'sessions', 'services'] as const).map((f) => ({
+    value: f,
+    label: `${t(`processes.filter.${f}`)} ${counts.value[f]}`,
+  })),
+)
+const query = ref('')
+const sort = ref<ProcSort>('rss')
+const sections = computed(() => procSections(entries.value, filter.value, query.value, sort.value))
+const fromDashboard = computed(() => route.query.from === 'dashboard')
+
+const SECTION_META = computed(() => ({
+  leftovers: { title: t('processes.sections.leftovers'), hint: t('processes.sections.leftoversHint'), dot: 'bg-warning' },
+  sessions: { title: t('processes.sections.sessions'), hint: '', dot: 'bg-primary' },
+  services: { title: t('processes.sections.services'), hint: t('processes.sections.servicesHint'), dot: 'bg-muted-foreground' },
+}))
+
+const COLUMNS = computed(() => [
+  { label: t('processes.col.name'), sort: null, right: false },
+  { label: t('processes.col.kind'), sort: null, right: false },
+  { label: t('processes.col.state'), sort: null, right: false },
+  { label: t('processes.col.procs'), sort: 'procs' as const, right: true },
+  { label: t('processes.col.cpu'), sort: 'cpu' as const, right: true },
+  { label: t('processes.col.ram'), sort: 'rss' as const, right: true },
+  { label: t('processes.col.age'), sort: 'age' as const, right: true },
+  { label: '', sort: null, right: true },
+])
 
 // Ages tick with each snapshot rather than on their own timer.
 const now = ref(Date.now())
@@ -49,12 +100,18 @@ watch(
   () => (now.value = Date.now()),
 )
 
+// Machine RAM for "of 32 GB": read once, the snapshot command is the only source.
+const totalMemKb = ref(0)
+
 const busy = reactive(new Set<string>())
 const bulkBusy = ref(false)
 
 let endWatch: (() => void) | null = null
 onMounted(() => {
   endWatch = store.watch(3000)
+  invoke<RuntimeSnapshot>(CMD_RUNTIME_SNAPSHOT)
+    .then((s) => (totalMemKb.value = s?.resources.totalMemKb ?? 0))
+    .catch(() => {})
 })
 onUnmounted(() => {
   endWatch?.()
@@ -111,7 +168,7 @@ async function killPid(e: BgEntry, pid: number) {
 }
 
 async function stopLeftovers() {
-  const n = strayProcesses.value
+  const n = counts.value.leftovers
   const ok = await confirm({
     title: t('processes.confirm.stopLeftoversTitle'),
     message: t('processes.confirm.stopLeftoversMessage', { n }, n),
@@ -129,7 +186,7 @@ async function stopLeftovers() {
 async function stopEverything() {
   const ok = await confirm({
     title: t('processes.confirm.stopAllTitle'),
-    message: t('processes.confirm.stopAllMessage', { n: totalProcesses.value }),
+    message: t('processes.confirm.stopAllMessage', { n: counts.value.all }),
     confirmLabel: t('processes.stopAll'),
   })
   if (!ok) return
@@ -153,18 +210,22 @@ async function openSession(e: BgEntry) {
   tabsStore.open(projectId, runId)
   router.push({ name: 'project-run-detail', params: { projectId, runId } }).catch(() => {})
 }
-
-const sections = computed(() => [
-  { key: 'orphan', title: t('processes.sections.orphan'), hint: t('processes.sections.orphanHint'), items: groups.value.orphan, warn: true },
-  { key: 'leftover', title: t('processes.sections.leftover'), hint: t('processes.sections.leftoverHint'), items: groups.value.leftover, warn: true },
-  { key: 'sessions', title: t('processes.sections.sessions'), hint: '', items: groups.value.sessions, warn: false },
-])
 </script>
 
 <template>
   <div class="flex flex-col h-full">
     <!-- Page header -->
-    <PageHeader :title="t('processes.title')" :count="totalProcesses > 0 ? totalProcesses : null">
+    <PageHeader :title="t('processes.title')" :count="counts.all > 0 ? counts.all : null">
+      <template v-if="fromDashboard" #leading>
+        <button
+          type="button"
+          class="flex cursor-pointer items-center gap-1 rounded px-1 text-sm text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+          @click="router.push({ name: 'dashboard' })"
+        >
+          {{ t('processes.backToDashboard') }}
+        </button>
+        <ChevronRight class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="2" aria-hidden="true" />
+      </template>
       <template #actions>
         <Button variant="outline" size="icon" :title="t('processes.refresh')" :aria-label="t('processes.refresh')" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
@@ -187,8 +248,11 @@ const sections = computed(() => [
     <!-- Content -->
     <div class="flex-1 overflow-auto p-6">
       <!-- Loading skeleton (first snapshot only) -->
-      <div v-if="store.loading && !store.snapshot" class="max-w-4xl space-y-3">
-        <div v-for="i in 3" :key="i" class="h-20 rounded-lg border border-border bg-card animate-pulse" />
+      <div v-if="store.loading && !store.snapshot" class="space-y-3">
+        <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+          <div v-for="i in 4" :key="i" class="h-32 rounded-lg border border-border bg-card animate-pulse" />
+        </div>
+        <div class="h-64 rounded-lg border border-border bg-card animate-pulse" />
       </div>
 
       <!-- Error with nothing to show -->
@@ -208,67 +272,79 @@ const sections = computed(() => [
         <p class="text-xs text-muted-foreground mt-1 max-w-80">{{ t('processes.empty.hint') }}</p>
       </div>
 
-      <div v-else class="max-w-4xl space-y-4">
-        <p class="text-xs text-muted-foreground">{{ t('processes.subtitle') }}</p>
+      <div v-else class="space-y-4">
+        <ProcessSummary
+          :cpu="totalCpu"
+          :cpu-history="store.cpuHistory"
+          :rss-kb="totalRss"
+          :rss-history="store.rssHistory"
+          :total-mem-kb="totalMemKb"
+          :counts="counts"
+          :group-count="entries.length"
+          :leftover-rss-kb="leftoverRss"
+          @review="filter = 'leftovers'"
+        />
 
-        <template v-for="s in sections" :key="s.key">
-          <Card v-if="s.items.length > 0" body-class="divide-y divide-border/50">
-            <template #header>
-              <span
-                class="h-2 w-2 shrink-0 rounded-full"
-                :class="s.warn ? 'bg-warning' : 'bg-primary'"
-              />
-              <span class="text-xs font-semibold">{{ s.title }}</span>
-              <span class="text-[11px] text-muted-foreground">({{ s.items.length }})</span>
-              <span v-if="s.hint" class="ml-2 truncate text-[11px] text-muted-foreground">{{ s.hint }}</span>
+        <!-- Toolbar -->
+        <div class="flex flex-wrap items-center gap-2">
+          <SegmentedControl v-model="filter" :options="filterOptions" :stretch="false" />
+          <div class="relative w-64 max-w-full">
+            <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
+            <Input v-model="query" type="search" size="sm" class="pl-7" :placeholder="t('processes.search')" :aria-label="t('processes.search')" />
+          </div>
+          <span class="ml-auto text-[11px] text-muted-foreground">{{ t('processes.autoRefresh') }}</span>
+        </div>
+
+        <!-- Table -->
+        <div class="overflow-x-auto rounded-lg border border-border/70 bg-card">
+          <div class="min-w-[920px]">
+            <div class="grid items-center gap-3 border-b border-border/60 px-3 py-2 text-[11px] text-muted-foreground" :class="PROC_GRID">
+              <template v-for="(c, i) in COLUMNS" :key="i">
+                <button
+                  v-if="c.sort"
+                  type="button"
+                  class="cursor-pointer text-right hover:text-foreground"
+                  :class="sort === c.sort && 'font-semibold text-foreground'"
+                  :title="t('processes.col.sortBy', { col: c.label })"
+                  :aria-pressed="sort === c.sort"
+                  @click="sort = c.sort"
+                >
+                  {{ c.label }}
+                </button>
+                <span v-else :class="[c.right && 'text-right', i === 0 && 'pl-5.5']">{{ c.label }}</span>
+              </template>
+            </div>
+
+            <template v-for="s in sections" :key="s.key">
+              <div class="flex items-center gap-2 border-b border-border/50 bg-muted/40 px-3 py-1.5 text-[11px]">
+                <span class="h-2 w-2 shrink-0 rounded-full" :class="SECTION_META[s.key].dot" />
+                <span class="font-semibold">{{ SECTION_META[s.key].title }}</span>
+                <span class="text-muted-foreground">({{ s.items.length }})</span>
+                <span v-if="SECTION_META[s.key].hint" class="ml-1 truncate text-muted-foreground">{{ SECTION_META[s.key].hint }}</span>
+              </div>
+              <div class="divide-y divide-border/50 border-b border-border/50 last:border-b-0">
+                <ProcessEntryRow
+                  v-for="e in s.items"
+                  :key="e.id"
+                  :entry="e"
+                  :now="now"
+                  :cpu-max="cpuMax"
+                  :rss-max="rssMax"
+                  :busy="busy.has(e.id) || bulkBusy"
+                  @stop="stopEntry(e)"
+                  @force="forceEntry(e)"
+                  @open="openSession(e)"
+                  @kill-pid="(pid) => killPid(e, pid)"
+                />
+              </div>
             </template>
-            <ProcessEntryRow
-              v-for="e in s.items"
-              :key="e.id"
-              :entry="e"
-              :now="now"
-              :busy="busy.has(e.id) || bulkBusy"
-              @stop="stopEntry(e)"
-              @force="forceEntry(e)"
-              @open="openSession(e)"
-              @kill-pid="(pid) => killPid(e, pid)"
-            />
-          </Card>
-        </template>
 
-        <!-- App services: collapsed by default -->
-        <Card v-if="groups.services.length > 0" body-class="divide-y divide-border/50">
-          <template #header>
-            <button
-              type="button"
-              class="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
-              :aria-expanded="servicesOpen"
-              @click="servicesOpen = !servicesOpen"
-            >
-              <ChevronRight
-                class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
-                :class="servicesOpen && 'rotate-90'"
-                :stroke-width="2"
-              />
-              <span class="text-xs font-semibold">{{ t('processes.sections.services') }}</span>
-              <span class="text-[11px] text-muted-foreground">({{ groups.services.length }})</span>
-              <span class="ml-2 truncate text-[11px] text-muted-foreground">{{ t('processes.sections.servicesHint') }}</span>
-            </button>
-          </template>
-          <template v-if="servicesOpen">
-            <ProcessEntryRow
-              v-for="e in groups.services"
-              :key="e.id"
-              :entry="e"
-              :now="now"
-              :busy="busy.has(e.id) || bulkBusy"
-              @stop="stopEntry(e)"
-              @force="forceEntry(e)"
-              @open="openSession(e)"
-              @kill-pid="(pid) => killPid(e, pid)"
-            />
-          </template>
-        </Card>
+            <p v-if="sections.length === 0" class="px-3 py-8 text-center text-xs text-muted-foreground">
+              {{ query.trim() ? t('processes.noMatch', { q: query.trim() }) : t('processes.noneInFilter') }}
+            </p>
+          </div>
+          <p class="border-t border-border/60 px-3 py-2 text-[11px] text-muted-foreground">{{ t('processes.signalsHint') }}</p>
+        </div>
       </div>
     </div>
   </div>

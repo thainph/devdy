@@ -1,18 +1,15 @@
 {
   "title": "Background Processes",
-  "subtitle": "Everything Devdy started that is still running: sessions, app services, and processes left behind.",
   "refresh": "Refresh",
   "stopAllLeftovers": "Stop all leftovers",
   "stopAll": "Stop all",
   "processCount": "{n} process | {n} processes",
   "sections": {
-    "orphan": "Leftover from previous session",
-    "orphanHint": "Started by Devdy before it last quit. Nothing owns them now.",
-    "leftover": "Leftover",
-    "leftoverHint": "Their session ended, but processes it started are still alive.",
     "sessions": "Sessions",
     "services": "App services",
-    "servicesHint": "Devdy's own helpers (translation, mascot, probes, MCP tests, ssh-agent)."
+    "servicesHint": "Devdy's own helpers (translation, mascot, probes, MCP tests, ssh-agent).",
+    "leftovers": "Leftovers",
+    "leftoversHint": "Their owner ended or Devdy restarted. Nothing stops these for you."
   },
   "kind": {
     "run": "Session",
@@ -29,7 +26,12 @@
     "command": "Command",
     "cpu": "CPU",
     "ram": "RAM",
-    "age": "Age"
+    "age": "Age",
+    "name": "Name",
+    "kind": "Kind",
+    "state": "State",
+    "procs": "Procs",
+    "sortBy": "Sort by {col}"
   },
   "noProject": "No project",
   "rootProcess": "root",
@@ -82,5 +84,34 @@
     "keepQuit": "Quit, keep background processes",
     "cancel": "Cancel",
     "dontAsk": "Don't ask again"
+  },
+  "backToDashboard": "Dashboard",
+  "search": "Search name, project, PID or command",
+  "autoRefresh": "Refreshes every 3 s",
+  "noMatch": "No process matches “{q}”.",
+  "noneInFilter": "Nothing here right now.",
+  "signalsHint": "Stop = SIGTERM, then SIGKILL after 3 s · Force kill = SIGKILL now",
+  "filter": {
+    "all": "All",
+    "leftovers": "Leftovers",
+    "sessions": "Sessions",
+    "services": "App services"
+  },
+  "state": {
+    "active": "Running",
+    "leftover": "Leftover",
+    "orphan": "From last launch"
+  },
+  "summary": {
+    "cpuOf": "of {n} cores",
+    "cpuOneCore": "{pct} of one core",
+    "ramOf": "of {total}",
+    "ramShare": "{pct} of the machine",
+    "processes": "Processes",
+    "groups": "in {n} group | in {n} groups",
+    "leftovers": "Leftovers",
+    "held": "{size} held",
+    "none": "Nothing left behind",
+    "review": "Review"
   }
 }

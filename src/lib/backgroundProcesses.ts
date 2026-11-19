@@ -96,34 +96,66 @@ export function trayCount(c: BgCounts): number {
   return c.active + c.leftover + c.orphan
 }
 
-export interface EntryGroups {
-  orphan: BgEntry[]
-  leftover: BgEntry[]
-  /** Active user work (runs). */
-  sessions: BgEntry[]
-  /** Active app plumbing. */
-  services: BgEntry[]
+/** The Processes screen's filter tabs; leftovers merges `leftover` + `orphan`. */
+export type ProcFilter = 'all' | 'leftovers' | 'sessions' | 'services'
+export type ProcGroup = Exclude<ProcFilter, 'all'>
+export type ProcSort = 'rss' | 'cpu' | 'procs' | 'age'
+
+export const PROC_GROUPS: readonly ProcGroup[] = ['leftovers', 'sessions', 'services']
+
+/** A `?filter=` query value, or `all` when it isn't one. */
+export function parseProcFilter(v: unknown): ProcFilter {
+  return v === 'leftovers' || v === 'sessions' || v === 'services' ? v : 'all'
 }
 
-/**
- * Split a snapshot into the screen's sections. Orphan / leftover keep infra
- * entries too — a stray process is stray whoever started it. Each section is
- * sorted heaviest-first (RAM) so the thing worth stopping sits on top.
- */
-export function groupEntries(entries: BgEntry[]): EntryGroups {
-  const g: EntryGroups = { orphan: [], leftover: [], sessions: [], services: [] }
-  for (const e of entries) {
-    if (e.state === 'orphan') g.orphan.push(e)
-    else if (e.state === 'leftover') g.leftover.push(e)
-    else if (e.infra) g.services.push(e)
-    else g.sessions.push(e)
+export function entryGroup(e: BgEntry): ProcGroup {
+  if (e.state !== 'active') return 'leftovers'
+  return e.infra ? 'services' : 'sessions'
+}
+
+/** Case-insensitive match on label, project, PIDs and commands. Empty query matches all. */
+export function matchesQuery(e: BgEntry, query: string): boolean {
+  const q = query.trim().toLowerCase()
+  if (!q) return true
+  if (e.label.toLowerCase().includes(q)) return true
+  if (e.project_name?.toLowerCase().includes(q)) return true
+  return e.processes.some((p) => String(p.pid).includes(q) || p.command.toLowerCase().includes(q))
+}
+
+/** Heaviest / busiest / oldest first; ties fall back to the label. */
+export function sortEntries(entries: readonly BgEntry[], by: ProcSort): BgEntry[] {
+  const key = (e: BgEntry): number => {
+    switch (by) {
+      case 'cpu': return e.cpu
+      case 'procs': return e.processes.length
+      case 'age': return -(Date.parse(e.created_at) || 0)
+      default: return e.rss_kb
+    }
   }
-  const byRss = (a: BgEntry, b: BgEntry) => b.rss_kb - a.rss_kb || a.label.localeCompare(b.label)
-  g.orphan.sort(byRss)
-  g.leftover.sort(byRss)
-  g.sessions.sort(byRss)
-  g.services.sort(byRss)
-  return g
+  return [...entries].sort((a, b) => key(b) - key(a) || a.label.localeCompare(b.label))
+}
+
+export interface ProcSection {
+  key: ProcGroup
+  items: BgEntry[]
+}
+
+/** The visible sections for a filter tab + search, in display order, empty ones dropped. */
+export function procSections(entries: readonly BgEntry[], filter: ProcFilter, query: string, by: ProcSort): ProcSection[] {
+  return PROC_GROUPS
+    .filter((g) => filter === 'all' || filter === g)
+    .map((g) => ({ key: g, items: sortEntries(entries.filter((e) => entryGroup(e) === g && matchesQuery(e, query)), by) }))
+    .filter((s) => s.items.length > 0)
+}
+
+/** Process count per filter tab. */
+export function groupProcessCounts(entries: readonly BgEntry[]): Record<ProcFilter, number> {
+  const out: Record<ProcFilter, number> = { all: 0, leftovers: 0, sessions: 0, services: 0 }
+  for (const e of entries) {
+    out.all += e.processes.length
+    out[entryGroup(e)] += e.processes.length
+  }
+  return out
 }
 
 /** Ids of every leftover + orphan entry ("Stop all leftovers"). */
