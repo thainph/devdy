@@ -954,9 +954,10 @@ function runDot(run: RunRecord): 'running' | 'done' | 'failed' | 'cancelled' | '
 }
 const RUN_DOT: Record<ReturnType<typeof runDot>, string> = {
   running: 'bg-success',
-  done: 'bg-success',
+  // Idle (turn finished) stays neutral so only a live run reads as green.
+  done: 'bg-muted-foreground/45',
   failed: 'bg-destructive',
-  cancelled: 'bg-muted-foreground/55',
+  cancelled: 'bg-warning',
   draft: 'border-[1.5px] border-muted-foreground/60',
 }
 

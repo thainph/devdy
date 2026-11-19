@@ -204,10 +204,11 @@ const STATUSES = ['running', 'done', 'failed', 'cancelled']
 function statusLabel(r: HistoryRun): string {
   return t(`dashboard.history.status.${STATUSES.includes(r.status) ? r.status : 'done'}`)
 }
+// Idle (turn finished) stays neutral so only a live run reads as green.
 const STATUS_DOT: Record<string, string> = {
-  done: 'bg-success',
+  done: 'bg-muted-foreground/45',
   failed: 'bg-destructive',
-  cancelled: 'bg-muted-foreground/55',
+  cancelled: 'bg-warning',
 }
 function account(r: HistoryRun): string {
   return r.engine === 'codex' ? t('dashboard.engine.codex') : r.accountName ?? t('dashboard.engine.claude')
@@ -336,7 +337,7 @@ defineExpose({ focusSearch })
                 <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none" />
                 <span class="relative inline-flex h-2 w-2 rounded-full bg-success" />
               </template>
-              <span v-else class="h-2 w-2 rounded-full" :class="STATUS_DOT[r.status] ?? 'bg-success'" />
+              <span v-else class="h-2 w-2 rounded-full" :class="STATUS_DOT[r.status] ?? STATUS_DOT.done" />
             </span>
             <span
               class="w-[84px] shrink-0 text-right text-[11px] tabular-nums"
