@@ -8,7 +8,11 @@
     "last7": "Last 7 days",
     "last30": "Last 30 days",
     "last90": "Last 90 days",
-    "all": "All time"
+    "all": "All time",
+    "short7": "7d",
+    "short30": "30d",
+    "short90": "90d",
+    "shortAll": "All"
   },
   "engine": {
     "all": "All engines"
@@ -19,34 +23,7 @@
   "account": {
     "all": "All Claude accounts",
     "none": "No account (~/.claude)",
-    "deleted": "(deleted account)",
-    "default": "default"
-  },
-  "plan": {
-    "claudeTitle": "Plan usage (Claude subscription)",
-    "claudeDescPrefix": "Your account's",
-    "claudeDescSuffix": "usage and reset times, read live from Claude's",
-    "claudeDescEnd": "data during runs.",
-    "codexTitle": "Plan usage (Codex subscription)",
-    "codexDescPrefix": "Your Codex account's",
-    "codexDescSuffix": "rate-limit usage (the numbers behind",
-    "codexDescEnd": "), updated after each Codex run.",
-    "real": "real",
-    "label": "Plan:",
-    "empty": "No plan usage captured yet — run a Claude task and it will populate here. (Unavailable for API-key / non-subscription sessions.)",
-    "emptyCodex": "No Codex plan usage captured yet — run a Codex task and it will populate here.",
-    "windowFiveHour": "Current session (5h)",
-    "windowSevenDay": "This week (all models)",
-    "windowSevenDayOpus": "This week (Opus)",
-    "windowSevenDaySonnet": "This week (Sonnet)",
-    "windowCodexWeek": "This week",
-    "resetsSoon": "resets soon",
-    "resetsInDaysHours": "resets in {days}d {hours}h",
-    "resetsInDays": "resets in {days}d",
-    "resetsInHoursMinutes": "resets in {hours}h {minutes}m",
-    "resetsInHours": "resets in {hours}h",
-    "resetsInMinutes": "resets in {minutes}m",
-    "emptyAccount": "No plan usage captured for this account yet — run a Claude task with it."
+    "deleted": "(deleted account)"
   },
   "empty": {
     "title": "No usage recorded for this filter.",
@@ -54,32 +31,35 @@
   },
   "summary": {
     "totalTokens": "Total tokens",
-    "tokensBreakdown": "in {input} · out {output} · cache {cache}",
     "estCost": "Est. cost",
     "estCostTooltip": "API-equivalent conversion. Since the account uses a subscription, the real cost is a fixed subscription fee, not billed per token.",
-    "estimated": "{cost} estimated",
     "runs": "Runs",
-    "turns": "Turns"
+    "turns": "Turns",
+    "input": "In",
+    "output": "Out",
+    "cache": "Cache",
+    "perDay": "{cost} / day avg",
+    "tokensPerRun": "{n} tokens / run",
+    "turnsPerRun": "{n} turns / run"
   },
   "charts": {
-    "dailyTitle": "Daily tokens & cost",
     "tokens": "Tokens",
-    "cost": "Cost (USD)",
+    "cost": "Cost",
     "byEngine": "By engine",
-    "byProject": "By project"
+    "byProject": "By project",
+    "daily": "Daily usage",
+    "runs": "Runs"
   },
   "table": {
-    "project": "Project",
     "tokens": "Tokens",
     "cost": "Cost",
     "percent": "%",
     "deletedProject": "(deleted)",
     "byModel": "By model",
-    "model": "Model",
-    "runs": "Runs",
     "unknownModel": "(unknown)",
     "byAccount": "By Claude account",
-    "account": "Account"
+    "showAll": "Show all {n}",
+    "showLess": "Show less"
   },
   "action": {
     "backfilled": "Backfilled {inserted} record(s) from {scanned} run log(s).",
@@ -89,15 +69,12 @@
     "storageReadFailed": "Failed to read storage: {error}"
   },
   "storage": {
-    "title": "Storage — session/run logs",
+    "title": "Storage",
     "totalSuffix": "· {bytes} total",
     "rescan": "Rescan",
     "scanning": "Scanning disk…",
-    "category": "Category",
-    "files": "Files",
-    "size": "Size",
-    "percent": "%",
-    "note": "Read-only overview. To free up space, delete sessions in History — that removes each session's Devdy log, fetched issue/PR files and Claude/Codex CLI transcripts together. Token stats are kept."
+    "note": "Read-only. To free space, delete sessions in History; that removes the session's Devdy log, fetched issue/PR files and Claude/Codex CLI transcripts together. Token stats are kept.",
+    "fileCount": "{n} files"
   },
   "resetModal": {
     "title": "Reset usage statistics",
@@ -105,5 +82,6 @@
     "irreversible": "This cannot be undone.",
     "typeToConfirm": "Type {word} to confirm:",
     "resetEverything": "Reset everything"
-  }
+  },
+  "engineLine": "{tokens} tokens · {cost} · {runs} runs"
 }

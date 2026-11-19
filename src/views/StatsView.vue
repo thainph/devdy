@@ -1,28 +1,22 @@
 <script setup lang="ts">
-import { ref, computed, onMounted, onUnmounted, watch } from 'vue'
+// Usage Stats: tokens / cost / runs recorded per run, filtered by range,
+// engine, project and Claude account (all in the page header), plus a
+// read-only disk-usage strip. Laid out dense: one KPI strip, the daily chart
+// beside the engine split, three ranked breakdowns side by side, storage last.
+import { ref, computed, onMounted, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { invoke } from '@/lib/tauri'
-import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import {
   Chart as ChartJS,
-  Title,
   Tooltip,
-  Legend,
   BarController,
   BarElement,
-  LineController,
-  LineElement,
-  PointElement,
-  DoughnutController,
-  ArcElement,
   CategoryScale,
   LinearScale,
 } from 'chart.js'
-import { Bar, Doughnut } from 'vue-chartjs'
-import {
-  Coins, DollarSign, Play, Repeat, RefreshCw, Trash2, Loader2, Info, AlertTriangle, HardDrive, Gauge,
-} from 'lucide-vue-next'
-import { Button, Input, Card, AppSelect, PageHeader } from '@/components/ui'
+import { Bar } from 'vue-chartjs'
+import { Coins, RefreshCw, Trash2, Loader2, Info, AlertTriangle } from 'lucide-vue-next'
+import { Button, Input, Card, AppSelect, PageHeader, SegmentedControl, type SegmentedOption } from '@/components/ui'
+import RankedTable, { type RankedRow } from '@/components/stats/RankedTable.vue'
 import { useProjectsStore } from '@/stores/projects'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import {
@@ -31,31 +25,23 @@ import {
   type StatsResult, type StatsFilter, type StorageStats, type AccountStat,
 } from '@/stores/stats'
 
-// Register controllers explicitly. The mixed bar/line daily chart needs both
-// BarController and LineController. Relying on vue-chartjs's import side effects
-// (createTypedChart calls Chart.register) breaks in production: those calls are
-// marked /* #__PURE__ */, so Rollup tree-shakes away the unused Line component
-// and LineController never registers — the daily chart then fails only in builds.
-ChartJS.register(
-  Title, Tooltip, Legend,
-  BarController, BarElement,
-  LineController, LineElement, PointElement,
-  DoughnutController, ArcElement,
-  CategoryScale, LinearScale,
-)
+// Register explicitly: vue-chartjs's own register calls are marked pure and get
+// tree-shaken out of production builds.
+ChartJS.register(Tooltip, BarController, BarElement, CategoryScale, LinearScale)
 
 const { t } = useI18n()
 const projectsStore = useProjectsStore()
 const accountsStore = useClaudeAccountsStore()
 
 // ── filters ────────────────────────────────────────────────────────────────
-const RANGE_OPTIONS = computed(() => [
-  { value: '7', label: t('stats.range.last7') },
-  { value: '30', label: t('stats.range.last30') },
-  { value: '90', label: t('stats.range.last90') },
-  { value: 'all', label: t('stats.range.all') },
+type Range = '7' | '30' | '90' | 'all'
+const RANGE_OPTIONS = computed<SegmentedOption<Range>[]>(() => [
+  { value: '7', label: t('stats.range.short7'), title: t('stats.range.last7') },
+  { value: '30', label: t('stats.range.short30'), title: t('stats.range.last30') },
+  { value: '90', label: t('stats.range.short90'), title: t('stats.range.last90') },
+  { value: 'all', label: t('stats.range.shortAll'), title: t('stats.range.all') },
 ])
-const range = ref('30')
+const range = ref<Range>('30')
 const engine = ref('') // '' = all
 const projectId = ref('') // '' = all
 const accountId = ref('') // '' = all; NO_ACCOUNT = global ~/.claude
@@ -82,7 +68,7 @@ function accountName(a: AccountStat): string {
   return a.account_label ?? t('stats.account.deleted')
 }
 
-function rangeToDates(r: string): { from: string | null; to: string | null } {
+function rangeToDates(r: Range): { from: string | null; to: string | null } {
   if (r === 'all') return { from: null, to: null }
   const days = parseInt(r, 10)
   const now = new Date()
@@ -125,21 +111,7 @@ watch(currentFilter, load, { deep: true })
 onMounted(async () => {
   if (projectsStore.projects.length === 0) await projectsStore.fetchProjects()
   if (accountsStore.accounts.length === 0) await accountsStore.fetch()
-  now.value = Date.now()
-  clockTimer = setInterval(() => { now.value = Date.now() }, 30_000)
-  await Promise.all([load(), loadStorage(), refreshPlanUsage(), refreshPlanUsageCodex()])
-  unlistenPlanUsage = await listen<{ provider?: string }>('plan_usage_updated', (e) => {
-    if (e.payload?.provider === 'codex') {
-      refreshPlanUsageCodex().catch(() => {})
-    } else {
-      refreshPlanUsage().catch(() => {})
-    }
-  })
-})
-
-onUnmounted(() => {
-  if (clockTimer) clearInterval(clockTimer)
-  if (unlistenPlanUsage) unlistenPlanUsage()
+  await Promise.all([load(), loadStorage()])
 })
 
 // ── formatting ────────────────────────────────────────────────────────────────
@@ -147,188 +119,100 @@ function fmtNum(n: number): string {
   return n.toLocaleString('en-US')
 }
 function fmtCompact(n: number): string {
+  if (n >= 1_000_000_000) return (n / 1_000_000_000).toFixed(2) + 'B'
   if (n >= 1_000_000) return (n / 1_000_000).toFixed(2) + 'M'
   if (n >= 1_000) return (n / 1_000).toFixed(1) + 'k'
-  return String(n)
+  return String(Math.round(n))
 }
 function fmtCost(n: number): string {
   if (n === 0) return '$0'
   if (n < 0.01) return '$' + n.toFixed(4)
   return '$' + n.toFixed(2)
 }
-
-const hasData = computed(() => (stats.value?.summary.total_turns ?? 0) > 0)
-
-// ── chart palette ────────────────────────────────────────────────────────────
-const INDIGO = '#6366f1'
-const AMBER = '#f59e0b'
-const PALETTE = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#ef4444', '#14b8a6']
-
-const gridColor = 'rgba(127,127,127,0.12)'
-const tickColor = 'rgba(148,148,160,0.9)'
-
-// Daily tokens (bars) + cost (line, right axis).
-// Typed `any` because this is a mixed bar/line dataset, which doesn't fit
-// vue-chartjs's `ChartData<'bar'>` prop type.
-const dailyChartData = computed((): any => {
-  const d = stats.value?.daily ?? []
-  return {
-    labels: d.map((p) => p.date.slice(5)), // MM-DD
-    datasets: [
-      {
-        type: 'bar' as const,
-        label: t('stats.charts.tokens'),
-        data: d.map((p) => p.tokens),
-        backgroundColor: 'rgba(99,102,241,0.55)',
-        borderColor: INDIGO,
-        borderWidth: 1,
-        borderRadius: 3,
-        yAxisID: 'y',
-        order: 2,
-      },
-      {
-        type: 'line' as const,
-        label: t('stats.charts.cost'),
-        data: d.map((p) => p.cost),
-        borderColor: AMBER,
-        backgroundColor: AMBER,
-        borderWidth: 2,
-        pointRadius: 2,
-        tension: 0.3,
-        yAxisID: 'y1',
-        order: 1,
-      },
-    ],
-  }
-})
-
-const dailyChartOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  interaction: { mode: 'index' as const, intersect: false },
-  plugins: {
-    legend: { labels: { color: tickColor, boxWidth: 12, font: { size: 11 } } },
-  },
-  scales: {
-    x: { grid: { color: gridColor }, ticks: { color: tickColor, font: { size: 10 }, maxRotation: 0, autoSkip: true } },
-    y: {
-      position: 'left' as const,
-      grid: { color: gridColor },
-      ticks: { color: tickColor, font: { size: 10 }, callback: (v: number | string) => fmtCompact(Number(v)) },
-    },
-    y1: {
-      position: 'right' as const,
-      grid: { drawOnChartArea: false },
-      ticks: { color: AMBER, font: { size: 10 }, callback: (v: number | string) => '$' + Number(v).toFixed(2) },
-    },
-  },
-}
-
-const engineChartData = computed(() => {
-  const e = stats.value?.by_engine ?? []
-  return {
-    labels: e.map((x) => x.engine),
-    datasets: [
-      {
-        data: e.map((x) => x.tokens),
-        backgroundColor: e.map((_, i) => PALETTE[i % PALETTE.length]),
-        borderWidth: 0,
-      },
-    ],
-  }
-})
-
-const doughnutOptions = {
-  responsive: true,
-  maintainAspectRatio: false,
-  cutout: '62%',
-  plugins: {
-    legend: { position: 'bottom' as const, labels: { color: tickColor, boxWidth: 12, font: { size: 11 } } },
-  },
-}
-
 function pct(part: number, total: number): string {
   if (!total) return '0%'
   return ((part / total) * 100).toFixed(0) + '%'
 }
 
-// ── real subscription plan usage (read live from /usage during runs) ────────────
-// The budget store only holds the single guardrail verdict, so Stats fetches the
-// raw `/usage` snapshot itself for the detailed breakdown below.
-interface PlanWindowData { utilization: number | null; resets_at: string | null }
-interface PlanUsageData {
-  subscription_type: string | null
-  rate_limits_available: boolean
-  windows: Record<'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet', PlanWindowData>
-}
-const planUsage = ref<PlanUsageData | null>(null)
-// With managed accounts each one keeps its own snapshot, keyed by account id.
-const planUsageByAccount = ref<Record<string, PlanUsageData | null>>({})
-const planUsageCodex = ref<PlanUsageData | null>(null)
-const now = ref(Date.now())
-let unlistenPlanUsage: UnlistenFn | null = null
-let clockTimer: ReturnType<typeof setInterval> | null = null
+const hasData = computed(() => (stats.value?.summary.total_turns ?? 0) > 0)
 
-async function refreshPlanUsage() {
-  if (!hasAccounts.value) {
-    planUsage.value = await invoke<PlanUsageData | null>('get_plan_usage')
-    return
-  }
-  const entries = await Promise.all(accountsStore.accounts.map(async (a) =>
-    [a.id, await invoke<PlanUsageData | null>('get_plan_usage', { accountId: a.id })] as const))
-  planUsageByAccount.value = Object.fromEntries(entries)
-}
-async function refreshPlanUsageCodex() {
-  planUsageCodex.value = await invoke<PlanUsageData | null>('get_plan_usage_codex')
-}
+// Series colours (data palette, not UI state — raw hex is fine here).
+const PALETTE = ['#6366f1', '#22c55e', '#f59e0b', '#ec4899', '#06b6d4', '#a855f7', '#ef4444', '#14b8a6']
 
-const PLAN_WINDOWS: { key: 'five_hour' | 'seven_day' | 'seven_day_opus' | 'seven_day_sonnet'; label: string }[] = [
-  { key: 'five_hour', label: t('stats.plan.windowFiveHour') },
-  { key: 'seven_day', label: t('stats.plan.windowSevenDay') },
-  { key: 'seven_day_opus', label: t('stats.plan.windowSevenDayOpus') },
-  { key: 'seven_day_sonnet', label: t('stats.plan.windowSevenDaySonnet') },
-]
-function planRowsFor(u: PlanUsageData | null, windows: typeof PLAN_WINDOWS) {
-  if (!u || !u.rate_limits_available) return []
-  return windows.map((w) => {
-    const win = u.windows[w.key]
-    return {
-      label: w.label,
-      utilization: win?.utilization ?? null,
-      resets_at: win?.resets_at ?? null,
-    }
-  }).filter((r) => r.utilization != null)
-}
-// One block per managed account (default first); a single unlabeled block otherwise.
-const claudePlanGroups = computed(() => {
-  if (!hasAccounts.value) {
-    return [{ key: 'global', label: null as string | null, isDefault: false, usage: planUsage.value, rows: planRowsFor(planUsage.value, PLAN_WINDOWS) }]
-  }
-  return [...accountsStore.accounts]
-    .sort((a, b) => Number(b.is_default) - Number(a.is_default))
-    .map((a) => {
-      const usage = planUsageByAccount.value[a.id] ?? null
-      return { key: a.id, label: a.label as string | null, isDefault: a.is_default, usage, rows: planRowsFor(usage, PLAN_WINDOWS) }
-    })
+// ── KPI strip ──────────────────────────────────────────────────────────────────
+const tokenParts = computed(() => {
+  const s = stats.value?.summary
+  if (!s) return []
+  return [
+    { key: 'input', label: t('stats.summary.input'), value: s.total_input, color: PALETTE[0] },
+    { key: 'output', label: t('stats.summary.output'), value: s.total_output, color: PALETTE[1] },
+    { key: 'cache', label: t('stats.summary.cache'), value: s.total_cache, color: PALETTE[2] },
+  ]
 })
-// Codex only reports two windows: rolling 5h + weekly (no per-model split).
-const CODEX_PLAN_WINDOWS: typeof PLAN_WINDOWS = [
-  { key: 'five_hour', label: t('stats.plan.windowFiveHour') },
-  { key: 'seven_day', label: t('stats.plan.windowCodexWeek') },
-]
-const planRowsCodex = computed(() => planRowsFor(planUsageCodex.value, CODEX_PLAN_WINDOWS))
-function planResetText(iso: string | null): string {
-  if (!iso) return ''
-  const ms = new Date(iso).getTime() - now.value
-  if (ms <= 0) return t('stats.plan.resetsSoon')
-  const totalMinutes = Math.max(1, Math.ceil(ms / 60_000))
-  const days = Math.floor(totalMinutes / 1440)
-  const hours = Math.floor((totalMinutes % 1440) / 60)
-  const minutes = totalMinutes % 60
-  if (days > 0) return hours > 0 ? t('stats.plan.resetsInDaysHours', { days, hours }) : t('stats.plan.resetsInDays', { days })
-  if (hours > 0) return minutes > 0 ? t('stats.plan.resetsInHoursMinutes', { hours, minutes }) : t('stats.plan.resetsInHours', { hours })
-  return t('stats.plan.resetsInMinutes', { minutes })
-}
+/** Days the average cost is spread over: the range, or the days with data for "All". */
+const dayCount = computed(() => (range.value === 'all' ? Math.max(1, stats.value?.daily.length ?? 1) : parseInt(range.value, 10)))
+
+// ── daily chart: one metric at a time ─────────────────────────────────────────
+type Metric = 'tokens' | 'cost' | 'runs'
+const metric = ref<Metric>('tokens')
+const METRIC_OPTIONS = computed<SegmentedOption<Metric>[]>(() => [
+  { value: 'tokens', label: t('stats.charts.tokens') },
+  { value: 'cost', label: t('stats.charts.cost') },
+  { value: 'runs', label: t('stats.charts.runs') },
+])
+const METRIC_COLOR: Record<Metric, string> = { tokens: PALETTE[0], cost: PALETTE[2], runs: PALETTE[1] }
+const fmtMetric = (m: Metric, v: number) => (m === 'cost' ? fmtCost(v) : m === 'runs' ? fmtNum(v) : fmtCompact(v))
+
+const gridColor = 'rgba(127,127,127,0.12)'
+const tickColor = 'rgba(148,148,160,0.9)'
+
+const dailyChartData = computed(() => {
+  const d = stats.value?.daily ?? []
+  return {
+    labels: d.map((p) => p.date.slice(5)), // MM-DD
+    datasets: [{
+      label: METRIC_OPTIONS.value.find((o) => o.value === metric.value)?.label ?? '',
+      data: d.map((p) => p[metric.value]),
+      backgroundColor: METRIC_COLOR[metric.value] + 'b3',
+      hoverBackgroundColor: METRIC_COLOR[metric.value],
+      borderRadius: 2,
+      maxBarThickness: 28,
+    }],
+  }
+})
+
+const dailyChartOptions = computed(() => {
+  const m = metric.value
+  return {
+    responsive: true,
+    maintainAspectRatio: false,
+    interaction: { mode: 'index' as const, intersect: false },
+    plugins: {
+      legend: { display: false },
+      tooltip: { callbacks: { label: (ctx: { parsed: { y: number | null } }) => fmtMetric(m, ctx.parsed.y ?? 0) } },
+    },
+    scales: {
+      x: { grid: { display: false }, ticks: { color: tickColor, font: { size: 10 }, maxRotation: 0, autoSkip: true, autoSkipPadding: 12 } },
+      y: {
+        grid: { color: gridColor },
+        border: { display: false },
+        ticks: { color: tickColor, font: { size: 10 }, maxTicksLimit: 5, callback: (v: number | string) => fmtMetric(m, Number(v)) },
+      },
+    },
+  }
+})
+
+// ── breakdowns ────────────────────────────────────────────────────────────────
+const projectRows = computed<RankedRow[]>(() => (stats.value?.by_project ?? []).map((p) => ({
+  key: p.project_id ?? 'none', name: p.project_name ?? t('stats.table.deletedProject'), tokens: p.tokens, cost: p.cost,
+})))
+const modelRows = computed<RankedRow[]>(() => (stats.value?.by_model ?? []).map((m) => ({
+  key: m.model ?? 'unknown', name: m.model ?? t('stats.table.unknownModel'), tokens: m.tokens, cost: m.cost,
+})))
+const accountRows = computed<RankedRow[]>(() => (stats.value?.by_account ?? []).map((a) => ({
+  key: a.account_id ?? 'none', name: accountName(a), tokens: a.tokens, cost: a.cost,
+})))
+const showAccounts = computed(() => hasAccounts.value && accountRows.value.length > 0)
 
 // ── actions: backfill + reset ──────────────────────────────────────────────────
 const backfilling = ref(false)
@@ -398,8 +282,17 @@ async function loadStorage() {
 
 <template>
   <div class="flex flex-col h-full">
-    <!-- Header -->
+    <!-- Header: title, filters, actions -->
     <PageHeader :title="t('stats.title')">
+      <template #meta>
+        <div class="ml-2 flex min-w-0 items-center gap-2 overflow-x-auto [scrollbar-width:none]">
+          <SegmentedControl v-model="range" :options="RANGE_OPTIONS" :stretch="false" />
+          <AppSelect v-model="engine" :options="engineOptions" size="sm" class="w-32 shrink-0" />
+          <AppSelect v-model="projectId" :options="projectOptions" size="sm" class="w-40 shrink-0" />
+          <AppSelect v-if="hasAccounts" v-model="accountId" :options="accountOptions" size="sm" class="w-44 shrink-0" />
+          <Loader2 v-if="loading" class="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" :aria-label="t('common.loading')" />
+        </div>
+      </template>
       <template #actions>
         <Button
           variant="outline"
@@ -412,7 +305,7 @@ async function loadStorage() {
           {{ t('stats.backfill') }}
         </Button>
         <Button
-          variant="destructive"
+          variant="destructive-ghost"
           :title="t('stats.resetTitle')"
           @click="openReset"
         >
@@ -423,108 +316,14 @@ async function loadStorage() {
     </PageHeader>
 
     <!-- Body -->
-    <div class="flex-1 overflow-auto p-6 space-y-5">
-      <!-- Filters -->
-      <div class="flex flex-wrap items-center gap-2">
-        <AppSelect v-model="range" :options="RANGE_OPTIONS" size="sm" class="w-40" />
-        <AppSelect v-model="engine" :options="engineOptions" size="sm" class="w-40" />
-        <AppSelect v-model="projectId" :options="projectOptions" size="sm" class="w-52" />
-        <AppSelect v-if="hasAccounts" v-model="accountId" :options="accountOptions" size="sm" class="w-52" />
-        <span v-if="loading" class="flex items-center gap-1.5 text-xs text-muted-foreground">
-          <Loader2 class="h-3.5 w-3.5 animate-spin" /> {{ t('common.loading') }}
-        </span>
-      </div>
-
+    <div class="flex-1 overflow-auto px-6 py-4 space-y-3">
       <p v-if="actionMsg" class="text-xs text-muted-foreground">{{ actionMsg }}</p>
       <p v-if="error" class="text-xs text-destructive">{{ error }}</p>
-
-      <!-- Real subscription plan usage (independent of token stats) -->
-      <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-        <!-- Claude subscription plan usage (from /usage) -->
-        <Card class="border-border/60" body-class="p-4 space-y-3">
-          <div>
-            <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.plan.claudeTitle') }}
-            </h2>
-            <p class="text-[11px] text-muted-foreground/70 leading-relaxed mt-1">
-              {{ t('stats.plan.claudeDescPrefix') }} <b>{{ t('stats.plan.real') }}</b> {{ t('stats.plan.claudeDescSuffix') }}
-              <code class="font-mono bg-muted px-1 rounded">/usage</code> {{ t('stats.plan.claudeDescEnd') }}
-            </p>
-          </div>
-          <div v-for="g in claudePlanGroups" :key="g.key" class="space-y-2">
-            <p v-if="g.label" class="flex items-center gap-1.5 text-[11px] font-semibold">
-              {{ g.label }}
-              <span v-if="g.isDefault" class="rounded bg-muted px-1 py-px text-[10px] font-normal text-muted-foreground">{{ t('stats.account.default') }}</span>
-            </p>
-            <div v-if="g.rows.length" class="space-y-2">
-              <div v-for="row in g.rows" :key="row.label" class="space-y-1">
-                <div class="flex items-baseline justify-between text-[11px]">
-                  <span class="font-medium">{{ row.label }}</span>
-                  <span class="font-mono text-muted-foreground">
-                    {{ Math.round(row.utilization!) }}%
-                    <span v-if="planResetText(row.resets_at)"> · {{ planResetText(row.resets_at) }}</span>
-                  </span>
-                </div>
-                <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                  <div
-                    class="h-full rounded-full transition-all"
-                    :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-info'"
-                    :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
-                  />
-                </div>
-              </div>
-              <p v-if="g.usage?.subscription_type" class="text-[11px] text-muted-foreground">
-                {{ t('stats.plan.label') }} <b class="capitalize">{{ g.usage.subscription_type }}</b>
-              </p>
-            </div>
-            <p v-else class="text-[11px] text-muted-foreground italic">
-              {{ g.label ? t('stats.plan.emptyAccount') : t('stats.plan.empty') }}
-            </p>
-          </div>
-        </Card>
-
-        <!-- Codex subscription plan usage (from account/rateLimits) -->
-        <Card class="border-border/60" body-class="p-4 space-y-3">
-          <div>
-            <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-              <Gauge class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.plan.codexTitle') }}
-            </h2>
-            <p class="text-[11px] text-muted-foreground/70 leading-relaxed mt-1">
-              {{ t('stats.plan.codexDescPrefix') }} <b>{{ t('stats.plan.real') }}</b> {{ t('stats.plan.codexDescSuffix') }}
-              <code class="font-mono bg-muted px-1 rounded">/status</code>{{ t('stats.plan.codexDescEnd') }}
-            </p>
-          </div>
-          <div v-if="planRowsCodex.length" class="space-y-2">
-            <div v-for="row in planRowsCodex" :key="row.label" class="space-y-1">
-              <div class="flex items-baseline justify-between text-[11px]">
-                <span class="font-medium">{{ row.label }}</span>
-                <span class="font-mono text-muted-foreground">
-                  {{ Math.round(row.utilization!) }}%
-                  <span v-if="planResetText(row.resets_at)"> · {{ planResetText(row.resets_at) }}</span>
-                </span>
-              </div>
-              <div class="h-1.5 w-full overflow-hidden rounded-full bg-muted">
-                <div
-                  class="h-full rounded-full transition-all"
-                  :class="row.utilization! >= 100 ? 'bg-destructive' : row.utilization! >= 80 ? 'bg-warning' : 'bg-info'"
-                  :style="{ width: Math.min(100, Math.round(row.utilization!)) + '%' }"
-                />
-              </div>
-            </div>
-            <p v-if="planUsageCodex?.subscription_type" class="text-[11px] text-muted-foreground">
-              {{ t('stats.plan.label') }} <b class="capitalize">{{ planUsageCodex.subscription_type }}</b>
-            </p>
-          </div>
-          <p v-else class="text-[11px] text-muted-foreground italic">
-            {{ t('stats.plan.emptyCodex') }}
-          </p>
-        </Card>
-      </div>
 
       <!-- Empty state -->
       <div
         v-if="!loading && !hasData"
-        class="flex flex-col items-center justify-center py-20 text-center"
+        class="flex flex-col items-center justify-center py-16 text-center"
       >
         <Coins class="h-8 w-8 text-muted-foreground/40 mb-3" :stroke-width="1.5" />
         <p class="text-sm text-muted-foreground">{{ t('stats.empty.title') }}</p>
@@ -534,200 +333,131 @@ async function loadStorage() {
       </div>
 
       <template v-if="hasData && stats">
-        <!-- Summary cards -->
-        <div class="grid grid-cols-2 lg:grid-cols-4 gap-3">
-          <Card class="border-border/60" body-class="p-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Coins class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.totalTokens') }}
+        <!-- KPI strip -->
+        <Card class="border-border/60" body-class="grid grid-cols-2 lg:grid-cols-[1.6fr_1fr_1fr_1fr] divide-border/50 lg:divide-x [&>*:nth-child(n+3)]:border-t [&>*:nth-child(n+3)]:border-border/50 lg:[&>*:nth-child(n+3)]:border-t-0">
+          <div class="flex min-w-0 flex-col gap-1 px-4 py-2.5">
+            <span class="text-[11px] font-semibold text-muted-foreground">{{ t('stats.summary.totalTokens') }}</span>
+            <span class="text-xl font-extrabold leading-tight tabular-nums" :title="fmtNum(stats.summary.total_tokens)">{{ fmtCompact(stats.summary.total_tokens) }}</span>
+            <div class="flex h-1.5 gap-0.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+              <template v-for="p in tokenParts" :key="p.key">
+                <span v-if="p.value > 0" :style="{ flex: p.value, background: p.color }" />
+              </template>
             </div>
-            <p class="text-xl font-semibold tabular-nums">{{ fmtNum(stats.summary.total_tokens) }}</p>
-            <p class="text-[11px] text-muted-foreground/70 mt-1">
-              {{ t('stats.summary.tokensBreakdown', { input: fmtCompact(stats.summary.total_input), output: fmtCompact(stats.summary.total_output), cache: fmtCompact(stats.summary.total_cache) }) }}
-            </p>
-          </Card>
-          <Card class="border-border/60" body-class="p-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <DollarSign class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.estCost') }}
-              <span :title="t('stats.summary.estCostTooltip')">
-                <Info class="h-3 w-3 text-muted-foreground/50" />
+            <div class="flex flex-wrap gap-x-3 text-[11px] text-muted-foreground">
+              <span v-for="p in tokenParts" :key="p.key" class="inline-flex items-center gap-1">
+                <span class="h-1.5 w-1.5 rounded-sm" :style="{ background: p.color }" />
+                {{ p.label }} <span class="tabular-nums">{{ fmtCompact(p.value) }}</span>
               </span>
             </div>
-            <p class="text-xl font-semibold tabular-nums">{{ fmtCost(stats.summary.total_cost) }}</p>
-            <p class="text-[11px] text-muted-foreground/70 mt-1">
-              {{ t('stats.summary.estimated', { cost: fmtCost(stats.summary.estimated_cost) }) }}
-            </p>
-          </Card>
-          <Card class="border-border/60" body-class="p-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Play class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.runs') }}
-            </div>
-            <p class="text-xl font-semibold tabular-nums">{{ fmtNum(stats.summary.total_runs) }}</p>
-          </Card>
-          <Card class="border-border/60" body-class="p-4">
-            <div class="flex items-center gap-1.5 text-xs text-muted-foreground mb-1">
-              <Repeat class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.summary.turns') }}
-            </div>
-            <p class="text-xl font-semibold tabular-nums">{{ fmtNum(stats.summary.total_turns) }}</p>
-          </Card>
-        </div>
-
-        <!-- Daily chart -->
-        <Card class="border-border/60" body-class="p-4">
-          <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.charts.dailyTitle') }}</h2>
-          <div class="h-64">
-            <Bar :data="dailyChartData" :options="dailyChartOptions" />
+          </div>
+          <div class="flex min-w-0 flex-col gap-1 px-4 py-2.5">
+            <span class="flex items-center gap-1 text-[11px] font-semibold text-muted-foreground">
+              {{ t('stats.summary.estCost') }}
+              <span :title="t('stats.summary.estCostTooltip')"><Info class="h-3 w-3 text-muted-foreground/60" /></span>
+            </span>
+            <span class="text-xl font-extrabold leading-tight tabular-nums">{{ fmtCost(stats.summary.total_cost) }}</span>
+            <span class="text-[11px] text-muted-foreground tabular-nums">{{ t('stats.summary.perDay', { cost: fmtCost(stats.summary.total_cost / dayCount) }) }}</span>
+          </div>
+          <div class="flex min-w-0 flex-col gap-1 px-4 py-2.5">
+            <span class="text-[11px] font-semibold text-muted-foreground">{{ t('stats.summary.runs') }}</span>
+            <span class="text-xl font-extrabold leading-tight tabular-nums">{{ fmtNum(stats.summary.total_runs) }}</span>
+            <span v-if="stats.summary.total_runs" class="text-[11px] text-muted-foreground tabular-nums">
+              {{ t('stats.summary.tokensPerRun', { n: fmtCompact(stats.summary.total_tokens / stats.summary.total_runs) }) }}
+            </span>
+          </div>
+          <div class="flex min-w-0 flex-col gap-1 px-4 py-2.5">
+            <span class="text-[11px] font-semibold text-muted-foreground">{{ t('stats.summary.turns') }}</span>
+            <span class="text-xl font-extrabold leading-tight tabular-nums">{{ fmtNum(stats.summary.total_turns) }}</span>
+            <span v-if="stats.summary.total_runs" class="text-[11px] text-muted-foreground tabular-nums">
+              {{ t('stats.summary.turnsPerRun', { n: (stats.summary.total_turns / stats.summary.total_runs).toFixed(1) }) }}
+            </span>
           </div>
         </Card>
 
-        <!-- Engine + project breakdown -->
-        <div class="grid grid-cols-1 lg:grid-cols-2 gap-4">
-          <Card class="border-border/60" body-class="p-4">
-            <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.charts.byEngine') }}</h2>
-            <div class="h-52">
-              <Doughnut :data="engineChartData" :options="doughnutOptions" />
+        <!-- Daily chart + engine split -->
+        <div class="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)]">
+          <Card class="border-border/60 min-w-0" body-class="px-3 pt-2.5 pb-3">
+            <div class="mb-2 flex items-center gap-2">
+              <h2 class="text-[11px] font-semibold text-muted-foreground">{{ t('stats.charts.daily') }}</h2>
+              <SegmentedControl v-model="metric" :options="METRIC_OPTIONS" :stretch="false" class="ml-auto" />
             </div>
-            <table class="w-full mt-3 text-xs">
-              <tbody>
-                <tr v-for="(e, i) in stats.by_engine" :key="e.engine" class="border-t border-border/40">
-                  <td class="py-1.5">
-                    <span class="inline-block h-2.5 w-2.5 rounded-sm mr-1.5 align-middle"
-                      :style="{ background: PALETTE[i % PALETTE.length] }" />
-                    {{ e.engine }}
-                  </td>
-                  <td class="py-1.5 text-right tabular-nums">{{ fmtNum(e.tokens) }}</td>
-                  <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtCost(e.cost) }}</td>
-                </tr>
-              </tbody>
-            </table>
+            <div class="h-48">
+              <Bar :data="dailyChartData" :options="dailyChartOptions" />
+            </div>
           </Card>
 
-          <Card class="border-border/60" body-class="p-4">
-            <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.charts.byProject') }}</h2>
-            <table class="w-full text-xs">
-              <thead>
-                <tr class="text-muted-foreground/70 text-left">
-                  <th class="font-normal pb-2">{{ t('stats.table.project') }}</th>
-                  <th class="font-normal pb-2 text-right">{{ t('stats.table.tokens') }}</th>
-                  <th class="font-normal pb-2 text-right">{{ t('stats.table.cost') }}</th>
-                  <th class="font-normal pb-2 text-right">{{ t('stats.table.percent') }}</th>
-                </tr>
-              </thead>
-              <tbody>
-                <tr v-for="p in stats.by_project" :key="p.project_id ?? 'none'" class="border-t border-border/40">
-                  <td class="py-1.5 truncate max-w-[160px]">{{ p.project_name ?? t('stats.table.deletedProject') }}</td>
-                  <td class="py-1.5 text-right tabular-nums">{{ fmtNum(p.tokens) }}</td>
-                  <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtCost(p.cost) }}</td>
-                  <td class="py-1.5 text-right tabular-nums text-muted-foreground">
-                    {{ pct(p.tokens, stats.summary.total_tokens) }}
-                  </td>
-                </tr>
-              </tbody>
-            </table>
+          <Card class="border-border/60 min-w-0" body-class="flex flex-col gap-2.5 px-3 pt-2.5 pb-3">
+            <h2 class="text-[11px] font-semibold text-muted-foreground">{{ t('stats.charts.byEngine') }}</h2>
+            <div class="flex h-2.5 gap-0.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+              <template v-for="(e, i) in stats.by_engine" :key="e.engine">
+                <span v-if="e.tokens > 0" :style="{ flex: e.tokens, background: PALETTE[i % PALETTE.length] }" />
+              </template>
+            </div>
+            <div v-for="(e, i) in stats.by_engine" :key="e.engine" class="min-w-0">
+              <div class="flex items-baseline justify-between gap-2">
+                <span class="flex items-center gap-1.5 text-[13px] font-semibold capitalize">
+                  <span class="h-2 w-2 rounded-sm" :style="{ background: PALETTE[i % PALETTE.length] }" />
+                  {{ e.engine }}
+                </span>
+                <span class="text-lg font-extrabold tabular-nums">{{ pct(e.tokens, stats.summary.total_tokens) }}</span>
+              </div>
+              <p class="pl-3.5 text-[11px] text-muted-foreground tabular-nums">
+                {{ t('stats.engineLine', { tokens: fmtCompact(e.tokens), cost: fmtCost(e.cost), runs: fmtNum(e.runs) }) }}
+              </p>
+            </div>
           </Card>
         </div>
 
-        <!-- By Claude account -->
-        <Card v-if="hasAccounts && stats.by_account.length" class="border-border/60" body-class="p-4">
-          <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.table.byAccount') }}</h2>
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="text-muted-foreground/70 text-left">
-                <th class="font-normal pb-2">{{ t('stats.table.account') }}</th>
-                <th class="font-normal pb-2 text-right">{{ t('stats.table.tokens') }}</th>
-                <th class="font-normal pb-2 text-right">{{ t('stats.table.cost') }}</th>
-                <th class="font-normal pb-2 text-right">{{ t('stats.table.runs') }}</th>
-                <th class="font-normal pb-2 text-right">{{ t('stats.table.percent') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="a in stats.by_account" :key="a.account_id ?? 'none'" class="border-t border-border/40">
-                <td class="py-1.5 truncate max-w-[200px]">{{ accountName(a) }}</td>
-                <td class="py-1.5 text-right tabular-nums">{{ fmtNum(a.tokens) }}</td>
-                <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtCost(a.cost) }}</td>
-                <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtNum(a.runs) }}</td>
-                <td class="py-1.5 text-right tabular-nums text-muted-foreground">
-                  {{ pct(a.tokens, stats.summary.total_tokens) }}
-                </td>
-              </tr>
-            </tbody>
-          </table>
-        </Card>
-
-        <!-- By model -->
-        <Card class="border-border/60" body-class="p-4">
-          <h2 class="text-xs font-medium text-muted-foreground mb-3">{{ t('stats.table.byModel') }}</h2>
-          <table class="w-full text-xs">
-            <thead>
-              <tr class="text-muted-foreground/70 text-left">
-                <th class="font-normal pb-2">{{ t('stats.table.model') }}</th>
-                <th class="font-normal pb-2 text-right">{{ t('stats.table.tokens') }}</th>
-                <th class="font-normal pb-2 text-right">{{ t('stats.table.cost') }}</th>
-                <th class="font-normal pb-2 text-right">{{ t('stats.table.runs') }}</th>
-              </tr>
-            </thead>
-            <tbody>
-              <tr v-for="m in stats.by_model" :key="m.model ?? 'unknown'" class="border-t border-border/40">
-                <td class="py-1.5 font-mono">{{ m.model ?? t('stats.table.unknownModel') }}</td>
-                <td class="py-1.5 text-right tabular-nums">{{ fmtNum(m.tokens) }}</td>
-                <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtCost(m.cost) }}</td>
-                <td class="py-1.5 text-right tabular-nums text-muted-foreground">{{ fmtNum(m.runs) }}</td>
-              </tr>
-            </tbody>
-          </table>
-        </Card>
+        <!-- Breakdowns -->
+        <div class="grid grid-cols-1 gap-3" :class="showAccounts ? 'lg:grid-cols-3' : 'lg:grid-cols-2'">
+          <RankedTable :title="t('stats.charts.byProject')" :rows="projectRows" :total="stats.summary.total_tokens" />
+          <RankedTable :title="t('stats.table.byModel')" :rows="modelRows" :total="stats.summary.total_tokens" mono />
+          <RankedTable v-if="showAccounts" :title="t('stats.table.byAccount')" :rows="accountRows" :total="stats.summary.total_tokens" />
+        </div>
       </template>
 
-      <!-- Storage: disk usage of session/run logs (read-only, independent of token data) -->
-      <Card class="border-border/60" body-class="p-4">
-        <div class="flex items-center justify-between mb-3">
-          <h2 class="flex items-center gap-1.5 text-xs font-medium text-muted-foreground">
-            <HardDrive class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('stats.storage.title') }}
-            <span v-if="storage" class="text-muted-foreground/60">
-              {{ t('stats.storage.totalSuffix', { bytes: fmtBytes(storage.total_bytes) }) }}
-            </span>
+      <!-- Storage: disk usage (read-only, independent of token data) -->
+      <Card class="border-border/60" body-class="px-3 pt-2 pb-2.5">
+        <div class="flex items-center gap-2">
+          <h2 class="text-[11px] font-semibold text-muted-foreground">
+            {{ t('stats.storage.title') }}
+            <span v-if="storage" class="font-normal">{{ t('stats.storage.totalSuffix', { bytes: fmtBytes(storage.total_bytes) }) }}</span>
           </h2>
-          <Button variant="ghost" size="sm" :disabled="storageLoading" @click="loadStorage">
-            <Loader2 v-if="storageLoading" class="h-3.5 w-3.5 animate-spin" />
-            <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <Button variant="ghost" size="xs" class="ml-auto" :disabled="storageLoading" @click="loadStorage">
+            <Loader2 v-if="storageLoading" class="h-3 w-3 animate-spin" />
+            <RefreshCw v-else class="h-3 w-3" :stroke-width="2" />
             {{ t('stats.storage.rescan') }}
           </Button>
         </div>
 
-        <div v-if="!storage && storageLoading" class="text-xs text-muted-foreground py-4">
-          {{ t('stats.storage.scanning') }}
-        </div>
+        <p v-if="!storage && storageLoading" class="py-3 text-xs text-muted-foreground">{{ t('stats.storage.scanning') }}</p>
 
-        <table v-else-if="storage" class="w-full text-xs">
-          <thead>
-            <tr class="text-muted-foreground/70 text-left">
-              <th class="font-normal pb-2">{{ t('stats.storage.category') }}</th>
-              <th class="font-normal pb-2 text-right">{{ t('stats.storage.files') }}</th>
-              <th class="font-normal pb-2 text-right">{{ t('stats.storage.size') }}</th>
-              <th class="font-normal pb-2 text-right">{{ t('stats.storage.percent') }}</th>
-            </tr>
-          </thead>
-          <tbody>
-            <tr v-for="c in storage.categories" :key="c.id" class="border-t border-border/40">
-              <td class="py-2">
-                <div class="flex items-center gap-1.5">
-                  <span>{{ c.label }}</span>
-                  <span :title="c.description">
-                    <Info class="h-3 w-3 text-muted-foreground/50" />
-                  </span>
-                </div>
-                <p class="font-mono text-[10px] text-muted-foreground/60 mt-0.5">{{ c.path }}</p>
-              </td>
-              <td class="py-2 text-right tabular-nums text-muted-foreground">{{ fmtNum(c.file_count) }}</td>
-              <td class="py-2 text-right tabular-nums">{{ fmtBytes(c.size_bytes) }}</td>
-              <td class="py-2 text-right tabular-nums text-muted-foreground">
-                {{ pct(c.size_bytes, storage.total_bytes) }}
-              </td>
-            </tr>
-          </tbody>
-        </table>
-        <p class="text-[11px] text-muted-foreground/70 mt-3">
-          {{ t('stats.storage.note') }}
-        </p>
+        <template v-else-if="storage">
+          <div class="mt-1.5 flex h-1.5 gap-0.5 overflow-hidden rounded-full bg-muted" aria-hidden="true">
+            <template v-for="(c, i) in storage.categories" :key="c.id">
+              <span v-if="c.size_bytes > 0" :style="{ flex: c.size_bytes, background: PALETTE[i % PALETTE.length] }" />
+            </template>
+          </div>
+          <div class="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
+            <div v-for="(c, i) in storage.categories" :key="c.id" class="min-w-0" :title="c.description">
+              <p class="flex items-center gap-1.5 truncate text-[11px] font-medium">
+                <span class="h-1.5 w-1.5 shrink-0 rounded-sm" :style="{ background: PALETTE[i % PALETTE.length] }" />
+                {{ c.label }}
+              </p>
+              <p class="tabular-nums">
+                <span class="text-sm font-bold">{{ fmtBytes(c.size_bytes) }}</span>
+                <span class="text-[11px] text-muted-foreground">
+                  · {{ pct(c.size_bytes, storage.total_bytes) }} · {{ t('stats.storage.fileCount', { n: fmtNum(c.file_count) }) }}
+                </span>
+              </p>
+              <p class="truncate font-mono text-[10px] text-muted-foreground">{{ c.path }}</p>
+              <p v-if="c.parts.length" class="mt-0.5 truncate text-[11px] text-muted-foreground tabular-nums" :title="c.parts.map((p) => `${p.name} ${fmtBytes(p.size_bytes)}`).join(' · ')">
+                <template v-for="(p, j) in c.parts" :key="p.name">{{ j ? ' · ' : '' }}{{ p.name }} {{ fmtBytes(p.size_bytes) }}</template>
+              </p>
+            </div>
+          </div>
+          <p class="mt-2 text-[11px] text-muted-foreground/80">{{ t('stats.storage.note') }}</p>
+        </template>
       </Card>
     </div>
 

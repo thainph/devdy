@@ -86,6 +86,14 @@ export interface StorageCategory {
   path: string
   size_bytes: number
   file_count: number
+  /** Breakdown by top-level folder, largest first (only the `devdy_data` row). */
+  parts: StoragePart[]
+}
+
+export interface StoragePart {
+  name: string
+  size_bytes: number
+  file_count: number
 }
 
 export interface StorageStats {
