@@ -5,97 +5,65 @@ const sessionOpen: Record<string, boolean> = {}
 </script>
 
 <script setup lang="ts">
-// Runtime Dashboard — the app's start screen: everything running right now.
-// A bento of four tiles (the sessions hero, 5-hour limits, resources, today),
-// then one list of sessions as a tree (workers under the session that spawned them, the most
-// urgent first). An overview only: clicking a session opens its own view, where
-// it is answered / messaged / stopped.
-// Keyboard: / search · j k select · n next waiting · Enter open · Esc leave the search.
+// Runtime Dashboard — the app's start screen. One short row of four tiles on
+// top (sessions, 5-hour limits, resources, today), then the space goes to the
+// sessions running now (a tree of rows: workers under the session that
+// spawned them, the most urgent first) and History (every session that ran,
+// latest first, with the unread ones marked). Clicking a session opens it in
+// its own window, where it is answered / messaged / stopped.
+// Keyboard: / search History · j k select · n next waiting · Enter open · Esc leave the search.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { useRouter } from 'vue-router'
-import { Activity, Search } from 'lucide-vue-next'
-import { Banner, Button, Input, PageHeader, SegmentedControl } from '@/components/ui'
+import { Activity } from 'lucide-vue-next'
+import { Banner, Button, PageHeader } from '@/components/ui'
 import '@/components/dashboard/runtime.css'
 import StatSessions from '@/components/dashboard/StatSessions.vue'
 import StatQuota from '@/components/dashboard/StatQuota.vue'
 import StatResources from '@/components/dashboard/StatResources.vue'
 import StatToday from '@/components/dashboard/StatToday.vue'
 import SessionTree from '@/components/dashboard/SessionTree.vue'
+import HistoryList from '@/components/dashboard/HistoryList.vue'
 import { useRuntimeDashboard } from '@/composables/useRuntimeDashboard'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useLiveRunsStore } from '@/stores/liveRuns'
-import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { strayIds } from '@/lib/backgroundProcesses'
-import type { RecentRun } from '@/lib/runtimeSnapshot'
+import { openSessionWindow } from '@/lib/sessionWindow'
+import type { HistoryRun } from '@/lib/runHistory'
 import {
   buildTree,
   displayOrder,
-  effectiveMode,
   filterCounts,
   layoutTree,
-  mapOrder,
   parentOf,
-  parseViewMode,
   stepOrder,
   stepQueue,
   waitQueue,
   type QuickFilter,
   type RtSession,
-  type ViewMode,
 } from '@/lib/runtimeDashboard'
 
 defineOptions({ name: 'DashboardView' })
 
 const { t, locale } = useI18n()
-const router = useRouter()
 const { confirm, state: confirmState } = useConfirm()
 const { toast } = useToast()
 const live = useLiveRunsStore()
-const tabs = useWorkspaceTabsStore()
 const bgProcs = useBackgroundProcessesStore()
 const dash = useRuntimeDashboard()
 
-// ── View mode (remembered) ───────────────────────────────────────────────────
-const MODE_KEY = 'devdy.dashboard.mode'
-function readMode(): ViewMode {
-  try { return parseViewMode(localStorage.getItem(MODE_KEY)) } catch { return 'auto' }
-}
-const mode = ref<ViewMode>(readMode())
-watch(mode, (v) => {
-  try { localStorage.setItem(MODE_KEY, v) } catch { /* best-effort */ }
-})
-const modeOptions = computed(() => (['auto', 'cards', 'rows'] as const).map((value) => ({ value, label: t(`dashboard.toolbar.mode.${value}`) })))
-const total = computed(() => dash.sessions.value.length)
-const shownMode = computed(() => effectiveMode(mode.value, total.value))
-const modeHint = computed(() => {
-  if (mode.value !== 'auto' || !total.value) return ''
-  return shownMode.value === 'rows' ? t('dashboard.toolbar.autoRows', { n: total.value }) : t('dashboard.toolbar.autoCards')
-})
-
-// ── Search / filter / tree ──────────────────────────────────────────────────
-const query = ref('')
+// ── Filter / tree ────────────────────────────────────────────────────────────
 const filter = ref<QuickFilter | null>(null)
 const openMap = ref<Record<string, boolean>>({ ...sessionOpen })
 watch(openMap, (m) => Object.assign(sessionOpen, m), { deep: true })
 
+const total = computed(() => dash.sessions.value.length)
 const nodes = computed(() => buildTree(dash.sessions.value))
-const rows = computed(() => layoutTree(nodes.value, { query: query.value, filter: filter.value, open: openMap.value }))
+const rows = computed(() => layoutTree(nodes.value, { query: '', filter: filter.value, open: openMap.value }))
 const order = computed(() => displayOrder(rows.value))
 const queue = computed(() => waitQueue(dash.sessions.value))
-const mapList = computed(() => mapOrder(nodes.value))
 const counts = computed(() => filterCounts(dash.sessions.value))
-/** Finished runs the user has not opened since (cleared by `markSeen`). */
-const unread = computed(() => {
-  const ids = new Set<string>()
-  live.sessions.forEach((s, id) => {
-    if (s.notifyDone && s.status !== 'running') ids.add(id)
-  })
-  return ids
-})
-const filtering = computed(() => !!query.value.trim() || filter.value !== null)
 const parents = computed(() => nodes.value.filter((n) => n.children.length).map((n) => n.session.id))
 
 function toggleWorkers(id: string) {
@@ -108,13 +76,22 @@ function setAllOpen(on: boolean) {
 function toggleFilter(f: QuickFilter) {
   filter.value = filter.value === f ? null : f
 }
-// The "waiting for you" chip hides at 0: drop its filter then, or nothing could clear it.
-watch(() => counts.value.wait, (n) => {
-  if (!n && filter.value === 'wait') filter.value = null
+// A legend row hides at 0: drop its filter then, or nothing could clear it.
+watch(counts, (c) => {
+  if (filter.value && !c[filter.value]) filter.value = null
+})
+
+/** Finished runs this window flagged that the user has not opened yet. */
+const liveUnread = computed(() => {
+  const ids = new Set<string>()
+  live.sessions.forEach((s, id) => {
+    if (s.notifyDone && s.status !== 'running') ids.add(id)
+  })
+  return ids
 })
 
 // ── Selection (keyboard) ────────────────────────────────────────────────────
-// j / k / n move a highlight; Enter or a click opens the session's own view.
+// j / k / n move a highlight; Enter or a click opens the session.
 const selectedId = ref<string | null>(null)
 const selected = computed<RtSession | null>(() => dash.sessions.value.find((s) => s.id === selectedId.value) ?? null)
 
@@ -132,10 +109,10 @@ function select(id: string | null) {
 }
 
 // ── Opening things ───────────────────────────────────────────────────────────
+/** A session always opens in its own window (or brings that window forward). */
 function openRun(projectId: string, runId: string) {
   live.markSeen(runId)
-  tabs.open(projectId, runId)
-  router.push({ name: 'project-run-detail', params: { projectId, runId } }).catch(() => {})
+  void openSessionWindow(projectId, runId).catch((e) => toast.error(String(e)))
 }
 /** A session outside Devdy opens the run its transcript was mirrored into, when there is one. */
 function openSession(s: RtSession) {
@@ -149,7 +126,7 @@ function openById(id: string) {
   const s = dash.sessions.value.find((x) => x.id === id)
   if (s) openSession(s)
 }
-function openRecent(r: RecentRun) {
+function openHistory(r: HistoryRun) {
   openRun(r.projectId, r.runId)
 }
 
@@ -185,7 +162,7 @@ async function cleanUp() {
 }
 
 // ── Keyboard ─────────────────────────────────────────────────────────────────
-const searchBox = ref<HTMLElement | null>(null)
+const history = ref<InstanceType<typeof HistoryList> | null>(null)
 
 function typingIn(el: EventTarget | null): boolean {
   if (!(el instanceof HTMLElement)) return false
@@ -198,7 +175,7 @@ function onKey(e: KeyboardEvent) {
   switch (e.key) {
     case '/':
       e.preventDefault()
-      searchBox.value?.querySelector('input')?.focus()
+      history.value?.focusSearch()
       break
     case 'j':
       select(stepOrder(order.value, selectedId.value, 1))
@@ -214,12 +191,6 @@ function onKey(e: KeyboardEvent) {
       if (e.target instanceof HTMLElement && ['BUTTON', 'A'].includes(e.target.tagName)) return
       if (selected.value) openSession(selected.value)
       break
-  }
-}
-function onSearchKey(e: KeyboardEvent) {
-  if (e.key === 'Escape') {
-    e.preventDefault()
-    ;(e.target as HTMLElement).blur()
   }
 }
 onMounted(() => window.addEventListener('keydown', onKey))
@@ -256,69 +227,56 @@ const SHORTCUTS = [
       </template>
     </PageHeader>
 
-    <div class="min-h-0 flex-1 overflow-y-auto p-6">
-      <div class="flex flex-col gap-3.5">
+    <div class="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+      <div class="@container flex flex-col gap-3.5">
         <Banner v-if="dash.loadError.value" tone="destructive">{{ t('dashboard.loadError', { error: dash.loadError.value }) }}</Banner>
         <p v-else-if="dash.loaded.value && !dash.hasSnapshot.value" class="text-[11px] text-muted-foreground">{{ t('dashboard.fallbackHint') }}</p>
         <p v-else-if="dash.snapshotStale.value" class="text-[11px] text-warning">{{ t('dashboard.staleHint') }}</p>
 
-        <!-- Bento: the hero takes 2 × 2 on wide screens, Today spans 2 columns. -->
-        <div class="@container">
-          <div class="grid grid-cols-1 gap-3.5 @min-[720px]:grid-cols-2 @min-[1180px]:grid-cols-4">
-            <StatSessions
-              class="@min-[720px]:col-span-2 @min-[1180px]:row-span-2"
-              :sessions="mapList"
-              :counts="counts"
-              :filter="filter"
-              :selected-id="selectedId"
-              :activity="dash.activity.value"
-              @pick="select"
-              @filter="toggleFilter"
-            />
-            <StatQuota :quotas="dash.quotas.value" :now="dash.now.value" />
-            <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
-            <StatToday class="@min-[720px]:col-span-2" :today="dash.today.value" :now="dash.now.value" :unread="unread" @open="openRecent" />
-          </div>
+        <!-- One short row of tiles (two per row, then one, as it narrows). -->
+        <div class="grid grid-cols-1 gap-2.5 @min-[720px]:grid-cols-2 @min-[1180px]:grid-cols-[1.5fr_0.9fr_1fr_1.4fr]">
+          <StatSessions :total="total" :counts="counts" :filter="filter" :activity="dash.activity.value" @filter="toggleFilter" />
+          <StatQuota :quotas="dash.quotas.value" :now="dash.now.value" />
+          <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
+          <StatToday :today="dash.today.value" :now="dash.now.value" />
         </div>
 
-        <div class="flex min-w-0 flex-col gap-2.5">
-          <div class="flex flex-wrap items-center gap-2">
-            <label ref="searchBox" class="relative min-w-0 flex-[1_1_220px] sm:max-w-[340px]">
-              <span class="sr-only">{{ t('dashboard.toolbar.searchLabel') }}</span>
-              <Search class="pointer-events-none absolute top-1/2 left-2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" aria-hidden="true" />
-              <Input v-model="query" size="xs" class="w-full pl-7" :placeholder="t('dashboard.toolbar.search')" @keydown="onSearchKey" />
-            </label>
-            <SegmentedControl v-model="mode" :options="modeOptions" :stretch="false" :aria-label="t('dashboard.toolbar.mode.label')" />
-            <span v-if="modeHint" class="text-[11px] text-muted-foreground">{{ modeHint }}</span>
-            <span class="ml-auto flex gap-1.5">
-              <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(true)">{{ t('dashboard.toolbar.expandAll') }}</Button>
-              <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(false)">{{ t('dashboard.toolbar.collapseAll') }}</Button>
-            </span>
-          </div>
+        <div class="grid grid-cols-1 items-start gap-4 @min-[1000px]:grid-cols-[minmax(0,1.55fr)_minmax(320px,1fr)]">
+          <section class="flex min-w-0 flex-col gap-2" :aria-label="t('dashboard.running.title')">
+            <div class="flex min-h-7 flex-wrap items-center gap-2">
+              <h2 class="text-[13px] font-bold">{{ t('dashboard.running.title') }}</h2>
+              <span class="rounded-full bg-muted px-2 text-[11px] font-bold text-muted-foreground tabular-nums">{{ total }}</span>
+              <span class="ml-auto flex gap-1.5">
+                <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(true)">{{ t('dashboard.toolbar.expandAll') }}</Button>
+                <Button variant="outline" size="xs" :disabled="!parents.length" @click="setAllOpen(false)">{{ t('dashboard.toolbar.collapseAll') }}</Button>
+              </span>
+            </div>
 
-          <div
-            v-if="dash.loaded.value && !total"
-            class="flex flex-col items-center gap-2 rounded-lg border-[1.5px] border-dashed border-border px-5 py-8 text-center"
-          >
-            <p class="text-sm font-bold text-foreground">{{ t('dashboard.emptyTitle') }}</p>
-            <p class="max-w-[46ch] text-xs text-muted-foreground">{{ t('dashboard.empty') }}</p>
-          </div>
-          <p
-            v-else-if="filtering && !rows.length"
-            class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
-          >
-            {{ t('dashboard.noMatch') }}
-          </p>
+            <div
+              v-if="dash.loaded.value && !total"
+              class="flex flex-col items-center gap-2 rounded-lg border-[1.5px] border-dashed border-border px-5 py-8 text-center"
+            >
+              <p class="text-sm font-bold text-foreground">{{ t('dashboard.emptyTitle') }}</p>
+              <p class="max-w-[46ch] text-xs text-muted-foreground">{{ t('dashboard.empty') }}</p>
+            </div>
+            <p
+              v-else-if="filter !== null && !rows.length"
+              class="rounded-lg border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
+            >
+              {{ t('dashboard.noMatch') }}
+            </p>
 
-          <SessionTree
-            v-if="rows.length"
-            :rows="rows"
-            :mode="shownMode"
-            :selected-id="selectedId"
-            :now="dash.now.value"
-            @toggle="toggleWorkers"
-            @select="openById"
-          />
+            <SessionTree
+              v-if="rows.length"
+              :rows="rows"
+              :selected-id="selectedId"
+              :now="dash.now.value"
+              @toggle="toggleWorkers"
+              @select="openById"
+            />
+          </section>
+
+          <HistoryList ref="history" :now="dash.now.value" :live-unread="liveUnread" @open="openHistory" />
         </div>
       </div>
     </div>

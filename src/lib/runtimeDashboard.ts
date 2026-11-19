@@ -105,8 +105,6 @@ export interface RtSession {
 export const CTX_WARN_PERCENT = 80
 /** No new event for this long while running → "quiet". */
 export const QUIET_AFTER_MS = 5 * 60_000
-/** Above this many sessions the Auto mode switches to rows. */
-export const AUTO_ROWS_OVER = 15
 
 /** Watchdog notices (`run:attention` kinds) that mean "quiet for long". */
 const QUIET_NOTICES = new Set(['quiet', 'long_tool', 'unresponsive', 'not_started', 'unmonitored'])
@@ -350,19 +348,6 @@ export function stepQueue(queue: readonly string[], current: string | null, dir:
   const i = current ? queue.indexOf(current) : -1
   if (i < 0) return dir > 0 ? queue[0] : queue[queue.length - 1]
   return queue[(i + dir + queue.length) % queue.length]
-}
-
-// ── View mode ───────────────────────────────────────────────────────────────
-
-export type ViewMode = 'auto' | 'cards' | 'rows'
-
-export function effectiveMode(mode: ViewMode, total: number): 'cards' | 'rows' {
-  if (mode !== 'auto') return mode
-  return total > AUTO_ROWS_OVER ? 'rows' : 'cards'
-}
-
-export function parseViewMode(v: unknown): ViewMode {
-  return v === 'cards' || v === 'rows' ? v : 'auto'
 }
 
 // ── Sparklines ──────────────────────────────────────────────────────────────

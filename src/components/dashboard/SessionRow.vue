@@ -3,7 +3,8 @@
 // workers toggle on a parent) · state · now · context · activity · elapsed.
 // The whole row is one button that opens the session; the workers toggle sits
 // above it. Status accent bar, waiting glow, hover lift and fade-in come from
-// `.rt-item` (runtime.css).
+// `.rt-item` (runtime.css). In a narrow list (under 640px, a container query on
+// SessionTree) the context and activity columns drop out.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import type { RtSession } from '@/lib/runtimeDashboard'
@@ -35,7 +36,7 @@ const nowText = computed(() => L.nowText(s.value, props.now))
   <div
     :data-session-id="s.id"
     :data-state="s.state"
-    class="rt-item grid h-11 w-full min-w-0 grid-cols-[22px_minmax(140px,1.4fr)_104px_minmax(0,2.2fr)_74px_66px_52px] items-center gap-3 rounded-lg border pr-3 pl-4"
+    class="rt-item grid h-11 w-full min-w-0 grid-cols-[22px_minmax(140px,1.4fr)_104px_minmax(0,2.2fr)_74px_66px_52px] items-center gap-3 rounded-lg border pr-3 pl-4 @max-[640px]:grid-cols-[22px_minmax(110px,1.4fr)_96px_minmax(0,2fr)_52px]"
     :class="frameClass(s, selected)"
   >
     <button
@@ -61,14 +62,14 @@ const nowText = computed(() => L.nowText(s.value, props.now))
       <span :class="[alert ? 'text-warning' : 'text-primary', s.now.kind === 'tool' && 'rt-busy']"><NowIcon :now="s.now" /></span>
       <span class="truncate font-mono text-[11px] text-foreground/90">{{ nowText }}</span>
     </span>
-    <span class="pointer-events-none flex items-center gap-1.5">
+    <span class="pointer-events-none flex items-center gap-1.5 @max-[640px]:hidden">
       <span class="relative h-1.5 flex-1 overflow-hidden rounded-full bg-muted">
         <span class="absolute inset-y-0 left-0 rounded-full" :class="ctxBarClass(s.ctxPercent)" :style="{ width: `${s.ctxPercent ?? 0}%` }" />
       </span>
       <span class="w-6 text-right font-mono text-[10px] tabular-nums" :class="ctxTextClass(s.ctxPercent)">{{ s.ctxPercent ?? '–' }}</span>
       <span class="sr-only">{{ s.ctxPercent !== null ? t('dashboard.contextTitle', { pct: s.ctxPercent }) : t('dashboard.contextUnknown') }}</span>
     </span>
-    <SparkLine :values="s.spark" :width="66" :height="22" class="pointer-events-none" />
+    <SparkLine :values="s.spark" :width="66" :height="22" class="pointer-events-none @max-[640px]:hidden" />
     <span class="pointer-events-none text-right font-mono text-[11px] text-muted-foreground tabular-nums">{{ L.elapsed(s, now) }}</span>
   </div>
 </template>

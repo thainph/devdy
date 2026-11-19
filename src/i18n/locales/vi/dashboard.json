@@ -18,8 +18,6 @@
     "sessions": {
       "title": "Session",
       "unit": "session | session",
-      "meta": "{conductors} session có worker · {external} ngoài Devdy | {conductors} session có worker · {external} ngoài Devdy",
-      "mapLabel": "Bản đồ session: mỗi ô một session",
       "chip": {
         "wait": "{n} chờ bạn",
         "quiet": "{n} im lâu",
@@ -28,11 +26,20 @@
         "idle": "{n} chờ worker",
         "ext": "{n} ngoài Devdy"
       },
-      "running": "đang chạy",
       "donutLabel": "Session theo trạng thái: {parts}",
-      "activity": "Nhịp hoạt động · 20 phút qua (event/phút, mọi session)",
       "activityLabel": "Nhịp hoạt động gộp của mọi session trong 20 phút qua",
-      "rate": "{n} ev/ph"
+      "legendLabel": "Lọc theo trạng thái",
+      "legend": {
+        "wait": "Chờ bạn",
+        "quiet": "Im lâu",
+        "ctx": "Context > 80%",
+        "run": "Đang chạy",
+        "idle": "Chờ worker",
+        "ext": "Ngoài Devdy"
+      },
+      "none": "Không có gì đang chạy",
+      "activityShort": "Hoạt động 20p",
+      "perMinute": "/phút"
     },
     "quota": {
       "title": "Hạn mức 5 giờ",
@@ -72,23 +79,10 @@
       },
       "busiest": "bận nhất {from}–{to}",
       "now": "bây giờ",
-      "timelineLabel": "Các session xong hôm nay, từ {from} tới bây giờ",
-      "latest": "Gần nhất",
-      "unread": "Chưa đọc",
-      "unreadCount": "{n} chưa đọc"
+      "timelineLabel": "Các session xong hôm nay, từ {from} tới bây giờ"
     }
   },
   "toolbar": {
-    "search": "Tìm theo tên hoặc project…",
-    "searchLabel": "Tìm session",
-    "mode": {
-      "label": "Kiểu hiển thị",
-      "auto": "Tự động",
-      "cards": "Thẻ",
-      "rows": "Dòng"
-    },
-    "autoRows": "đang hiện dạng dòng vì có {n} session",
-    "autoCards": "đang hiện dạng thẻ",
     "expandAll": "Mở hết",
     "collapseAll": "Thu hết"
   },
@@ -131,5 +125,31 @@
   "activityTitle": "Số event mỗi phút trong 20 phút gần đây",
   "activityStalled": "Vài phút gần đây không có event nào",
   "transcriptUnavailable": "Session này chưa gắn với project nào trong Devdy nên chưa mở được transcript ở đây.",
-  "emptyTitle": "Không có gì đang chạy"
+  "emptyTitle": "Không có gì đang chạy",
+  "running": {
+    "title": "Đang chạy"
+  },
+  "history": {
+    "title": "History",
+    "all": "Tất cả",
+    "unread": "Chưa đọc",
+    "unreadCount": "{n} chưa đọc",
+    "unreadOne": "chưa đọc",
+    "search": "Tìm theo tên session…",
+    "searchLabel": "Tìm session theo tên",
+    "showLabel": "Hiện",
+    "loadError": "Không tải được History: {error}",
+    "noMatch": "Không có session nào khớp.",
+    "noUnread": "Không có session nào chưa đọc.",
+    "empty": "Chưa có session nào chạy.",
+    "loadingMore": "Đang tải session cũ hơn…",
+    "status": {
+      "running": "đang chạy",
+      "done": "xong",
+      "failed": "lỗi",
+      "cancelled": "đã dừng"
+    },
+    "workers": "{n} worker | {n} worker",
+    "pinned": "Đã ghim"
+  }
 }

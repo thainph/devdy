@@ -121,6 +121,21 @@ export function quotaLevel(pct: number | null): QuotaLevel {
   return 'ok'
 }
 
+/** Up to this many 5-hour limits show as rings; more switch to a list. */
+export const QUOTA_RING_MAX = 3
+
+/**
+ * The 5-hour limits in list order: Claude accounts by % used, highest first
+ * (no data last), Codex always at the end. Stable for equal values.
+ */
+export function quotaListOrder<T extends { engine: string; pct: number | null }>(list: readonly T[]): T[] {
+  const rank = (q: T) => (q.engine === 'codex' ? 1 : 0)
+  return list
+    .map((q, i) => ({ q, i }))
+    .sort((a, b) => rank(a.q) - rank(b.q) || (b.q.pct ?? -1) - (a.q.pct ?? -1) || a.i - b.i)
+    .map((x) => x.q)
+}
+
 /** Time left as "h:mm:ss" ("0:04:09"); empty when unknown. Never negative. */
 export function formatCountdown(ms: number | null): string {
   if (ms === null || !Number.isFinite(ms)) return ''

@@ -13,6 +13,7 @@ import {
   localDayStart,
   localHourOn,
   quotaLevel,
+  quotaListOrder,
   ringDash,
   sumBuckets,
   timelineDots,
@@ -145,4 +146,16 @@ test('busiestHour', () => {
   assert.equal(busiestHour([at(9), at(10)]), null)
   assert.deepEqual(busiestHour([at(9, 1), at(10, 5), at(10, 40), at(11), at(11, 30)]), { start: at(10), count: 2 })
   assert.deepEqual(busiestHour([at(9), at(11), at(11, 10), at(11, 50)]), { start: at(11), count: 3 })
+})
+
+test('quotaListOrder: Claude by % used (no data last), Codex at the end', () => {
+  const list = [
+    { key: 'codex', engine: 'codex', pct: 99 },
+    { key: 'a', engine: 'claude', pct: 35 },
+    { key: 'b', engine: 'claude', pct: null },
+    { key: 'c', engine: 'claude', pct: 94 },
+    { key: 'd', engine: 'claude', pct: 35 },
+  ]
+  assert.deepEqual(quotaListOrder(list).map((q) => q.key), ['c', 'a', 'd', 'b', 'codex'])
+  assert.equal(list[0].key, 'codex', 'input left alone')
 })

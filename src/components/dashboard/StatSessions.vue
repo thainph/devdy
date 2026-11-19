@@ -1,13 +1,12 @@
 <script setup lang="ts">
-// Bento hero "Sessions": a donut of the session states (a segment filters the
-// list like the chips), the total in its centre, the running count, the quick
-// filter chips, the combined activity of every session over the last 20
-// minutes, and a square per session (click = select it, which also opens its
-// group).
+// Bento tile "Sessions", compact: a donut of the session states with the total
+// in its centre, one legend that doubles as the quick filters (a state, plus
+// "context > 80%"; each row and donut segment filters the list), and the
+// combined activity of every session over the last 20 minutes.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Activity } from 'lucide-vue-next'
-import { STATE_FILTER, type QuickFilter, type RtSession, type SessionState } from '@/lib/runtimeDashboard'
+import { STATE_FILTER, type QuickFilter, type SessionState } from '@/lib/runtimeDashboard'
 import { donutSegments } from '@/lib/runtimeCharts'
 import AreaChart from './AreaChart.vue'
 import BentoCard from './BentoCard.vue'
@@ -15,21 +14,15 @@ import CountUp from './CountUp.vue'
 import { STATE_FILL, useRuntimeLabels } from './runtimeStyles'
 
 const props = defineProps<{
-  /** Every session, in group order. */
-  sessions: RtSession[]
+  total: number
   counts: Record<QuickFilter, number>
   filter: QuickFilter | null
-  selectedId: string | null
   /** Events per minute of all sessions together, oldest first. */
   activity: number[]
 }>()
-const emit = defineEmits<{ pick: [id: string]; filter: [f: QuickFilter] }>()
-
+const emit = defineEmits<{ filter: [f: QuickFilter] }>()
 const { t } = useI18n()
 const L = useRuntimeLabels()
-
-const conductors = computed(() => props.sessions.filter((s) => s.role === 'conductor').length)
-const external = computed(() => props.sessions.filter((s) => s.role === 'external').length)
 
 // ── Donut ────────────────────────────────────────────────────────────────────
 const STATES: SessionState[] = ['running', 'waiting', 'quiet', 'idle', 'external']
@@ -54,37 +47,25 @@ function dimmed(state: SessionState): boolean {
   return props.filter !== null && props.filter !== 'ctx' && props.filter !== STATE_FILTER[state]
 }
 
-// ── Chips ────────────────────────────────────────────────────────────────────
-const CHIP_DOT: Record<QuickFilter, string> = {
-  wait: STATE_FILL.waiting,
-  quiet: STATE_FILL.quiet,
-  ctx: 'bg-warning',
-  run: STATE_FILL.running,
-  idle: STATE_FILL.idle,
-  ext: STATE_FILL.external,
-}
-/** The usual chips, plus the active filter's when a donut segment set it, so it can be cleared. */
-const chips = computed(() => {
-  const keys: QuickFilter[] = ['wait', 'quiet', 'ctx', 'ext']
-  const shown = keys.filter((k) => (k !== 'wait' && k !== 'ext') || props.counts[k] > 0)
-  if (props.filter && !shown.includes(props.filter)) shown.push(props.filter)
-  return shown.map((key) => ({ key, n: props.counts[key], dot: CHIP_DOT[key] }))
+// ── Legend (= quick filters) ─────────────────────────────────────────────────
+// Only what is there, plus the active filter so it can always be cleared.
+const legend = computed(() => {
+  const rows: { key: QuickFilter; dot: string; square?: boolean }[] = STATES.map((s) => ({ key: STATE_FILTER[s], dot: STATE_FILL[s] }))
+  rows.push({ key: 'ctx', dot: 'bg-warning', square: true })
+  return rows
+    .filter((r) => props.counts[r.key] > 0 || props.filter === r.key)
+    .map((r) => ({ ...r, n: props.counts[r.key] }))
 })
 
-// ── Activity ─────────────────────────────────────────────────────────────────
 const rate = computed(() => props.activity[props.activity.length - 1] ?? 0)
-
-function tip(s: RtSession): string {
-  return [s.title, s.projectName, L.stateLabel(s.state)].filter(Boolean).join(' · ')
-}
 </script>
 
 <template>
-  <BentoCard :title="t('dashboard.stat.sessions.title')" :icon="Activity" tone="primary">
-    <div class="flex flex-wrap items-center gap-x-6 gap-y-3">
-      <div class="relative h-[132px] w-[132px] shrink-0">
+  <BentoCard :title="t('dashboard.stat.sessions.title')" :icon="Activity" tone="primary" compact>
+    <div class="flex min-h-0 min-w-0 flex-1 items-center gap-3">
+      <div class="relative h-[76px] w-[76px] shrink-0">
         <svg viewBox="0 0 120 120" class="h-full w-full" role="group" :aria-label="donutLabel">
-          <circle cx="60" cy="60" :r="R" fill="none" class="stroke-muted" stroke-width="12" />
+          <circle cx="60" cy="60" :r="R" fill="none" class="stroke-muted" stroke-width="13" />
           <circle
             v-for="seg in segments"
             :key="seg.key"
@@ -92,7 +73,7 @@ function tip(s: RtSession): string {
             cy="60"
             :r="R"
             fill="none"
-            stroke-width="12"
+            stroke-width="13"
             :stroke-dasharray="seg.dash"
             :stroke-dashoffset="seg.offset"
             transform="rotate(-90 60 60)"
@@ -111,52 +92,35 @@ function tip(s: RtSession): string {
         </svg>
         <div class="pointer-events-none absolute inset-0 grid place-items-center text-center">
           <div>
-            <CountUp :value="sessions.length" class="block text-4xl leading-none font-extrabold tracking-tight" />
-            <span class="text-[11px] font-semibold text-muted-foreground">{{ t('dashboard.stat.sessions.unit', sessions.length) }}</span>
+            <CountUp :value="total" class="block text-2xl leading-none font-extrabold tracking-tight" />
+            <span class="text-[10px] font-semibold text-muted-foreground">{{ t('dashboard.stat.sessions.unit', total) }}</span>
           </div>
         </div>
       </div>
 
-      <div class="flex min-w-[220px] flex-1 flex-col gap-2.5">
-        <div class="flex min-w-0 flex-wrap items-baseline gap-x-2.5 gap-y-1">
-          <CountUp :value="counts.run" class="text-5xl leading-none font-extrabold tracking-tight" />
-          <span class="text-sm font-bold whitespace-nowrap">{{ t('dashboard.stat.sessions.running') }}</span>
-          <span class="min-w-0 truncate text-xs text-muted-foreground" :title="t('dashboard.stat.sessions.meta', { conductors, external }, conductors)">· {{ t('dashboard.stat.sessions.meta', { conductors, external }, conductors) }}</span>
-        </div>
-        <div class="flex flex-wrap gap-1.5">
+      <ul class="flex min-w-0 flex-1 flex-col gap-px" :aria-label="t('dashboard.stat.sessions.legendLabel')">
+        <li v-for="r in legend" :key="r.key">
           <button
-            v-for="c in chips"
-            :key="c.key"
             type="button"
-            class="inline-flex min-h-7 cursor-pointer items-center gap-1.5 rounded-full border px-2.5 text-xs font-semibold transition-colors motion-reduce:transition-none"
-            :class="filter === c.key ? 'border-primary bg-primary/15 text-primary' : 'border-border bg-card text-foreground hover:border-primary/40'"
-            :aria-pressed="filter === c.key"
-            @click="emit('filter', c.key)"
+            class="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[11px] transition-colors motion-reduce:transition-none"
+            :class="filter === r.key ? 'bg-primary/15 font-semibold text-primary' : 'text-foreground hover:bg-accent/60'"
+            :aria-pressed="filter === r.key"
+            @click="emit('filter', r.key)"
           >
-            <span class="h-2 w-2 shrink-0 rounded-full" :class="c.dot" aria-hidden="true" />
-            {{ t(`dashboard.stat.sessions.chip.${c.key}`, { n: c.n }) }}
+            <span class="h-[7px] w-[7px] shrink-0" :class="[r.dot, r.square ? 'rounded-[2px]' : 'rounded-full']" aria-hidden="true" />
+            <span class="min-w-0 flex-1 truncate">{{ t(`dashboard.stat.sessions.legend.${r.key}`) }}</span>
+            <span class="font-bold tabular-nums">{{ r.n }}</span>
           </button>
-        </div>
-      </div>
-    </div>
+        </li>
+        <li v-if="!legend.length" class="px-1.5 text-[11px] text-muted-foreground">{{ t('dashboard.stat.sessions.none') }}</li>
+      </ul>
 
-    <div class="mt-auto flex min-w-0 flex-col gap-1.5">
-      <div class="flex min-w-0 items-baseline justify-between gap-2">
-        <span class="min-w-0 truncate text-[11px] font-semibold text-muted-foreground">{{ t('dashboard.stat.sessions.activity') }}</span>
-        <span class="shrink-0 font-mono text-xs font-semibold text-primary tabular-nums">{{ t('dashboard.stat.sessions.rate', { n: rate }) }}</span>
-      </div>
-      <AreaChart :values="activity" :height="110" :floor="5" tone="primary" dot :label="t('dashboard.stat.sessions.activityLabel')" />
-      <div v-if="sessions.length" class="mt-1 flex flex-wrap gap-1" role="group" :aria-label="t('dashboard.stat.sessions.mapLabel')">
-        <button
-          v-for="s in sessions"
-          :key="s.id"
-          type="button"
-          class="h-3.5 w-3.5 cursor-pointer rounded-[4px] transition-transform hover:scale-125 motion-reduce:transition-none focus-visible:outline-2 focus-visible:outline-offset-1 focus-visible:outline-primary"
-          :class="[STATE_FILL[s.state], selectedId === s.id && 'ring-2 ring-primary ring-offset-1 ring-offset-card']"
-          :title="tip(s)"
-          :aria-label="tip(s)"
-          @click="emit('pick', s.id)"
-        />
+      <div class="flex w-[34%] max-w-[150px] min-w-[72px] shrink-0 flex-col gap-0.5">
+        <span class="truncate font-mono text-[10px] text-muted-foreground">{{ t('dashboard.stat.sessions.activityShort') }}</span>
+        <AreaChart :values="activity" :height="34" :floor="5" tone="primary" dot :label="t('dashboard.stat.sessions.activityLabel')" />
+        <span class="text-right text-[13px] font-bold text-primary tabular-nums">
+          {{ rate }}<span class="text-[10px] font-medium text-muted-foreground">{{ t('dashboard.stat.sessions.perMinute') }}</span>
+        </span>
       </div>
     </div>
   </BentoCard>

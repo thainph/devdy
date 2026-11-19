@@ -18,8 +18,6 @@
     "sessions": {
       "title": "Sessions",
       "unit": "session | sessions",
-      "meta": "{conductors} with workers · {external} outside Devdy | {conductors} with workers · {external} outside Devdy",
-      "mapLabel": "Session map: one square per session",
       "chip": {
         "wait": "{n} waiting for you",
         "quiet": "{n} quiet for long",
@@ -28,11 +26,20 @@
         "idle": "{n} waiting on workers",
         "ext": "{n} outside Devdy"
       },
-      "running": "running",
       "donutLabel": "Sessions by state: {parts}",
-      "activity": "Activity · last 20 minutes (events per minute, all sessions)",
       "activityLabel": "Combined activity of every session over the last 20 minutes",
-      "rate": "{n} ev/min"
+      "legendLabel": "Filter by state",
+      "legend": {
+        "wait": "Waiting for you",
+        "quiet": "Quiet for long",
+        "ctx": "Context > 80%",
+        "run": "Running",
+        "idle": "Waiting on workers",
+        "ext": "Outside Devdy"
+      },
+      "none": "Nothing running",
+      "activityShort": "Activity 20m",
+      "perMinute": "/min"
     },
     "quota": {
       "title": "5-hour limit",
@@ -72,23 +79,10 @@
       },
       "busiest": "busiest {from}–{to}",
       "now": "now",
-      "timelineLabel": "Runs finished today, from {from} to now",
-      "latest": "Latest",
-      "unread": "Unread",
-      "unreadCount": "{n} unread"
+      "timelineLabel": "Runs finished today, from {from} to now"
     }
   },
   "toolbar": {
-    "search": "Search by name or project…",
-    "searchLabel": "Search sessions",
-    "mode": {
-      "label": "Display",
-      "auto": "Auto",
-      "cards": "Cards",
-      "rows": "Rows"
-    },
-    "autoRows": "showing rows: {n} sessions",
-    "autoCards": "showing cards",
     "expandAll": "Expand all",
     "collapseAll": "Collapse all"
   },
@@ -131,5 +125,31 @@
   "activityTitle": "Events per minute over the last 20 minutes",
   "activityStalled": "No events for the last few minutes",
   "transcriptUnavailable": "This session isn't linked to a Devdy project yet, so its transcript can't be opened here.",
-  "emptyTitle": "Nothing running"
+  "emptyTitle": "Nothing running",
+  "running": {
+    "title": "Running"
+  },
+  "history": {
+    "title": "History",
+    "all": "All",
+    "unread": "Unread",
+    "unreadCount": "{n} unread",
+    "unreadOne": "unread",
+    "search": "Search by session name…",
+    "searchLabel": "Search sessions by name",
+    "showLabel": "Show",
+    "loadError": "Couldn't load History: {error}",
+    "noMatch": "No session matches.",
+    "noUnread": "Nothing unread.",
+    "empty": "No session has run yet.",
+    "loadingMore": "Loading older sessions…",
+    "status": {
+      "running": "running",
+      "done": "done",
+      "failed": "failed",
+      "cancelled": "stopped"
+    },
+    "workers": "{n} worker | {n} workers",
+    "pinned": "Pinned"
+  }
 }

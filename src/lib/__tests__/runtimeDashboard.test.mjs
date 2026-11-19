@@ -11,7 +11,6 @@ import {
   compareSessions,
   contextPercent,
   displayOrder,
-  effectiveMode,
   filterCounts,
   formatElapsed,
   isMissingCommandError,
@@ -25,7 +24,6 @@ import {
   needsAttention,
   noteActivity,
   parentOf,
-  parseViewMode,
   pushQuotaSample,
   pushSample,
   quotaForecast,
@@ -256,15 +254,6 @@ test('waitQueue: longest waiting first', () => {
   ]
   const q = waitQueue(list)
   assert.deepEqual(q, ['b', 'd', 'a'])
-})
-
-test('effectiveMode / parseViewMode', () => {
-  assert.equal(effectiveMode('auto', 15), 'cards')
-  assert.equal(effectiveMode('auto', 16), 'rows')
-  assert.equal(effectiveMode('cards', 99), 'cards')
-  assert.equal(parseViewMode('rows'), 'rows')
-  assert.equal(parseViewMode('weird'), 'auto')
-  assert.equal(parseViewMode(null), 'auto')
 })
 
 test('sparkline: points, stalled tail, empty', () => {
