@@ -15,7 +15,8 @@ const KIND = {
   session: { icon: MessageSquare, tile: 'bg-primary/12 text-primary' },
   pr: { icon: GitPullRequest, tile: 'bg-info/14 text-info' },
   issue: { icon: CircleDot, tile: 'bg-success/13 text-success' },
-  conductor: { icon: Network, tile: 'bg-accent text-accent-foreground' },
+  // A fixed hue (not primary, which a color theme may move onto session's).
+  conductor: { icon: Network, tile: 'bg-fuchsia-500/14 text-fuchsia-500' },
 } as const
 
 const k = computed(() => KIND[props.kind])
