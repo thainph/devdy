@@ -48,13 +48,12 @@ function dimmed(state: SessionState): boolean {
 }
 
 // ── Legend (= quick filters) ─────────────────────────────────────────────────
-// Only what is there, plus the active filter so it can always be cleared.
+// Every entry, always, so the tile keeps its shape with few sessions; an empty
+// one is greyed out and inert unless it is the active filter (to clear it).
 const legend = computed(() => {
   const rows: { key: QuickFilter; dot: string; square?: boolean }[] = STATES.map((s) => ({ key: STATE_FILTER[s], dot: STATE_FILL[s] }))
   rows.push({ key: 'ctx', dot: 'bg-warning', square: true })
-  return rows
-    .filter((r) => props.counts[r.key] > 0 || props.filter === r.key)
-    .map((r) => ({ ...r, n: props.counts[r.key] }))
+  return rows.map((r) => ({ ...r, n: props.counts[r.key], empty: props.counts[r.key] === 0 && props.filter !== r.key }))
 })
 
 const rate = computed(() => props.activity[props.activity.length - 1] ?? 0)
@@ -101,23 +100,33 @@ const rate = computed(() => props.activity[props.activity.length - 1] ?? 0)
         </div>
       </div>
 
-      <!-- Two columns: at most 5 entries (4 states + context), so 3 rows always fit. -->
+      <!-- Two columns: 5 entries (4 states + context), so 3 rows always fit. -->
       <ul class="grid min-w-0 flex-1 grid-cols-2 content-center gap-x-1.5 gap-y-px" :aria-label="t('dashboard.stat.sessions.legendLabel')">
         <li v-for="r in legend" :key="r.key" class="min-w-0">
           <button
             type="button"
-            class="flex w-full min-w-0 cursor-pointer items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[11px] transition-colors motion-reduce:transition-none"
-            :class="filter === r.key ? 'bg-primary/15 font-semibold text-primary' : 'text-foreground hover:bg-accent/60'"
+            class="flex w-full min-w-0 items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[11px] transition-colors motion-reduce:transition-none"
+            :class="
+              filter === r.key
+                ? 'cursor-pointer bg-primary/15 font-semibold text-primary'
+                : r.empty
+                  ? 'cursor-default text-muted-foreground/60'
+                  : 'cursor-pointer text-foreground hover:bg-accent/60'
+            "
+            :disabled="r.empty"
             :aria-pressed="filter === r.key"
             :title="`${t(`dashboard.stat.sessions.legend.${r.key}`)}: ${r.n}`"
             @click="emit('filter', r.key)"
           >
-            <span class="h-[7px] w-[7px] shrink-0" :class="[r.dot, r.square ? 'rounded-[2px]' : 'rounded-full']" aria-hidden="true" />
+            <span
+              class="h-[7px] w-[7px] shrink-0"
+              :class="[r.dot, r.square ? 'rounded-[2px]' : 'rounded-full', r.empty && 'opacity-30']"
+              aria-hidden="true"
+            />
             <span class="min-w-0 flex-1 truncate">{{ t(`dashboard.stat.sessions.legend.${r.key}`) }}</span>
-            <span class="font-bold tabular-nums">{{ r.n }}</span>
+            <span class="tabular-nums" :class="r.empty ? 'font-medium' : 'font-bold'">{{ r.n }}</span>
           </button>
         </li>
-        <li v-if="!legend.length" class="col-span-2 px-1.5 text-[11px] text-muted-foreground">{{ t('dashboard.stat.sessions.none') }}</li>
       </ul>
 
       <div class="flex w-[26%] max-w-[130px] min-w-[64px] shrink-0 flex-col gap-0.5 @max-[400px]:hidden">

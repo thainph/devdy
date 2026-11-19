@@ -34,7 +34,6 @@
         "run": "Running",
         "idle": "Waiting on workers"
       },
-      "none": "Nothing running",
       "activityShort": "Activity 20m",
       "perMinute": "/min"
     },
