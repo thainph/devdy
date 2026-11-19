@@ -322,7 +322,25 @@ const leftTab = ref<'session' | 'files'>('session')
 // the conductor without a forest of OS windows.
 async function openSession(runId: string) {
   if (!runId) return
+  // A worker may run in another project than its conductor (and vice versa when
+  // hopping back): route to the run's own project so the header, accounts and
+  // file list follow it. The project change remounts RunView, which loads the run.
+  const owner = runOwnerProjectId(runId)
+  if (owner && owner !== projectId.value) {
+    await router.replace({ name: 'project-run-detail', params: { projectId: owner, runId } }).catch(() => {})
+    return
+  }
   await loadRunLog(runId)
+}
+// The project a run belongs to, from whatever already knows it: the run list,
+// the open conductor's worker rows, or the conductor session itself.
+function runOwnerProjectId(runId: string): string | undefined {
+  const detail = conductorStore.detail
+  return (
+    runsStore.runMeta.get(runId)?.project_id ??
+    detail?.workers.find((w) => w.worker_id === runId)?.project_id ??
+    (detail?.session?.id === runId ? detail.session.project_id : undefined)
+  )
 }
 // Secondary action: pop a worker out into its OWN OS window (one window per run),
 // for watching several workers side by side. Clicking the same worker again just

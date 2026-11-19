@@ -862,7 +862,11 @@ onMounted(async () => {
     <ThemeDecorations :active="sceneOn" :theme="sceneTheme" />
     <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
       <div class="flex-1 min-w-0 overflow-auto">
-        <RouterView />
+        <!-- Same key as the main window: hopping from a conductor to a worker in
+             another project remounts RunView on that project. -->
+        <RouterView v-slot="{ Component }">
+          <component :is="Component" :key="routeKey" />
+        </RouterView>
       </div>
     </main>
     <!-- Overlay hosts the run screen relies on; NOT PermissionNotifier /
