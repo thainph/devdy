@@ -36,11 +36,12 @@ test('without a query, recent projects come first in recency order', () => {
   assert.deepEqual(ids(rows.others), ['b'])
 })
 
-test('a query searches name and path in one flat list', () => {
+test('a query searches names only, in one flat list', () => {
   assert.deepEqual(ids(pickerRows(P, ['a'], 'du an').others), ['c'])
-  assert.deepEqual(ids(pickerRows(P, ['a'], 'yahagi-168').others), ['b'])
+  assert.deepEqual(ids(pickerRows(P, ['a'], 'yahagi 168').others), ['b'])
+  assert.deepEqual(ids(pickerRows(P, ['a'], 'yahagi-168').others), [], 'paths are not searched')
   assert.deepEqual(pickerRows(P, ['a'], 'DEV').recent, [])
-  assert.deepEqual(ids(pickerRows(P, [], 'workspace').others), ['a', 'b'])
+  assert.deepEqual(ids(pickerRows(P, [], 'workspace').others), [])
   assert.deepEqual(ids(pickerRows(P, [], 'nothing').others), [])
 })
 

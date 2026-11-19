@@ -101,7 +101,7 @@ const projectChips = computed(() => {
 })
 
 // --- Search ------------------------------------------------------------------
-// Name or path, accent- and case-insensitive. Not persisted: a one-off lookup.
+// Name only, accent- and case-insensitive. Not persisted: a one-off lookup.
 const search = ref('')
 const searching = computed(() => search.value.trim() !== '')
 // Keep each project's index in store.projects — drag & drop works on those.
@@ -109,7 +109,7 @@ const visibleProjects = computed(() => {
   const q = foldText(search.value.trim())
   return store.projects
     .map((project, index) => ({ project, index }))
-    .filter(({ project }) => !q || foldText(`${project.name}\n${project.path}`).includes(q))
+    .filter(({ project }) => !q || foldText(project.name).includes(q))
 })
 
 // --- Drag & drop reorder ------------------------------------------------------

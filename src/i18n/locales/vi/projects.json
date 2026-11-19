@@ -30,7 +30,7 @@
   "removeRepo": "Gỡ repository",
   "noReposHint": "Chưa có repository — dán link repo ở trên để thêm",
   "azureChipTitle": "Azure: {label} · subscription {subscription}",
-  "searchPlaceholder": "Tìm dự án theo tên hoặc đường dẫn…",
+  "searchPlaceholder": "Tìm dự án theo tên…",
   "clearSearch": "Xóa tìm kiếm",
   "noMatch": "Không có dự án nào khớp"
 }

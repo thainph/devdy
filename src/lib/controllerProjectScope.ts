@@ -30,7 +30,7 @@ export function foldText(s: string): string {
 }
 
 /**
- * The picker's rows: projects matching `query` (name or path, accent- and
+ * The picker's rows: projects whose name matches `query` (accent- and
  * case-insensitive), split into the recently used ones (in recency order) and
  * the rest (in host order). While searching, everything is one flat list.
  */
@@ -41,7 +41,7 @@ export function pickerRows<T extends ScopeProject>(
 ): { recent: T[]; others: T[] } {
   const q = foldText(query.trim())
   if (q) {
-    const hit = (p: T) => foldText(p.name).includes(q) || (p.path ? foldText(p.path).includes(q) : false)
+    const hit = (p: T) => foldText(p.name).includes(q)
     return { recent: [], others: projects.filter(hit) }
   }
   const byId = new Map(projects.map((p) => [p.id, p]))

@@ -30,7 +30,7 @@
   "removeRepo": "Remove repository",
   "noReposHint": "No repositories — paste a repo link above to add one",
   "azureChipTitle": "Azure: {label} · subscription {subscription}",
-  "searchPlaceholder": "Search projects by name or path…",
+  "searchPlaceholder": "Search projects by name…",
   "clearSearch": "Clear search",
   "noMatch": "No projects match your search"
 }
