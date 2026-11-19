@@ -943,7 +943,7 @@ function runIsRunning(run: RunRecord): boolean {
 // History rows read like the Dashboard's: a tile for the KIND of session on the
 // left (session / PR / issue / conductor), the STATUS as a dot on the right.
 function runKind(run: RunRecord) {
-  return historyType({ runType: run.run_type, role: run.role ?? null, workerCount: runWorkerCount(run) })
+  return historyType({ runType: run.run_type, workerCount: runWorkerCount(run) })
 }
 
 /** The status dot: running (pulsing) · done · failed · cancelled · draft (never ran / only fetched). */

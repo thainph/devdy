@@ -63,7 +63,7 @@ test('historyAgo: now, minutes / hours today, yesterday, days, then a date', () 
 test('historyType / historyRepoRef / historyWebUrl', () => {
   assert.equal(historyType({ runType: 'review_pr', role: null, workerCount: 0 }), 'pr')
   assert.equal(historyType({ runType: 'analyze_issue', role: null, workerCount: 0 }), 'issue')
-  assert.equal(historyType({ runType: 'session', role: 'conductor', workerCount: 0 }), 'conductor')
+  assert.equal(historyType({ runType: 'session', role: 'conductor', workerCount: 0 }), 'session', 'no workers → plain session')
   assert.equal(historyType({ runType: 'session', role: null, workerCount: 2 }), 'conductor')
   assert.equal(historyType({ runType: 'session', role: null, workerCount: 0 }), 'session')
 

@@ -48,11 +48,15 @@ export function historyKind(r: Pick<HistoryRun, 'runType'>): 'PR' | 'Issue' | nu
   return r.runType === 'analyze_issue' ? 'Issue' : 'PR'
 }
 
-/** What the row says about its kind: an issue / PR, a conductor, or a plain session. */
-export function historyType(r: Pick<HistoryRun, 'runType' | 'role' | 'workerCount'>): 'pr' | 'issue' | 'conductor' | 'session' {
+/**
+ * What the row says about its kind: an issue / PR, a conductor, or a plain
+ * session. Every session can conduct, so only one that actually spawned
+ * workers reads as a conductor.
+ */
+export function historyType(r: Pick<HistoryRun, 'runType' | 'workerCount'>): 'pr' | 'issue' | 'conductor' | 'session' {
   const kind = historyKind(r)
   if (kind) return kind === 'PR' ? 'pr' : 'issue'
-  return r.role === 'conductor' || r.workerCount > 0 ? 'conductor' : 'session'
+  return r.workerCount > 0 ? 'conductor' : 'session'
 }
 
 /** `owner/repo#12` for an issue / PR run whose repo is known, else null. */
