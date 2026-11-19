@@ -1121,7 +1121,7 @@ pub async fn drain_sidecar(
                                         == Some("background_tasks_changed")
                                 {
                                     if let Some(tasks) = v.get("tasks").and_then(|t| t.as_array()) {
-                                        live_bg_tasks = tasks.len();
+                                        live_bg_tasks = count_blocking_bg_tasks(tasks);
                                     }
                                     // A `background_tasks_changed` that drains the last
                                     // task must EVENTUALLY close stdin (otherwise the
@@ -1567,6 +1567,18 @@ fn result_ends_user_turn(value: &Value) -> bool {
         None | Some(Value::Null) => true,
         Some(_) => false,
     }
+}
+
+/// How many of a `background_tasks_changed` set's tasks should keep the session
+/// alive past a `result`. `ambient` tasks are passive watchers the CLI arms on
+/// its own (e.g. the live-updates `monitor_ws` auto-armed when an Artifact is
+/// published): they never finish, so counting them would keep stdin open forever
+/// and leave the run stuck "running" after its turn is done.
+fn count_blocking_bg_tasks(tasks: &[Value]) -> usize {
+    tasks
+        .iter()
+        .filter(|t| t.get("ambient").and_then(|a| a.as_bool()) != Some(true))
+        .count()
 }
 
 /// Should this `result` cause the drain to close the sidecar's stdin (ending the
@@ -2287,6 +2299,26 @@ mod turn_end_tests {
         });
         assert!(!result_ends_user_turn(&wake));
         assert!(result_should_close_stdin(&wake, 0, /* user_turn_ended */ true));
+    }
+
+    // Regression: publishing an Artifact auto-arms an `ambient` monitor_ws that
+    // never ends; counting it kept stdin open and the run stuck "running".
+    #[test]
+    fn ambient_bg_tasks_do_not_keep_session_alive() {
+        let tasks = serde_json::json!([
+            { "task_id": "a", "task_type": "monitor_ws", "ambient": true },
+            { "task_id": "b", "task_type": "local_bash", "is_backgrounded": true },
+            { "task_id": "c", "task_type": "monitor", "ambient": false },
+        ]);
+        assert_eq!(count_blocking_bg_tasks(tasks.as_array().unwrap()), 2);
+
+        let only_ambient = serde_json::json!([
+            { "task_id": "a", "task_type": "monitor_ws", "ambient": true },
+        ]);
+        let live = count_blocking_bg_tasks(only_ambient.as_array().unwrap());
+        assert_eq!(live, 0);
+        let fg = serde_json::json!({ "type": "result", "subtype": "success", "origin": null });
+        assert!(result_should_close_stdin(&fg, live, false));
     }
 
     // Regression: the `task-notification` wake `result` can arrive BEFORE the
