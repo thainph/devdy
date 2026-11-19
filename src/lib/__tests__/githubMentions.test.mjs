@@ -5,6 +5,7 @@ import assert from 'node:assert/strict'
 import {
   activeFilters,
   applyFilters,
+  checkGoal,
   checkStatusOf,
   filterOptions,
   groupMentions,
@@ -84,4 +85,14 @@ test('check status: unmapped, unavailable, startable, running, done', () => {
 test('excerpt becomes a Markdown quote', () => {
   assert.equal(quoteExcerpt('a\nb'), '> a\n> b')
   assert.equal(quoteExcerpt('  '), '')
+})
+
+test('checkGoal appends the mention after the instruction', () => {
+  const goal = checkGoal('  Trả lời bằng tiếng Việt.\n', item())
+  assert.equal(
+    goal,
+    'Trả lời bằng tiếng Việt.\n\n---\nGitHub: org/api Issue #7 — "Fix sync"\n@lam → @me: https://github.com/org/api/issues/7\n\n> @me check this',
+  )
+  const pr = checkGoal('x', item({ kind: 'PullRequest', trigger: { ...item().trigger, html_url: 'https://c/1', body: '' } }))
+  assert.equal(pr, 'x\n\n---\nGitHub: org/api PR #7 — "Fix sync"\n@lam → @me: https://c/1')
 })

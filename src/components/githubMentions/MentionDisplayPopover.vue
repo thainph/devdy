@@ -1,8 +1,8 @@
 <script setup lang="ts">
 // "Display" header button + popover for GitHub Mentions: how many days back
 // to look, group by repo / person / nothing, and the muted threads / repos
-// ("Not interested") with a way to unmute them. Same panel as
-// PrInboxDisplayPopover.
+// ("Not interested") with a way to unmute them, and the "Check with AI"
+// prompt editor entry. Same panel as PrInboxDisplayPopover.
 import { ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
@@ -12,7 +12,9 @@ import { Button } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { MENTION_GROUP_BYS, type MentionMute } from '@/lib/githubMentions'
-import { BellOff, Check, FolderX, SlidersHorizontal, X } from 'lucide-vue-next'
+import { BellOff, Check, ChevronRight, FolderX, SlidersHorizontal, Sparkles, X } from 'lucide-vue-next'
+
+const emit = defineEmits<{ 'edit-prompt': [] }>()
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -30,6 +32,11 @@ onClickOutside(wrap, () => { open.value = false })
 useEscapeClose(open)
 usePopoverFocus(open, wrap, panel)
 watch(open, o => { if (o) void store.loadMutes() })
+
+function editPrompt() {
+  open.value = false
+  emit('edit-prompt')
+}
 
 function unmute(m: MentionMute) {
   store.unmute(m)
@@ -92,6 +99,17 @@ function unmute(m: MentionMute) {
           <Check v-if="store.groupBy === g" class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
         </button>
       </div>
+
+      <!-- Prompt a "Check with AI" session starts with -->
+      <button
+        type="button"
+        class="mt-3 flex w-full items-center gap-2 rounded-md px-1 py-1 text-left cursor-pointer hover:bg-accent/60 transition-colors focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-ring"
+        @click="editPrompt"
+      >
+        <Sparkles class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+        <span class="min-w-0 flex-1 text-sm text-foreground truncate">{{ t('githubMentions.prompt.button') }}</span>
+        <ChevronRight class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+      </button>
 
       <div class="mb-1.5 mt-3 text-[11px] font-medium uppercase tracking-wide text-muted-foreground">
         {{ t('githubMentions.muted.title') }}

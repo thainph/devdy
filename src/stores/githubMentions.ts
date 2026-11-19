@@ -220,7 +220,28 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
     writeStorage(GROUP_BY_KEY, value)
   }
 
+  /** The "Check with AI" instruction: saved prompt, custom text or the default. */
+  function loadCheckPrompt(): Promise<string> {
+    return invoke<string>('get_github_mentions_check_prompt')
+  }
+
+  /** The prompt editor's view: linked saved prompt id (if any) + custom text (else the default). */
+  function loadPromptConfig(): Promise<{ saved_prompt_id: string | null; prompt: string }> {
+    return invoke('get_github_mentions_prompt_config')
+  }
+
+  /** Save the custom check prompt; blank restores the default. */
+  async function savePrompt(prompt: string): Promise<void> {
+    await invoke('set_github_mentions_prompt', { prompt })
+  }
+
+  /** Use a Settings → Prompt Templates entry; null goes back to the custom text. */
+  async function savePromptId(savedPromptId: string | null): Promise<void> {
+    await invoke('set_github_mentions_prompt_id', { savedPromptId })
+  }
+
   return {
+    loadCheckPrompt, loadPromptConfig, savePrompt, savePromptId,
     items, warnings, loading, error, fetchedAt, filters, groupBy, lookbackDays, setLookbackDays, busyKeys, pendingCount,
     mutes, loadMutes, mute, unmute,
     load, watchCache, refresh, linkRun, withBusy, dismiss, markRead, setFilter, clearFilters, setGroupBy,

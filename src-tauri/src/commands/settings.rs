@@ -152,6 +152,9 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "pr_inbox.review_prompt_id",
     "pr_inbox.rereview_prompt",
     "pr_inbox.rereview_prompt_id",
+    // GitHub Mentions "Check with AI" prompt (github_mentions).
+    "github_mentions.check_prompt",
+    "github_mentions.check_prompt_id",
     // Focus (focus::settings); the calendar choice stays per machine.
     "focus.work_start",
     "focus.work_end",

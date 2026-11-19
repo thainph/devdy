@@ -368,10 +368,16 @@ impl PromptKind {
     }
 }
 
-/// The linked saved prompt (if it still exists and isn't blank), else the
-/// custom text, else the built-in default.
 async fn resolve_prompt(db: &Db, kind: PromptKind) -> Result<String, String> {
     let (text_key, id_key, default) = kind.keys();
+    resolve_configured_prompt(db, text_key, id_key, default).await
+}
+
+/// A prompt configured like the PR review ones (custom text under `text_key`,
+/// or a saved prompt id under `id_key`): the linked saved prompt (if it still
+/// exists and isn't blank), else the custom text, else `default`. Shared with
+/// other screens' prompts (GitHub Mentions).
+pub async fn resolve_configured_prompt(db: &Db, text_key: &str, id_key: &str, default: &str) -> Result<String, String> {
     if let Some(id) = setting(db, id_key).await? {
         let library = setting(db, "saved_prompts").await?.unwrap_or_default();
         let body = crate::remote::forwarder::parse_saved_prompts(&library)
@@ -415,9 +421,14 @@ pub struct PrPromptConfig {
 #[tauri::command]
 pub async fn get_pr_inbox_prompt_config(db: tauri::State<'_, Db>, kind: PromptKind) -> Result<PrPromptConfig, String> {
     let (text_key, id_key, default) = kind.keys();
+    prompt_config(db.inner(), text_key, id_key, default).await
+}
+
+/// [`get_pr_inbox_prompt_config`] for a prompt stored under other keys.
+pub async fn prompt_config(db: &Db, text_key: &str, id_key: &str, default: &str) -> Result<PrPromptConfig, String> {
     Ok(PrPromptConfig {
-        saved_prompt_id: setting(db.inner(), id_key).await?,
-        prompt: setting(db.inner(), text_key).await?.unwrap_or_else(|| default.to_string()),
+        saved_prompt_id: setting(db, id_key).await?,
+        prompt: setting(db, text_key).await?.unwrap_or_else(|| default.to_string()),
     })
 }
 
@@ -430,9 +441,14 @@ pub async fn set_pr_inbox_prompt_id(
     saved_prompt_id: Option<String>,
 ) -> Result<(), String> {
     let (_, id_key, _) = kind.keys();
+    save_prompt_id(db.inner(), id_key, saved_prompt_id).await
+}
+
+/// [`set_pr_inbox_prompt_id`] for a prompt stored under another key.
+pub async fn save_prompt_id(db: &Db, id_key: &str, saved_prompt_id: Option<String>) -> Result<(), String> {
     match saved_prompt_id.filter(|id| !id.trim().is_empty()) {
-        Some(id) => crate::commands::settings::set_setting(db.inner(), id_key, &id).await,
-        None => delete_setting(db.inner(), id_key).await,
+        Some(id) => crate::commands::settings::set_setting(db, id_key, &id).await,
+        None => delete_setting(db, id_key).await,
     }
 }
 
@@ -441,11 +457,16 @@ pub async fn set_pr_inbox_prompt_id(
 #[tauri::command]
 pub async fn set_pr_inbox_prompt(db: tauri::State<'_, Db>, kind: PromptKind, prompt: String) -> Result<(), String> {
     let (text_key, _, default) = kind.keys();
+    save_prompt_text(db.inner(), text_key, default, &prompt).await
+}
+
+/// [`set_pr_inbox_prompt`] for a prompt stored under another key.
+pub async fn save_prompt_text(db: &Db, text_key: &str, default: &str, prompt: &str) -> Result<(), String> {
     let prompt = prompt.trim();
     if prompt.is_empty() || prompt == default {
-        return delete_setting(db.inner(), text_key).await;
+        return delete_setting(db, text_key).await;
     }
-    crate::commands::settings::set_setting(db.inner(), text_key, prompt).await
+    crate::commands::settings::set_setting(db, text_key, prompt).await
 }
 
 #[tauri::command]

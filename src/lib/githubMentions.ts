@@ -197,3 +197,20 @@ export function quoteExcerpt(body: string): string {
   const text = body.trim()
   return text ? text.split(/\r?\n/).map(l => `> ${l}`).join('\n') : ''
 }
+
+/**
+ * First message of a "Check with AI" session: the configured instruction (like
+ * the PR review prompt), then the mention itself — only names, links and the
+ * quoted comment, so it reads the same whatever language the instruction is in.
+ */
+export function checkGoal(instruction: string, item: MentionItem): string {
+  const kind = item.kind === 'PullRequest' ? 'PR' : 'Issue'
+  const who = item.trigger ? `@${item.trigger.author_login}` : '?'
+  const context = [
+    `GitHub: ${item.owner}/${item.repo} ${kind} #${item.number} — "${item.title}"`,
+    `${who} → @${item.account_login}: ${item.trigger?.html_url || item.html_url}`,
+    '',
+    quoteExcerpt(item.trigger?.body ?? ''),
+  ].join('\n').trim()
+  return `${instruction.trim()}\n\n---\n${context}`
+}

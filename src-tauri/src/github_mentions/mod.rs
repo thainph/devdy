@@ -53,6 +53,13 @@ const MAX_THREADS: usize = 150;
 /// Excerpt length sent to the UI.
 const EXCERPT_CHARS: usize = 600;
 const MAX_DISMISSED: usize = 500;
+/// Instruction a "Check with AI" session starts with, configured like the PR
+/// review prompt: custom text, or a Settings → Prompt Templates entry (id key,
+/// wins while it exists). The mention itself is appended by the UI.
+const CHECK_PROMPT_KEY: &str = "github_mentions.check_prompt";
+const CHECK_PROMPT_ID_KEY: &str = "github_mentions.check_prompt_id";
+/// Used while the user hasn't set their own check prompt.
+const DEFAULT_CHECK_PROMPT: &str = "Có người tag tôi trên GitHub, chi tiết ở cuối tin nhắn này. Đọc file task (nội dung issue / PR, comment, và diff nếu có) cùng code liên quan trong repo để hiểu người đó đang hỏi hoặc yêu cầu gì. Sau đó trả lời bằng tiếng Việt, gồm:\n1. Tóm tắt ngắn yêu cầu.\n2. Câu trả lời hoặc hướng xử lý, kèm dẫn chứng (file:dòng).\n3. Bản nháp comment để tôi đăng lên GitHub, viết cùng ngôn ngữ với thread.\n\nKhông tự đăng comment hay thay đổi gì trên GitHub.";
 /// "Not interested": threads / repos never listed again, whatever happens on
 /// them (unlike `DISMISSED_KEY`, which a new comment undoes).
 const MUTED_KEY: &str = "github_mentions.muted";
@@ -1027,6 +1034,32 @@ pub async fn link_github_mention_run(app: AppHandle, db: State<'_, Db>, key: Str
         }
     });
     Ok(())
+}
+
+/// The instruction a "Check with AI" session starts with: the linked saved
+/// prompt, else the custom text, else the default (Vietnamese, like the PR
+/// review prompt).
+#[tauri::command]
+pub async fn get_github_mentions_check_prompt(db: State<'_, Db>) -> Result<String, String> {
+    crate::pr_inbox::resolve_configured_prompt(db.inner(), CHECK_PROMPT_KEY, CHECK_PROMPT_ID_KEY, DEFAULT_CHECK_PROMPT).await
+}
+
+/// What the prompt editor shows (same shape as the PR review prompts).
+#[tauri::command]
+pub async fn get_github_mentions_prompt_config(db: State<'_, Db>) -> Result<crate::pr_inbox::PrPromptConfig, String> {
+    crate::pr_inbox::prompt_config(db.inner(), CHECK_PROMPT_KEY, CHECK_PROMPT_ID_KEY, DEFAULT_CHECK_PROMPT).await
+}
+
+/// Save the custom check prompt; blank (or the default) restores the default.
+#[tauri::command]
+pub async fn set_github_mentions_prompt(db: State<'_, Db>, prompt: String) -> Result<(), String> {
+    crate::pr_inbox::save_prompt_text(db.inner(), CHECK_PROMPT_KEY, DEFAULT_CHECK_PROMPT, &prompt).await
+}
+
+/// Link the check prompt to a saved prompt, or unlink it (`None`).
+#[tauri::command]
+pub async fn set_github_mentions_prompt_id(db: State<'_, Db>, saved_prompt_id: Option<String>) -> Result<(), String> {
+    crate::pr_inbox::save_prompt_id(db.inner(), CHECK_PROMPT_ID_KEY, saved_prompt_id).await
 }
 
 #[cfg(test)]

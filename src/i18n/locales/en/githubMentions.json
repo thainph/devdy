@@ -72,8 +72,7 @@
     "openLabel": "View check",
     "sessionTitle": "Mention",
     "started": "AI check started for {ref}",
-    "failed": "Could not start the AI check: {error}",
-    "prompt": "Help me ({me}) with a GitHub mention on {ref}: \"{title}\".\n\n{who} wrote ({url}):\n\n{excerpt}\n\nRead the task file (issue / PR text, comments, and the diff when there is one) and the related code in this repo to understand what they are asking or requesting. Then reply with:\n1. A short summary of the request.\n2. The answer or proposed fix, with evidence (file:line).\n3. A draft comment I can post on GitHub, written in the thread's language.\n\nDo not post comments or change anything on GitHub yourself."
+    "failed": "Could not start the AI check: {error}"
   },
   "muted": {
     "title": "Not interested",
@@ -82,5 +81,10 @@
     "repo": "Muted repository",
     "unmute": "Unmute",
     "unmuted": "Unmuted {name}"
+  },
+  "prompt": {
+    "button": "Check with AI prompt",
+    "title": "Check with AI prompt",
+    "hint": "The instruction a “Check with AI” session starts with. The mention (issue / PR, who tagged you, link and comment) is always appended."
   }
 }

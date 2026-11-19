@@ -1,11 +1,10 @@
 <script setup lang="ts">
-// GitHub Mentions: every place on GitHub waiting for the user's answer (a
-// direct @mention, a team mention, a reply on a thread they take part in),
-// across all linked GitHub accounts. Header layout follows the PR Inbox:
+// GitHub Mentions: comments on GitHub that @-mention the user directly and
+// wait for their answer, across all linked GitHub accounts. Header layout follows the PR Inbox:
 // search + Filters / Display beside Refresh. Mentions answered in the last
 // week sit in a collapsed section at the bottom. "Check with AI" opens a
-// session on the issue / PR (like the PR Inbox's AI review); the user answers
-// on GitHub themselves.
+// session on the issue / PR (like the PR Inbox's AI review), starting with the
+// configurable check prompt; the user answers on GitHub themselves.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
@@ -17,6 +16,7 @@ import MentionCard from '@/components/githubMentions/MentionCard.vue'
 import MentionFiltersPopover from '@/components/githubMentions/MentionFiltersPopover.vue'
 import MentionDisplayPopover from '@/components/githubMentions/MentionDisplayPopover.vue'
 import PrAvatar from '@/components/prInbox/PrAvatar.vue'
+import PromptConfigModal from '@/components/PromptConfigModal.vue'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { useToast } from '@/composables/useToast'
 import { useRunsStore } from '@/stores/runs'
@@ -30,11 +30,11 @@ import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import {
   activeFilters,
   applyFilters,
+  checkGoal,
   checkStatusOf,
   filterOptions,
   groupMentions,
   MENTION_REASONS,
-  quoteExcerpt,
   splitAnswered,
   type MentionFilterDimension,
   type MentionFilterOption,
@@ -147,18 +147,8 @@ function openRun(item: MentionItem) {
   router.push(`/projects/${item.project_id}/run/${item.existing_run_id}`).catch(() => {})
 }
 
-/** First message of the session: what was asked, by whom, and what to deliver. */
-function checkGoal(item: MentionItem): string {
-  const kind = item.kind === 'PullRequest' ? 'PR' : 'Issue'
-  return t('githubMentions.check.prompt', {
-    me: `@${item.account_login}`,
-    ref: `${item.owner}/${item.repo} ${kind} #${item.number}`,
-    title: item.title,
-    who: item.trigger ? `@${item.trigger.author_login}` : t('githubMentions.unknownAuthor'),
-    url: item.trigger?.html_url || item.html_url,
-    excerpt: quoteExcerpt(item.trigger?.body ?? ''),
-  })
-}
+// The "Check with AI" prompt editor (Display → Check prompt), like the PR Inbox's.
+const promptEditorOpen = ref(false)
 
 // Same path as the PR Inbox's AI review: fetch the issue / PR into a run (as
 // the account that was tagged), start it as a conductor with our goal, then
@@ -177,7 +167,7 @@ async function check(item: MentionItem) {
       const run = item.kind === 'PullRequest'
         ? await runsStore.fetchPr(projectId, repoId, number, undefined, true, title, item.account_id)
         : await runsStore.fetchIssue(projectId, repoId, number, item.account_id)
-      await conductorStore.start(run.id, checkGoal(item), {
+      await conductorStore.start(run.id, checkGoal(await store.loadCheckPrompt(), item), {
         permissionModeOverride: resolvePermissionMode(null, appSettings.settings?.default_permission_mode),
       })
       await store.linkRun(item.key, run.id)
@@ -265,7 +255,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
             @update="store.setFilter"
             @clear="store.clearFilters()"
           />
-          <MentionDisplayPopover />
+          <MentionDisplayPopover @edit-prompt="promptEditorOpen = true" />
         </template>
         <Button variant="outline" :disabled="store.loading" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
@@ -423,5 +413,14 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
         {{ t('githubMentions.menu.muteRepo', { repo: menu.item ? `${menu.item.owner}/${menu.item.repo}` : '' }) }}
       </DropdownItem>
     </ContextMenu>
+    <PromptConfigModal
+      :open="promptEditorOpen"
+      :title="t('githubMentions.prompt.title')"
+      :hint="t('githubMentions.prompt.hint')"
+      :load="store.loadPromptConfig"
+      :save-text="store.savePrompt"
+      :save-id="store.savePromptId"
+      @close="promptEditorOpen = false"
+    />
   </div>
 </template>
