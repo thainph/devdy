@@ -8,7 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
-  ChevronRight, CornerDownRight, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
+  CalendarDays, ChevronRight, Clock, CornerDownRight, CornerUpLeft, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
 } from 'lucide-vue-next'
 import { useProjectsStore, type Project } from '@/stores/projects'
 import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
@@ -28,6 +28,7 @@ import {
   countByStatus,
   filterIssues,
   statusDotClass,
+  swatchClass,
   visibleRows,
   type ClassifiedIssue,
   type RadarGroup,
@@ -35,7 +36,7 @@ import {
   type RadarStatus,
 } from '@/lib/deliveryRadar'
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const projectsStore = useProjectsStore()
 const store = useDeliveryRadarStore()
 
@@ -241,28 +242,25 @@ function deadlineText(i: ClassifiedIssue): string {
   if (i.daysLeft === 0) return t('radar.dueToday')
   return t('radar.daysLeft', { n: i.daysLeft })
 }
+/** "16/11 · Sat" — the weekday tells whether the deadline falls before a weekend. */
 function deadlineDate(i: ClassifiedIssue): string {
   const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(i.deadline ?? '')
-  return m ? `${m[3]}/${m[2]}` : ''
+  if (!m) return ''
+  const weekday = new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(locale.value, { weekday: 'short' })
+  return `${m[3]}/${m[2]} · ${weekday}`
 }
-/** Second line of an issue row: project (person mode) or assignees (project mode), co-assignees, parent. */
-function issueMeta(i: ClassifiedIssue, g: RadarGroup, depth: number): string[] {
-  const out: string[] = []
-  if (groupMode.value === 'project') {
-    out.push(i.assignees.join(', ') || t('radar.unassigned'))
-  } else {
-    out.push(i.projectName)
-    const others = i.assignees.filter((a) => a !== g.key)
-    if (others.length && g.key !== null) out.push(t('radar.alsoAssigned', { names: others.join(', ') }))
-  }
-  // Parent not in this list (other assignee, done, …): say where the task belongs.
-  if (depth === 0 && i.parent) out.push(`↑ #${i.parent.number} ${i.parent.title}`)
-  return out
+/** People shown on an issue's second line: everyone (project mode) or the co-assignees (person mode). */
+function issuePeople(i: ClassifiedIssue, g: RadarGroup): string[] {
+  if (groupMode.value === 'project') return i.assignees
+  return g.key === null ? [] : i.assignees.filter((a) => a !== g.key)
+}
+function initial(name: string): string {
+  return (name.replace(/^[^\p{L}\p{N}]+/u, '')[0] ?? '?').toUpperCase()
 }
 function deadlineTone(i: ClassifiedIssue): string {
-  if (i.daysLeft !== null && i.daysLeft < 0) return 'text-destructive font-medium'
-  if (i.radar === 'due-soon') return 'text-warning font-medium'
-  return 'text-muted-foreground'
+  if (i.daysLeft !== null && i.daysLeft < 0) return 'text-destructive'
+  if (i.radar === 'due-soon') return 'text-warning'
+  return 'text-foreground font-medium'
 }
 
 
@@ -371,7 +369,7 @@ function openSettings(p: Project) {
 
 const GRID = 'grid grid-cols-[minmax(140px,1fr)_repeat(5,minmax(56px,92px))_minmax(48px,68px)_minmax(64px,84px)] items-center gap-x-1'
 // Narrow windows drop the board-status column (it moves to the row's second line).
-const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,132px)_64px_52px] md:grid-cols-[minmax(0,1fr)_minmax(88px,132px)_minmax(104px,132px)_minmax(64px,96px)_52px] items-center gap-x-3'
+const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:grid-cols-[minmax(0,1fr)_minmax(104px,140px)_minmax(96px,124px)_minmax(64px,88px)_52px] items-center gap-x-4'
 </script>
 
 <template>
@@ -597,23 +595,25 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,132px)_64px_52px] md:gr
 
             <!-- Issues of the group -->
             <div v-if="expanded.has(groupId(g))" class="bg-muted/25 border-t border-border/40 pt-1 pb-1.5">
-              <div :class="IGRID" class="pl-12 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+              <div :class="IGRID" class="pl-10 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
                 <span>{{ t('radar.colIssue') }}</span>
                 <span class="hidden md:block truncate">{{ t('radar.colBoardStatus') }}</span>
                 <span class="truncate">{{ t('radar.colDeadline') }}</span>
                 <span class="truncate text-right">{{ t('radar.colUpdated') }}</span>
                 <span />
               </div>
+              <div class="divide-y divide-border/40">
               <div
                 v-for="{ issue: i, depth, hasChildren, hidden } in groupRows(g)" :key="i.key"
                 :class="IGRID"
-                class="mx-1.5 rounded-md pr-1.5 py-1 hover:bg-accent/50"
+                class="group/row mx-1.5 rounded-md pr-1.5 py-1.5 hover:bg-accent/50"
                 :title="i.parent ? `${i.title}\n${t('radar.parentHint', { title: `#${i.parent.number} ${i.parent.title}` })}` : i.title"
                 @contextmenu.prevent="openRowMenu($event, i)"
               >
-                <div class="flex items-start gap-1.5 min-w-0" :style="{ paddingLeft: `${0.75 + depth * 1.4}rem` }">
-                  <!-- Fold slot: chevron on parents, an elbow on leaf sub-issues. -->
-                  <span class="flex h-4.5 w-4.5 shrink-0 items-center justify-center">
+                <div class="flex items-start gap-2 min-w-0" :style="{ paddingLeft: `${0.5 + depth * 1.4}rem` }">
+                  <!-- Severity square, then the fold slot: chevron on parents, an elbow on leaf sub-issues. -->
+                  <span class="flex w-4.5 shrink-0 flex-col items-center gap-1 pt-1">
+                    <span class="h-2 w-2 rounded-[2px]" :class="TONE_BG[i.radar]" :title="t(`radar.status.${i.radar}`)" />
                     <button
                       v-if="hasChildren"
                       class="flex h-4.5 w-4.5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -626,43 +626,88 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,132px)_64px_52px] md:gr
                     </button>
                     <CornerDownRight v-else-if="depth > 0" class="h-3 w-3 text-muted-foreground/60" :stroke-width="1.75" />
                   </span>
-                  <span class="mt-px w-24 shrink-0 truncate rounded px-1.5 py-0.5 text-center text-[10.5px] font-semibold" :class="TONE_CHIP[i.radar]">
-                    {{ t(`radar.status.${i.radar}`) }}
-                  </span>
-                  <span class="flex min-w-0 flex-col gap-px">
-                    <span class="flex min-w-0 items-center gap-1.5">
-                      <span class="truncate text-[12.5px]">{{ i.title }}</span>
+                  <span class="flex min-w-0 flex-1 flex-col gap-1">
+                    <!-- Line 1: title, radar status (on-track needs no chip), folded children -->
+                    <span class="flex min-w-0 items-baseline gap-2">
+                      <span class="truncate text-[13px] font-medium leading-snug text-foreground">{{ i.title }}</span>
+                      <span
+                        v-if="i.radar !== 'on-track'"
+                        class="shrink-0 rounded-full px-1.75 py-px text-[10.5px] font-semibold"
+                        :class="TONE_CHIP[i.radar]"
+                      >{{ t(`radar.status.${i.radar}`) }}</span>
                       <span
                         v-if="hidden"
-                        class="shrink-0 rounded-full border border-border bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
+                        class="shrink-0 rounded-full border border-dashed border-border px-1.5 text-[10px] font-semibold text-muted-foreground"
                         :title="t('radar.hiddenChildren', { n: hidden })"
                       >+{{ hidden }}</span>
                     </span>
-                    <span class="truncate text-[11px] text-muted-foreground">
-                      <span class="font-mono text-[10.5px]">{{ i.repo }}#{{ i.number }}</span>
-                      <span class="md:hidden"> · {{ i.status || t('radar.noStatus') }}</span>
-                      <template v-for="(m, mi) in issueMeta(i, g, depth)" :key="mi"> · {{ m }}</template>
+                    <!-- Line 2: each kind of meta has its own form (code ref, project swatch, avatars, parent link) -->
+                    <span class="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
+                      <span class="shrink-0 rounded bg-muted px-1.25 py-px font-mono text-[10.5px]">{{ i.repo }}<span class="font-medium text-foreground">#{{ i.number }}</span></span>
+                      <span class="md:hidden flex shrink-0 items-center gap-1.5">
+                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+                        <span class="h-2 w-2 rounded-full" :class="statusDotClass(i.statusColor)" />
+                        {{ i.status || t('radar.noStatus') }}
+                      </span>
+                      <span v-if="groupMode === 'person'" class="flex shrink-0 items-center gap-1.5 font-medium text-foreground/80">
+                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+                        <span class="h-1.75 w-1.75 rounded-[2px]" :class="swatchClass(i.projectName)" />
+                        {{ i.projectName }}
+                      </span>
+                      <span v-if="issuePeople(i, g).length" class="flex shrink-0 items-center gap-1.5">
+                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+                        <span class="flex">
+                          <span
+                            v-for="(p, pi) in issuePeople(i, g).slice(0, 3)" :key="p"
+                            class="flex h-4 w-4 items-center justify-center rounded-full text-[8.5px] font-bold text-white ring-[1.5px] ring-card"
+                            :class="[swatchClass(p), pi > 0 ? '-ml-1' : '']"
+                          >{{ initial(p) }}</span>
+                        </span>
+                        {{ groupMode === 'person' ? t('radar.alsoAssigned', { names: issuePeople(i, g).join(', ') }) : issuePeople(i, g).join(', ') }}
+                      </span>
+                      <span v-else-if="groupMode === 'project'" class="flex shrink-0 items-center gap-1.5 italic">
+                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+                        {{ t('radar.unassigned') }}
+                      </span>
+                      <!-- Parent not in this list (other assignee, done, …): say where the task belongs. -->
+                      <span v-if="depth === 0 && i.parent" class="flex min-w-0 items-center gap-1">
+                        <span class="mr-1 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
+                        <CornerUpLeft class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+                        <span class="shrink-0 font-mono text-[10.5px]">#{{ i.parent.number }}</span>
+                        <span class="truncate italic">{{ i.parent.title }}</span>
+                      </span>
                     </span>
                   </span>
                 </div>
-                <span class="hidden md:flex min-w-0 items-center gap-1.5 text-[11.5px] text-muted-foreground">
-                  <span class="h-2 w-2 rounded-full shrink-0" :class="statusDotClass(i.statusColor)" />
-                  <span class="truncate">{{ i.status || t('radar.noStatus') }}</span>
-                </span>
-                <span
-                  class="grid grid-cols-[38px_minmax(0,1fr)] items-baseline gap-x-2 whitespace-nowrap text-[11.5px]"
-                  :title="i.deadlineInherited ? t('radar.inheritedDeadline') : undefined"
-                >
-                  <span class="tabular-nums" :class="deadlineDate(i) ? 'text-foreground' : 'text-muted-foreground/60'">{{ deadlineDate(i) || '–' }}</span>
-                  <span class="truncate" :class="[deadlineTone(i), { italic: i.deadlineInherited }]">
-                    {{ i.daysLeft === null ? t('radar.noDeadlineShort') : deadlineText(i) }}
+                <span class="hidden md:flex min-w-0">
+                  <span
+                    class="inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11.5px]"
+                    :class="i.status ? 'border-border font-medium text-foreground' : 'border-dashed border-border text-muted-foreground/70'"
+                  >
+                    <span v-if="i.status" class="h-2 w-2 rounded-full shrink-0" :class="statusDotClass(i.statusColor)" />
+                    <span class="truncate">{{ i.status || t('radar.noStatus') }}</span>
                   </span>
                 </span>
                 <span
-                  class="truncate text-right text-[11px]"
-                  :class="i.radar === 'stale' ? 'text-foreground font-semibold' : 'text-muted-foreground'"
-                >{{ relativeTime(i.updatedAt) }}</span>
-                <span class="flex justify-end gap-0.5">
+                  class="flex min-w-0 flex-col gap-px whitespace-nowrap leading-tight"
+                  :title="i.deadlineInherited ? t('radar.inheritedDeadline') : undefined"
+                >
+                  <span v-if="i.daysLeft === null" class="text-[12px] font-medium text-muted-foreground/70">{{ t('radar.noDeadlineShort') }}</span>
+                  <span v-else class="truncate text-[12px] font-semibold" :class="deadlineTone(i)">{{ deadlineText(i) }}</span>
+                  <span v-if="deadlineDate(i)" class="flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">
+                    <CalendarDays class="h-2.75 w-2.75 shrink-0" :stroke-width="2" />
+                    <span class="truncate">{{ deadlineDate(i) }}</span>
+                  </span>
+                  <span v-if="i.deadlineInherited" class="text-[10px] italic text-muted-foreground/70">{{ t('radar.inheritedShort') }}</span>
+                </span>
+                <span
+                  class="flex min-w-0 items-center justify-end gap-1 text-right text-[11px] tabular-nums"
+                  :class="i.radar === 'stale' ? 'text-warning font-semibold' : 'text-muted-foreground/70'"
+                >
+                  <Clock v-if="i.radar === 'stale'" class="h-3 w-3 shrink-0" :stroke-width="2" />
+                  <span class="truncate">{{ relativeTime(i.updatedAt) }}</span>
+                </span>
+                <span class="flex justify-end gap-0.5 opacity-50 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
                   <Button
                     variant="ghost"
                     size="icon-xs"
@@ -684,6 +729,7 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,132px)_64px_52px] md:gr
                     <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
                   </Button>
                 </span>
+              </div>
               </div>
             </div>
           </div>

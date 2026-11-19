@@ -73,6 +73,7 @@
   "noDeadline": "chưa có deadline",
   "noStatus": "Chưa có status",
   "updatedAgo": "cập nhật {time}",
+  "inheritedShort": "theo task cha",
   "alsoAssigned": "cùng {names}",
   "openOnGithub": "Mở trên GitHub",
   "nothingTitle": "Không có gì để hiển thị",

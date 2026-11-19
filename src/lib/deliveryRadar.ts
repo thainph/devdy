@@ -54,6 +54,19 @@ export function statusDotClass(color: string | null | undefined): string {
   return GH_STATUS_DOT[(color ?? '').toUpperCase()] ?? 'bg-muted-foreground/50'
 }
 
+// Identity colours for projects and people in issue rows (not status: no red/green/amber).
+const SWATCHES = [
+  'bg-violet-500', 'bg-cyan-500', 'bg-pink-500', 'bg-orange-500', 'bg-blue-500',
+  'bg-teal-500', 'bg-fuchsia-500', 'bg-indigo-500', 'bg-sky-500', 'bg-lime-600',
+]
+
+/** Stable Tailwind background class for a name (project, login), case-insensitive. */
+export function swatchClass(name: string): string {
+  let h = 0
+  for (const ch of name.toLowerCase()) h = (h * 31 + ch.codePointAt(0)!) >>> 0
+  return SWATCHES[h % SWATCHES.length]
+}
+
 export type RadarStatus = 'overdue' | 'due-soon' | 'not-started' | 'stale' | 'no-deadline' | 'on-track'
 
 export const RADAR_STATUSES: RadarStatus[] = ['overdue', 'due-soon', 'not-started', 'stale', 'no-deadline', 'on-track']

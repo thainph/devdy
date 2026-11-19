@@ -73,6 +73,7 @@
   "noDeadline": "no deadline",
   "noStatus": "No status",
   "updatedAgo": "updated {time}",
+  "inheritedShort": "from parent",
   "alsoAssigned": "with {names}",
   "openOnGithub": "Open on GitHub",
   "nothingTitle": "Nothing to show",

@@ -14,6 +14,7 @@ import {
   isDone,
   nestIssues,
   stageOf,
+  swatchClass,
   visibleRows,
 } from '../deliveryRadar.ts'
 
@@ -266,4 +267,10 @@ test('visibleRows hides the subtree of collapsed rows and counts it', () => {
 test('filterIssues matches the parent title', () => {
   const issues = classifyAll([issue({ parent: { ...parentOf(1), title: 'Checkout epic' } }), issue()], NOW, TH)
   assert.equal(filterIssues(issues, { query: 'checkout' }).length, 1)
+})
+
+test('swatchClass is stable and case-insensitive', () => {
+  assert.equal(swatchClass('Lunchbox'), swatchClass('lunchbox'))
+  assert.match(swatchClass('minhtq'), /^bg-[a-z]+-\d00$/)
+  assert.match(swatchClass(''), /^bg-/)
 })
