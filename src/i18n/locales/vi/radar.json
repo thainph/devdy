@@ -74,6 +74,8 @@
   "noStatus": "Chưa có status",
   "updatedAgo": "cập nhật {time}",
   "inheritedShort": "theo task cha",
+  "byRepo": "Chia theo repo",
+  "byRepoHint": "Chia issue trong mỗi nhóm theo repo",
   "alsoAssigned": "cùng {names}",
   "openOnGithub": "Mở trên GitHub",
   "nothingTitle": "Không có gì để hiển thị",

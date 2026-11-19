@@ -8,7 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
-  CalendarDays, ChevronRight, Clock, CornerDownRight, CornerUpLeft, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
+  BookMarked, CalendarDays, ChevronRight, Clock, CornerDownRight, CornerUpLeft, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
 } from 'lucide-vue-next'
 import { useProjectsStore, type Project } from '@/stores/projects'
 import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
@@ -27,12 +27,14 @@ import {
   classifyAll,
   countByStatus,
   filterIssues,
+  sectionByRepo,
   statusDotClass,
   swatchClass,
   visibleRows,
   type ClassifiedIssue,
   type RadarGroup,
   type RadarGroupMode,
+  type RadarRepoSection,
   type RadarStatus,
 } from '@/lib/deliveryRadar'
 
@@ -43,6 +45,7 @@ const store = useDeliveryRadarStore()
 const isRadarWindow = new URLSearchParams(window.location.search).get('radarWindow') === '1'
 const PROJECTS_KEY = 'devdy:radarProjects'
 const GROUP_KEY = 'devdy:radarGroupMode'
+const BY_REPO_KEY = 'devdy:radarByRepo'
 
 // ── Project scope ────────────────────────────────────────────────────────────
 // Only projects with a linked GitHub Project board carry the Deadline field.
@@ -205,8 +208,35 @@ function toggleChildren(g: RadarGroup, i: ClassifiedIssue) {
   else next.add(id)
   collapsed.value = next
 }
-function groupRows(g: RadarGroup) {
-  return visibleRows(g.rows, (key) => collapsed.value.has(`${groupId(g)}\u0001${key}`))
+function sectionRows(g: RadarGroup, rows: RadarGroup['rows']) {
+  return visibleRows(rows, (key) => collapsed.value.has(`${groupId(g)}\u0001${key}`))
+}
+
+// Issues of a group split per repo (header only when the group spans several).
+const byRepo = ref(localStorage.getItem(BY_REPO_KEY) !== '0')
+watch(byRepo, (v) => {
+  try { localStorage.setItem(BY_REPO_KEY, v ? '1' : '0') } catch { /* best-effort */ }
+})
+const foldedRepos = ref<Set<string>>(new Set())
+function repoId(g: RadarGroup, s: RadarRepoSection): string {
+  return `${groupId(g)}\u0002${s.key}`
+}
+function toggleRepo(g: RadarGroup, s: RadarRepoSection) {
+  const next = new Set(foldedRepos.value)
+  const id = repoId(g, s)
+  if (next.has(id)) next.delete(id)
+  else next.add(id)
+  foldedRepos.value = next
+}
+/** Sections to render; `null` header = one flat list (split off, or a single repo). */
+function groupSections(g: RadarGroup): { section: RadarRepoSection | null, rows: RadarGroup['rows'] }[] {
+  const sections = byRepo.value ? sectionByRepo(g.rows) : []
+  if (sections.length < 2) return [{ section: null, rows: g.rows }]
+  return sections.map((section) => ({ section, rows: section.rows }))
+}
+/** Statuses that need attention, as compact counts on a repo header. */
+function sectionHot(s: RadarRepoSection): RadarStatus[] {
+  return HOT.filter((st) => s.counts[st] > 0)
 }
 
 // Narrowing to one status or a search means "show me those issues": open everything.
@@ -214,11 +244,13 @@ watch([statusFilter, query], ([s, q]) => {
   if (s || q.trim()) {
     expanded.value = new Set(groups.value.map(groupId))
     collapsed.value = new Set()
+    foldedRepos.value = new Set()
   }
 })
 watch(groupMode, () => {
   expanded.value = new Set()
   collapsed.value = new Set()
+  foldedRepos.value = new Set()
 })
 
 function groupLabel(g: RadarGroup): string {
@@ -528,6 +560,17 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
               <EyeOff class="h-3 w-3" :stroke-width="1.75" />
               {{ t('radar.hiddenCount', { n: hiddenCount }) }}
             </button>
+            <button
+              v-if="groups.length"
+              class="inline-flex items-center gap-1 rounded px-1 transition-colors"
+              :class="byRepo ? 'text-foreground font-medium' : 'hover:text-foreground'"
+              :aria-pressed="byRepo"
+              :title="t('radar.byRepoHint')"
+              @click="byRepo = !byRepo"
+            >
+              <BookMarked class="h-3 w-3" :class="byRepo ? 'text-primary' : ''" :stroke-width="1.75" />
+              {{ t('radar.byRepo') }}
+            </button>
             <button v-if="groups.length" class="font-medium text-primary hover:underline" @click="toggleAll">
               {{ allExpanded ? t('radar.collapseAll') : t('radar.expandAll') }}
             </button>
@@ -602,9 +645,41 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
                 <span class="truncate text-right">{{ t('radar.colUpdated') }}</span>
                 <span />
               </div>
-              <div class="divide-y divide-border/40">
+              <template v-for="{ section, rows } in groupSections(g)" :key="section?.key ?? 'all'">
+              <!-- Repo header: project (person mode), repo, open count, what needs attention. Click = fold. -->
+              <button
+                v-if="section"
+                class="mx-1.5 mt-1.5 flex w-[calc(100%-0.75rem)] items-center gap-2 rounded-md px-2 py-1 text-left text-[11.5px] hover:bg-accent/50"
+                :aria-expanded="!foldedRepos.has(repoId(g, section))"
+                @click="toggleRepo(g, section)"
+              >
+                <ChevronRight
+                  class="h-3 w-3 shrink-0 text-muted-foreground transition-transform"
+                  :class="{ 'rotate-90': !foldedRepos.has(repoId(g, section)) }"
+                  :stroke-width="2"
+                />
+                <template v-if="groupMode === 'person'">
+                  <span class="h-1.75 w-1.75 shrink-0 rounded-[2px]" :class="swatchClass(section.projectName)" />
+                  <span class="shrink-0 font-medium text-muted-foreground">{{ section.projectName }}</span>
+                  <span class="shrink-0 text-muted-foreground/50">/</span>
+                </template>
+                <BookMarked v-else class="h-3 w-3 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                <span class="truncate font-mono text-[11.5px] font-semibold text-foreground">{{ section.repo }}</span>
+                <span class="shrink-0 rounded-full bg-muted px-1.5 text-[10px] font-medium tabular-nums text-muted-foreground">{{ section.total }}</span>
+                <span class="ml-auto flex shrink-0 items-center gap-2.5 tabular-nums">
+                  <span
+                    v-for="st in sectionHot(section)" :key="st"
+                    class="flex items-center gap-1 text-[11px] font-semibold"
+                    :class="TONE_TEXT[st]"
+                    :title="t(`radar.status.${st}`)"
+                  >
+                    <span class="h-1.5 w-1.5 rounded-full" :class="TONE_BG[st]" />{{ section.counts[st] }}
+                  </span>
+                </span>
+              </button>
+              <div v-if="!section || !foldedRepos.has(repoId(g, section))" class="divide-y divide-border/40" :class="{ 'ml-3 border-l border-border/50': section }">
               <div
-                v-for="{ issue: i, depth, hasChildren, hidden } in groupRows(g)" :key="i.key"
+                v-for="{ issue: i, depth, hasChildren, hidden } in sectionRows(g, rows)" :key="i.key"
                 :class="IGRID"
                 class="group/row mx-1.5 rounded-md pr-1.5 py-1.5 hover:bg-accent/50"
                 :title="i.parent ? `${i.title}\n${t('radar.parentHint', { title: `#${i.parent.number} ${i.parent.title}` })}` : i.title"
@@ -643,13 +718,13 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
                     </span>
                     <!-- Line 2: each kind of meta has its own form (code ref, project swatch, avatars, parent link) -->
                     <span class="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
-                      <span class="shrink-0 rounded bg-muted px-1.25 py-px font-mono text-[10.5px]">{{ i.repo }}<span class="font-medium text-foreground">#{{ i.number }}</span></span>
+                      <span class="shrink-0 rounded bg-muted px-1.25 py-px font-mono text-[10.5px]"><template v-if="!section || section.repo !== i.repo">{{ i.repo }}</template><span class="font-medium text-foreground">#{{ i.number }}</span></span>
                       <span class="md:hidden flex shrink-0 items-center gap-1.5">
                         <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
                         <span class="h-2 w-2 rounded-full" :class="statusDotClass(i.statusColor)" />
                         {{ i.status || t('radar.noStatus') }}
                       </span>
-                      <span v-if="groupMode === 'person'" class="flex shrink-0 items-center gap-1.5 font-medium text-foreground/80">
+                      <span v-if="groupMode === 'person' && (!section || section.projectId !== i.projectId)" class="flex shrink-0 items-center gap-1.5 font-medium text-foreground/80">
                         <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
                         <span class="h-1.75 w-1.75 rounded-[2px]" :class="swatchClass(i.projectName)" />
                         {{ i.projectName }}
@@ -731,6 +806,7 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
                 </span>
               </div>
               </div>
+              </template>
             </div>
           </div>
         </Card>

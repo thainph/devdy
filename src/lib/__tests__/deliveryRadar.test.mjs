@@ -13,6 +13,7 @@ import {
   defaultStage,
   isDone,
   nestIssues,
+  sectionByRepo,
   stageOf,
   swatchClass,
   visibleRows,
@@ -273,4 +274,20 @@ test('swatchClass is stable and case-insensitive', () => {
   assert.equal(swatchClass('Lunchbox'), swatchClass('lunchbox'))
   assert.match(swatchClass('minhtq'), /^bg-[a-z]+-\d00$/)
   assert.match(swatchClass(''), /^bg-/)
+})
+
+test('sectionByRepo keeps whole trees in their root repo, most urgent repo first', () => {
+  const calm = issue({ repo: 'api', number: 500, deadline: '2026-12-20' })
+  const epic = issue({ repo: 'web', number: 501, title: 'Epic' })
+  // Cross-repo sub-issue: stays under its parent in the web section.
+  const apiTask = issue({ repo: 'api', number: 502, deadline: '2026-11-01', parent: { ...parentOf(501), repo: 'web' } })
+  const docs = issue({ repo: 'docs', number: 503 })
+  const other = issue({ repo: 'web', number: 504, projectId: 'p2', projectName: 'Beta' })
+  const sections = sectionByRepo(nestIssues(classifyAll([calm, epic, apiTask, docs, other], NOW, TH)))
+  // web holds the late sub-issue; api's only own issue is on track, so it comes last.
+  assert.deepEqual(sections.map((s) => s.key), ['p1::web', 'p1::docs', 'p2::web', 'p1::api'])
+  assert.deepEqual(sections[0].rows.map((r) => r.issue.number), [501, 502])
+  assert.equal(sections[0].counts.overdue, 1)
+  assert.equal(sections[0].total, 2)
+  assert.deepEqual(sections.find((s) => s.key === 'p1::api').rows.map((r) => r.issue.number), [500])
 })

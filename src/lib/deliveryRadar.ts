@@ -369,6 +369,42 @@ export function visibleRows(rows: RadarRow[], isCollapsed: (key: string) => bool
   return out
 }
 
+export interface RadarRepoSection {
+  /** `projectId::repo` (lower-case repo), unique within a group. */
+  key: string
+  repo: string
+  projectId: string
+  projectName: string
+  rows: RadarRow[]
+  counts: RadarCounts
+  total: number
+}
+
+/**
+ * Split a `nestIssues` layout per repo. A whole tree goes to its root's repo
+ * (a sub-issue from another repo stays under its parent), and sections keep the
+ * order of their first row — the most urgent repo comes first.
+ */
+export function sectionByRepo(rows: RadarRow[]): RadarRepoSection[] {
+  const sections = new Map<string, RadarRepoSection>()
+  let current: RadarRepoSection | null = null
+  for (const row of rows) {
+    if (row.depth === 0 || !current) {
+      const i = row.issue
+      const key = `${i.projectId}::${i.repo.toLowerCase()}`
+      current = sections.get(key) ?? null
+      if (!current) {
+        current = { key, repo: i.repo, projectId: i.projectId, projectName: i.projectName, rows: [], counts: emptyCounts(), total: 0 }
+        sections.set(key, current)
+      }
+    }
+    current.rows.push(row)
+    current.counts[row.issue.radar]++
+    current.total++
+  }
+  return [...sections.values()]
+}
+
 /**
  * Roll issues up per assignee (an issue with several assignees counts for each
  * of them; unassigned issues share one bucket, sorted last) or per project.

@@ -74,6 +74,8 @@
   "noStatus": "No status",
   "updatedAgo": "updated {time}",
   "inheritedShort": "from parent",
+  "byRepo": "By repo",
+  "byRepoHint": "Split each group's issues by repo",
   "alsoAssigned": "with {names}",
   "openOnGithub": "Open on GitHub",
   "nothingTitle": "Nothing to show",
