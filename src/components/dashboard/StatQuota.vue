@@ -5,14 +5,16 @@
 // More (several Claude accounts): one row each — name, 5-hour bar + %, week %
 // — highest 5-hour use first, Codex last, scrolling inside the tile. Colour
 // follows the level; both resets (and the 5-hour forecast) are in the tooltip.
+// The tile opens the Usage Stats screen.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Clock } from 'lucide-vue-next'
+import { ChevronRight, Clock } from 'lucide-vue-next'
 import type { QuotaView } from '@/composables/useRuntimeDashboard'
 import { QUOTA_COLUMNS_MAX, formatCountdown, quotaLevel, quotaListOrder, type QuotaLevel } from '@/lib/runtimeCharts'
 import BentoCard from './BentoCard.vue'
 
 const props = defineProps<{ quotas: QuotaView[]; now: number }>()
+const emit = defineEmits<{ open: [] }>()
 const { t } = useI18n()
 
 const LEVEL: Record<QuotaLevel, { text: string; bar: string }> = {
@@ -56,7 +58,25 @@ function pctText(pct: number | null): string {
 </script>
 
 <template>
-  <BentoCard :title="t('dashboard.stat.quota.title')" :icon="Clock" tone="warning" compact>
+  <BentoCard
+    :title="t('dashboard.stat.quota.title')"
+    :icon="Clock"
+    tone="warning"
+    compact
+    class="rt-card-link group/quota"
+    role="link"
+    tabindex="0"
+    :aria-label="t('dashboard.stat.quota.openTitle')"
+    @click="emit('open')"
+    @keydown.enter.self="emit('open')"
+  >
+    <template #aside>
+      <ChevronRight
+        class="ml-auto h-3 w-3 shrink-0 -translate-x-0.5 text-primary opacity-0 transition group-hover/quota:translate-x-0 group-hover/quota:opacity-100 group-focus-visible/quota:translate-x-0 group-focus-visible/quota:opacity-100"
+        :stroke-width="2.2"
+        aria-hidden="true"
+      />
+    </template>
     <!-- Several accounts: one row each -->
     <div v-if="asList" class="flex min-h-0 flex-1 flex-col gap-1 overflow-y-auto pr-0.5">
       <div class="grid grid-cols-[minmax(0,1fr)_minmax(36px,56px)_30px_34px] gap-1.5 text-[10px] font-semibold text-muted-foreground">

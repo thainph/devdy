@@ -36,6 +36,7 @@ import {
   type HistoryRun,
 } from '@/lib/runHistory'
 import SessionKindTile from './SessionKindTile.vue'
+import TrayEmpty from './TrayEmpty.vue'
 import SessionMenu, { menuPoint, type SessionMenuTarget } from './SessionMenu.vue'
 
 const props = defineProps<{
@@ -50,6 +51,12 @@ const items = ref<HistoryRun[]>([])
 const query = ref('')
 /** Opens on "Unread": what finished since the user last looked comes first. */
 const show = ref<'all' | 'unread'>('unread')
+/** What the empty tray says: no match for the search, all read, or no history at all. */
+const emptyState = computed(() => {
+  if (query.value.trim()) return { title: t('dashboard.history.noMatch'), hint: undefined }
+  if (show.value === 'unread') return { title: t('dashboard.history.noUnread'), hint: t('dashboard.history.noUnreadHint') }
+  return { title: t('dashboard.history.emptyTitle'), hint: t('dashboard.history.empty') }
+})
 const loading = ref(false)
 const loaded = ref(false)
 const exhausted = ref(false)
@@ -294,12 +301,10 @@ defineExpose({ focusSearch })
       </span>
     </div>
 
-    <div ref="scroller" class="min-h-[240px] overflow-y-auto" style="max-height: max(320px, calc(100vh - 330px))">
-      <p v-if="error && !items.length" class="px-4 py-5 text-center text-xs text-destructive">{{ t('dashboard.history.loadError', { error }) }}</p>
-      <p v-else-if="loaded && !rows.length && !loading" class="rounded-[9px] border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground">
-        {{ query.trim() ? t('dashboard.history.noMatch') : show === 'unread' ? t('dashboard.history.noUnread') : t('dashboard.history.empty') }}
-      </p>
-      <ul class="flex flex-col gap-1.5" role="list">
+    <div ref="scroller" class="flex min-h-[240px] flex-1 flex-col overflow-y-auto" style="max-height: max(320px, calc(100vh - 330px))">
+      <TrayEmpty v-if="error && !items.length" tone="destructive" :title="t('dashboard.history.loadError', { error })" />
+      <TrayEmpty v-else-if="loaded && !rows.length && !loading" :title="emptyState.title" :hint="emptyState.hint" />
+      <ul v-if="rows.length" class="flex flex-col gap-1.5" role="list">
         <!-- Unread: a raised card; read: a quieter one, flat on the tray. -->
         <li v-for="r in rows" :key="r.runId">
           <button

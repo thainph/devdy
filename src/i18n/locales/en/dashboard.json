@@ -48,7 +48,8 @@
       "default": "default",
       "resetIn": "resets in {time}",
       "fiveHour": "5 hours",
-      "week": "Week"
+      "week": "Week",
+      "openTitle": "Open Usage Stats"
     },
     "resources": {
       "title": "Resources",
@@ -62,7 +63,9 @@
       "cleanTitle": "Stop the processes left behind by ended sessions or a previous app run",
       "noData": "no data yet",
       "cpuTitle": "Share of the whole machine used by Devdy's processes",
-      "history": "{name} over the last few minutes"
+      "history": "{name} over the last few minutes",
+      "openTitle": "Open Processes",
+      "reviewLeftovers": "Review leftover processes"
     },
     "today": {
       "title": "Today",
@@ -130,8 +133,8 @@
     "searchLabel": "Search sessions by name",
     "showLabel": "Show",
     "loadError": "Couldn't load History: {error}",
-    "noMatch": "No session matches.",
-    "noUnread": "Nothing unread.",
+    "noMatch": "No session matches",
+    "noUnread": "Nothing unread",
     "empty": "No session has run yet.",
     "loadingMore": "Loading older sessions…",
     "status": {
@@ -164,7 +167,9 @@
       "stopTitle": "Stop session",
       "stopMessage": "Stop \"{name}\"? The current turn is cancelled; you can resume the session later.",
       "delete": "Delete session"
-    }
+    },
+    "noUnreadHint": "Sessions that finish while you're away stay here until you open them.",
+    "emptyTitle": "No history yet"
   },
   "kind": {
     "session": "Session",

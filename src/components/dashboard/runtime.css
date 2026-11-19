@@ -169,3 +169,17 @@
 @keyframes rt-breathe {
   50% { opacity: 1; }
 }
+
+/* ── A bento tile that opens another screen (Resources → Processes) ────────── */
+.rt-card-link {
+  cursor: pointer;
+  transition: box-shadow 150ms ease;
+}
+.rt-card-link:hover,
+.rt-card-link:focus-visible {
+  outline: none;
+  box-shadow:
+    0 0 0 1px hsl(var(--primary) / 0.7),
+    0 0 0 4px hsl(var(--primary) / 0.15),
+    0 8px 24px -12px hsl(var(--primary) / 0.3);
+}

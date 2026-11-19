@@ -3,9 +3,11 @@
 // as small live area charts with their current values, how many processes
 // there are and — only when there are any — the leftovers with "Clean up",
 // which reuses the Background processes cleanup (confirmed by the caller).
+// The tile opens the Processes screen (the leftovers strip opens it filtered to
+// them); "Clean up" keeps doing its own thing.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { Cpu, TriangleAlert } from 'lucide-vue-next'
+import { ChevronRight, Cpu, TriangleAlert } from 'lucide-vue-next'
 import { Button } from '@/components/ui'
 import { formatCpu, formatRss } from '@/lib/backgroundProcesses'
 import type { ResourcesView } from '@/composables/useRuntimeDashboard'
@@ -13,7 +15,7 @@ import AreaChart from './AreaChart.vue'
 import BentoCard from './BentoCard.vue'
 
 const props = defineProps<{ resources: ResourcesView | null; busy: boolean }>()
-const emit = defineEmits<{ clean: [] }>()
+const emit = defineEmits<{ clean: []; open: [filter?: 'leftovers'] }>()
 const { t } = useI18n()
 
 const r = computed(() => props.resources)
@@ -23,9 +25,27 @@ const ramFloor = computed(() => Math.max(1, ...(r.value?.ramHistory ?? [])) * 1.
 </script>
 
 <template>
-  <BentoCard :title="t('dashboard.stat.resources.title')" :icon="Cpu" tone="success" compact>
+  <BentoCard
+    :title="t('dashboard.stat.resources.title')"
+    :icon="Cpu"
+    tone="success"
+    compact
+    class="rt-card-link group/res"
+    role="link"
+    tabindex="0"
+    :aria-label="t('dashboard.stat.resources.openTitle')"
+    @click="emit('open')"
+    @keydown.enter.self="emit('open')"
+  >
     <template #aside>
-      <span v-if="r" class="ml-auto shrink-0 font-medium whitespace-nowrap">{{ t('dashboard.stat.resources.processes', { n: r.processCount }, r.processCount) }}</span>
+      <span class="ml-auto flex shrink-0 items-center gap-0.5 font-medium whitespace-nowrap">
+        <template v-if="r">{{ t('dashboard.stat.resources.processes', { n: r.processCount }, r.processCount) }}</template>
+        <ChevronRight
+          class="h-3 w-3 -translate-x-0.5 text-primary opacity-0 transition group-hover/res:translate-x-0 group-hover/res:opacity-100 group-focus-visible/res:translate-x-0 group-focus-visible/res:opacity-100"
+          :stroke-width="2.2"
+          aria-hidden="true"
+        />
+      </span>
     </template>
     <p v-if="!r" class="text-[11px] text-muted-foreground">{{ t('dashboard.stat.resources.noData') }}</p>
     <template v-else>
@@ -57,13 +77,18 @@ const ramFloor = computed(() => Math.max(1, ...(r.value?.ramHistory ?? [])) * 1.
           />
         </div>
       </div>
-      <div v-if="r.orphanCount" class="mt-auto flex min-w-0 items-center gap-1.5 rounded-md bg-warning/10 px-2 py-0.5">
+      <div
+        v-if="r.orphanCount"
+        class="mt-auto flex min-w-0 items-center gap-1.5 rounded-md bg-warning/10 px-2 py-0.5 transition-colors hover:bg-warning/20"
+        :title="t('dashboard.stat.resources.reviewLeftovers')"
+        @click.stop="emit('open', 'leftovers')"
+      >
         <TriangleAlert class="h-3 w-3 shrink-0 text-warning" :stroke-width="2" aria-hidden="true" />
         <span
           class="min-w-0 flex-1 truncate text-[11px] font-semibold"
           :title="r.staleWorktreeCount ? t('dashboard.stat.resources.staleWorktrees', { n: r.staleWorktreeCount }, r.staleWorktreeCount) : undefined"
         >{{ t('dashboard.stat.resources.orphans', { n: r.orphanCount }, r.orphanCount) }}</span>
-        <Button variant="outline" size="xs" class="h-5 px-1.5 text-[10px]" :disabled="busy" :title="t('dashboard.stat.resources.cleanTitle')" @click="emit('clean')">
+        <Button variant="outline" size="xs" class="h-5 px-1.5 text-[10px]" :disabled="busy" :title="t('dashboard.stat.resources.cleanTitle')" @click.stop="emit('clean')" @keydown.stop>
           {{ t('dashboard.stat.resources.clean') }}
         </Button>
       </div>

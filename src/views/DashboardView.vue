@@ -24,6 +24,7 @@ import StatQuota from '@/components/dashboard/StatQuota.vue'
 import StatResources from '@/components/dashboard/StatResources.vue'
 import StatToday from '@/components/dashboard/StatToday.vue'
 import SessionTree from '@/components/dashboard/SessionTree.vue'
+import TrayEmpty from '@/components/dashboard/TrayEmpty.vue'
 import HistoryList from '@/components/dashboard/HistoryList.vue'
 import { useRuntimeDashboard } from '@/composables/useRuntimeDashboard'
 import { useConfirm } from '@/composables/useConfirm'
@@ -167,6 +168,11 @@ function closeMenu() {
   menu.value = { ...menu.value, open: false }
 }
 
+// ── Resources tile → the Processes screen ───────────────────────────────────
+function openProcesses(filter?: 'leftovers') {
+  router.push({ name: 'processes', query: { from: 'dashboard', filter } }).catch(() => {})
+}
+
 // ── Cleanup (the Background processes action) ────────────────────────────────
 const cleaning = ref(false)
 async function cleanUp() {
@@ -273,12 +279,12 @@ const SHORTCUTS = [
         <!-- One short row of tiles (two per row, then one, as it narrows). -->
         <div class="grid grid-cols-1 gap-2.5 @min-[720px]:grid-cols-2 @min-[1180px]:grid-cols-[1.5fr_0.9fr_1fr_1.4fr]">
           <StatSessions :total="total" :counts="counts" :filter="filter" :activity="dash.activity.value" @filter="toggleFilter" />
-          <StatQuota :quotas="dash.quotas.value" :now="dash.now.value" />
-          <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
+          <StatQuota :quotas="dash.quotas.value" :now="dash.now.value" @open="router.push({ name: 'stats' }).catch(() => {})" />
+          <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" @open="openProcesses" />
           <StatToday :today="dash.today.value" :now="dash.now.value" />
         </div>
 
-        <div class="grid grid-cols-1 items-start gap-4 @min-[1000px]:grid-cols-[minmax(0,1.55fr)_minmax(320px,1fr)]">
+        <div class="grid grid-cols-1 items-stretch gap-4 @min-[1000px]:grid-cols-[minmax(0,1.55fr)_minmax(320px,1fr)]">
           <!-- A tray like History's: the header inside, every session a card on it. -->
           <section class="rt-tray flex min-w-0 flex-col gap-1.5 p-1.5" :aria-label="t('dashboard.running.title')">
             <div class="flex min-h-7 flex-wrap items-center gap-2 pt-1 pr-1 pb-0.5 pl-2">
@@ -293,29 +299,21 @@ const SHORTCUTS = [
               </span>
             </div>
 
-            <div
-              v-if="dash.loaded.value && !total"
-              class="flex flex-col items-center gap-2 rounded-[9px] border-[1.5px] border-dashed border-border px-5 py-8 text-center"
-            >
-              <p class="text-sm font-bold text-foreground">{{ t('dashboard.emptyTitle') }}</p>
-              <p class="max-w-[46ch] text-xs text-muted-foreground">{{ t('dashboard.empty') }}</p>
-            </div>
-            <p
-              v-else-if="filter !== null && !rows.length"
-              class="rounded-[9px] border border-dashed border-border/70 px-4 py-5 text-center text-xs text-muted-foreground"
-            >
-              {{ t('dashboard.noMatch') }}
-            </p>
+            <!-- Same list area as History's, so both trays line up when empty. -->
+            <div class="flex min-h-[240px] flex-1 flex-col">
+              <TrayEmpty v-if="dash.loaded.value && !total" :title="t('dashboard.emptyTitle')" :hint="t('dashboard.empty')" />
+              <TrayEmpty v-else-if="filter !== null && !rows.length" :title="t('dashboard.noMatch')" />
 
-            <SessionTree
-              v-if="rows.length"
-              :rows="rows"
-              :selected-id="selectedId"
-              :now="dash.now.value"
-              @toggle="toggleWorkers"
-              @select="openById"
-              @menu="openMenu"
-            />
+              <SessionTree
+                v-if="rows.length"
+                :rows="rows"
+                :selected-id="selectedId"
+                :now="dash.now.value"
+                @toggle="toggleWorkers"
+                @select="openById"
+                @menu="openMenu"
+              />
+            </div>
           </section>
 
           <HistoryList ref="history" :now="dash.now.value" :live-unread="liveUnread" @open="openHistory" />

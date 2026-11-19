@@ -48,7 +48,8 @@
       "default": "mặc định",
       "resetIn": "reset sau {time}",
       "fiveHour": "5 giờ",
-      "week": "Tuần"
+      "week": "Tuần",
+      "openTitle": "Mở màn Thống kê sử dụng"
     },
     "resources": {
       "title": "Tài nguyên",
@@ -62,7 +63,9 @@
       "cleanTitle": "Dừng các tiến trình còn sót lại từ session đã kết thúc hoặc lần chạy app trước",
       "noData": "chưa có dữ liệu",
       "cpuTitle": "Phần CPU của cả máy mà các tiến trình Devdy đang dùng",
-      "history": "{name} trong vài phút gần đây"
+      "history": "{name} trong vài phút gần đây",
+      "openTitle": "Mở màn Tiến trình",
+      "reviewLeftovers": "Xem các tiến trình còn sót"
     },
     "today": {
       "title": "Hôm nay",
@@ -130,8 +133,8 @@
     "searchLabel": "Tìm session theo tên",
     "showLabel": "Hiện",
     "loadError": "Không tải được History: {error}",
-    "noMatch": "Không có session nào khớp.",
-    "noUnread": "Không có session nào chưa đọc.",
+    "noMatch": "Không có session nào khớp",
+    "noUnread": "Không có gì chưa đọc",
     "empty": "Chưa có session nào chạy.",
     "loadingMore": "Đang tải session cũ hơn…",
     "status": {
@@ -164,7 +167,9 @@
       "stopTitle": "Dừng session",
       "stopMessage": "Dừng \"{name}\"? Lượt đang chạy sẽ bị hủy; bạn có thể tiếp tục session sau.",
       "delete": "Xóa session"
-    }
+    },
+    "noUnreadHint": "Session nào xong lúc bạn vắng mặt sẽ nằm ở đây cho tới khi bạn mở.",
+    "emptyTitle": "Chưa có lịch sử"
   },
   "kind": {
     "session": "Session",
