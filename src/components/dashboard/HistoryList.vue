@@ -47,7 +47,8 @@ const { t } = useI18n()
 
 const items = ref<HistoryRun[]>([])
 const query = ref('')
-const show = ref<'all' | 'unread'>('all')
+/** Opens on "Unread": what finished since the user last looked comes first. */
+const show = ref<'all' | 'unread'>('unread')
 const loading = ref(false)
 const loaded = ref(false)
 const exhausted = ref(false)
