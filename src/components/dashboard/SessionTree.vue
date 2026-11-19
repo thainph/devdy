@@ -12,7 +12,7 @@ defineProps<{
   selectedId: string | null
   now: number
 }>()
-const emit = defineEmits<{ select: [id: string]; toggle: [id: string] }>()
+const emit = defineEmits<{ select: [id: string]; toggle: [id: string]; menu: [id: string, event: MouseEvent] }>()
 </script>
 
 <template>
@@ -29,6 +29,7 @@ const emit = defineEmits<{ select: [id: string]; toggle: [id: string] }>()
         :child-attention="r.childAttention"
         @select="emit('select', $event)"
         @toggle="emit('toggle', $event)"
+        @menu="(id, e) => emit('menu', id, e)"
       />
     </div>
   </div>

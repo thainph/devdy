@@ -1,5 +1,5 @@
 // Runtime Dashboard data: the live runs, their per-run activity, resources,
-// today's finished runs, sessions outside Devdy and the 5-hour quotas.
+// today's finished runs, sessions outside Devdy and the 5-hour / weekly quotas.
 //
 // Sources: `get_runtime_snapshot` (polled ~3 s while the screen is visible) +
 // `list_active_runs` + the liveRuns store. While the backend does not provide
@@ -18,7 +18,7 @@ import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { mergeContextModel, resolveContextLimit } from '@/lib/contextLimits'
 import type { StreamEntry } from '@/lib/streamEvents'
-import { sumBuckets } from '@/lib/runtimeCharts'
+import { sumBuckets, weeklyWindow } from '@/lib/runtimeCharts'
 import {
   ACTIVITY_BUCKETS,
   CMD_RUNTIME_SNAPSHOT,
@@ -81,7 +81,12 @@ interface PlanWindowData {
 interface PlanUsageData {
   captured_at: string
   rate_limits_available: boolean
-  windows: { five_hour: PlanWindowData }
+  windows: {
+    five_hour: PlanWindowData
+    seven_day?: PlanWindowData
+    seven_day_opus?: PlanWindowData
+    seven_day_sonnet?: PlanWindowData
+  }
 }
 
 /** The fields of `list_claude_accounts` the quota card needs. */
@@ -104,6 +109,9 @@ export interface QuotaView {
   pct: number | null
   resetsAt: number | null
   forecast: QuotaForecast
+  /** The binding weekly window: 0-100, null = no data. */
+  weekPct: number | null
+  weekResetsAt: number | null
 }
 
 export interface ResourcesView extends RuntimeResources {
@@ -149,7 +157,7 @@ export function useRuntimeDashboard() {
   const now = ref(Date.now())
   const planClaude = shallowRef<PlanUsageData | null>(null)
   const planCodex = shallowRef<PlanUsageData | null>(null)
-  /** One entry per Claude account when there are several (each has its own 5-hour window). */
+  /** One entry per Claude account when there are several (each has its own 5-hour / weekly windows). */
   const planAccounts = shallowRef<{ id: string; label: string; isDefault: boolean; plan: PlanUsageData | null }[]>([])
 
   const contextOverride = computed(() => {
@@ -235,6 +243,13 @@ export function useRuntimeDashboard() {
       title: runTitle(ar) ?? t('dashboard.untitled'),
       engine: ar.engine === 'codex' ? 'codex' : 'claude',
       role: conductor ? 'conductor' : ar.conductor_run_id ? 'worker' : 'session',
+      runType: ar.run_type,
+      refNumber: ar.ref_number,
+      accountName: ar.account_name ?? null,
+      repoProvider: ar.repo_provider ?? null,
+      repoPath: ar.repo_path ?? null,
+      pinned: !!ar.pinned,
+      protected: !!ar.protected,
       conductorId: ar.conductor_run_id,
       live: ar.live !== false,
       state,
@@ -258,6 +273,13 @@ export function useRuntimeDashboard() {
       title: e.title,
       engine: e.engine === 'codex' ? 'codex' : 'claude',
       role: 'external',
+      runType: null,
+      refNumber: null,
+      accountName: null,
+      repoProvider: null,
+      repoPath: null,
+      pinned: false,
+      protected: false,
       conductorId: null,
       live: false,
       state: 'external',
@@ -363,7 +385,18 @@ export function useRuntimeDashboard() {
     const stale = resetsAt !== null && resetsAt <= now.value
     if (stale) resetsAt = null
     const shown = stale ? null : pct
-    return { key, engine, label, isDefault, pct: shown, resetsAt, forecast: quotaForecast(shown, resetsAt, quotaSamples[key] ?? [], now.value) }
+    const week = plan?.rate_limits_available === false ? null : weeklyWindow(plan?.windows, now.value)
+    return {
+      key,
+      engine,
+      label,
+      isDefault,
+      pct: shown,
+      resetsAt,
+      forecast: quotaForecast(shown, resetsAt, quotaSamples[key] ?? [], now.value),
+      weekPct: week?.pct ?? null,
+      weekResetsAt: week?.resetsAt ?? null,
+    }
   }
   const quotas = computed<QuotaView[]>(() => {
     const claude = planAccounts.value.length > 1

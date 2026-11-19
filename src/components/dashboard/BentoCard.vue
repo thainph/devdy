@@ -2,7 +2,8 @@
 // A Runtime Dashboard tile: the shared Card, opaque with a border tinted from
 // `primary` (`.rt-card`, runtime.css), an icon + title header and an optional
 // right-hand aside. `compact` = the short one-row strip on top of the
-// Dashboard: fixed height, tighter padding and a smaller header.
+// Dashboard: fixed height (overflow clipped), tighter padding, a smaller
+// header, and a size container so a tile can adapt to its own width.
 import type { Component } from 'vue'
 import { Card } from '@/components/ui'
 
@@ -19,7 +20,7 @@ const TONE = {
 <template>
   <Card
     class="rt-card min-w-0"
-    :class="compact && 'h-[132px]'"
+    :class="compact && 'h-[132px] overflow-hidden @container'"
     :body-class="compact ? 'flex h-full min-h-0 flex-col gap-1.5 px-3 py-2' : 'flex h-full flex-col gap-3 p-4'"
     role="region"
     :aria-label="title"

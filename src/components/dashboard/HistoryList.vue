@@ -3,17 +3,22 @@
 // first, one continuous list that loads older pages as it scrolls to the end.
 // Search is by session name; "Unread" keeps only runs that finished since the
 // user last saw them. A click asks the parent to open the run (in its own
-// window); the row stops reading as unread right away.
+// window); the row stops reading as unread right away. A right-click (or the
+// Menu key / Shift+F10) opens the shared session menu (`SessionMenu`).
+//
+// A row: a tile for its kind (session / PR / issue / conductor), its name, then
+// project · repo#n (issue / PR) or N workers (conductor) · account, a status
+// dot and how long ago it last ran.
 //
 // Unread = the persisted read state (`runs.seen_at`, shared with the Remote
 // Control Inbox and set by whichever window shows the run), minus what was
-// opened from here since the last fetch. A run finishing does not emit
-// `runs:list_changed`, so a change in `liveUnread` (this window saw a finish)
-// is what re-reads the list then.
+// changed from here (opened, marked read / unread) since the last fetch. A
+// run finishing does not emit `runs:list_changed`, so a change in `liveUnread`
+// (this window saw a finish) is what re-reads the list then.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
-import { History, Search, Star, XCircle, CheckCircle2, Square } from 'lucide-vue-next'
+import { History, Search } from 'lucide-vue-next'
 import { Input, SegmentedControl } from '@/components/ui'
 import { invoke } from '@/lib/tauri'
 import {
@@ -21,20 +26,23 @@ import {
   HISTORY_MAX_PAGE,
   HISTORY_PAGE,
   appendHistory,
-  historyKind,
+  historyAgo,
+  historyExact,
+  historyRepoRef,
   historyTitle,
-  historyWhen,
+  historyType,
   mergeHistory,
   type HistoryRun,
 } from '@/lib/runHistory'
-import EngineMark from './EngineMark.vue'
+import SessionKindTile from './SessionKindTile.vue'
+import SessionMenu, { menuPoint, type SessionMenuTarget } from './SessionMenu.vue'
 
 const props = defineProps<{
   now: number
   /** Runs this window saw finish and nobody opened here: a change means "re-read". */
   liveUnread: ReadonlySet<string>
 }>()
-const emit = defineEmits<{ open: [run: HistoryRun] }>()
+const emit = defineEmits<{ open: [run: HistoryRun, where: 'window' | 'main'] }>()
 const { t } = useI18n()
 
 const items = ref<HistoryRun[]>([])
@@ -44,8 +52,12 @@ const loading = ref(false)
 const loaded = ref(false)
 const exhausted = ref(false)
 const error = ref<string | null>(null)
-/** Opened from here: runId → the activity it had then (a later finish is unread again). */
-const openedAt = ref<Record<string, string>>({})
+/**
+ * Read state set from here (opened, marked read / unread) until the backend's
+ * catches up: runId → the state and the activity it had then (a later turn
+ * finishing makes the stored state count again).
+ */
+const readOverride = ref<Record<string, { unread: boolean; at: string }>>({})
 
 const showOptions = computed(() => [
   { value: 'all', label: t('dashboard.history.all') },
@@ -53,8 +65,12 @@ const showOptions = computed(() => [
 ])
 
 function isUnread(r: HistoryRun): boolean {
-  if (openedAt.value[r.runId] === r.lastActivityAt) return false
-  return r.status !== 'running' && r.unread
+  if (r.status === 'running') return false
+  const o = readOverride.value[r.runId]
+  return o && o.at === r.lastActivityAt ? o.unread : r.unread
+}
+function overrideRead(r: HistoryRun, unread: boolean) {
+  readOverride.value = { ...readOverride.value, [r.runId]: { unread, at: r.lastActivityAt } }
 }
 const unreadCount = computed(() => items.value.filter(isUnread).length)
 const rows = computed(() => (show.value === 'unread' ? items.value.filter(isUnread) : items.value))
@@ -177,15 +193,70 @@ onBeforeUnmount(() => {
 })
 
 // ── Rows ─────────────────────────────────────────────────────────────────────
-function open(r: HistoryRun) {
-  openedAt.value = { ...openedAt.value, [r.runId]: r.lastActivityAt }
-  emit('open', r)
+function open(r: HistoryRun, where: 'window' | 'main' = 'window') {
+  overrideRead(r, false)
+  emit('open', r, where)
 }
 function name(r: HistoryRun): string {
   return historyTitle(r) ?? t('dashboard.untitled')
 }
+const STATUSES = ['running', 'done', 'failed', 'cancelled']
 function statusLabel(r: HistoryRun): string {
-  return t(`dashboard.history.status.${['running', 'done', 'failed', 'cancelled'].includes(r.status) ? r.status : 'done'}`)
+  return t(`dashboard.history.status.${STATUSES.includes(r.status) ? r.status : 'done'}`)
+}
+const STATUS_DOT: Record<string, string> = {
+  done: 'bg-success',
+  failed: 'bg-destructive',
+  cancelled: 'bg-muted-foreground/55',
+}
+function account(r: HistoryRun): string {
+  return r.engine === 'codex' ? t('dashboard.engine.codex') : r.accountName ?? t('dashboard.engine.claude')
+}
+function ago(r: HistoryRun): string {
+  const a = historyAgo(r.lastActivityAt, props.now)
+  if (!a) return ''
+  return a.key === 'date' ? a.date : t(`dashboard.history.ago.${a.key}`, { n: a.n }, a.n)
+}
+
+// ── Menu (right-click) ───────────────────────────────────────────────────────
+const menu = ref<{ open: boolean; x: number; y: number; target: SessionMenuTarget | null }>({ open: false, x: 0, y: 0, target: null })
+function openMenu(r: HistoryRun, e: MouseEvent) {
+  menu.value = {
+    open: true,
+    ...menuPoint(e),
+    target: {
+      runId: r.runId,
+      projectId: r.projectId,
+      name: name(r),
+      runType: r.runType,
+      refNumber: r.refNumber,
+      repoPath: r.repoPath,
+      repoProvider: r.repoProvider,
+      title: historyTitle(r),
+      pinned: r.pinned,
+      protected: r.protected,
+      live: r.status === 'running',
+      deletable: r.status !== 'running',
+      unread: r.status === 'running' ? null : isUnread(r),
+    },
+  }
+}
+function closeMenu() {
+  menu.value = { ...menu.value, open: false }
+}
+function findRun(id: string): HistoryRun | undefined {
+  return items.value.find((x) => x.runId === id)
+}
+function onMenuOpen(target: SessionMenuTarget, where: 'window' | 'main') {
+  const r = findRun(target.runId)
+  if (r) open(r, where)
+}
+function onMenuRead(target: SessionMenuTarget, unread: boolean) {
+  const r = findRun(target.runId)
+  if (r) overrideRead(r, unread)
+}
+function onDeleted(runId: string) {
+  items.value = items.value.filter((x) => x.runId !== runId)
 }
 
 // ── Search box (the Dashboard's "/" shortcut lands here) ─────────────────────
@@ -223,41 +294,72 @@ defineExpose({ focusSearch })
       <p v-else-if="loaded && !rows.length && !loading" class="px-4 py-5 text-center text-xs text-muted-foreground">
         {{ query.trim() ? t('dashboard.history.noMatch') : show === 'unread' ? t('dashboard.history.noUnread') : t('dashboard.history.empty') }}
       </p>
-      <ul class="flex flex-col p-1" role="list">
-        <li v-for="r in rows" :key="r.runId">
+      <ul class="flex flex-col px-1 py-0.5" role="list">
+        <!-- A hairline between rows, starting after the kind tile; it steps aside on hover. -->
+        <li
+          v-for="(r, i) in rows"
+          :key="r.runId"
+          class="relative"
+          :class="i > 0 && 'before:absolute before:top-0 before:right-2.5 before:left-[54px] before:h-px before:bg-border/55 hover:before:opacity-0 [&:hover+li]:before:opacity-0'"
+        >
           <button
             type="button"
-            class="flex w-full min-w-0 cursor-pointer items-center gap-2 rounded-md px-2 py-1.5 text-left hover:bg-accent/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
-            :title="`${name(r)} — ${r.projectName} · ${statusLabel(r)}`"
+            class="relative flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-md py-[9px] pr-2.5 pl-3 text-left hover:bg-accent/60 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary"
+            :class="menu.open && menu.target?.runId === r.runId && 'bg-accent/60'"
+            :title="`${name(r)} — ${statusLabel(r)}`"
             @click="open(r)"
+            @contextmenu.prevent="openMenu(r, $event)"
           >
-            <span class="grid h-4 w-4 shrink-0 place-items-center" aria-hidden="true">
-              <span v-if="r.status === 'running'" class="relative flex h-2 w-2">
-                <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none" />
-                <span class="relative inline-flex h-2 w-2 rounded-full bg-success" />
+            <!-- Unread: a bar on the left edge (plus the bold name and time). -->
+            <span v-if="isUnread(r)" class="absolute inset-y-2.5 left-0.5 w-[3px] rounded-full bg-primary" aria-hidden="true" />
+            <SessionKindTile :kind="historyType(r)" />
+            <!-- The name leads; the second line is one quiet grey. -->
+            <span class="flex min-w-0 flex-1 flex-col gap-[3px]">
+              <span class="truncate text-[13.5px] leading-tight text-foreground" :class="isUnread(r) ? 'font-semibold' : 'font-medium'">{{ name(r) }}</span>
+              <span class="flex min-w-0 items-center gap-[5px] text-[11px] leading-tight text-muted-foreground/85">
+                <span class="shrink-0">{{ r.projectName }}</span>
+                <template v-if="historyRepoRef(r)">
+                  <span class="opacity-45" aria-hidden="true">·</span>
+                  <span class="min-w-0 truncate font-mono text-[10.5px]">{{ historyRepoRef(r) }}</span>
+                </template>
+                <template v-else-if="r.workerCount">
+                  <span class="opacity-45" aria-hidden="true">·</span>
+                  <span class="shrink-0">{{ t('dashboard.history.workers', { n: r.workerCount }, r.workerCount) }}</span>
+                </template>
+                <span class="opacity-45" aria-hidden="true">·</span>
+                <span class="min-w-0 truncate">{{ account(r) }}</span>
               </span>
-              <XCircle v-else-if="r.status === 'failed'" class="h-3.5 w-3.5 text-destructive" :stroke-width="2" />
-              <Square v-else-if="r.status === 'cancelled'" class="h-3 w-3 text-muted-foreground" :stroke-width="2.25" />
-              <CheckCircle2 v-else class="h-3.5 w-3.5 text-success" :stroke-width="2" />
             </span>
             <span class="sr-only">{{ statusLabel(r) }}<template v-if="isUnread(r)">, {{ t('dashboard.history.unreadOne') }}</template></span>
-            <span class="min-w-0 flex-1">
-              <span class="block truncate text-[13px] leading-tight" :class="isUnread(r) ? 'font-bold text-foreground' : 'text-foreground/90'">{{ name(r) }}</span>
-              <span class="flex min-w-0 items-center gap-1 text-[11px] leading-tight text-muted-foreground">
-                <EngineMark :engine="r.engine === 'codex' ? 'codex' : 'claude'" size="sm" />
-                <span class="truncate">{{ r.projectName }}</span>
-              </span>
+            <span class="relative flex h-2 w-2 shrink-0" :title="statusLabel(r)" aria-hidden="true">
+              <template v-if="r.status === 'running'">
+                <span class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none" />
+                <span class="relative inline-flex h-2 w-2 rounded-full bg-success" />
+              </template>
+              <span v-else class="h-2 w-2 rounded-full" :class="STATUS_DOT[r.status] ?? 'bg-success'" />
             </span>
-            <span v-if="historyKind(r)" class="shrink-0 rounded border border-border px-1 text-[9px] font-bold text-muted-foreground">{{ historyKind(r) }}</span>
-            <span v-if="r.workerCount" class="shrink-0 rounded-full bg-primary/10 px-1.5 text-[10px] font-semibold text-primary">{{ t('dashboard.history.workers', { n: r.workerCount }, r.workerCount) }}</span>
-            <Star v-if="r.pinned" class="h-3 w-3 shrink-0 fill-warning text-warning" :stroke-width="2" :aria-label="t('dashboard.history.pinned')" />
-            <span v-if="isUnread(r)" class="h-[7px] w-[7px] shrink-0 rounded-full bg-primary" :title="t('dashboard.history.unreadOne')" aria-hidden="true" />
-            <span class="w-[68px] shrink-0 text-right font-mono text-[10px] text-muted-foreground tabular-nums">{{ historyWhen(r.lastActivityAt, now) }}</span>
+            <span
+              class="w-[84px] shrink-0 text-right text-[11px] tabular-nums"
+              :class="isUnread(r) ? 'font-semibold text-primary' : 'text-muted-foreground'"
+              :title="historyExact(r.lastActivityAt)"
+            >{{ ago(r) }}</span>
           </button>
         </li>
       </ul>
       <div ref="sentinel" class="h-px" aria-hidden="true" />
       <p v-if="loading && items.length" class="border-t border-border/60 py-2 text-center text-[11px] text-muted-foreground" aria-live="polite">{{ t('dashboard.history.loadingMore') }}</p>
     </div>
+
+    <SessionMenu
+      :open="menu.open"
+      :x="menu.x"
+      :y="menu.y"
+      :target="menu.target"
+      @close="closeMenu"
+      @open-run="onMenuOpen"
+      @read="onMenuRead"
+      @changed="refresh"
+      @deleted="onDeleted"
+    />
   </section>
 </template>

@@ -136,13 +136,6 @@
     will-change: opacity;
     animation: rt-breathe 2.6s ease-in-out infinite;
   }
-
-  /* The "now" icon while a tool runs: a slow blink. */
-  .rt-busy {
-    display: inline-flex;
-    will-change: opacity;
-    animation: rt-blink 1.6s ease-in-out infinite;
-  }
 }
 
 @media (hover: hover) and (prefers-reduced-motion: no-preference) {
@@ -166,7 +159,4 @@
 }
 @keyframes rt-breathe {
   50% { opacity: 1; }
-}
-@keyframes rt-blink {
-  50% { opacity: 0.35; }
 }

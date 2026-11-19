@@ -17,7 +17,6 @@
   "stat": {
     "sessions": {
       "title": "Session",
-      "unit": "session | session",
       "chip": {
         "wait": "{n} chờ bạn",
         "quiet": "{n} im lâu",
@@ -42,7 +41,7 @@
       "perMinute": "/phút"
     },
     "quota": {
-      "title": "Hạn mức 5 giờ",
+      "title": "Hạn mức",
       "noData": "chưa có dữ liệu",
       "exhaust": "hết lúc ~{time} nếu giữ tốc độ này",
       "safe": "còn dư",
@@ -50,7 +49,9 @@
       "unknown": "chưa đủ dữ liệu để dự báo",
       "reset": "reset {time}",
       "default": "mặc định",
-      "resetIn": "reset sau {time}"
+      "resetIn": "reset sau {time}",
+      "fiveHour": "5 giờ",
+      "week": "Tuần"
     },
     "resources": {
       "title": "Tài nguyên",
@@ -119,11 +120,8 @@
     "working": "Đang làm…",
     "lastActivity": "hoạt động {age} trước"
   },
-  "context": "context",
   "contextTitle": "Context đã dùng {pct}%",
   "contextUnknown": "Chưa biết mức dùng context",
-  "activityTitle": "Số event mỗi phút trong 20 phút gần đây",
-  "activityStalled": "Vài phút gần đây không có event nào",
   "transcriptUnavailable": "Session này chưa gắn với project nào trong Devdy nên chưa mở được transcript ở đây.",
   "emptyTitle": "Không có gì đang chạy",
   "running": {
@@ -150,6 +148,36 @@
       "cancelled": "đã dừng"
     },
     "workers": "{n} worker | {n} worker",
-    "pinned": "Đã ghim"
+    "ago": {
+      "now": "vừa xong",
+      "minutes": "{n} phút trước | {n} phút trước",
+      "hours": "{n} giờ trước | {n} giờ trước",
+      "yesterday": "hôm qua",
+      "days": "{n} ngày trước | {n} ngày trước"
+    },
+    "menu": {
+      "openWindow": "Mở trong cửa sổ riêng",
+      "openMain": "Mở trong cửa sổ chính",
+      "prOnGithub": "Mở PR trên GitHub",
+      "issueOnGithub": "Mở issue trên GitHub",
+      "prOnGitlab": "Mở merge request trên GitLab",
+      "issueOnGitlab": "Mở issue trên GitLab",
+      "markRead": "Đánh dấu đã đọc",
+      "markUnread": "Đánh dấu chưa đọc",
+      "copyPrLink": "Sao chép link PR",
+      "copyIssueLink": "Sao chép link issue",
+      "linkCopied": "Đã sao chép link",
+      "stop": "Dừng session",
+      "stopTitle": "Dừng session",
+      "stopMessage": "Dừng \"{name}\"? Lượt đang chạy sẽ bị hủy; bạn có thể tiếp tục session sau.",
+      "delete": "Xóa session"
+    }
+  },
+  "kind": {
+    "session": "Session",
+    "pr": "Review PR",
+    "issue": "Phân tích issue",
+    "conductor": "Conductor (có worker)",
+    "external": "Ngoài Devdy"
   }
 }

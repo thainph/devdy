@@ -1,18 +1,24 @@
 <script setup lang="ts">
-// The actions on one run / session, as DropdownItems — shared by the History
-// row's ⋯ menu and the RunView header's ⋯ menu, so both offer the same list with
-// the same rules. RunView owns the handlers (and their busy state); this only
-// renders and emits.
+// The actions on one run / session, as DropdownItems — the project History
+// row's right-click menu. RunView owns the handlers (and their busy state);
+// this only renders and emits.
 //
-//   section 'actions'  Pop out · Open on GitHub · Refetch · Copy log path ·
-//                      Copy session ID · View log file | Rename · Pin · Protect
-//   section 'delete'   | Delete (hidden while the run is running)
+//   section 'actions'  Pop out · Open on GitHub · Refetch | Mark read / unread |
+//                      Rename · Pin · Protect | Copy link · Copy session ID ·
+//                      Copy log path · View log file
+//   section 'delete'   | Stop (running, when `stoppable`) or Delete (not running)
+//
+// Read state and Stop only show when the caller passes them.
 import { useI18n } from 'vue-i18n'
 import {
   AppWindow,
+  CircleStop,
   ClipboardCopy,
   ExternalLink,
+  Eye,
+  EyeOff,
   Hash,
+  Link,
   Pencil,
   Pin,
   PinOff,
@@ -25,7 +31,7 @@ import {
 import { DropdownItem, DropdownSeparator } from '@/components/ui'
 import type { RunRecord } from '@/stores/runs'
 
-defineProps<{
+withDefaults(defineProps<{
   run: RunRecord
   section: 'actions' | 'delete'
   /** A session pop-out can't pop itself out again. */
@@ -34,18 +40,25 @@ defineProps<{
   githubUrl: string | null
   /** An action for this run is in flight (its item is disabled meanwhile). */
   busy: { refetching: boolean; pinning: boolean; protecting: boolean; deleting: boolean }
-}>()
+  /** Read state to offer toggling; null / omitted = no read items. */
+  unread?: boolean | null
+  /** Offer "Stop" while the run is running. */
+  stoppable?: boolean
+}>(), { unread: null, stoppable: false })
 
 const emit = defineEmits<{
   popout: []
   openGithub: []
   refetch: []
+  markRead: [read: boolean]
+  copyLink: []
   copyLogPath: []
   copyId: []
   viewLog: []
   rename: []
   togglePin: []
   toggleProtect: []
+  stop: []
   delete: []
 }>()
 
@@ -72,18 +85,17 @@ const { t } = useI18n()
       <RefreshCw class="h-3.5 w-3.5 shrink-0" :class="{ 'animate-spin': busy.refetching }" :stroke-width="1.75" />
       {{ run.run_type === 'analyze_issue' ? t('run.refetchIssue') : t('run.refetchPr') }}
     </DropdownItem>
-    <DropdownItem @click="emit('copyLogPath')">
-      <ClipboardCopy class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-      {{ t('run.copyLogPath') }}
-    </DropdownItem>
-    <DropdownItem @click="emit('copyId')">
-      <Hash class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-      {{ t('run.copySessionId') }}
-    </DropdownItem>
-    <DropdownItem @click="emit('viewLog')">
-      <ScrollText class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-      {{ t('run.viewLogFile') }}
-    </DropdownItem>
+    <template v-if="unread !== null && run.status !== 'running'">
+      <DropdownSeparator />
+      <DropdownItem v-if="unread" @click="emit('markRead', true)">
+        <Eye class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+        {{ t('dashboard.history.menu.markRead') }}
+      </DropdownItem>
+      <DropdownItem v-else @click="emit('markRead', false)">
+        <EyeOff class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+        {{ t('dashboard.history.menu.markUnread') }}
+      </DropdownItem>
+    </template>
     <DropdownSeparator />
     <DropdownItem @click="emit('rename')">
       <Pencil class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
@@ -97,9 +109,36 @@ const { t } = useI18n()
       <component :is="run.protected ? ShieldOff : Shield" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
       {{ run.protected ? t('run.unprotect') : t('run.protect') }}
     </DropdownItem>
+    <DropdownSeparator />
+    <DropdownItem v-if="githubUrl" @click="emit('copyLink')">
+      <Link class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+      {{ run.run_type === 'analyze_issue' ? t('dashboard.history.menu.copyIssueLink') : t('dashboard.history.menu.copyPrLink') }}
+    </DropdownItem>
+    <DropdownItem @click="emit('copyId')">
+      <Hash class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+      {{ t('run.copySessionId') }}
+    </DropdownItem>
+    <DropdownItem @click="emit('copyLogPath')">
+      <ClipboardCopy class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+      {{ t('run.copyLogPath') }}
+    </DropdownItem>
+    <DropdownItem @click="emit('viewLog')">
+      <ScrollText class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+      {{ t('run.viewLogFile') }}
+    </DropdownItem>
   </template>
 
-  <template v-else-if="run.status !== 'running'">
+  <template v-else-if="run.status === 'running'">
+    <template v-if="stoppable">
+      <DropdownSeparator />
+      <DropdownItem variant="destructive" @click="emit('stop')">
+        <CircleStop class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+        {{ t('dashboard.history.menu.stop') }}…
+      </DropdownItem>
+    </template>
+  </template>
+
+  <template v-else>
     <DropdownSeparator />
     <DropdownItem variant="destructive" :disabled="busy.deleting" @click="emit('delete')">
       <Trash2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />

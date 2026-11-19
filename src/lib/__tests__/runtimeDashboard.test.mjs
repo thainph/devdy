@@ -1,5 +1,5 @@
 // Unit tests for lib/runtimeDashboard.ts (Runtime Dashboard: state, groups,
-// folding, ordering, sparklines, quota forecast, tool summaries, log lines).
+// folding, ordering, quota forecast, tool summaries, log lines).
 // Run: node --test src/lib/__tests__/runtimeDashboard.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
@@ -28,7 +28,7 @@ import {
   pushSample,
   quotaForecast,
   runningTool,
-  sparkline,
+  sessionKind,
   stepOrder,
   stepQueue,
   toolLabel,
@@ -256,17 +256,6 @@ test('waitQueue: longest waiting first', () => {
   assert.deepEqual(q, ['b', 'd', 'a'])
 })
 
-test('sparkline: points, stalled tail, empty', () => {
-  const sp = sparkline([0, 5, 10], 100, 20)
-  assert.equal(sp.points, '0,18 50,10 100,2')
-  assert.equal(sp.stalled, false)
-  assert.equal(sparkline([3, 0, 0, 0, 0, 0]).stalled, true)
-  assert.equal(sparkline([0, 0, 0, 0, 0]).stalled, false)
-  assert.equal(sparkline([0, 0, 0, 0, 0]).empty, true)
-  assert.equal(sparkline([]).points, '')
-  assert.deepEqual(pushSample([1, 2, 3], 4, 3), [2, 3, 4])
-})
-
 test('activity fallback buckets entry growth per minute', () => {
   const tracks = new Map()
   noteActivity(tracks, 'r', 10, NOW)
@@ -403,4 +392,12 @@ test('isMissingCommandError tells a missing command from a transient failure', (
   assert.equal(isMissingCommandError(new Error('Unknown command get_runtime_snapshot')), true)
   assert.equal(isMissingCommandError('database is locked'), false)
   assert.equal(isMissingCommandError('timeout'), false)
+})
+
+test('sessionKind: issue / PR by run type, conductor, external, else session', () => {
+  assert.equal(sessionKind({ role: 'session', runType: 'review_pr' }), 'pr')
+  assert.equal(sessionKind({ role: 'worker', runType: 'analyze_issue' }), 'issue')
+  assert.equal(sessionKind({ role: 'conductor', runType: 'session' }), 'conductor')
+  assert.equal(sessionKind({ role: 'external', runType: null }), 'external')
+  assert.equal(sessionKind({ role: 'worker', runType: 'session' }), 'session')
 })

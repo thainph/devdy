@@ -121,8 +121,35 @@ export function quotaLevel(pct: number | null): QuotaLevel {
   return 'ok'
 }
 
-/** Up to this many 5-hour limits show as rings; more switch to a list. */
-export const QUOTA_RING_MAX = 3
+/** Up to this many limits show as columns (5 hours over week); more switch to a list. */
+export const QUOTA_COLUMNS_MAX = 3
+
+/** One plan window as the backend reports it. */
+export interface PlanWindowLike {
+  utilization: number | null
+  resets_at: string | null
+}
+
+/**
+ * The binding weekly limit: the most-used of the weekly windows (all models,
+ * Opus, Sonnet) whose reset is still ahead. Null when none has a reading.
+ */
+export function weeklyWindow(
+  windows: Partial<Record<'seven_day' | 'seven_day_opus' | 'seven_day_sonnet', PlanWindowLike | null | undefined>> | null | undefined,
+  now: number,
+): { pct: number; resetsAt: number | null } | null {
+  let best: { pct: number; resetsAt: number | null } | null = null
+  for (const key of ['seven_day', 'seven_day_opus', 'seven_day_sonnet'] as const) {
+    const w = windows?.[key]
+    if (typeof w?.utilization !== 'number' || !Number.isFinite(w.utilization)) continue
+    const reset = w.resets_at ? Date.parse(w.resets_at) : NaN
+    const resetsAt = Number.isNaN(reset) ? null : reset
+    // A window whose reset passed is a new one: its old reading means nothing.
+    if (resetsAt !== null && resetsAt <= now) continue
+    if (!best || w.utilization > best.pct) best = { pct: w.utilization, resetsAt }
+  }
+  return best
+}
 
 /**
  * The 5-hour limits in list order: Claude accounts by % used, highest first

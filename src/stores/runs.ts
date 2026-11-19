@@ -104,6 +104,8 @@ export interface RunRecord {
   ref_title?: string | null
   /** The fetched issue/PR's author login; null for sessions or when unknown. */
   ref_author?: string | null
+  /** Finished after the user last saw it (`seen_at`); only `list_runs` fills it. */
+  unread?: boolean
 }
 
 /**

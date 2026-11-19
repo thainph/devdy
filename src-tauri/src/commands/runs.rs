@@ -2811,6 +2811,7 @@ pub async fn rerun_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord, S
         worktree_branch: None,
         ref_title: None,
         ref_author: None,
+        unread: false,
     })
 }
 
@@ -2918,6 +2919,7 @@ pub async fn create_handoff_run(
             worktree_branch: None,
             ref_title: None,
             ref_author: None,
+            unread: false,
         },
         context_path,
     })
@@ -2986,6 +2988,7 @@ pub async fn create_session_run_inner(
         worktree_branch: None,
         ref_title: None,
         ref_author: None,
+        unread: false,
     })
 }
 

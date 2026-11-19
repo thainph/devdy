@@ -31,15 +31,15 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import { open as openFileDialog } from '@tauri-apps/plugin-dialog'
 import {
   Play, Square, GitPullRequest, Bug,
-  Clock, Cpu, Terminal, FileText, RotateCcw,
+  Cpu, Terminal, FileText, RotateCcw,
   Send, MessageSquare, Trash2, Settings, Code2, FolderClosed, FolderOpen, Sparkles,
   ChevronDown, ChevronUp, Maximize2, Minimize2,
   X, Paperclip,
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
   HardDrive, Cloud, CloudCog, Languages, StickyNote, ListTodo, FolderTree, Loader2,
-  MoreHorizontal, Search, Network, GitBranch, ChevronLeft, ChevronRight,
-  Plus, AlignJustify, Rows2, Rows3, Rows4, CircleDashed, ArrowUpDown
+  Search, Network, GitBranch, ChevronLeft, ChevronRight,
+  Plus, AlignJustify, Rows2, Rows3, Rows4, ArrowUpDown
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
@@ -60,21 +60,21 @@ import { mergeContextModel } from '@/lib/contextLimits'
 import {
   formatRunTimestamp,
   relativeAge,
-  runStatusColorClass,
-  runStatusIcon,
   shortModelId,
 } from '@/lib/runDisplay'
-import { repoShortName, runRefLine } from '@/lib/runRef'
+import { runRefLine } from '@/lib/runRef'
 import FileTree from '@/components/FileTree.vue'
 import { nativeDropPoint, treeDropTargetAt } from '@/lib/fileTreeDnd'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
-import { Button, Input, Badge, Modal, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
+import { Button, Input, Badge, Modal, ContextMenu, DropdownMenu, DropdownItem } from '@/components/ui'
+import SessionKindTile from '@/components/dashboard/SessionKindTile.vue'
+import { menuPoint } from '@/components/dashboard/SessionMenu.vue'
+import { historyAgo, historyType } from '@/lib/runHistory'
 import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import { useTurnNavigator, turnLabel } from '@/composables/useTurnNavigator'
 import { useScrollMemory } from '@/composables/useScrollMemory'
 import { useConfirm } from '@/composables/useConfirm'
-import { usePrompt } from '@/composables/usePrompt'
 import { useToast } from '@/composables/useToast'
 import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
 import { vMermaid } from '@/lib/mermaid'
@@ -116,7 +116,6 @@ const appSettings = useAppSettingsStore()
 const modelCatalog = useModelCatalogStore()
 const uiLayout = useUILayoutStore()
 const { confirm } = useConfirm()
-const { prompt } = usePrompt()
 const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
@@ -745,7 +744,13 @@ function markSeenSoon() {
     seenTimer = null
     const runId = currentRunId.value
     if (!runId || currentStatus.value === 'running' || document.visibilityState !== 'visible') return
-    invoke('mark_run_seen', { runId }).catch(() => { /* best effort */ })
+    invoke('mark_run_seen', { runId })
+      .then(() => {
+        // Its History row stops reading as unread once it is off screen.
+        const row = runsStore.runs.find((r) => r.id === runId)
+        if (row) row.unread = false
+      })
+      .catch(() => { /* best effort */ })
   }, SEEN_DELAY_MS)
 }
 watch([currentRunId, currentStatus], markSeenSoon, { immediate: true })
@@ -927,11 +932,6 @@ function runRefText(run: RunRecord): string | null {
   return runRefLine(run, runRepoSlug(run), runLabel(run))
 }
 
-// One-line rows only have room for the repo's short name.
-function runRepoShort(run: RunRecord): string | null {
-  const slug = runRepoSlug(run)
-  return slug ? repoShortName(slug) : null
-}
 
 // A run is "running" for display when it is streaming itself, or when any of
 // its workers is still streaming.
@@ -940,16 +940,52 @@ function runIsRunning(run: RunRecord): boolean {
   return conductorIdsWithRunningWorker.value.has(run.id)
 }
 
-// History-row icon shows STATUS only (every session is a conductor, so there is
-// no type icon): a spinner while running, otherwise a status glyph tinted by
-// runIconColorClass. Issue/PR identity is a separate badge (runRefBadge).
-function runIcon(run: RunRecord) {
-  if (runIsRunning(run)) return Loader2
-  if (run.status === 'fetched' && run.run_type === 'session') return CircleDashed
-  return runStatusIcon(run.status)
+// History rows read like the Dashboard's: a tile for the KIND of session on the
+// left (session / PR / issue / conductor), the STATUS as a dot on the right.
+function runKind(run: RunRecord) {
+  return historyType({ runType: run.run_type, role: run.role ?? null, workerCount: runWorkerCount(run) })
 }
 
-// Tooltip for the History-row status icon.
+/** The status dot: running (pulsing) · done · failed · cancelled · draft (never ran / only fetched). */
+function runDot(run: RunRecord): 'running' | 'done' | 'failed' | 'cancelled' | 'draft' {
+  if (runIsRunning(run)) return 'running'
+  if (run.status === 'done' || run.status === 'failed' || run.status === 'cancelled') return run.status
+  return 'draft'
+}
+const RUN_DOT: Record<ReturnType<typeof runDot>, string> = {
+  running: 'bg-success',
+  done: 'bg-success',
+  failed: 'bg-destructive',
+  cancelled: 'bg-muted-foreground/55',
+  draft: 'border-[1.5px] border-muted-foreground/60',
+}
+
+/** Account of the row's second line: the Claude account, else the engine for Codex. */
+function runAccountText(run: RunRecord): string {
+  return runClaudeAccountLabel(run) || (run.engine === 'codex' ? t('dashboard.engine.codex') : '')
+}
+
+/** Clock for the relative times, ticking every 30 s. */
+const nowTick = ref(Date.now())
+const nowTimer = setInterval(() => (nowTick.value = Date.now()), 30_000)
+onBeforeUnmount(() => clearInterval(nowTimer))
+
+/** "5 minutes ago" / "yesterday" / a date — the Dashboard History's wording. */
+function runAgo(run: RunRecord): string {
+  const a = historyAgo(runActivityAt(run), nowTick.value)
+  if (!a) return ''
+  return a.key === 'date' ? a.date : t(`dashboard.history.ago.${a.key}`, { n: a.n }, a.n)
+}
+
+/**
+ * Finished since the user last saw it (`seen_at`) — never the run on screen,
+ * which `markSeenSoon` is about to mark seen.
+ */
+function runIsUnread(run: RunRecord): boolean {
+  return !!run.unread && !runIsRunning(run) && run.id !== currentRunId.value
+}
+
+// Tooltip for the History-row status dot.
 function runStatusTitle(run: RunRecord): string {
   if (runIsRunning(run)) return t('common.status.running')
   if (run.status === 'fetched' && run.run_type === 'session') return t('common.status.draft')
@@ -970,12 +1006,6 @@ function runWorkerCount(run: RunRecord): number {
   return workerCountByConductor.value.get(run.id) ?? 0
 }
 
-// Issue/PR rows keep their identity as a small Bug / PR glyph before the title
-// (whose label already reads "Issue #N" / "PR #N"); fresh sessions have none.
-function runRefIcon(run: RunRecord) {
-  if (run.run_type === 'session') return null
-  return run.run_type === 'analyze_issue' ? Bug : GitPullRequest
-}
 
 // Compact model id for dense rows: drop a leading "claude-" (the account badge
 // already implies Claude); the full id stays in the tooltip.
@@ -1006,15 +1036,6 @@ function runDenseTooltip(run: RunRecord): string {
   if (meta) parts.push(meta)
   parts.push(runTimestamp(runActivityAt(run)))
   return parts.join('\n')
-}
-
-// History row: tint the session icon by run status so the list conveys state
-// at a glance without a separate status pill. Mirrors StatusBadge's palette.
-// A freshly-created chat session ('fetched' + session) is a draft → stays muted.
-function runIconColorClass(run: RunRecord): string {
-  if (runIsRunning(run)) return 'text-info'
-  if (run.status === 'fetched' && run.run_type === 'session') return 'text-muted-foreground'
-  return runStatusColorClass(run.status)
 }
 
 // History row: which Claude account this run used. Only Claude runs record an
@@ -3107,9 +3128,24 @@ const refetchingRunId = ref<string | null>(null)
 const clearingAll = ref(false)
 const pinningRunId = ref<string | null>(null)
 const protectingRunId = ref<string | null>(null)
-// Which History row currently has its actions (⋯) menu open. Kept so the
-// trigger stays visible even when the pointer leaves the row while open.
-const actionsMenuRunId = ref<string | null>(null)
+// The History row's right-click menu (the run it was opened on).
+const runMenu = ref<{ open: boolean; x: number; y: number; run: RunRecord | null }>({ open: false, x: 0, y: 0, run: null })
+function openRunMenu(run: RunRecord, e: MouseEvent) {
+  runMenu.value = { open: true, ...menuPoint(e), run }
+}
+function closeRunMenu() {
+  runMenu.value = { ...runMenu.value, open: false }
+}
+const actionsMenuRunId = computed(() => (runMenu.value.open ? runMenu.value.run?.id ?? null : null))
+/** The run's action handlers, each closing the menu before it acts. */
+function runMenuHandlers(run: RunRecord) {
+  return Object.fromEntries(
+    Object.entries(runActionHandlers(run)).map(([k, fn]) => [k, (...args: unknown[]) => {
+      closeRunMenu()
+      ;(fn as (...a: unknown[]) => unknown)(...args)
+    }]),
+  )
+}
 
 // Inline rename state for the History list.
 const renamingRunId = ref<string | null>(null)
@@ -3193,26 +3229,15 @@ async function applyRename(runId: string, value: string) {
   }
 }
 
-// The header's ⋯ → Rename: the History row (and its inline field) may be off
-// screen — focus mode, scrolled away — so ask in a dialog instead.
-async function renameViaPrompt(run: RunRecord) {
-  const value = await prompt({
-    title: t('run.rename'),
-    initialValue: run.title ?? runLabel(run),
-    confirmLabel: t('common.save'),
-    cancelLabel: t('common.cancel'),
-    selectAll: true,
-  })
-  if (value !== null) await applyRename(run.id, value)
-}
-
-// ── Run actions (RunActionItems: History row ⋯ and header ⋯) ──────────────
+// ── Run actions (RunActionItems: the History row's right-click menu) ───────
 
 function runActionProps(run: RunRecord) {
   return {
     run,
     isSessionWindow,
     githubUrl: runGithubUrl(run),
+    unread: runIsUnread(run),
+    stoppable: true,
     busy: {
       refetching: refetchingRunId.value === run.id,
       pinning: pinningRunId.value === run.id,
@@ -3222,8 +3247,7 @@ function runActionProps(run: RunRecord) {
   }
 }
 
-/** `rename` defaults to the History row's inline field. */
-function runActionHandlers(run: RunRecord, rename: (run: RunRecord) => void = startRename) {
+function runActionHandlers(run: RunRecord) {
   return {
     popout: () => popoutSession(run.id),
     openGithub: () => openRunInBrowser(run),
@@ -3231,10 +3255,55 @@ function runActionHandlers(run: RunRecord, rename: (run: RunRecord) => void = st
     copyLogPath: () => copyLogPath(run),
     copyId: () => copySessionId(run),
     viewLog: () => viewLogFile(run),
-    rename: () => rename(run),
+    rename: () => startRename(run),
     togglePin: () => handleTogglePin(run),
     toggleProtect: () => handleToggleProtect(run),
     delete: () => handleDeleteRun(run.id),
+    markRead: (read: boolean) => handleMarkRead(run, read),
+    copyLink: () => copyRunLink(run),
+    stop: () => handleStopRun(run),
+  }
+}
+
+/** History menu: mark a finished run read / unread (persisted, shared with the Dashboard). */
+async function handleMarkRead(run: RunRecord, read: boolean) {
+  run.unread = !read
+  try {
+    if (read) {
+      live.markSeen(run.id)
+      await invoke('mark_run_seen', { runId: run.id })
+    } else {
+      await invoke('mark_run_unread', { runId: run.id })
+    }
+  } catch (err) {
+    run.unread = read
+    toast.error(String(err))
+  }
+}
+
+async function copyRunLink(run: RunRecord) {
+  const url = runGithubUrl(run)
+  if (!url) return
+  try {
+    await navigator.clipboard.writeText(url)
+    toast.success(t('dashboard.history.menu.linkCopied'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+/** History menu: stop a running session (any row, not only the one on screen). */
+async function handleStopRun(run: RunRecord) {
+  const ok = await confirm({
+    title: t('dashboard.history.menu.stopTitle'),
+    message: t('dashboard.history.menu.stopMessage', { name: runLabel(run) }),
+    confirmLabel: t('dashboard.history.menu.stop'),
+  })
+  if (!ok) return
+  try {
+    await runsStore.cancelRun(run.id)
+  } catch (e) {
+    toast.error(String(e))
   }
 }
 
@@ -3676,8 +3745,8 @@ function handleRefInput(val: string) {
           <span v-if="azureChip.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ azureChip.tag }}</span>
         </Badge>
       </div>
-      <!-- Icon-only actions: the linked Slack / todo / note menus, then one ⋯
-           menu for the rest. Labels live in the tooltips so the header stays
+      <!-- Icon-only actions: the linked Slack / todo / note menus, then the
+           project's buttons. Labels live in the tooltips so the header stays
            short no matter how narrow the pane gets.
            Hidden entirely in a session pop-out for now — that window is a bare
            conversation view. -->
@@ -3701,71 +3770,41 @@ function handleRefInput(val: string) {
           variant="icon"
         />
 
-        <!-- Everything else lives in one ⋯ menu: open the project elsewhere ·
-             this session's actions (the History row's, RunActionItems) ·
-             remote / focus mode / project settings · delete. -->
-        <DropdownMenu align="right">
-          <template #trigger>
-            <Button
-              variant="outline"
-              size="icon"
-              class="relative"
-              :title="t('run.moreActions')"
-              :aria-label="t('run.moreActions')"
-            >
-              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </Button>
-          </template>
-          <div class="min-w-[15rem]">
-            <!-- Open the project elsewhere -->
-            <div class="px-2.5 pb-0.5 pt-1 text-[10px] font-medium uppercase tracking-wider text-muted-foreground/70">
-              {{ t('run.openProjectIn') }}
-            </div>
-            <DropdownItem :disabled="!project" @click="handleOpenInVscode">
-              <Code2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              VS Code
-            </DropdownItem>
-            <DropdownItem :disabled="!project" @click="handleOpenInFolder">
-              <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              {{ t('run.folder') }}
-            </DropdownItem>
-            <DropdownItem :disabled="!project" @click="handleOpenInTerminal">
-              <Terminal class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              {{ t('run.terminal') }}
-            </DropdownItem>
-
-            <!-- This session (same list as its History row) -->
-            <template v-if="currentRun">
-              <DropdownSeparator />
-              <RunActionItems
-                v-bind="runActionProps(currentRun)"
-                section="actions"
-                v-on="runActionHandlers(currentRun, renameViaPrompt)"
-              />
-            </template>
-
-            <DropdownSeparator />
-            <DropdownItem
-              :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
-              @click="uiLayout.toggleFocus()"
-            >
-              <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              <span class="flex-1">{{ t('run.focusMode') }}</span>
-              <Check v-if="uiLayout.focusMode" class="h-3.5 w-3.5 shrink-0 text-primary" :stroke-width="2" />
-            </DropdownItem>
-            <DropdownItem :title="t('run.projectSettingsTitle')" @click="router.push(`/projects/${projectId}/settings`)">
-              <Settings class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-              {{ t('run.projectSettings') }}
-            </DropdownItem>
-
-            <RunActionItems
-              v-if="currentRun"
-              v-bind="runActionProps(currentRun)"
-              section="delete"
-              v-on="runActionHandlers(currentRun)"
-            />
-          </div>
-        </DropdownMenu>
+        <!-- Then the project, all in the same outline icon buttons, groups set
+             apart by hairlines: open it elsewhere · focus mode (a toggle) ·
+             project settings. The session's own actions are on its
+             History row's right-click menu (RunActionItems), not repeated here. -->
+        <span class="mx-1 h-[18px] w-px bg-border" aria-hidden="true" />
+        <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInVscode')" :aria-label="t('run.openInVscode')" @click="handleOpenInVscode">
+          <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInFolder')" :aria-label="t('run.openInFolder')" @click="handleOpenInFolder">
+          <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInTerminal')" :aria-label="t('run.openInTerminal')" @click="handleOpenInTerminal">
+          <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <span class="mx-1 h-[18px] w-px bg-border" aria-hidden="true" />
+        <Button
+          variant="outline"
+          size="icon"
+          :class="uiLayout.focusMode && 'border-primary/40 bg-primary/15 text-primary hover:bg-primary/20'"
+          :aria-pressed="uiLayout.focusMode"
+          :title="uiLayout.focusMode ? t('run.exitFocusMode') : t('run.enterFocusMode')"
+          :aria-label="t('run.focusMode')"
+          @click="uiLayout.toggleFocus()"
+        >
+          <component :is="uiLayout.focusMode ? Minimize2 : Maximize2" class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+        <Button
+          variant="outline"
+          size="icon"
+          :title="t('run.projectSettingsTitle')"
+          :aria-label="t('run.projectSettings')"
+          @click="router.push(`/projects/${projectId}/settings`)"
+        >
+          <Settings class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
       </div>
     </div>
 
@@ -3969,6 +4008,13 @@ function handleRefInput(val: string) {
             </div>
           </div>
           <div ref="sessionListEl" class="flex-1 min-h-0 overflow-auto">
+            <!-- The History row's right-click menu (teleported, anchored to the pointer). -->
+            <ContextMenu :open="runMenu.open" :x="runMenu.x" :y="runMenu.y" @close="closeRunMenu">
+              <template v-if="runMenu.run">
+                <RunActionItems v-bind="runActionProps(runMenu.run)" section="actions" v-on="runMenuHandlers(runMenu.run)" />
+                <RunActionItems v-bind="runActionProps(runMenu.run)" section="delete" v-on="runMenuHandlers(runMenu.run)" />
+              </template>
+            </ContextMenu>
             <div v-if="runsStore.loading" class="px-4 py-3 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
             <div v-else-if="runsStore.runs.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
               {{ t('run.noSessionsYet') }}
@@ -3982,223 +4028,120 @@ function handleRefInput(val: string) {
               :key="run.id"
               :data-run-id="run.id"
               class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
-              :class="{ 'bg-accent/60': currentRunId === run.id }"
+              :class="{ 'bg-accent/60': currentRunId === run.id, 'bg-accent/40': actionsMenuRunId === run.id && currentRunId !== run.id }"
             >
               <!-- Selected indicator bar -->
               <span
                 v-if="currentRunId === run.id"
                 class="absolute left-0 inset-y-0 w-0.5 bg-primary"
               />
-              <!-- Row layout follows uiLayout.listDensity:
-                   comfortable = title line + badges/timestamp block,
-                   compact     = title line (+ relative time) + "account · model",
-                   dense       = one line; the rest lives in the row tooltip. -->
+              <!-- Row layout follows uiLayout.listDensity, in the Dashboard
+                   History's language: a kind tile on the left, the status dot
+                   + relative time on the right, unread = a bar + bold name.
+                   comfortable = name · ref/workers · account · model · exact time,
+                   compact     = name · ref/workers · account (model in the tooltip),
+                   dense       = one line; the rest lives in the row tooltip.
+                   Actions: right-click (or Menu / Shift+F10) opens the run menu. -->
               <button
-                class="w-full text-left px-3 cursor-pointer rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
-                :class="historyDensity === 'comfortable' ? 'py-3' : historyDensity === 'compact' ? 'py-2' : 'py-1.5'"
-                :title="historyDensity === 'dense' ? runDenseTooltip(run) : undefined"
+                class="relative flex w-full min-w-0 cursor-pointer items-center text-left rounded-sm focus:outline-none focus-visible:ring-1 focus-visible:ring-ring focus-visible:ring-inset"
+                :class="historyDensity === 'comfortable' ? 'gap-3 py-3 pl-3 pr-3' : historyDensity === 'compact' ? 'gap-2.5 py-2 pl-3 pr-3' : 'gap-2 py-1.5 pl-3 pr-3'"
+                :title="historyDensity === 'dense' ? runDenseTooltip(run) : [runLabel(run), runStatusTitle(run), runAccountModelLine(run, false)].filter(Boolean).join(' · ')"
                 @click="loadRunLog(run.id)"
+                @contextmenu.prevent="openRunMenu(run, $event)"
               >
-                <!-- Title line: status · badges · title · workers · markers · time -->
-                <div class="flex items-center" :class="historyDensity === 'comfortable' ? 'gap-2' : 'gap-1.5'">
-                  <component
-                    :is="runIcon(run)"
-                    class="shrink-0"
-                    :class="[
-                      historyDensity === 'comfortable' ? 'h-4 w-4' : 'h-3.5 w-3.5',
-                      runIconColorClass(run),
-                      { 'animate-spin': runIsRunning(run) },
-                    ]"
-                    :stroke-width="1.75"
-                    :title="runStatusTitle(run)"
-                  />
-                  <!-- Pin / protect badges grouped so they stay tightly aligned
-                       when both are shown (own gap, not the row's gap). -->
-                  <span
-                    v-if="run.pinned || run.protected || isProtectedByConductor(run)"
-                    class="flex shrink-0 items-center gap-1"
-                  >
-                    <Pin
-                      v-if="run.pinned"
-                      class="h-3 w-3 text-primary"
-                      :stroke-width="2"
-                      :aria-label="t('run.pinned')"
-                    />
-                    <Shield
-                      v-if="run.protected"
-                      class="h-3 w-3 text-success"
-                      :stroke-width="2"
-                      :aria-label="t('run.protected')"
-                    />
+                <span v-if="runIsUnread(run)" class="absolute inset-y-2 left-[3px] w-[3px] rounded-full bg-primary" aria-hidden="true" />
+                <SessionKindTile
+                  :kind="runKind(run)"
+                  :size="historyDensity === 'comfortable' ? 'lg' : historyDensity === 'compact' ? 'md' : 'xs'"
+                />
+                <span class="flex min-w-0 flex-1 flex-col gap-[3px]">
+                  <!-- Name · pin / protect / worktree markers -->
+                  <span class="flex min-w-0 items-center gap-1">
+                    <span
+                      class="min-w-0 truncate leading-tight text-foreground"
+                      :class="[historyDensity === 'dense' ? 'text-xs' : 'text-[13px]', runIsUnread(run) ? 'font-semibold' : 'font-medium']"
+                    >{{ runLabel(run) }}</span>
+                    <Pin v-if="run.pinned" class="h-3 w-3 shrink-0 text-primary" :stroke-width="2" :aria-label="t('run.pinned')" />
+                    <Shield v-if="run.protected" class="h-3 w-3 shrink-0 text-success" :stroke-width="2" :aria-label="t('run.protected')" />
                     <Shield
                       v-else-if="isProtectedByConductor(run)"
-                      class="h-3 w-3 text-success/50"
+                      class="h-3 w-3 shrink-0 text-success/50"
                       :stroke-width="2"
                       :aria-label="t('run.protectedByConductor')"
                       :title="t('run.protectedByConductor')"
                     />
-                  </span>
-                  <!-- Issue / PR identity (the title already reads "Issue #N"). -->
-                  <component
-                    :is="runRefIcon(run)"
-                    v-if="runRefIcon(run)"
-                    class="h-3 w-3 shrink-0 text-muted-foreground"
-                    :stroke-width="1.75"
-                  />
-                  <!-- Dense rows have one line: the repo's short name keeps PRs
-                       from different repos apart (full identity in the tooltip). -->
-                  <span
-                    v-if="historyDensity === 'dense' && runRepoShort(run)"
-                    class="shrink-0 max-w-[6rem] truncate rounded bg-muted/60 px-1 font-mono text-[10px] text-muted-foreground"
-                  >{{ runRepoShort(run) }}</span>
-                  <span
-                    class="flex-1 min-w-0 truncate font-medium leading-tight"
-                    :class="historyDensity === 'dense' ? 'text-xs' : 'text-[13px]'"
-                    :title="historyDensity === 'dense' ? undefined : runLabel(run)"
-                  >{{ runLabel(run) }}</span>
-                  <!-- Worker count (its workers never get rows of their own). -->
-                  <span
-                    v-if="runWorkerCount(run) > 0"
-                    class="flex shrink-0 items-center gap-0.5 font-mono text-[10px] text-muted-foreground"
-                    :title="t('conductor.workerCountShort', { n: runWorkerCount(run) })"
-                  >
-                    <Network class="h-3 w-3" :stroke-width="1.75" />{{ runWorkerCount(run) }}
-                  </span>
-                  <!-- Runs in its own worktree (branch on hover). -->
-                  <span
-                    v-if="run.worktree_branch"
-                    class="flex shrink-0 text-muted-foreground"
-                    :title="t('run.inWorktree', { branch: run.worktree_branch })"
-                  >
-                    <GitBranch class="h-3 w-3" :stroke-width="1.75" />
-                  </span>
-                  <!-- Animated attention marker: this run is waiting for a
-                       permission / question answer (replaces the floating toast). -->
-                  <span
-                    v-if="pendingRequest(run.id)"
-                    class="relative flex h-4 w-4 shrink-0 items-center justify-center text-primary"
-                    :title="
-                      pendingRequest(run.id)?.tool_name === 'AskUserQuestion'
-                        ? t('run.waitingForAnswer')
-                        : t('run.waitingForPermission')
-                    "
-                  >
-                    <span class="absolute inset-0 animate-ping rounded-full bg-primary/30" />
-                    <component
-                      :is="pendingRequest(run.id)?.tool_name === 'AskUserQuestion' ? MessageCircleQuestion : ShieldQuestion"
-                      class="relative h-4 w-4"
-                      :stroke-width="2"
+                    <GitBranch
+                      v-if="run.worktree_branch"
+                      class="h-3 w-3 shrink-0 text-muted-foreground"
+                      :stroke-width="1.75"
+                      :aria-label="t('run.inWorktree', { branch: run.worktree_branch })"
                     />
                   </span>
-                  <!-- Relative age (compact/dense). In dense mode the ⋯ trigger
-                       takes this slot on hover, so the time steps aside. -->
+                  <!-- Second line (not dense): owner/repo #N or N workers · account (· model when comfortable) -->
                   <span
-                    v-if="historyDensity !== 'comfortable'"
-                    class="shrink-0 min-w-[1.25rem] text-right font-mono text-[10px] text-muted-foreground/70"
-                    :class="historyDensity === 'dense'
-                      ? ['group-hover:invisible group-focus-within:invisible', { invisible: actionsMenuRunId === run.id }]
-                      : ''"
-                    :title="historyDensity === 'dense' ? undefined : runTimestamp(runActivityAt(run))"
-                  >{{ runRelativeTime(runActivityAt(run)) }}</span>
-                </div>
-                <!-- Compact: "account · model" (model without its "claude-"
-                     prefix; full value in the tooltip). Kept in the layout but
-                     invisible for an unstarted session so rows share one height.
-                     `pr-6` keeps it clear of the hover actions (⋯). -->
-                <!-- Issue/PR rows lead with their identity ("owner/repo #N ·
-                     @author") instead, so a review is recognisable before its
-                     model; the full line stays in the tooltip. -->
-                <p
-                  v-if="historyDensity === 'compact' && runRefText(run)"
-                  class="mt-0.5 pl-5 pr-6 truncate text-[10px] leading-tight text-muted-foreground/70"
-                  :title="[runRefText(run), runStarted(run) ? runAccountModelLine(run, false) : ''].filter(Boolean).join(' · ')"
-                >
-                  <span class="font-mono text-foreground/70">{{ runRefText(run) }}</span>
-                  <template v-if="runStarted(run)"> · {{ runAccountModelLine(run) }}</template>
-                </p>
-                <p
-                  v-else-if="historyDensity === 'compact'"
-                  class="mt-0.5 pl-5 pr-6 truncate text-[10px] leading-tight text-muted-foreground/70"
-                  :class="{ invisible: !runStarted(run) }"
-                  :title="runAccountModelLine(run, false)"
-                >
-                  {{ runAccountModelLine(run) || '\u00a0' }}
-                </p>
-                <!-- Comfortable meta: the AI badges (account + model) on top so a
-                     long model id gets the full row width, with the timestamp on
-                     its own line underneath. -->
-                <div
-                  v-else-if="historyDensity === 'comfortable'"
-                  class="mt-2 pl-6 pr-3 text-[10px] text-muted-foreground/70"
-                  :class="{ invisible: !runStarted(run) }"
-                >
-                  <!-- Issue/PR identity; `visible` keeps it shown even while the
-                       rest of the block is hidden for an unstarted run. -->
-                  <p
-                    v-if="runRefText(run)"
-                    class="visible mb-1.5 truncate font-mono text-[11px] text-foreground/70"
-                    :title="runRefText(run) ?? undefined"
+                    v-if="historyDensity !== 'dense'"
+                    class="flex min-w-0 items-center gap-[5px] text-[11px] leading-tight text-muted-foreground/85"
+                    :class="{ invisible: !runStarted(run) && !runRefText(run) }"
                   >
-                    {{ runRefText(run) }}
-                  </p>
-                  <!-- Account badge shown alongside the model when the run has a
-                       known Claude account (the name implies Claude); Codex and
-                       legacy/account-less runs show just the model. `pr-6` keeps
-                       the badges clear of the hover actions (⋯) at the row's end. -->
-                  <div class="flex flex-wrap items-center gap-1.5 pr-6">
-                    <span
-                      v-if="runClaudeAccountLabel(run)"
-                      class="shrink-0 truncate max-w-[10rem] px-1.5 py-0.5 rounded bg-primary/10 text-[9px] font-medium tracking-wide text-primary"
-                      :title="runClaudeAccountLabel(run)"
-                    >
-                      {{ runClaudeAccountLabel(run) }}
-                    </span>
-                    <!-- The model this run actually runs on (falls back to engine). -->
-                    <span
-                      class="min-w-0 max-w-full truncate px-1.5 py-0.5 rounded bg-muted/60 font-mono text-[9px] tracking-wide text-muted-foreground"
-                      :title="runModelLabel(run)"
-                    >
-                      {{ runModelLabel(run) }}
-                    </span>
-                  </div>
-                  <span class="mt-1 flex items-center gap-1" :title="t('run.lastActivity')">
-                    <Clock class="h-2.5 w-2.5 shrink-0" :stroke-width="1.5" />
-                    {{ runTimestamp(runActivityAt(run)) }}
+                    <span v-if="runRefText(run)" class="min-w-0 truncate font-mono text-[10.5px]">{{ runRefText(run) }}</span>
+                    <span v-else-if="runWorkerCount(run)" class="shrink-0">{{ t('dashboard.history.workers', { n: runWorkerCount(run) }, runWorkerCount(run)) }}</span>
+                    <template v-if="runStarted(run) && runAccountText(run)">
+                      <span v-if="runRefText(run) || runWorkerCount(run)" class="opacity-45" aria-hidden="true">·</span>
+                      <span class="min-w-0 truncate">{{ runAccountText(run) }}</span>
+                    </template>
+                    <template v-if="historyDensity === 'comfortable' && runStarted(run)">
+                      <span class="opacity-45" aria-hidden="true">·</span>
+                      <span class="min-w-0 truncate font-mono text-[10.5px]">{{ runModelShort(run) }}</span>
+                    </template>
+                    <template v-if="!runRefText(run) && !runWorkerCount(run) && !(runStarted(run) && runAccountText(run))">&nbsp;</template>
                   </span>
-                </div>
-              </button>
-              <!-- Actions: a single overflow (⋯) menu revealed on hover/focus, so
-                   the row's meta info stays fully visible. The trigger also stays
-                   put while its menu is open (actionsMenuRunId). Running sessions
-                   get a safe subset — delete/refetch are hidden while live. -->
-              <div
-                class="absolute flex items-center opacity-0 pointer-events-none transition-opacity group-hover:opacity-100 group-hover:pointer-events-auto group-focus-within:opacity-100 group-focus-within:pointer-events-auto"
-                :class="[
-                  historyDensity === 'comfortable' ? 'right-2 bottom-2'
-                  : historyDensity === 'compact' ? 'right-2 bottom-1'
-                  : 'right-2 top-1/2 -translate-y-1/2',
-                  { '!opacity-100 !pointer-events-auto': actionsMenuRunId === run.id },
-                ]"
-              >
-                <DropdownMenu
-                  align="right"
-                  @update:open="(o) => (actionsMenuRunId = o ? run.id : null)"
+                  <span
+                    v-if="historyDensity === 'comfortable'"
+                    class="font-mono text-[10px] text-muted-foreground/75"
+                    :title="t('run.lastActivity')"
+                  >{{ runTimestamp(runActivityAt(run)) }}</span>
+                </span>
+                <!-- Status: waiting-for-you marker, dot, relative time -->
+                <span
+                  class="flex shrink-0 items-center gap-1.5"
+                  :class="historyDensity === 'dense' ? '' : 'flex-col-reverse items-end self-start pt-0.5'"
                 >
-                  <template #trigger>
-                    <Button
-                      variant="ghost"
-                      size="icon-xs"
-                      :aria-label="t('run.moreActions')"
-                      :title="t('run.moreActions')"
+                  <span class="flex items-center gap-1.5">
+                    <!-- Waiting for a permission / question answer. -->
+                    <span
+                      v-if="pendingRequest(run.id)"
+                      class="relative flex h-4 w-4 shrink-0 items-center justify-center text-warning"
+                      :title="
+                        pendingRequest(run.id)?.tool_name === 'AskUserQuestion'
+                          ? t('run.waitingForAnswer')
+                          : t('run.waitingForPermission')
+                      "
                     >
-                      <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    </Button>
-                  </template>
-
-                  <RunActionItems v-bind="runActionProps(run)" section="actions" v-on="runActionHandlers(run)" />
-                  <RunActionItems v-bind="runActionProps(run)" section="delete" v-on="runActionHandlers(run)" />
-                </DropdownMenu>
-              </div>
+                      <span class="absolute inset-0 animate-ping rounded-full bg-warning/30 motion-reduce:animate-none" />
+                      <component
+                        :is="pendingRequest(run.id)?.tool_name === 'AskUserQuestion' ? MessageCircleQuestion : ShieldQuestion"
+                        class="relative h-3.5 w-3.5"
+                        :stroke-width="2"
+                      />
+                    </span>
+                    <span class="relative flex h-2 w-2 shrink-0" :title="runStatusTitle(run)">
+                      <span
+                        v-if="runDot(run) === 'running'"
+                        class="absolute inline-flex h-full w-full animate-ping rounded-full bg-success opacity-60 motion-reduce:animate-none"
+                      />
+                      <span class="relative inline-flex h-2 w-2 rounded-full" :class="RUN_DOT[runDot(run)]" />
+                    </span>
+                  </span>
+                  <span
+                    class="whitespace-nowrap tabular-nums"
+                    :class="[
+                      historyDensity === 'dense' ? 'font-mono text-[10px]' : 'text-[10.5px]',
+                      runIsUnread(run) ? 'font-semibold text-primary' : 'text-muted-foreground',
+                    ]"
+                    :title="runTimestamp(runActivityAt(run))"
+                  >{{ historyDensity === 'dense' ? runRelativeTime(runActivityAt(run)) : runAgo(run) }}</span>
+                </span>
+              </button>
 
               <!-- Inline rename: overlays the row title while editing. -->
               <div

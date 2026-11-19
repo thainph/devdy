@@ -41,10 +41,7 @@
   "labelIssue": "Issue",
   "labelPr": "PR",
   "projectFallback": "Project",
-  "openProjectIn": "Open project in…",
   "open": "Open",
-  "folder": "Folder",
-  "terminal": "Terminal",
   "projectSettingsTitle": "Project settings (repos, PAT, skills)",
   "exitFocusMode": "Exit focus mode (show sidebar and history again)",
   "enterFocusMode": "Focus mode: show only the current AI session",
@@ -88,7 +85,6 @@
   "copySessionId": "Copy session ID",
   "sessionIdCopied": "Session ID copied",
   "viewLogFile": "View log file",
-  "moreActions": "More actions",
   "rename": "Rename",
   "unpinFromTop": "Unpin from top",
   "pinToTop": "Pin to top",
@@ -184,5 +180,8 @@
     "compact": "Compact",
     "dense": "Dense"
   },
-  "inWorktree": "Runs in its own worktree · branch {branch}"
+  "inWorktree": "Runs in its own worktree · branch {branch}",
+  "openInVscode": "Open the project in VS Code",
+  "openInFolder": "Open the project folder",
+  "openInTerminal": "Open a terminal in the project"
 }

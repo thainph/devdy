@@ -1,6 +1,6 @@
 // Runtime Dashboard (the app's start screen): everything running right now,
 // grouped by conductor. The pure part — session state, grouping and folding,
-// ordering, keyboard navigation, sparklines, the 5-hour quota forecast, tool
+// ordering, keyboard navigation, the 5-hour quota forecast, tool
 // summaries and the detail log lines. The data plumbing lives in
 // `composables/useRuntimeDashboard.ts`.
 //
@@ -31,6 +31,14 @@ export interface ActiveRun {
    * workers still run while it sits between turns (older backends omit it).
    */
   live?: boolean
+  /** Label of its Claude account (older backends omit it). */
+  account_name?: string | null
+  /** `github` | `gitlab` for an issue / PR run with a repo. */
+  repo_provider?: string | null
+  /** `owner/repo` (GitHub) or the project path (GitLab). */
+  repo_path?: string | null
+  pinned?: boolean
+  protected?: boolean
 }
 
 /** A run's name: its title, else "Issue #n" / "PR #n", else null. */
@@ -40,6 +48,16 @@ export function runTitle(r: Pick<ActiveRun, 'title' | 'run_type' | 'ref_number'>
     return `${r.run_type === 'analyze_issue' ? 'Issue' : 'PR'} #${r.ref_number}`
   }
   return null
+}
+
+/** What a session is, for its kind tile (same tiles as the Dashboard History). */
+export type SessionKind = 'session' | 'pr' | 'issue' | 'conductor' | 'external'
+
+export function sessionKind(s: Pick<RtSession, 'role' | 'runType'>): SessionKind {
+  if (s.role === 'external') return 'external'
+  if (s.runType === 'review_pr') return 'pr'
+  if (s.runType === 'analyze_issue') return 'issue'
+  return s.role === 'conductor' ? 'conductor' : 'session'
 }
 
 // ── Session summary ─────────────────────────────────────────────────────────
@@ -80,6 +98,17 @@ export interface RtSession {
   title: string
   engine: Engine
   role: SessionRole
+  /** `session` | `analyze_issue` | `review_pr`; null for an external session. */
+  runType: string | null
+  refNumber: number | null
+  /** Label of its Claude account; null for Codex / external / unknown. */
+  accountName: string | null
+  /** `github` | `gitlab` for an issue / PR run with a repo. */
+  repoProvider: string | null
+  /** `owner/repo` (GitHub) or the project path (GitLab). */
+  repoPath: string | null
+  pinned: boolean
+  protected: boolean
   /** Conductor run id of a worker. */
   conductorId: string | null
   /**
@@ -348,36 +377,6 @@ export function stepQueue(queue: readonly string[], current: string | null, dir:
   const i = current ? queue.indexOf(current) : -1
   if (i < 0) return dir > 0 ? queue[0] : queue[queue.length - 1]
   return queue[(i + dir + queue.length) % queue.length]
-}
-
-// ── Sparklines ──────────────────────────────────────────────────────────────
-
-/** The trailing buckets that must all be empty for a line to read "stalled". */
-export const STALL_BUCKETS = 5
-
-export interface Sparkline {
-  /** SVG polyline points in a `width` × `height` box. */
-  points: string
-  /** Activity stopped (the last buckets are all zero after earlier activity). */
-  stalled: boolean
-  empty: boolean
-}
-
-export function sparkline(values: readonly number[], width = 100, height = 20): Sparkline {
-  if (!values.length) return { points: '', stalled: false, empty: true }
-  const max = Math.max(1, ...values)
-  const step = values.length > 1 ? width / (values.length - 1) : 0
-  const pad = 2
-  const points = values
-    .map((v, i) => `${round1(i * step)},${round1(height - pad - (Math.max(0, v) / max) * (height - pad * 2))}`)
-    .join(' ')
-  const tail = values.slice(-STALL_BUCKETS)
-  const stalled = values.length >= STALL_BUCKETS && tail.every((v) => v <= 0) && values.some((v) => v > 0)
-  return { points, stalled, empty: values.every((v) => v <= 0) }
-}
-
-function round1(n: number): number {
-  return Math.round(n * 10) / 10
 }
 
 /** Append a sample, keeping the last `max`. */

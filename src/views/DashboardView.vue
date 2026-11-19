@@ -10,10 +10,12 @@ const sessionOpen: Record<string, boolean> = {}
 // sessions running now (a tree of rows: workers under the session that
 // spawned them, the most urgent first) and History (every session that ran,
 // latest first, with the unread ones marked). Clicking a session opens it in
-// its own window, where it is answered / messaged / stopped.
+// its own window, where it is answered / messaged / stopped; a right-click
+// opens the session menu (shared with History).
 // Keyboard: / search History · j k select · n next waiting · Enter open · Esc leave the search.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import { useRouter } from 'vue-router'
 import { Activity } from 'lucide-vue-next'
 import { Banner, Button, PageHeader } from '@/components/ui'
 import '@/components/dashboard/runtime.css'
@@ -27,10 +29,12 @@ import { useRuntimeDashboard } from '@/composables/useRuntimeDashboard'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { strayIds } from '@/lib/backgroundProcesses'
 import { openSessionWindow } from '@/lib/sessionWindow'
 import type { HistoryRun } from '@/lib/runHistory'
+import SessionMenu, { menuPoint, type SessionMenuTarget } from '@/components/dashboard/SessionMenu.vue'
 import {
   buildTree,
   displayOrder,
@@ -47,9 +51,11 @@ import {
 defineOptions({ name: 'DashboardView' })
 
 const { t, locale } = useI18n()
+const router = useRouter()
 const { confirm, state: confirmState } = useConfirm()
 const { toast } = useToast()
 const live = useLiveRunsStore()
+const tabs = useWorkspaceTabsStore()
 const bgProcs = useBackgroundProcessesStore()
 const dash = useRuntimeDashboard()
 
@@ -109,16 +115,29 @@ function select(id: string | null) {
 }
 
 // ── Opening things ───────────────────────────────────────────────────────────
-/** A session always opens in its own window (or brings that window forward). */
-function openRun(projectId: string, runId: string) {
+/**
+ * A session opens in its own window (or brings that window forward) — or, from
+ * the session menu, in the main window (its project's tab).
+ */
+function openRun(projectId: string, runId: string, where: 'window' | 'main' = 'window') {
   live.markSeen(runId)
-  void openSessionWindow(projectId, runId).catch((e) => toast.error(String(e)))
+  if (where === 'window') {
+    void openSessionWindow(projectId, runId).catch((e) => toast.error(String(e)))
+    return
+  }
+  tabs.open(projectId, runId)
+  router.push({ name: 'project-run-detail', params: { projectId, runId } }).catch(() => {})
+}
+/** The run a session's row stands for: its own, or the one an outside session was mirrored into. */
+function runOf(s: RtSession): { projectId: string; runId: string } | null {
+  if (s.runId && s.projectId) return { projectId: s.projectId, runId: s.runId }
+  const e = s.role === 'external' ? dash.externalById.value.get(s.id) : null
+  return e?.runId && e.projectId ? { projectId: e.projectId, runId: e.runId } : null
 }
 /** A session outside Devdy opens the run its transcript was mirrored into, when there is one. */
 function openSession(s: RtSession) {
-  if (s.runId && s.projectId) return openRun(s.projectId, s.runId)
-  const e = s.role === 'external' ? dash.externalById.value.get(s.id) : null
-  if (e?.runId && e.projectId) openRun(e.projectId, e.runId)
+  const run = runOf(s)
+  if (run) openRun(run.projectId, run.runId)
   else toast.info(t('dashboard.transcriptUnavailable'))
 }
 function openById(id: string) {
@@ -126,8 +145,41 @@ function openById(id: string) {
   const s = dash.sessions.value.find((x) => x.id === id)
   if (s) openSession(s)
 }
-function openHistory(r: HistoryRun) {
-  openRun(r.projectId, r.runId)
+function openHistory(r: HistoryRun, where: 'window' | 'main') {
+  openRun(r.projectId, r.runId, where)
+}
+
+// ── Session menu (right-click on a running row) ─────────────────────────────
+const menu = ref<{ open: boolean; x: number; y: number; target: SessionMenuTarget | null }>({ open: false, x: 0, y: 0, target: null })
+function openMenu(id: string, e: MouseEvent) {
+  const s = dash.sessions.value.find((x) => x.id === id)
+  const run = s && runOf(s)
+  // An outside session with no Devdy run to open has nothing to offer.
+  if (!s || !run) return
+  selectedId.value = id
+  menu.value = {
+    open: true,
+    ...menuPoint(e),
+    target: {
+      runId: run.runId,
+      projectId: run.projectId,
+      name: s.title,
+      runType: s.runType ?? 'session',
+      refNumber: s.refNumber,
+      repoPath: s.repoPath,
+      repoProvider: s.repoProvider,
+      title: s.title,
+      pinned: s.pinned,
+      protected: s.protected,
+      live: s.live,
+      deletable: false,
+      unread: null,
+      openOnly: s.role === 'external',
+    },
+  }
+}
+function closeMenu() {
+  menu.value = { ...menu.value, open: false }
 }
 
 // ── Cleanup (the Background processes action) ────────────────────────────────
@@ -273,6 +325,7 @@ const SHORTCUTS = [
               :now="dash.now.value"
               @toggle="toggleWorkers"
               @select="openById"
+              @menu="openMenu"
             />
           </section>
 
@@ -280,5 +333,15 @@ const SHORTCUTS = [
         </div>
       </div>
     </div>
+
+    <SessionMenu
+      :open="menu.open"
+      :x="menu.x"
+      :y="menu.y"
+      :target="menu.target"
+      @close="closeMenu"
+      @open-run="(s, where) => openRun(s.projectId, s.runId, where)"
+      @changed="dash.refresh()"
+    />
   </div>
 </template>

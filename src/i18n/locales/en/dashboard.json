@@ -17,7 +17,6 @@
   "stat": {
     "sessions": {
       "title": "Sessions",
-      "unit": "session | sessions",
       "chip": {
         "wait": "{n} waiting for you",
         "quiet": "{n} quiet for long",
@@ -42,7 +41,7 @@
       "perMinute": "/min"
     },
     "quota": {
-      "title": "5-hour limit",
+      "title": "Limits",
       "noData": "no data yet",
       "exhaust": "runs out ~{time} at this pace",
       "safe": "enough left",
@@ -50,7 +49,9 @@
       "unknown": "pace not known yet",
       "reset": "resets {time}",
       "default": "default",
-      "resetIn": "resets in {time}"
+      "resetIn": "resets in {time}",
+      "fiveHour": "5 hours",
+      "week": "Week"
     },
     "resources": {
       "title": "Resources",
@@ -119,11 +120,8 @@
     "working": "Working…",
     "lastActivity": "last activity {age} ago"
   },
-  "context": "context",
   "contextTitle": "Context window {pct}% full",
   "contextUnknown": "Context use not known yet",
-  "activityTitle": "Events per minute over the last 20 minutes",
-  "activityStalled": "No events for the last few minutes",
   "transcriptUnavailable": "This session isn't linked to a Devdy project yet, so its transcript can't be opened here.",
   "emptyTitle": "Nothing running",
   "running": {
@@ -150,6 +148,36 @@
       "cancelled": "stopped"
     },
     "workers": "{n} worker | {n} workers",
-    "pinned": "Pinned"
+    "ago": {
+      "now": "just now",
+      "minutes": "{n} min ago | {n} min ago",
+      "hours": "{n} hour ago | {n} hours ago",
+      "yesterday": "yesterday",
+      "days": "{n} days ago | {n} days ago"
+    },
+    "menu": {
+      "openWindow": "Open in its own window",
+      "openMain": "Open in the main window",
+      "prOnGithub": "Open PR on GitHub",
+      "issueOnGithub": "Open issue on GitHub",
+      "prOnGitlab": "Open merge request on GitLab",
+      "issueOnGitlab": "Open issue on GitLab",
+      "markRead": "Mark as read",
+      "markUnread": "Mark as unread",
+      "copyPrLink": "Copy PR link",
+      "copyIssueLink": "Copy issue link",
+      "linkCopied": "Link copied",
+      "stop": "Stop session",
+      "stopTitle": "Stop session",
+      "stopMessage": "Stop \"{name}\"? The current turn is cancelled; you can resume the session later.",
+      "delete": "Delete session"
+    }
+  },
+  "kind": {
+    "session": "Session",
+    "pr": "PR review",
+    "issue": "Issue analysis",
+    "conductor": "Conductor (with workers)",
+    "external": "Outside Devdy"
   }
 }

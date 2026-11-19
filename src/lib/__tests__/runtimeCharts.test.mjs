@@ -20,6 +20,7 @@ import {
   timelinePercent,
   timelineTicks,
   timelineWindow,
+  weeklyWindow,
 } from '../runtimeCharts.ts'
 
 /** Local time today-ish: a fixed local date so DST does not matter. */
@@ -158,4 +159,14 @@ test('quotaListOrder: Claude by % used (no data last), Codex at the end', () => 
   ]
   assert.deepEqual(quotaListOrder(list).map((q) => q.key), ['c', 'a', 'd', 'b', 'codex'])
   assert.equal(list[0].key, 'codex', 'input left alone')
+})
+
+test('weeklyWindow: the most-used weekly window still ahead of its reset', () => {
+  const now = Date.parse('2026-11-19T10:00:00Z')
+  const w = (utilization, resets_at = '2026-11-23T00:00:00Z') => ({ utilization, resets_at })
+  assert.deepEqual(weeklyWindow({ seven_day: w(40), seven_day_opus: w(71), seven_day_sonnet: w(null) }, now), { pct: 71, resetsAt: Date.parse('2026-11-23T00:00:00Z') })
+  assert.deepEqual(weeklyWindow({ seven_day: w(40), seven_day_opus: w(90, '2026-11-18T00:00:00Z') }, now), { pct: 40, resetsAt: Date.parse('2026-11-23T00:00:00Z') }, 'a window past its reset is ignored')
+  assert.deepEqual(weeklyWindow({ seven_day: w(12, null) }, now), { pct: 12, resetsAt: null })
+  assert.equal(weeklyWindow({ seven_day: w(null) }, now), null)
+  assert.equal(weeklyWindow(null, now), null)
 })

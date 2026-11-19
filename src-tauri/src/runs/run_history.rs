@@ -4,13 +4,17 @@
 //! conductor stands for them and reports how many it has.
 //!
 //! "Unread" is the persisted read state the Remote Control Inbox already uses
-//! (`runs.seen_at`, set by `mark_run_seen`): a run whose last turn finished
-//! after the user last saw it.
+//! (`runs.seen_at`, set by `mark_run_seen`, cleared by `mark_run_unread`): a run
+//! whose last turn finished after the user last saw it.
+//!
+//! Each row also carries what the row shows besides its name: the Claude
+//! account it runs on (the run's own, else its project's, else the default
+//! one) and, for an issue / PR run, the repo it is about.
 
 use crate::db::Db;
 use serde::Serialize;
 use sqlx::Row;
-use tauri::State;
+use tauri::{AppHandle, State};
 
 /// Rows per page when the caller does not say.
 const DEFAULT_LIMIT: u32 = 40;
@@ -19,6 +23,20 @@ const MAX_LIMIT: u32 = 200;
 const ACTIVITY: &str = "COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at)";
 const UNREAD: &str = "(r.status != 'running' AND r.finished_at IS NOT NULL \
      AND (r.seen_at IS NULL OR r.seen_at < r.finished_at))";
+
+/// Select columns `account_name`, `repo_provider`, `repo_path` for a run `r`
+/// of project `p`, with [`REPO_JOIN`] joined. The account is the run's own
+/// Claude account, else its project's, else the default one (Claude runs only);
+/// the repo is set for an issue / PR run. Shared with `list_active_runs`.
+pub(crate) const ACCOUNT_AND_REPO: &str = "CASE WHEN r.engine = 'claude' THEN COALESCE( \
+        (SELECT label FROM claude_accounts WHERE id = r.claude_account_id), \
+        (SELECT label FROM claude_accounts WHERE id = p.claude_account_id), \
+        (SELECT label FROM claude_accounts WHERE is_default = 1 LIMIT 1)) END AS account_name, \
+    rp.provider AS repo_provider, \
+    CASE WHEN rp.provider = 'gitlab' THEN rp.gitlab_project_path \
+         WHEN rp.github_owner IS NOT NULL AND rp.github_repo IS NOT NULL \
+         THEN rp.github_owner || '/' || rp.github_repo END AS repo_path";
+pub(crate) const REPO_JOIN: &str = "LEFT JOIN repos rp ON rp.id = r.repo_id AND r.type != 'session'";
 
 #[derive(Debug, Serialize, Clone, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -38,7 +56,15 @@ pub struct HistoryRun {
     /// Workers this run spawned (a conductor), 0 otherwise.
     pub worker_count: i64,
     pub pinned: bool,
+    /// Skipped by "Clear all".
+    pub protected: bool,
     pub unread: bool,
+    /// Label of the Claude account (Claude runs only; None when there is none).
+    pub account_name: Option<String>,
+    /// `github` | `gitlab` for an issue / PR run with a repo, else None.
+    pub repo_provider: Option<String>,
+    /// `owner/repo` (GitHub) or the project path (GitLab).
+    pub repo_path: Option<String>,
     /// RFC3339-ish, as stored; the sort key (with `run_id` as tie-break).
     pub last_activity_at: String,
 }
@@ -70,9 +96,10 @@ pub async fn list_run_history_inner(
     let query = query.map(str::trim).filter(|q| !q.is_empty());
     let mut sql = format!(
         "SELECT r.id, r.project_id, p.name AS project_name, r.type, r.ref_number, r.title, r.ref_title, \
-                r.status, r.engine, r.role, r.pinned, {ACTIVITY} AS activity, {UNREAD} AS unread, \
-                (SELECT COUNT(*) FROM runs w WHERE w.conductor_run_id = r.id) AS worker_count \
-         FROM runs r JOIN projects p ON p.id = r.project_id \
+                r.status, r.engine, r.role, r.pinned, r.protected, {ACTIVITY} AS activity, {UNREAD} AS unread, \
+                (SELECT COUNT(*) FROM runs w WHERE w.conductor_run_id = r.id) AS worker_count, \
+                {ACCOUNT_AND_REPO} \
+         FROM runs r JOIN projects p ON p.id = r.project_id {REPO_JOIN} \
          WHERE r.conductor_run_id IS NULL AND r.status != 'fetched'"
     );
     if query.is_some() {
@@ -110,7 +137,11 @@ pub async fn list_run_history_inner(
             role: row.get("role"),
             worker_count: row.get("worker_count"),
             pinned: row.get::<i64, _>("pinned") != 0,
+            protected: row.get::<i64, _>("protected") != 0,
             unread: row.get::<i64, _>("unread") != 0,
+            account_name: row.get("account_name"),
+            repo_path: row.get::<Option<String>, _>("repo_path").filter(|s| !s.trim().is_empty()),
+            repo_provider: row.get("repo_provider"),
             last_activity_at: row.get("activity"),
         })
         .collect())
@@ -134,6 +165,25 @@ pub async fn list_run_history(
         limit.unwrap_or(DEFAULT_LIMIT),
     )
     .await
+}
+
+/// Mark a finished run unread again (the Dashboard's "Mark as unread"): its
+/// result shows as new here and on the Remote Control Inbox until it is seen.
+pub async fn mark_run_unread_inner(db: &Db, run_id: &str) -> Result<bool, String> {
+    let done = sqlx::query("UPDATE runs SET seen_at = NULL WHERE id = ? AND finished_at IS NOT NULL AND seen_at IS NOT NULL")
+        .bind(run_id)
+        .execute(db)
+        .await
+        .map_err(|e| e.to_string())?;
+    Ok(done.rows_affected() > 0)
+}
+
+#[tauri::command]
+pub async fn mark_run_unread(app: AppHandle, db: State<'_, Db>, run_id: String) -> Result<(), String> {
+    if mark_run_unread_inner(db.inner(), &run_id).await? {
+        crate::remote::live_lists::emit_runs_changed(&app);
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -190,6 +240,38 @@ mod tests {
 
         let only_unread = list_run_history_inner(&db, None, true, None, 0).await.unwrap();
         assert_eq!(ids(&only_unread), ["b", "d"]);
+
+        // "Mark as unread" brings a seen run back; a running one has nothing to clear.
+        assert!(mark_run_unread_inner(&db, "a").await.unwrap());
+        assert!(!mark_run_unread_inner(&db, "c").await.unwrap());
+        let again = list_run_history_inner(&db, None, true, None, 0).await.unwrap();
+        assert_eq!(ids(&again), ["b", "d", "a"]);
+    }
+
+    #[tokio::test]
+    async fn carries_account_and_repo() {
+        let db = memory_db().await;
+        insert(&db, "s", "p1", "done", "2026-11-10T01:00:00+00:00", Some("2026-11-10T01:00:00+00:00"), None).await;
+        insert(&db, "pr", "p1", "done", "2026-11-11T01:00:00+00:00", Some("2026-11-11T01:00:00+00:00"), None).await;
+        insert(&db, "cx", "p2", "done", "2026-11-12T01:00:00+00:00", Some("2026-11-12T01:00:00+00:00"), None).await;
+        for q in [
+            "INSERT INTO claude_accounts (id, label, config_dir, is_default, created_at) VALUES \
+             ('acc1', 'Work', '/tmp/a1', 1, '2026-01-01'), ('acc2', 'Personal', '/tmp/a2', 0, '2026-01-01')",
+            "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at) \
+             VALUES ('r1', 'p1', 'api', '/tmp/api', 'malme', 'lunchbox-api', '2026-01-01')",
+            "UPDATE runs SET type = 'review_pr', ref_number = 412, repo_id = 'r1', claude_account_id = 'acc2' WHERE id = 'pr'",
+            "UPDATE runs SET engine = 'codex' WHERE id = 'cx'",
+        ] {
+            sqlx::query(q).execute(&db).await.unwrap();
+        }
+        let all = list_run_history_inner(&db, None, false, None, 0).await.unwrap();
+        let by = |id: &str| all.iter().find(|r| r.run_id == id).unwrap().clone();
+        assert_eq!(by("s").account_name.as_deref(), Some("Work"), "the default account");
+        assert_eq!(by("s").repo_path, None);
+        assert_eq!(by("pr").account_name.as_deref(), Some("Personal"));
+        assert_eq!(by("pr").repo_path.as_deref(), Some("malme/lunchbox-api"));
+        assert_eq!(by("pr").repo_provider.as_deref(), Some("github"));
+        assert_eq!(by("cx").account_name, None, "Codex has no Claude account");
     }
 
     #[tokio::test]

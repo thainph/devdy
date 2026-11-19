@@ -34,9 +34,10 @@ export function frameClass(s: Pick<RtSession, 'state'>, selected: boolean): stri
   return out
 }
 
-export function ctxBarClass(pct: number | null): string {
-  if (pct === null) return 'bg-muted-foreground/30'
-  return pct >= 80 ? 'bg-warning' : 'bg-primary/70'
+/** The context ring's arc. */
+export function ctxRingClass(pct: number | null): string {
+  if (pct === null) return 'stroke-muted-foreground/30'
+  return pct >= 80 ? 'stroke-warning' : 'stroke-primary/80'
 }
 
 export function ctxTextClass(pct: number | null): string {

@@ -32,6 +32,14 @@ pub struct ActiveRun {
     /// its workers still run while it sits between turns (see
     /// [`active_runs`]).
     pub live: bool,
+    /// Label of its Claude account (see `run_history::ACCOUNT_AND_REPO`).
+    pub account_name: Option<String>,
+    /// `github` | `gitlab` for an issue / PR run with a repo.
+    pub repo_provider: Option<String>,
+    /// `owner/repo` (GitHub) or the project path (GitLab).
+    pub repo_path: Option<String>,
+    pub pinned: bool,
+    pub protected: bool,
 }
 
 /// Open permission prompts of a run: (count, oldest arrival).
@@ -84,9 +92,11 @@ async fn fetch_rows(
     let sql = format!(
         "SELECT r.id, r.project_id, p.name AS project_name, r.title, r.type, r.ref_number, r.engine, \
                 r.model, r.status, COALESCE(r.started_at, r.created_at) AS started_at, r.created_at, \
-                r.role, r.conductor_run_id \
-         FROM runs r JOIN projects p ON p.id = r.project_id \
-         WHERE r.id IN ({placeholders})"
+                r.role, r.conductor_run_id, r.pinned, r.protected, {account_and_repo} \
+         FROM runs r JOIN projects p ON p.id = r.project_id {repo_join} \
+         WHERE r.id IN ({placeholders})",
+        account_and_repo = super::run_history::ACCOUNT_AND_REPO,
+        repo_join = super::run_history::REPO_JOIN,
     );
     let mut q = sqlx::query(&sql);
     for id in run_ids {
@@ -115,6 +125,11 @@ async fn fetch_rows(
                 pending_permissions,
                 waiting_since,
                 live: true,
+                account_name: row.get("account_name"),
+                repo_provider: row.get("repo_provider"),
+                repo_path: row.get::<Option<String>, _>("repo_path").filter(|s| !s.trim().is_empty()),
+                pinned: row.get::<i64, _>("pinned") != 0,
+                protected: row.get::<i64, _>("protected") != 0,
                 run_id,
             }
         })
@@ -206,5 +221,28 @@ mod tests {
         assert_eq!(rows[0].role.as_deref(), Some("conductor"));
         assert!(!rows[0].live);
         assert!(rows[1..].iter().all(|r| r.live));
+    }
+
+    #[tokio::test]
+    async fn carries_account_repo_and_flags() {
+        let db = memory_db().await;
+        run(&db, "pr", "p1", "2026-01-02T10:00:00Z").await;
+        run(&db, "s", "p1", "2026-01-02T11:00:00Z").await;
+        for q in [
+            "INSERT INTO claude_accounts (id, label, config_dir, is_default, created_at) \
+             VALUES ('acc1', 'Work', '/tmp/a1', 1, '2026-01-01')",
+            "INSERT INTO repos (id, project_id, name, path, github_owner, github_repo, created_at) \
+             VALUES ('r1', 'p1', 'api', '/tmp/api', 'malme', 'api', '2026-01-01')",
+            "UPDATE runs SET type = 'review_pr', ref_number = 7, repo_id = 'r1', pinned = 1 WHERE id = 'pr'",
+        ] {
+            sqlx::query(q).execute(&db).await.unwrap();
+        }
+        let ids = vec!["pr".to_string(), "s".to_string()];
+        let rows = active_runs(&db, &ids, &HashMap::new()).await.unwrap();
+        let pr = rows.iter().find(|r| r.run_id == "pr").unwrap();
+        assert_eq!(pr.repo_path.as_deref(), Some("malme/api"));
+        assert_eq!(pr.account_name.as_deref(), Some("Work"));
+        assert!(pr.pinned && !pr.protected);
+        assert_eq!(rows.iter().find(|r| r.run_id == "s").unwrap().repo_path, None);
     }
 }

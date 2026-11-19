@@ -2,7 +2,18 @@
 // Run: node --test src/lib/__tests__/runHistory.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
-import { appendHistory, historyKind, historyTitle, historyWhen, isOlder, mergeHistory } from '../runHistory.ts'
+import {
+  appendHistory,
+  historyAgo,
+  historyExact,
+  historyKind,
+  historyRepoRef,
+  historyTitle,
+  historyType,
+  historyWebUrl,
+  isOlder,
+  mergeHistory,
+} from '../runHistory.ts'
 
 const run = (runId, lastActivityAt, extra = {}) => ({
   runId,
@@ -17,7 +28,11 @@ const run = (runId, lastActivityAt, extra = {}) => ({
   role: null,
   workerCount: 0,
   pinned: false,
+  protected: false,
   unread: false,
+  accountName: null,
+  repoProvider: null,
+  repoPath: null,
   lastActivityAt,
   ...extra,
 })
@@ -31,11 +46,35 @@ test('historyTitle: title, else the issue / PR, else null', () => {
   assert.equal(historyKind({ runType: 'session' }), null)
 })
 
-test('historyWhen: time today, date + time otherwise', () => {
+test('historyAgo: now, minutes / hours today, yesterday, days, then a date', () => {
   const now = new Date(2026, 10, 19, 16, 30).getTime()
-  assert.equal(historyWhen(new Date(2026, 10, 19, 9, 5).toISOString(), now), '09:05')
-  assert.equal(historyWhen(new Date(2026, 10, 18, 23, 59).toISOString(), now), '18/11 23:59')
-  assert.equal(historyWhen('nope', now), '')
+  const at = (...a) => new Date(2026, ...a).toISOString()
+  assert.deepEqual(historyAgo(at(10, 19, 16, 29, 30), now), { key: 'now', n: 0, date: '19/11' })
+  assert.equal(historyAgo(at(10, 19, 16, 40), now).key, 'now', 'clock skew')
+  assert.deepEqual(historyAgo(at(10, 19, 16, 25), now), { key: 'minutes', n: 5, date: '19/11' })
+  assert.deepEqual(historyAgo(at(10, 19, 9, 0), now), { key: 'hours', n: 7, date: '19/11' })
+  assert.deepEqual(historyAgo(at(10, 18, 23, 59), now), { key: 'yesterday', n: 1, date: '18/11' })
+  assert.deepEqual(historyAgo(at(10, 12, 10, 0), now), { key: 'days', n: 7, date: '12/11' })
+  assert.deepEqual(historyAgo(at(10, 11, 10, 0), now), { key: 'date', n: 0, date: '11/11' })
+  assert.equal(historyAgo('nope', now), null)
+  assert.equal(historyExact(at(10, 18, 9, 5)), '18/11/2026 09:05')
+})
+
+test('historyType / historyRepoRef / historyWebUrl', () => {
+  assert.equal(historyType({ runType: 'review_pr', role: null, workerCount: 0 }), 'pr')
+  assert.equal(historyType({ runType: 'analyze_issue', role: null, workerCount: 0 }), 'issue')
+  assert.equal(historyType({ runType: 'session', role: 'conductor', workerCount: 0 }), 'conductor')
+  assert.equal(historyType({ runType: 'session', role: null, workerCount: 2 }), 'conductor')
+  assert.equal(historyType({ runType: 'session', role: null, workerCount: 0 }), 'session')
+
+  const pr = { runType: 'review_pr', repoPath: 'malme/api', repoProvider: 'github', refNumber: 412 }
+  assert.equal(historyRepoRef(pr), 'malme/api#412')
+  assert.equal(historyWebUrl(pr), 'https://github.com/malme/api/pull/412')
+  assert.equal(historyWebUrl({ ...pr, runType: 'analyze_issue' }), 'https://github.com/malme/api/issues/412')
+  assert.equal(historyWebUrl({ ...pr, repoProvider: 'gitlab', repoPath: 'g/sub/api' }), 'https://gitlab.com/g/sub/api/-/merge_requests/412')
+  assert.equal(historyWebUrl({ ...pr, repoProvider: 'gitlab', repoPath: 'g/api', runType: 'analyze_issue' }), 'https://gitlab.com/g/api/-/issues/412')
+  assert.equal(historyRepoRef({ ...pr, runType: 'session' }), null)
+  assert.equal(historyWebUrl({ ...pr, repoPath: null }), null)
 })
 
 test('isOlder follows the backend order (activity desc, id desc)', () => {

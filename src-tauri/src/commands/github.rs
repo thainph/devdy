@@ -67,6 +67,11 @@ pub struct RunRecord {
     /// The fetched issue/PR's author login; `None` for sessions or when unknown.
     #[serde(default)]
     pub ref_author: Option<String>,
+    /// Finished after the user last saw it (`seen_at`, shared with the Remote
+    /// Control Inbox and the Dashboard). Only `list_runs` computes it; a run
+    /// just created / fetched is never unread.
+    #[serde(default)]
+    pub unread: bool,
 }
 
 /// Title + author of a fetched issue/PR, read back from its task file's
@@ -395,6 +400,7 @@ pub async fn fetch_issue(
         worktree_branch: None,
         ref_title,
         ref_author,
+        unread: false,
     })
 }
 
@@ -774,6 +780,7 @@ pub async fn fetch_pr(
         worktree_branch: None,
         ref_title,
         ref_author,
+        unread: false,
     })
 }
 
@@ -935,6 +942,7 @@ pub async fn refetch_run(db: State<'_, Db>, run_id: String) -> Result<RunRecord,
         worktree_branch: None,
         ref_title,
         ref_author,
+        unread: false,
     })
 }
 
@@ -1010,6 +1018,8 @@ pub async fn list_runs(
     let rows = sqlx::query(
         "SELECT r.id, r.project_id, r.repo_id, r.type, r.ref_number, r.status, r.engine, r.model, r.input_path, r.output_path, r.session_id, r.claude_account_id, r.started_at, r.finished_at, r.created_at, r.title, r.pinned, r.protected, r.role, r.conductor_run_id, r.ref_title, r.ref_author,
                 COALESCE(r.last_activity_at, r.finished_at, r.started_at, r.created_at) AS last_activity_at,
+                (r.status != 'running' AND r.finished_at IS NOT NULL
+                 AND (r.seen_at IS NULL OR r.seen_at < r.finished_at)) AS unread,
                 w.branch AS worktree_branch
          FROM runs r LEFT JOIN worktrees w ON w.path = r.worktree_path
          WHERE r.project_id = ?
@@ -1047,6 +1057,7 @@ pub async fn list_runs(
         // '' marks a backfill that found no task file.
         ref_title: row.get::<Option<String>, _>("ref_title").filter(|s| !s.is_empty()),
         ref_author: row.get::<Option<String>, _>("ref_author").filter(|s| !s.is_empty()),
+        unread: row.get::<i64, _>("unread") != 0,
     }).collect())
 }
 

@@ -41,10 +41,7 @@
   "labelIssue": "Issue",
   "labelPr": "PR",
   "projectFallback": "Project",
-  "openProjectIn": "Mở project bằng…",
   "open": "Mở",
-  "folder": "Thư mục",
-  "terminal": "Terminal",
   "projectSettingsTitle": "Cài đặt project (repo, PAT, skill)",
   "exitFocusMode": "Thoát chế độ focus (hiện lại sidebar, history)",
   "enterFocusMode": "Chế độ focus: chỉ hiện phiên AI hiện tại",
@@ -88,7 +85,6 @@
   "copySessionId": "Sao chép ID session",
   "sessionIdCopied": "Đã sao chép ID session",
   "viewLogFile": "Xem file log",
-  "moreActions": "Thao tác khác",
   "rename": "Đổi tên",
   "unpinFromTop": "Bỏ ghim khỏi đầu",
   "pinToTop": "Ghim lên đầu",
@@ -184,5 +180,8 @@
     "compact": "Gọn",
     "dense": "Dày"
   },
-  "inWorktree": "Chạy trong bản sao riêng · nhánh {branch}"
+  "inWorktree": "Chạy trong bản sao riêng · nhánh {branch}",
+  "openInVscode": "Mở project bằng VS Code",
+  "openInFolder": "Mở thư mục project",
+  "openInTerminal": "Mở terminal ở project"
 }

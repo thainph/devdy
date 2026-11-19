@@ -651,6 +651,7 @@ pub fn run() {
             list_active_runs,
             runs::runtime_snapshot::get_runtime_snapshot,
             runs::run_history::list_run_history,
+            runs::run_history::mark_run_unread,
             send_user_message,
             end_run_input,
             read_run_input,
