@@ -12,6 +12,8 @@ import {
   type MentionFilters,
   type MentionGroupBy,
   type MentionItem,
+  type MentionMute,
+  type MentionMuteScope,
   type MentionsResult,
 } from '@/lib/githubMentions'
 
@@ -66,6 +68,8 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
   const lookbackDays = ref(3)
   /** Keys with a request in flight (starting an AI check / dismiss), to disable their buttons. */
   const busyKeys = ref<Set<string>>(new Set())
+  /** Muted threads / repos ("Not interested"), newest first. */
+  const mutes = ref<MentionMute[]>([])
 
   /** Mentions waiting for an answer (sidebar badge). */
   const pendingCount = computed(() => items.value.filter(i => !i.answered).length)
@@ -176,6 +180,27 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
     return withBusy(key, () => invoke('dismiss_github_mention', { key }))
   }
 
+  async function loadMutes() {
+    try {
+      mutes.value = await invoke<MentionMute[]>('list_github_mention_mutes')
+    } catch {
+      /* keep the last list */
+    }
+  }
+
+  /** Never list this thread / its repo again (the backend drops it from the cache). */
+  async function mute(key: string, scope: MentionMuteScope) {
+    await withBusy(key, () => invoke('mute_github_mention', { key, scope }))
+    await loadMutes()
+  }
+
+  /** Unmute and fetch again so the thread / repo comes back. */
+  async function unmute(m: MentionMute) {
+    await invoke('unmute_github_mention', { scope: m.scope, target: m.target })
+    mutes.value = mutes.value.filter(x => !(x.scope === m.scope && x.target === m.target))
+    await refresh()
+  }
+
   function markRead(key: string) {
     return invoke('mark_github_mention_read', { key })
   }
@@ -197,6 +222,7 @@ export const useGithubMentionsStore = defineStore('githubMentions', () => {
 
   return {
     items, warnings, loading, error, fetchedAt, filters, groupBy, lookbackDays, setLookbackDays, busyKeys, pendingCount,
+    mutes, loadMutes, mute, unmute,
     load, watchCache, refresh, linkRun, withBusy, dismiss, markRead, setFilter, clearFilters, setGroupBy,
   }
 })

@@ -54,7 +54,12 @@
     "copyLink": "Copy link",
     "copied": "Link copied",
     "dismiss": "Ignore until someone replies again",
-    "dismissed": "Ignored"
+    "dismissed": "Ignored",
+    "more": "More actions",
+    "muteThread": "Not interested in this thread",
+    "muteRepo": "Mute everything from {repo}",
+    "mutedThread": "Thread muted — unmute it under Display",
+    "mutedRepo": "{repo} muted — unmute it under Display"
   },
   "check": {
     "label": "Check with AI",
@@ -69,5 +74,13 @@
     "started": "AI check started for {ref}",
     "failed": "Could not start the AI check: {error}",
     "prompt": "Help me ({me}) with a GitHub mention on {ref}: \"{title}\".\n\n{who} wrote ({url}):\n\n{excerpt}\n\nRead the task file (issue / PR text, comments, and the diff when there is one) and the related code in this repo to understand what they are asking or requesting. Then reply with:\n1. A short summary of the request.\n2. The answer or proposed fix, with evidence (file:line).\n3. A draft comment I can post on GitHub, written in the thread's language.\n\nDo not post comments or change anything on GitHub yourself."
+  },
+  "muted": {
+    "title": "Not interested",
+    "empty": "Nothing muted. Use a card's menu to mute a thread or a whole repository.",
+    "thread": "Muted thread",
+    "repo": "Muted repository",
+    "unmute": "Unmute",
+    "unmuted": "Unmuted {name}"
   }
 }

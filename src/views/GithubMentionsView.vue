@@ -41,7 +41,7 @@ import {
   type MentionItem,
 } from '@/lib/githubMentions'
 import {
-  AtSign, Check, ChevronRight, Copy, EyeOff, ExternalLink, MailOpen, RefreshCw, Search, SearchX, X,
+  AtSign, BellOff, Check, ChevronRight, Copy, EyeOff, ExternalLink, FolderX, MailOpen, RefreshCw, Search, SearchX, X,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -62,7 +62,10 @@ const search = ref('')
 const showAnswered = ref(false)
 const collapsed = ref<Set<string>>(new Set())
 
-onMounted(() => { void store.load() })
+onMounted(() => {
+  void store.load()
+  void store.loadMutes()
+})
 
 // Standalone window: on top while focused (like the other pop-outs), a light
 // status feed for the linked AI-check sessions instead of the main window's
@@ -194,7 +197,7 @@ function closeMenu() {
   menu.value = { ...menu.value, open: false }
 }
 
-async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss') {
+async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteThread' | 'muteRepo') {
   const item = menu.value.item
   closeMenu()
   if (!item) return
@@ -205,9 +208,15 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss') {
     else if (action === 'copy') {
       await navigator.clipboard.writeText(url)
       toast.success(t('githubMentions.menu.copied'))
-    } else {
+    } else if (action === 'dismiss') {
       await store.dismiss(item.key)
       toast.success(t('githubMentions.menu.dismissed'))
+    } else if (action === 'muteThread') {
+      await store.mute(item.key, 'thread')
+      toast.success(t('githubMentions.menu.mutedThread'))
+    } else {
+      await store.mute(item.key, 'repo')
+      toast.success(t('githubMentions.menu.mutedRepo', { repo: `${item.owner}/${item.repo}` }))
     }
   } catch (e) {
     toast.error(String(e))
@@ -404,6 +413,14 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss') {
       <DropdownItem @click="menuAction('dismiss')">
         <EyeOff class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('githubMentions.menu.dismiss') }}
+      </DropdownItem>
+      <DropdownItem @click="menuAction('muteThread')">
+        <BellOff class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('githubMentions.menu.muteThread') }}
+      </DropdownItem>
+      <DropdownItem @click="menuAction('muteRepo')">
+        <FolderX class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('githubMentions.menu.muteRepo', { repo: menu.item ? `${menu.item.owner}/${menu.item.repo}` : '' }) }}
       </DropdownItem>
     </ContextMenu>
   </div>

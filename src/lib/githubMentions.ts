@@ -44,6 +44,16 @@ export interface MentionItem {
   existing_run_status: string | null
 }
 
+export type MentionMuteScope = 'thread' | 'repo'
+
+/** "Not interested": a thread (target = mention key) or a whole repo (target = lowercase owner/repo). */
+export interface MentionMute {
+  scope: MentionMuteScope
+  target: string
+  label: string
+  muted_at: string
+}
+
 export interface MentionAccountError {
   account_id: string
   account_label: string

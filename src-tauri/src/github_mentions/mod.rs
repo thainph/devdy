@@ -53,6 +53,10 @@ const MAX_THREADS: usize = 150;
 /// Excerpt length sent to the UI.
 const EXCERPT_CHARS: usize = 600;
 const MAX_DISMISSED: usize = 500;
+/// "Not interested": threads / repos never listed again, whatever happens on
+/// them (unlike `DISMISSED_KEY`, which a new comment undoes).
+const MUTED_KEY: &str = "github_mentions.muted";
+const MAX_MUTED: usize = 1000;
 
 /// Notification reasons whose threads may hold a direct `@login`: a mention on
 /// a thread the user already follows can arrive as `comment` / `author`, so
@@ -106,6 +110,44 @@ pub struct MentionItem {
     /// The "Check with AI" session started for this mention.
     pub existing_run_id: Option<String>,
     pub existing_run_status: Option<String>,
+}
+
+/// A muted thread (`scope` "thread", `target` = mention key) or repository
+/// (`scope` "repo", `target` = lowercase `owner/repo`, every account).
+#[derive(Debug, Serialize, Deserialize, Clone, PartialEq)]
+pub struct MentionMute {
+    pub scope: String,
+    pub target: String,
+    /// Shown in the muted list: `owner/repo#N title` or `owner/repo`.
+    pub label: String,
+    pub muted_at: String,
+}
+
+#[derive(Default)]
+struct MuteSet {
+    threads: HashSet<String>,
+    repos: HashSet<String>,
+}
+
+impl MuteSet {
+    fn from(list: &[MentionMute]) -> Self {
+        let mut s = MuteSet::default();
+        for m in list {
+            match m.scope.as_str() {
+                "thread" => s.threads.insert(m.target.clone()),
+                _ => s.repos.insert(m.target.clone()),
+            };
+        }
+        s
+    }
+
+    fn mutes(&self, thread_key: &str, owner: &str, repo: &str) -> bool {
+        self.threads.contains(thread_key) || self.repos.contains(&repo_target(owner, repo))
+    }
+}
+
+fn repo_target(owner: &str, repo: &str) -> String {
+    format!("{owner}/{repo}").to_lowercase()
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -483,7 +525,12 @@ async fn memo_item(
     item.filter(|i| !i.answered_at.as_deref().is_some_and(|a| a < answered_cutoff))
 }
 
-async fn fetch_account(acct: &Account, dismissed: &HashSet<String>, lookback_days: i64) -> Result<Vec<MentionItem>, String> {
+async fn fetch_account(
+    acct: &Account,
+    dismissed: &HashSet<String>,
+    muted: &MuteSet,
+    lookback_days: i64,
+) -> Result<Vec<MentionItem>, String> {
     let client = github::client_for_account(&acct.id).map_err(|e| e.to_string())?;
     let now = chrono::Utc::now();
     let since = (now - chrono::Duration::days(lookback_days)).to_rfc3339_opts(chrono::SecondsFormat::Secs, true);
@@ -514,7 +561,11 @@ async fn fetch_account(acct: &Account, dismissed: &HashSet<String>, lookback_day
     let Some(mut notifications) = notifications else {
         return Err(last_err.unwrap_or_else(|| "GitHub notifications failed".into()));
     };
-    notifications.retain(|n| REASONS.contains(&n.reason.as_str()));
+    // Muted threads / repos are dropped before their comments are read.
+    notifications.retain(|n| {
+        REASONS.contains(&n.reason.as_str())
+            && !muted.mutes(&format!("{}:{}", acct.id, n.id), &n.repository.owner.login, &n.repository.name)
+    });
     notifications.truncate(MAX_THREADS);
     // Forget threads of this account that left the window.
     let live: HashSet<String> = notifications.iter().map(|n| format!("{}:{}", acct.id, n.id)).collect();
@@ -542,9 +593,10 @@ fn dismiss_key(item: &MentionItem) -> String {
 async fn fetch_all(db: &Db) -> Result<MentionsResult, String> {
     let accounts = accounts(db).await?;
     let dismissed: HashSet<String> = load_dismissed(db).await.into_iter().collect();
+    let muted = MuteSet::from(&load_muted(db).await);
     restore_threads(db).await;
     let lookback = lookback_days(db).await;
-    let results = futures_util::future::join_all(accounts.iter().map(|a| fetch_account(a, &dismissed, lookback))).await;
+    let results = futures_util::future::join_all(accounts.iter().map(|a| fetch_account(a, &dismissed, &muted, lookback))).await;
 
     let mut out = MentionsResult::default();
     let mut seen = HashSet::new();
@@ -643,6 +695,14 @@ async fn set_setting(db: &Db, key: &str, value: &str) -> Result<(), String> {
 
 async fn load_dismissed(db: &Db) -> Vec<String> {
     setting(db, DISMISSED_KEY).await.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+}
+
+async fn load_muted(db: &Db) -> Vec<MentionMute> {
+    setting(db, MUTED_KEY).await.and_then(|v| serde_json::from_str(&v).ok()).unwrap_or_default()
+}
+
+async fn save_muted(db: &Db, list: &[MentionMute]) -> Result<(), String> {
+    set_setting(db, MUTED_KEY, &serde_json::to_string(list).unwrap_or_default()).await
 }
 
 /// Kept in insertion order so the oldest links drop first past the cap.
@@ -885,6 +945,70 @@ pub async fn dismiss_github_mention(app: AppHandle, db: State<'_, Db>, key: Stri
     Ok(())
 }
 
+/// "Not interested": never list this thread (`scope` "thread") or anything
+/// from its repository (`scope` "repo") again, until unmuted. Marked read on
+/// GitHub too; the GitHub subscription itself is left alone.
+#[tauri::command]
+pub async fn mute_github_mention(app: AppHandle, db: State<'_, Db>, key: String, scope: String) -> Result<(), String> {
+    let item = cached_item(&key)?;
+    let repo_label = format!("{}/{}", item.owner, item.repo);
+    let mute = match scope.as_str() {
+        "thread" => MentionMute {
+            scope,
+            target: item.key.clone(),
+            label: match item.number {
+                Some(n) => format!("{repo_label}#{n} {}", item.title),
+                None => format!("{repo_label} · {}", item.title),
+            },
+            muted_at: chrono::Utc::now().to_rfc3339(),
+        },
+        "repo" => MentionMute {
+            scope,
+            target: repo_target(&item.owner, &item.repo),
+            label: repo_label,
+            muted_at: chrono::Utc::now().to_rfc3339(),
+        },
+        other => return Err(format!("Unknown mute scope: {other}")),
+    };
+    let mut list = load_muted(&db).await;
+    list.retain(|m| !(m.scope == mute.scope && m.target == mute.target));
+    list.push(mute.clone());
+    if list.len() > MAX_MUTED {
+        list.drain(..list.len() - MAX_MUTED);
+    }
+    save_muted(&db, &list).await?;
+
+    let set = MuteSet::from(std::slice::from_ref(&mute));
+    let hit: Vec<MentionItem> = cached()
+        .map(|c| c.result.items.into_iter().filter(|i| set.mutes(&i.key, &i.owner, &i.repo)).collect())
+        .unwrap_or_default();
+    for i in hit.iter().filter(|i| i.unread) {
+        if let Ok(client) = github::client_for_account(&i.account_id) {
+            if let Err(e) = mark_thread_read(&client, &i.thread_id).await {
+                tracing::warn!(event = "github_mentions_mark_read_failed", error = %e);
+            }
+        }
+    }
+    patch_cache(&app, |items| items.retain(|i| !set.mutes(&i.key, &i.owner, &i.repo)));
+    Ok(())
+}
+
+/// Muted threads / repositories, newest first.
+#[tauri::command]
+pub async fn list_github_mention_mutes(db: State<'_, Db>) -> Result<Vec<MentionMute>, String> {
+    let mut list = load_muted(&db).await;
+    list.reverse();
+    Ok(list)
+}
+
+/// Unmute; the thread / repo comes back on the next fetch (the caller refreshes).
+#[tauri::command]
+pub async fn unmute_github_mention(db: State<'_, Db>, scope: String, target: String) -> Result<(), String> {
+    let mut list = load_muted(&db).await;
+    list.retain(|m| !(m.scope == scope && m.target == target));
+    save_muted(&db, &list).await
+}
+
 /// Remember the "Check with AI" session started for a mention, so the card
 /// shows it and a second click opens it instead of starting another.
 #[tauri::command]
@@ -903,4 +1027,22 @@ pub async fn link_github_mention_run(app: AppHandle, db: State<'_, Db>, key: Str
         }
     });
     Ok(())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn mute(scope: &str, target: &str) -> MentionMute {
+        MentionMute { scope: scope.into(), target: target.into(), label: String::new(), muted_at: String::new() }
+    }
+
+    #[test]
+    fn mute_set_matches_thread_or_repo() {
+        let set = MuteSet::from(&[mute("thread", "acc:42"), mute("repo", "sora-tech/noise")]);
+        assert!(set.mutes("acc:42", "any", "repo"));
+        assert!(set.mutes("acc:7", "Sora-Tech", "Noise"));
+        assert!(!set.mutes("acc:7", "sora-tech", "app"));
+        assert!(!set.mutes("other:42", "sora-tech", "app"));
+    }
 }

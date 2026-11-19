@@ -54,7 +54,12 @@
     "copyLink": "Copy link",
     "copied": "Đã copy link",
     "dismiss": "Bỏ qua cho tới khi có người trả lời tiếp",
-    "dismissed": "Đã bỏ qua"
+    "dismissed": "Đã bỏ qua",
+    "more": "Thao tác khác",
+    "muteThread": "Không quan tâm thread này",
+    "muteRepo": "Ẩn mọi mention từ {repo}",
+    "mutedThread": "Đã ẩn thread — bỏ ẩn trong mục Hiển thị",
+    "mutedRepo": "Đã ẩn {repo} — bỏ ẩn trong mục Hiển thị"
   },
   "check": {
     "label": "Kiểm tra bằng AI",
@@ -69,5 +74,13 @@
     "started": "Đã bắt đầu kiểm tra bằng AI cho {ref}",
     "failed": "Không bắt đầu được phiên kiểm tra: {error}",
     "prompt": "Hãy giúp tôi ({me}) xử lý một lần được nhắc tới trên GitHub tại {ref}: \"{title}\".\n\n{who} viết ({url}):\n\n{excerpt}\n\nĐọc file task (nội dung issue / PR, comment, và diff nếu có) cùng code liên quan trong repo để hiểu người đó đang hỏi hoặc yêu cầu gì. Sau đó trả lời bằng tiếng Việt, gồm:\n1. Tóm tắt ngắn yêu cầu.\n2. Câu trả lời hoặc hướng xử lý, kèm dẫn chứng (file:dòng).\n3. Bản nháp comment để tôi đăng lên GitHub, viết cùng ngôn ngữ với thread.\n\nKhông tự đăng comment hay thay đổi gì trên GitHub."
+  },
+  "muted": {
+    "title": "Không quan tâm",
+    "empty": "Chưa ẩn gì. Dùng menu của card để ẩn một thread hoặc cả repository.",
+    "thread": "Thread đã ẩn",
+    "repo": "Repository đã ẩn",
+    "unmute": "Bỏ ẩn",
+    "unmuted": "Đã bỏ ẩn {name}"
   }
 }
