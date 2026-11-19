@@ -58,7 +58,7 @@ export function usePrReviewActions(opts: {
         permissionModeOverride: resolvePermissionMode(null, appSettings.settings?.default_permission_mode),
       })
       // Link immediately so a second click resumes instead of duplicating. The run
-      // streams in the background (liveRuns / ActiveRunsDock) — stay on this screen.
+      // streams in the background (liveRuns / Dashboard) — stay on this screen.
       store.linkRun(key, run.id, 'running')
       return true
     } finally {

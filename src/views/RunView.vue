@@ -693,8 +693,8 @@ watch(
 // Live streaming state for the focused run is owned by the liveRuns store so it
 // survives navigation and lets multiple runs stream at once.
 const session = computed(() => currentRunId.value ? live.get(currentRunId.value) : undefined)
-// Viewing a run acknowledges its "run finished" notification in the Active runs
-// dock. Fires when the focused run changes and when it finishes while on screen.
+// Viewing a run acknowledges its "run finished" (unread) mark on the Dashboard.
+// Fires when the focused run changes and when it finishes while on screen.
 watch(
   [currentRunId, () => session.value?.notifyDone],
   () => {

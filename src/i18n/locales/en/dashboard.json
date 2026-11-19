@@ -73,7 +73,9 @@
       "busiest": "busiest {from}–{to}",
       "now": "now",
       "timelineLabel": "Runs finished today, from {from} to now",
-      "latest": "Latest"
+      "latest": "Latest",
+      "unread": "Unread",
+      "unreadCount": "{n} unread"
     }
   },
   "toolbar": {

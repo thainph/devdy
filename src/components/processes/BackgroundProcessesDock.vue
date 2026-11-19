@@ -1,5 +1,5 @@
 <script setup lang="ts">
-// Sidebar warning row under the Active runs dock: shown only while processes are
+// Sidebar warning row under the nav: shown only while processes are
 // left behind (by an ended session or a previous app run), linking to the
 // Processes screen. Counts come from the `procs:changed` push, so it costs nothing
 // while hidden.

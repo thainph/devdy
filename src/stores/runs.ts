@@ -167,7 +167,7 @@ export const useRunsStore = defineStore('runs', () => {
   // Metadata for every run we've loaded this session, keyed by run id and kept
   // across project switches. The `runs` array only ever holds ONE project's
   // runs (it gets replaced on every tab switch), so app-wide surfaces like the
-  // active-runs dock can't rely on it to label a background project's run. They
+  // tray / tabs can't rely on it to label a background project's run. They
   // read titles from this accumulated cache instead.
   const runMeta = reactive(new Map<string, RunRecord>())
 
@@ -244,7 +244,7 @@ export const useRunsStore = defineStore('runs', () => {
 
   /**
    * Refresh `runMeta` for a project. `list_runs` is the only endpoint that fills
-   * `role` and `conductor_run_id`, so app-wide surfaces (the active-runs dock)
+   * `role` and `conductor_run_id`, so app-wide surfaces (the tray, workspace tabs)
    * need this to learn a freshly-spawned worker's conductor before they can group
    * it. For a BACKGROUND project this must not clobber whatever project the user
    * is currently viewing, so it only folds the result into `runMeta`.

@@ -73,7 +73,7 @@ export interface RuntimeToday {
   finished: number
   /** Runs that reached failed today. */
   failed: number
-  /** Latest 3 finished / failed, newest first. */
+  /** Latest 8 finished / failed / cancelled, newest first. */
   recent: RecentRun[]
   /** Every run finished today (local day), oldest first (optional: older backends omit it). */
   timeline?: TimelineRun[]

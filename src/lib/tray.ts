@@ -131,7 +131,7 @@ interface ActiveRun {
   pending: number
 }
 
-// Same naming as the Active runs dock: issue/PR runs by number, sessions by title,
+// Same naming everywhere: issue/PR runs by number, sessions by title,
 // else the project name — read from the session-wide `runMeta` cache so runs of
 // background projects are named too. The project is appended for context.
 function runLabel(r: ActiveRun): string {

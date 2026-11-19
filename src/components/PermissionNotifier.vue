@@ -93,7 +93,7 @@ let unsubscribeReminder: (() => void) | null = null
 const notified = new Set<string>()
 
 // Native "session finished" notification. Skipped when the window is focused
-// (the Active runs dock already shows it), when the mascot is on, for cancelled
+// (the Dashboard already marks it unread), when the mascot is on, for cancelled
 // runs (the user stopped it), and for conductor workers (only the main run).
 async function notifyRunFinished(runId: string, projectId: string, status: string) {
   if (!permissionGranted || mascotEnabled.value || status === 'cancelled') return
@@ -119,7 +119,7 @@ async function notifyRunFinished(runId: string, projectId: string, status: strin
     projectId,
     runId,
   }).catch(() => {
-    // ignore — the Active runs dock still shows it in-app
+    // ignore — the Dashboard still marks it unread in-app
   })
 }
 

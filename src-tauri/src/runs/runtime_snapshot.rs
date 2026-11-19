@@ -451,6 +451,9 @@ fn parse_ts(s: &str) -> Option<DateTime<Utc>> {
         .map(|t| t.with_timezone(&Utc))
 }
 
+/// How many latest finished runs the Today tile lists.
+const RECENT_LIMIT: u32 = 8;
+
 /// Runs a Devdy turn finished, excluding sessions merely imported from an
 /// external transcript (inserted already `done` with `started_at = created_at`;
 /// every Devdy turn stamps its own `started_at`).
@@ -459,7 +462,7 @@ const DEVDY_FINISHED: &str =
      AND r.started_at IS NOT NULL AND r.started_at <> r.created_at";
 
 /// Runs that finished / failed on `now`'s local day (counts and a timeline,
-/// oldest first), plus the three latest finished, failed or cancelled runs.
+/// oldest first), plus the [`RECENT_LIMIT`] latest finished, failed or cancelled runs.
 pub async fn today_stats<Tz: TimeZone>(
     db: &Db,
     now: DateTime<Tz>,
@@ -506,7 +509,7 @@ pub async fn today_stats<Tz: TimeZone>(
     let recent = sqlx::query(&format!(
         "SELECT r.id, r.project_id, p.name AS project_name, r.title, r.status, r.finished_at \
          FROM runs r JOIN projects p ON p.id = r.project_id \
-         WHERE {DEVDY_FINISHED} ORDER BY r.finished_at DESC LIMIT 3"
+         WHERE {DEVDY_FINISHED} ORDER BY r.finished_at DESC LIMIT {RECENT_LIMIT}"
     ))
     .fetch_all(db)
     .await?;
@@ -1028,7 +1031,8 @@ mod tests {
         assert_eq!(t.finished, 2, "d1 + d2");
         assert_eq!(t.failed, 1);
         let ids: Vec<&str> = t.recent.iter().map(|r| r.run_id.as_str()).collect();
-        assert_eq!(ids, ["c1", "f1", "d2"]);
+        // Not limited to today; the running run and the imported transcript are left out.
+        assert_eq!(ids, ["c1", "f1", "d2", "d1", "old"]);
         assert_eq!(t.recent[0].status, "cancelled");
         assert_eq!(
             t.recent[1].error.as_deref(),

@@ -73,7 +73,9 @@
       "busiest": "bận nhất {from}–{to}",
       "now": "bây giờ",
       "timelineLabel": "Các session xong hôm nay, từ {from} tới bây giờ",
-      "latest": "Gần nhất"
+      "latest": "Gần nhất",
+      "unread": "Chưa đọc",
+      "unreadCount": "{n} chưa đọc"
     }
   },
   "toolbar": {

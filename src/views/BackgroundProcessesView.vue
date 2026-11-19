@@ -141,7 +141,7 @@ async function stopEverything() {
   }
 }
 
-// Same path as the Active runs dock / tray: the run's own pop-out if it has one,
+// Same path as the tray: the run's own pop-out if it has one,
 // otherwise its workspace tab in this window.
 async function openSession(e: BgEntry) {
   const runId = e.run_id

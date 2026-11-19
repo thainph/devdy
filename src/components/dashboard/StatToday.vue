@@ -1,8 +1,9 @@
 <script setup lang="ts">
 // Bento tile "Today": runs finished today and how many failed, a timeline from
 // 08:00 (or the day start, when a run finished earlier) to now with one dot per
-// run finished today, and the three latest finished runs (not limited to
-// today; click opens the run).
+// run finished today, and the latest finished runs (not limited to today;
+// click opens the run). A run finished since the user last opened it is marked
+// unread.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { CheckCircle2, CircleCheckBig, XCircle } from 'lucide-vue-next'
@@ -17,7 +18,7 @@ import {
 import BentoCard from './BentoCard.vue'
 import CountUp from './CountUp.vue'
 
-const props = defineProps<{ today: RuntimeToday | null; now: number }>()
+const props = defineProps<{ today: RuntimeToday | null; now: number; unread: ReadonlySet<string> }>()
 const emit = defineEmits<{ open: [run: RecentRun] }>()
 const { t } = useI18n()
 
@@ -31,6 +32,7 @@ const span = computed(() => timelineWindow(firstAt.value, props.now))
 const dots = computed(() => timelineDots(runs.value, span.value))
 const ticks = computed(() => timelineTicks(span.value))
 const busiest = computed(() => busiestHour(dots.value.map((d) => d.at)))
+const unreadCount = computed(() => props.today?.recent.filter((r) => props.unread.has(r.runId)).length ?? 0)
 
 const DOT: Record<TimelineRun['status'], string> = {
   done: 'bg-success',
@@ -90,7 +92,10 @@ function when(iso: string): string {
       </div>
 
       <div v-if="today.recent.length" class="flex min-w-0 flex-[1_1_220px] flex-col gap-1">
-        <span class="text-[11px] font-semibold text-muted-foreground">{{ t('dashboard.stat.today.latest') }}</span>
+        <span class="flex items-center gap-1.5 text-[11px] font-semibold text-muted-foreground">
+          {{ t('dashboard.stat.today.latest') }}
+          <span v-if="unreadCount" class="rounded-full bg-primary/15 px-1.5 py-px text-[10px] text-primary">{{ t('dashboard.stat.today.unreadCount', { n: unreadCount }) }}</span>
+        </span>
         <ul class="flex flex-col gap-0.5">
           <li v-for="r in today.recent" :key="r.runId">
             <button
@@ -101,10 +106,12 @@ function when(iso: string): string {
               <XCircle v-if="r.status === 'failed'" class="h-3.5 w-3.5 shrink-0 text-destructive" :stroke-width="1.75" aria-hidden="true" />
               <CheckCircle2 v-else class="h-3.5 w-3.5 shrink-0" :class="r.status === 'done' ? 'text-success' : 'text-muted-foreground'" :stroke-width="1.75" aria-hidden="true" />
               <span class="sr-only">{{ t(`dashboard.stat.today.status.${r.status}`) }}</span>
-              <span class="min-w-0 flex-1 truncate">
+              <span class="min-w-0 flex-1 truncate" :class="unread.has(r.runId) && 'font-semibold'">
                 {{ r.title || t('dashboard.untitled') }}
                 <span class="text-muted-foreground">· {{ r.status === 'failed' && r.error ? r.error : r.projectName }}</span>
               </span>
+              <span v-if="unread.has(r.runId)" class="h-1.5 w-1.5 shrink-0 rounded-full bg-primary" :title="t('dashboard.stat.today.unread')" />
+              <span v-if="unread.has(r.runId)" class="sr-only">{{ t('dashboard.stat.today.unread') }}</span>
               <span class="shrink-0 font-mono text-[10px] text-muted-foreground">{{ when(r.finishedAt) }}</span>
             </button>
           </li>

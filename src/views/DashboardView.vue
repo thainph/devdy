@@ -87,6 +87,14 @@ const order = computed(() => displayOrder(rows.value))
 const queue = computed(() => waitQueue(dash.sessions.value))
 const mapList = computed(() => mapOrder(nodes.value))
 const counts = computed(() => filterCounts(dash.sessions.value))
+/** Finished runs the user has not opened since (cleared by `markSeen`). */
+const unread = computed(() => {
+  const ids = new Set<string>()
+  live.sessions.forEach((s, id) => {
+    if (s.notifyDone && s.status !== 'running') ids.add(id)
+  })
+  return ids
+})
 const filtering = computed(() => !!query.value.trim() || filter.value !== null)
 const parents = computed(() => nodes.value.filter((n) => n.children.length).map((n) => n.session.id))
 
@@ -269,7 +277,7 @@ const SHORTCUTS = [
             />
             <StatQuota :quotas="dash.quotas.value" :now="dash.now.value" />
             <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" />
-            <StatToday class="@min-[720px]:col-span-2" :today="dash.today.value" :now="dash.now.value" @open="openRecent" />
+            <StatToday class="@min-[720px]:col-span-2" :today="dash.today.value" :now="dash.now.value" :unread="unread" @open="openRecent" />
           </div>
         </div>
 

@@ -18,7 +18,6 @@ import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
-import ActiveRunsDock from '@/components/ActiveRunsDock.vue'
 import RemoteIndicator from '@/components/RemoteIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
@@ -633,7 +632,7 @@ onMounted(async () => {
   // Attach per-run listeners for any run the backend reports as active — even
   // ones this window never opened (started/resumed from a remote Controller, or
   // still live after a restart). This is what lets a remotely-driven run's
-  // permission / question prompts surface on the desktop (active-runs dock +
+  // permission / question prompts surface on the desktop (dashboard +
   // native notification), not just on the phone. `startListening` is idempotent,
   // so re-announcing a locally-started run is a harmless no-op.
   try {
@@ -1032,9 +1031,6 @@ onMounted(async () => {
               </RouterLink>
             </template>
           </nav>
-
-          <!-- App-wide monitor of concurrent runs + permission center -->
-          <ActiveRunsDock />
 
           <!-- Warning row while processes outlive their session -->
           <BackgroundProcessesDock />

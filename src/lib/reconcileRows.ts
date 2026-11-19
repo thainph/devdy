@@ -2,7 +2,7 @@
  * Helpers for folding a fresh backend list into an already-reactive one without
  * invalidating everything that reads it. Replacing a reactive array (or every
  * entry of a reactive Map) wholesale re-triggers every computed / component
- * that touches it — the tray, the active-runs dock and the History list — even
+ * that touches it — the tray, the Dashboard and the History list — even
  * when nothing changed, which adds up with many concurrent sessions polling.
  */
 

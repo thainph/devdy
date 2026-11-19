@@ -74,7 +74,7 @@ export interface LiveSession {
   budgetBlocked: boolean
   /**
    * True once the run has finished (run:done) but the user hasn't opened it
-   * since. Drives the "run finished" notification in the Active runs dock; it
+   * since. Drives the unread mark on the Dashboard's latest runs; it
    * is cleared by `markSeen` when the user views the run. The finished status
    * itself lives in `status` (done / failed / cancelled).
    */
@@ -287,7 +287,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
    *     status already went terminal (an abnormal combination, but dropping it
    *     would strand a prompt the user can never answer);
    *  3. `notifyDone` is false — the user hasn't acknowledged the finish yet, and
-   *     the Active runs dock still needs the row;
+   *     the Dashboard still marks it unread;
    *  4. no `doneCallbacks` — a subscriber registered these and keeps them across
    *     turns on purpose; evicting would break its relay mid-conversation;
    *  5. the backend hasn't reported it live (`activeRunIds`) — a run resumed
@@ -569,7 +569,7 @@ export const useLiveRunsStore = defineStore('liveRuns', () => {
         s.permissionQueue = []
         s.attention = []
         for (const id of answeredIds) if (id.startsWith(`${runId}:`)) answeredIds.delete(id)
-        // Flag a "run finished" notification for the Active runs dock. It stays
+        // Flag the run unread (Dashboard, mascot). It stays
         // until the user opens this run (markSeen). If the run is already on
         // screen, RunView acknowledges it immediately so nothing shows.
         // Conductor workers never flag one: their conductor relays the result,
