@@ -309,7 +309,7 @@ defineExpose({ focusSearch })
         <li v-for="r in rows" :key="r.runId">
           <button
             type="button"
-            class="relative flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-lg border py-[9px] pr-2.5 pl-3 text-left transition-colors hover:border-primary/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary motion-reduce:transition-none"
+            class="rt-row relative flex w-full min-w-0 cursor-pointer items-center gap-3 rounded-lg border py-[9px] pr-2.5 pl-3 text-left transition-colors hover:border-primary/40 focus-visible:outline-2 focus-visible:outline-offset-[-2px] focus-visible:outline-primary motion-reduce:transition-none"
             :class="[
               isUnread(r) ? 'border-border/50 bg-card shadow-sm shadow-black/5' : 'border-transparent bg-card/60 hover:bg-card',
               menu.open && menu.target?.runId === r.runId && 'border-primary/40! bg-card!',

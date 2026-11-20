@@ -26,11 +26,13 @@ export const STATE_FILL: Record<SessionState, string> = {
  */
 export function frameClass(s: Pick<RtSession, 'state'>, selected: boolean): string[] {
   const out: string[] = []
-  // The tint mixed into the card, so it stays opaque on the tray.
-  if (s.state === 'waiting') out.push('border-warning/60 bg-[color-mix(in_srgb,var(--color-warning)_10%,var(--color-card))]')
+  // The tint mixed into the card, so it stays opaque on the tray. `--card` is
+  // read on the row itself (not the root-resolved `--color-card`) so a skin
+  // can make rows translucent there (tahoe.css, `.rt-row`).
+  if (s.state === 'waiting') out.push('border-warning/60 bg-[color-mix(in_srgb,var(--color-warning)_10%,hsl(var(--card)))]')
   else if (s.state === 'quiet') out.push('border-dashed border-warning/70 bg-card')
   else out.push('border-border/50 bg-card shadow-sm shadow-black/5')
-  if (selected) out.push('border-primary/70! bg-[color-mix(in_srgb,var(--color-primary)_6%,var(--color-card))]!')
+  if (selected) out.push('border-primary/70! bg-[color-mix(in_srgb,var(--color-primary)_6%,hsl(var(--card)))]!')
   else out.push('hover:border-primary/40')
   return out
 }

@@ -255,6 +255,59 @@
   background-color: rgba(0, 0, 0, 0.38);
 }
 
+/* --- Dashboard (components/dashboard/runtime.css) --------------------------
+ * Bento tiles drop their opaque fill and primary-tinted gradient border for
+ * the card glass above; the Running / History trays float as glass panes like
+ * the list sidebars; the session rows on them are clear glass (concentric:
+ * 18px tray − 6px padding = 12px). Rows tint via `--card`, which their
+ * state / selected classes mix from, so those stay translucent too. */
+[data-theme='tahoe'] .rt-card {
+  background-image: none;
+}
+[data-theme='tahoe'] .rt-card-link:is(:hover, :focus-visible) {
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    0 0 0 3px hsl(var(--primary) / 0.35),
+    var(--tahoe-shadow);
+}
+[data-theme='tahoe'] .rt-tray {
+  border-color: transparent;
+  border-radius: 18px;
+  background: var(--tahoe-pane);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 6px rgba(0, 0, 0, 0.06);
+}
+[data-theme='tahoe'] .rt-row {
+  --card: 0 0% 100% / 0.62;
+  border-radius: 12px;
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), 0 1px 2px rgba(0, 0, 0, 0.04);
+}
+[data-theme='tahoe'].dark .rt-row {
+  --card: 0 0% 100% / 0.07;
+}
+/* Neutral lift instead of the default primary glow. */
+@media (hover: hover) and (prefers-reduced-motion: no-preference) {
+  [data-theme='tahoe'] .rt-item:hover {
+    box-shadow: inset 0 1px 0 var(--tahoe-specular), var(--tahoe-shadow);
+  }
+}
+[data-theme='tahoe'] .rt-empty {
+  border-radius: 12px;
+  border-width: 1px;
+  border-color: hsl(var(--foreground) / 0.14);
+}
+[data-theme='tahoe'] .rt-kbd {
+  border-radius: 5px;
+  border-width: 0;
+  background-color: var(--tahoe-clear);
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), 0 0 0 0.5px var(--tahoe-hairline), 0 1px 1px rgba(0, 0, 0, 0.06);
+}
+
 /* --- Buttons: capsules ----------------------------------------------------- */
 [data-theme='tahoe'] .ui-btn:not([class*='rounded-none']) {
   border-radius: 999px;

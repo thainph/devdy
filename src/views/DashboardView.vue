@@ -263,7 +263,7 @@ const SHORTCUTS = [
         <span class="hidden flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground lg:flex" :aria-label="t('dashboard.shortcuts.label')">
           <template v-for="(k, i) in SHORTCUTS" :key="k.label">
             <span v-if="i" aria-hidden="true">·</span>
-            <kbd v-for="key in k.keys" :key="key" class="rounded border border-b-2 border-border bg-card px-1 font-mono text-[10px] text-foreground">{{ key }}</kbd>
+            <kbd v-for="key in k.keys" :key="key" class="rt-kbd rounded border border-b-2 border-border bg-card px-1 font-mono text-[10px] text-foreground">{{ key }}</kbd>
             <span>{{ t(`dashboard.shortcuts.${k.label}`) }}</span>
           </template>
         </span>

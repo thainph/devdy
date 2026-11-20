@@ -156,6 +156,7 @@ A **skin** (group `skin`) also changes shape, material and motion, not just colo
 | `.ui-backdrop` | Modal / Drawer scrim |
 | `.app-shell` · `.app-titlebar` · `.app-sidebar` | window root (opaque `bg-background` — it hides `body::before` unless a skin makes it translucent) · title bar · navigation sidebar |
 | `.app-sidebar .is-active` · `.app-nav-indicator` | active nav link · its 2px primary bar |
+| `.rt-card` · `.rt-tray` · `.rt-row` · `.rt-empty` · `.rt-kbd` | Dashboard bento tile (also `.ui-card`) · Running / History tray · session row on a tray (tints from `--card`, set it there for translucent rows) · tray empty state · shortcut keycap |
 | `body::before` / `body::after` | full-window background layers (aurora by default) |
 | `html[data-agent-state]` | `idle` · `running` · `waiting` · `error` · `done` — the app-wide agent state (see `src/assets/agent-ambient.css`) |
 

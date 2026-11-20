@@ -43,7 +43,7 @@ const RING_R = 15
   <div
     :data-session-id="s.id"
     :data-state="s.state"
-    class="rt-item grid h-[54px] w-full min-w-0 grid-cols-[30px_minmax(0,1fr)_34px_52px] items-center gap-3 rounded-lg border pr-3 pl-4 @max-[640px]:grid-cols-[30px_minmax(0,1fr)_52px]"
+    class="rt-item rt-row grid h-[54px] w-full min-w-0 grid-cols-[30px_minmax(0,1fr)_34px_52px] items-center gap-3 rounded-lg border pr-3 pl-4 @max-[640px]:grid-cols-[30px_minmax(0,1fr)_52px]"
     :class="frameClass(s, selected)"
   >
     <button
