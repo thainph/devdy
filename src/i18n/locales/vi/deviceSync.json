@@ -135,7 +135,7 @@
   },
   "warningGroups": {
     "problems": "Lỗi ({n})",
-    "awsLogin": "AWS profile cần đăng nhập ({n})",
+    "login": "Tài khoản cần đăng nhập ({n})",
     "folders": "Thư mục project không có trên máy này ({n})",
     "links": "Liên kết tới mục không có trên máy này ({n})",
     "mirror": "Không xoá khi đồng bộ y hệt ({n})"
@@ -153,6 +153,8 @@
     "aws_profile_added": "Đã thêm AWS profile '{profile}' (account '{account}', đăng nhập tại {url}) vào ~/.aws/config. Đăng nhập để dùng.",
     "aws_profile_conflict": "AWS profile '{profile}': [{section}] trong ~/.aws/config có giá trị khác nên được giữ nguyên.",
     "aws_profile_failed": "AWS profile '{profile}': không ghi được ~/.aws/config: {error}",
+    "azure_login_needed": "Đã thêm Azure account '{account}', máy này chưa đăng nhập.",
+    "claude_login_needed": "Đã thêm Claude account '{account}', máy này chưa đăng nhập.",
     "other": "{message}"
   },
   "linkKinds": {
@@ -203,9 +205,10 @@
     "counts": "{n} mục · thêm {created}, cập nhật {updated}",
     "never": "Chưa đồng bộ từ máy khác lần nào."
   },
-  "awsLogin": {
+  "login": {
     "action": "Đăng nhập",
     "done": "Đã đăng nhập",
-    "failed": "Đăng nhập thất bại"
+    "failed": "Đăng nhập thất bại",
+    "settingsHint": "Bạn cũng có thể đăng nhập ở mục của account đó trong Settings."
   }
 }

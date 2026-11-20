@@ -14,7 +14,7 @@ import { Banner, Button, Checkbox, Input, Modal } from '@/components/ui'
 import { invoke } from '@/lib/tauri'
 import {
   DEVICE_SYNC_PROGRESS, REPORT_COLUMNS, SYNC_CATEGORY_KEYS, SYNC_GROUPS, SYNC_PHASES, WARNING_PREVIEW,
-  compactReport, defaultCategories, deviceLabel, deviceLabels, groupState, groupWarnings, isDeviceGone,
+  compactReport, defaultCategories, deviceLabel, deviceLabels, groupState, groupWarnings, isDeviceGone, loginFor,
   mirrorDeletions, needsRelogin, progressPercent, reportTotals, selectedCategories, syncErrorCode,
   type SyncCategories, type SyncCategory, type SyncDevice, type SyncProgress, type SyncReport, type SyncWarning,
   type SyncWarningGroup,
@@ -172,24 +172,32 @@ function visibleWarnings(group: SyncWarningGroup, items: SyncWarning[]) {
   return expanded.value.has(group) ? items : items.slice(0, WARNING_PREVIEW)
 }
 
-const GROUP_ICON = { problems: AlertTriangle, awsLogin: KeyRound, folders: FolderX, links: Link2Off, mirror: Info } as const
+const GROUP_ICON = { problems: AlertTriangle, login: KeyRound, folders: FolderX, links: Link2Off, mirror: Info } as const
 
-// `aws sso login` per profile written by the sync; one login covers every profile on its sso-session.
-const awsLogin = ref<Record<string, 'running' | 'done' | string>>({})
+// Login for accounts the pull left signed out here (AWS profile, Azure, Claude), keyed by `loginFor().key`.
+// One AWS login covers every profile on the same sso-session.
+const logins = ref<Record<string, 'running' | 'done' | string>>({})
 
-async function loginAwsProfile(profile: string) {
-  awsLogin.value = { ...awsLogin.value, [profile]: 'running' }
+async function runLogin(w: SyncWarning) {
+  const login = loginFor(w)
+  if (!login) return
+  logins.value = { ...logins.value, [login.key]: 'running' }
   try {
-    await invoke('aws_sso_login_profile', { profileName: profile })
-    awsLogin.value = { ...awsLogin.value, [profile]: 'done' }
+    await invoke(login.command, login.args)
+    logins.value = { ...logins.value, [login.key]: 'done' }
   }
   catch (e) {
-    awsLogin.value = { ...awsLogin.value, [profile]: String(e) || t('deviceSync.awsLogin.failed') }
+    logins.value = { ...logins.value, [login.key]: String(e) || t('deviceSync.login.failed') }
   }
 }
 
-function awsLoginError(profile: string) {
-  const s = awsLogin.value[profile]
+function loginState(w: SyncWarning) {
+  const login = loginFor(w)
+  return login ? logins.value[login.key] : undefined
+}
+
+function loginError(w: SyncWarning) {
+  const s = loginState(w)
   return s && s !== 'running' && s !== 'done' ? s : ''
 }
 
@@ -577,24 +585,24 @@ onBeforeUnmount(() => {
           </p>
           <ul class="space-y-0.5 pl-[18px] text-[11px]">
             <li v-for="(w, i) in visibleWarnings(g.group, g.items)" :key="i" class="break-words">
-              <template v-if="w.code === 'aws_profile_added'">
+              <template v-if="loginFor(w)">
                 <div class="flex items-center gap-2">
                   <span class="min-w-0 flex-1">{{ warningText(w) }}</span>
-                  <span v-if="awsLogin[w.params.profile] === 'done'" class="flex items-center gap-1 text-success">
-                    <Check class="h-3 w-3" :stroke-width="2" />{{ t('deviceSync.awsLogin.done') }}
+                  <span v-if="loginState(w) === 'done'" class="flex items-center gap-1 text-success">
+                    <Check class="h-3 w-3" :stroke-width="2" />{{ t('deviceSync.login.done') }}
                   </span>
                   <Button
                     v-else
                     variant="outline"
                     size="xs"
-                    :disabled="awsLogin[w.params.profile] === 'running'"
-                    @click="loginAwsProfile(w.params.profile)"
+                    :disabled="loginState(w) === 'running'"
+                    @click="runLogin(w)"
                   >
-                    <Loader2 v-if="awsLogin[w.params.profile] === 'running'" class="h-3 w-3 animate-spin" />
-                    {{ t('deviceSync.awsLogin.action') }}
+                    <Loader2 v-if="loginState(w) === 'running'" class="h-3 w-3 animate-spin" />
+                    {{ t('deviceSync.login.action') }}
                   </Button>
                 </div>
-                <p v-if="awsLoginError(w.params.profile)" class="text-destructive">{{ awsLoginError(w.params.profile) }}</p>
+                <p v-if="loginError(w)" class="text-destructive">{{ loginError(w) }} {{ t('deviceSync.login.settingsHint') }}</p>
               </template>
               <template v-else>{{ warningText(w) }}</template>
             </li>

@@ -135,7 +135,7 @@
   },
   "warningGroups": {
     "problems": "Problems ({n})",
-    "awsLogin": "AWS profiles to log in to ({n})",
+    "login": "Accounts to sign in to ({n})",
     "folders": "Project folders not on this machine ({n})",
     "links": "Links to items not on this machine ({n})",
     "mirror": "Mirror skipped ({n})"
@@ -153,6 +153,8 @@
     "aws_profile_added": "AWS profile '{profile}' (account '{account}', sign-in at {url}) was added to ~/.aws/config. Log in to use it.",
     "aws_profile_conflict": "AWS profile '{profile}': [{section}] in ~/.aws/config has different values, so it was left unchanged.",
     "aws_profile_failed": "AWS profile '{profile}': could not write ~/.aws/config: {error}",
+    "azure_login_needed": "Azure account '{account}' was added and is signed out on this machine.",
+    "claude_login_needed": "Claude account '{account}' was added and is signed out on this machine.",
     "other": "{message}"
   },
   "linkKinds": {
@@ -203,9 +205,10 @@
     "counts": "{n} items · {created} new, {updated} updated",
     "never": "Never synced from another machine."
   },
-  "awsLogin": {
+  "login": {
     "action": "Log in",
     "done": "Logged in",
-    "failed": "Login failed"
+    "failed": "Login failed",
+    "settingsHint": "You can also sign in from the account's section in Settings."
   }
 }

@@ -90,6 +90,7 @@ pub struct SyncReport {
 /// - `aws_profile_added` {profile, account, url}: SSO profile written to ~/.aws/config, needs login
 /// - `aws_profile_conflict` {profile, section}: a same-named section differs, left unchanged
 /// - `aws_profile_failed` {profile, error}
+/// - `azure_login_needed` / `claude_login_needed` {account, id}: new account, logged out here
 /// - `other` {message}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncWarning {
@@ -110,6 +111,20 @@ impl SyncWarning {
 
     fn other(message: impl Into<String>) -> Self {
         Self::new("other", &[("message", &message.into())])
+    }
+}
+
+/// A Claude / Azure account created by the pull arrives logged out: list it with
+/// its local id so the result can offer a login button.
+async fn push_login_needed(
+    db: &Db,
+    warnings: &mut Vec<SyncWarning>,
+    code: &str,
+    table: &str,
+    label: &str,
+) {
+    if let Ok(Some(id)) = backup::id_by(db, table, "label", label).await {
+        warnings.push(SyncWarning::new(code, &[("account", label), ("id", &id)]));
     }
 }
 
@@ -472,7 +487,11 @@ async fn apply_payload(
         }
         for entry in &bundle.azure_accounts {
             let result = backup::import_azure(app_data, db, entry).await;
+            let created = matches!(result, Ok(Upsert::Created));
             record(&mut report, w, "azureAccounts", &entry.label, result);
+            if created {
+                push_login_needed(db, w, "azure_login_needed", "azure_accounts", &entry.label).await;
+            }
         }
         if let Some(client) = &secret.google_client {
             let same = secrets::get_google_client().is_some_and(|c| {
@@ -496,7 +515,12 @@ async fn apply_payload(
         }
         for entry in &bundle.claude_accounts {
             let result = backup::import_claude(app_data, db, entry).await;
+            let created = matches!(result, Ok(Upsert::Created));
             record(&mut report, w, "claudeAccounts", &entry.label, result);
+            if created {
+                push_login_needed(db, w, "claude_login_needed", "claude_accounts", &entry.label)
+                    .await;
+            }
         }
     }
 
@@ -1445,7 +1469,14 @@ mod tests {
             ..Default::default()
         };
         let report = apply_payload(&env(&dir), &target, p, &cats).await;
-        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        // The new accounts arrive signed out and are listed with a login button.
+        assert_eq!(
+            report.warnings,
+            vec![
+                SyncWarning::new("azure_login_needed", &[("account", "corp"), ("id", "z1")]),
+                SyncWarning::new("claude_login_needed", &[("account", "fresh"), ("id", "c2")]),
+            ]
+        );
 
         // Existing AWS: metadata updated, local key id kept.
         let (region, key): (String, Option<String>) =
