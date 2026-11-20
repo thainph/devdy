@@ -211,6 +211,7 @@
     "action": "Log in",
     "done": "Logged in",
     "failed": "Login failed",
-    "settingsHint": "You can also sign in from the account's section in Settings."
+    "settingsHint": "You can also sign in from the account's section in Settings.",
+    "notSignedIn": "The login finished but the account is still signed out."
   }
 }

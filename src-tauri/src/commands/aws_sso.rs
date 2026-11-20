@@ -463,6 +463,14 @@ const OTHER_AUTH_KEYS: &[&str] = &[
     "web_identity_token_file",
 ];
 
+/// Keys that put credentials straight into a config / credentials section.
+const INLINE_KEY_KEYS: &[&str] = &[
+    "aws_access_key_id",
+    "aws_secret_access_key",
+    "aws_session_token",
+    "aws_security_token",
+];
+
 /// Long-lived access keys of a profile, from `~/.aws/credentials`. Secret:
 /// carried only inside the sealed sync payload, never logged (no `Debug`).
 #[derive(Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -482,11 +490,16 @@ fn credentials_section<'a>(sections: &'a [ConfigSection], name: &str) -> Option<
 pub fn static_keys_from_text(text: &str, name: &str) -> Option<AwsStaticKeys> {
     let sections = parse_config(text);
     let kv = &credentials_section(&sections, name)?.kv;
-    if kv.contains_key("aws_session_token") {
+    if kv.contains_key("aws_session_token") || kv.contains_key("aws_security_token") {
+        return None;
+    }
+    let access_key_id = kv.get("aws_access_key_id")?;
+    // `ASIA…` ids are temporary STS keys: useless without their token.
+    if access_key_id.starts_with("ASIA") {
         return None;
     }
     Some(AwsStaticKeys {
-        access_key_id: kv.get("aws_access_key_id")?.clone(),
+        access_key_id: access_key_id.clone(),
         secret_access_key: kv.get("aws_secret_access_key")?.clone(),
     })
 }
@@ -494,6 +507,10 @@ pub fn static_keys_from_text(text: &str, name: &str) -> Option<AwsStaticKeys> {
 /// Config side of access-key profile `name`: its region / output (possibly
 /// none). `None` when the profile is SSO or gets credentials another way.
 pub fn static_def_from_text(config: &str, name: &str) -> Option<AwsProfileDef> {
+    // The default profile is never written on import, so don't carry its keys.
+    if name == "default" {
+        return None;
+    }
     let sections = parse_config(config);
     let kv = find(&sections, "profile", name)
         .map(|s| s.kv.clone())
@@ -569,11 +586,20 @@ pub fn merge_credentials(
     Ok((ProfileMerge::Added, Some(out)))
 }
 
+/// `~/.aws/<file>` for messages (never the content).
+fn shown(path: &Path) -> String {
+    let file = path
+        .file_name()
+        .and_then(|n| n.to_str())
+        .unwrap_or("config");
+    format!("~/.aws/{file}")
+}
+
 fn read_existing(path: &Path) -> Result<String, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(text),
         Err(e) if e.kind() == std::io::ErrorKind::NotFound => Ok(String::new()),
-        Err(e) => Err(format!("read ~/.aws/config: {e}")),
+        Err(e) => Err(format!("read {}: {e}", shown(path))),
     }
 }
 
@@ -601,7 +627,7 @@ fn write_config(target: &Path, expected: &str, text: &str) -> Result<bool, Strin
         f.sync_all()
     };
     let result = write_tmp()
-        .map_err(|e| format!("write ~/.aws/config: {e}"))
+        .map_err(|e| format!("write {}: {e}", shown(target)))
         .and_then(|()| read_existing(target))
         .and_then(|current| {
             if current != expected {
@@ -609,7 +635,7 @@ fn write_config(target: &Path, expected: &str, text: &str) -> Result<bool, Strin
             }
             std::fs::rename(&tmp, target)
                 .map(|()| true)
-                .map_err(|e| format!("write ~/.aws/config: {e}"))
+                .map_err(|e| format!("write {}: {e}", shown(target)))
         });
     if result != Ok(true) {
         let _ = std::fs::remove_file(&tmp);
@@ -633,6 +659,18 @@ fn merge_item(
         (false, Some(keys)) => Some(keys),
         (false, None) => return Err("access keys were not included".to_string()),
     };
+    // Never give an existing profile a second way to authenticate: keys appended
+    // to `credentials` win over SSO / credential_process in the CLI and SDKs, and
+    // an SSO section would shadow existing keys.
+    match keys {
+        Some(_) if has_other_auth(config, name) => {
+            return Ok(ProfileMerge::Conflict(format!("profile {name}")))
+        }
+        None if credentials_section(&parse_config(credentials), name).is_some() => {
+            return Ok(ProfileMerge::Conflict(format!("credentials {name}")))
+        }
+        _ => {}
+    }
     let (config_outcome, new_config) = merge_profile_def(config, name, def)?;
     let (cred_outcome, new_credentials) = match keys {
         Some(keys) => merge_credentials(credentials, name, keys)?,
@@ -657,6 +695,19 @@ fn merge_item(
     })
 }
 
+/// Whether the config's `[profile name]` authenticates some other way (SSO, role,
+/// process, web identity, or keys inline in config).
+fn has_other_auth(config: &str, name: &str) -> bool {
+    let sections = parse_config(config);
+    find(&sections, "profile", name).is_some_and(|s| {
+        s.kv.keys().any(|k| {
+            k.starts_with("sso_")
+                || OTHER_AUTH_KEYS.contains(&k.as_str())
+                || INLINE_KEY_KEYS.contains(&k.as_str())
+        })
+    })
+}
+
 /// Back up `original` beside `link` (in `~/.aws`, even for a symlinked file),
 /// owner-only since the credentials backup holds secrets.
 fn write_backup(link: &Path, original: &str) -> Result<(), String> {
@@ -667,10 +718,15 @@ fn write_backup(link: &Path, original: &str) -> Result<(), String> {
     let backup = link.with_file_name(format!("{file}.devdy.bak"));
     let write = || -> std::io::Result<()> {
         use std::io::Write;
+        // Replace, never write through, whatever sits at the backup path (a planted
+        // symlink would otherwise receive the credentials backup).
+        match std::fs::remove_file(&backup) {
+            Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
+            _ => {}
+        }
         let mut f = std::fs::OpenOptions::new()
             .write(true)
-            .create(true)
-            .truncate(true)
+            .create_new(true)
             .open(&backup)?;
         #[cfg(unix)]
         {
@@ -695,6 +751,9 @@ pub fn ensure_profile_defs_at(
     // Write through symlinked files (e.g. dotfiles) instead of replacing the link.
     let resolve = |p: &Path| std::fs::canonicalize(p).unwrap_or_else(|_| p.to_path_buf());
     let (config_target, cred_target) = (resolve(path), resolve(&cred_path));
+    // Items whose entries an earlier attempt already wrote (a retry sees them as
+    // present and would otherwise report "unchanged").
+    let mut written = vec![false; items.len()];
     for _ in 0..3 {
         let original_config = read_existing(&config_target)?;
         let original_cred = read_existing(&cred_target)?;
@@ -703,27 +762,71 @@ pub fn ensure_profile_defs_at(
             .iter()
             .map(|item| merge_item(&mut config, &mut cred, item))
             .collect();
+        let finish = |results: Vec<Result<ProfileMerge, String>>, written: &[bool]| {
+            results
+                .into_iter()
+                .zip(written)
+                .map(|(r, &w)| match r {
+                    Ok(ProfileMerge::Unchanged) if w => Ok(ProfileMerge::Added),
+                    r => r,
+                })
+                .collect::<Vec<_>>()
+        };
         let files = [
-            (cred_path.as_path(), cred_target.as_path(), &original_cred, &cred),
+            (
+                cred_path.as_path(),
+                cred_target.as_path(),
+                &original_cred,
+                &cred,
+            ),
             (path, config_target.as_path(), &original_config, &config),
         ];
         let mut done = true;
         // Credentials first: a profile in config without its keys would fail, keys
         // without the config entry still work.
-        for (link, target, original, text) in files {
+        for (index, (link, target, original, text)) in files.into_iter().enumerate() {
             if text == original {
                 continue;
             }
-            if !original.is_empty() {
-                write_backup(link, original)?;
-            }
-            if !write_config(target, original, text)? {
-                done = false;
-                break;
+            let step = (|| {
+                if !original.is_empty() {
+                    write_backup(link, original)?;
+                }
+                write_config(target, original, text)
+            })();
+            match step {
+                Ok(true) => {
+                    if index == 0 {
+                        // Only access-key items put anything in `credentials`.
+                        for ((w, r), (_, def, keys)) in written.iter_mut().zip(&results).zip(items)
+                        {
+                            *w |= r == &Ok(ProfileMerge::Added) && keys.is_some() && !is_sso(def);
+                        }
+                    }
+                }
+                Ok(false) => {
+                    done = false;
+                    break;
+                }
+                // Keys already written but the config failed: say exactly that.
+                Err(e) if index == 1 && written.iter().any(|w| *w) => {
+                    return Ok(results
+                        .into_iter()
+                        .zip(&written)
+                        .map(|(r, &w)| match r {
+                            Ok(_) if w => Err(format!(
+                                "access keys written to ~/.aws/credentials, ~/.aws/config not updated: {e}"
+                            )),
+                            Ok(_) => Err(e.clone()),
+                            r => r,
+                        })
+                        .collect());
+                }
+                Err(e) => return Err(e),
             }
         }
         if done {
-            return Ok(results);
+            return Ok(finish(results, &written));
         }
     }
     Err("~/.aws kept changing while writing, left unchanged".to_string())
@@ -1303,5 +1406,129 @@ aws_session_token = tok
         assert_eq!(r[0], Ok(ProfileMerge::Added));
         assert!(!path.with_file_name("credentials").exists());
         let _ = std::fs::remove_dir_all(path.parent().unwrap().parent().unwrap());
+    }
+
+    // Review round 3.
+
+    fn scratch_aws(tag: &str) -> (std::path::PathBuf, std::path::PathBuf) {
+        let path = scratch_config(tag);
+        let aws = path.parent().unwrap().to_path_buf();
+        std::fs::create_dir_all(&aws).unwrap();
+        (path, aws)
+    }
+
+    #[test]
+    fn keys_never_give_an_existing_profile_a_second_auth() {
+        // Bundle profile exists only in credentials (empty config side), target has
+        // an SSO / process / role profile of that name: conflict, nothing written.
+        for existing in [
+            "[profile prod]\nsso_session = s\nsso_account_id = 1\nsso_role_name = r\n",
+            "[profile prod]\nregion = ap-northeast-1\ncredential_process = /bin/get\n",
+            "[profile prod]\nregion = ap-northeast-1\nrole_arn = arn:x\nsource_profile = base\n",
+            "[profile prod]\naws_access_key_id = AKIAINLINE0000000000\n",
+        ] {
+            let (path, aws) = scratch_aws("second-auth");
+            std::fs::write(&path, existing).unwrap();
+            let empty = static_def_from_text("", "prod").unwrap();
+            let regioned =
+                static_def_from_text("[profile prod]\nregion = ap-northeast-1\n", "prod").unwrap();
+            for def in [empty, regioned] {
+                let r = ensure_profile_defs_at(&path, &[("prod".to_string(), def, Some(keys()))])
+                    .unwrap();
+                assert_eq!(
+                    r[0],
+                    Ok(ProfileMerge::Conflict("profile prod".into())),
+                    "{existing}"
+                );
+            }
+            assert!(!aws.join("credentials").exists(), "{existing}");
+            assert_eq!(std::fs::read_to_string(&path).unwrap(), existing);
+            let _ = std::fs::remove_dir_all(aws.parent().unwrap());
+        }
+    }
+
+    #[test]
+    fn sso_profile_never_shadows_existing_keys() {
+        let (path, aws) = scratch_aws("shadow");
+        std::fs::write(
+            aws.join("credentials"),
+            CREDS.replace("malme", "yahagi-admin"),
+        )
+        .unwrap();
+        let r =
+            ensure_profile_defs_at(&path, &[("yahagi-admin".to_string(), def(), None)]).unwrap();
+        assert_eq!(
+            r[0],
+            Ok(ProfileMerge::Conflict("credentials yahagi-admin".into()))
+        );
+        assert!(!path.exists());
+        let _ = std::fs::remove_dir_all(aws.parent().unwrap());
+    }
+
+    #[test]
+    fn temporary_and_default_keys_are_not_exported() {
+        let legacy = "[t]\naws_access_key_id = AKIAEXAMPLETEMP00002\naws_secret_access_key = x\naws_security_token = tok\n";
+        assert!(static_keys_from_text(legacy, "t").is_none());
+        let asia = "[t]\naws_access_key_id = ASIAEXAMPLETEMP00003\naws_secret_access_key = x\n";
+        assert!(static_keys_from_text(asia, "t").is_none());
+        assert!(static_def_from_text("[default]\nregion = x\n", "default").is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn backup_replaces_a_planted_symlink_instead_of_following_it() {
+        let (path, aws) = scratch_aws("bak-link");
+        std::fs::write(aws.join("credentials"), "[bimcim]\naws_access_key_id = B\n").unwrap();
+        let elsewhere = aws.parent().unwrap().join("stolen");
+        std::fs::write(&elsewhere, "untouched").unwrap();
+        std::os::unix::fs::symlink(&elsewhere, aws.join("credentials.devdy.bak")).unwrap();
+        let r = ensure_profile_defs_at(&path, &[("malme".to_string(), static_def(), Some(keys()))])
+            .unwrap();
+        assert_eq!(r[0], Ok(ProfileMerge::Added));
+        assert_eq!(std::fs::read_to_string(&elsewhere).unwrap(), "untouched");
+        let bak = aws.join("credentials.devdy.bak");
+        assert!(!std::fs::symlink_metadata(&bak)
+            .unwrap()
+            .file_type()
+            .is_symlink());
+        assert_eq!(
+            std::fs::read_to_string(&bak).unwrap(),
+            "[bimcim]\naws_access_key_id = B\n"
+        );
+        let _ = std::fs::remove_dir_all(aws.parent().unwrap());
+    }
+
+    #[test]
+    fn keys_written_but_config_failed_is_reported_as_such() {
+        let (path, aws) = scratch_aws("partial");
+        std::fs::write(&path, "[profile other]\nregion = x\n").unwrap();
+        // The config backup can't be written (a non-empty directory sits there).
+        std::fs::create_dir_all(aws.join("config.devdy.bak").join("x")).unwrap();
+        let r = ensure_profile_defs_at(
+            &path,
+            &[
+                ("malme".to_string(), static_def(), Some(keys())),
+                ("yahagi-admin".to_string(), def(), None),
+            ],
+        )
+        .unwrap();
+        let err = r[0].clone().unwrap_err();
+        assert!(
+            err.starts_with("access keys written to ~/.aws/credentials"),
+            "{err}"
+        );
+        assert!(!err.contains("s3cr3t"));
+        assert!(r[1].is_err());
+        assert!(
+            static_keys_from_text(
+                &std::fs::read_to_string(aws.join("credentials")).unwrap(),
+                "malme"
+            ) == Some(keys())
+        );
+        assert_eq!(
+            std::fs::read_to_string(&path).unwrap(),
+            "[profile other]\nregion = x\n"
+        );
+        let _ = std::fs::remove_dir_all(aws.parent().unwrap());
     }
 }

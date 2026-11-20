@@ -6,6 +6,7 @@
 import { computed, nextTick, onBeforeUnmount, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
+import { openUrl } from '@tauri-apps/plugin-opener'
 import {
   AlertTriangle, ArrowDownToLine, Check, ChevronRight, Circle, FolderX, Info, KeyRound, Link2Off, Loader2,
   Monitor, RefreshCw, RotateCcw, Trash2, WifiOff,
@@ -157,7 +158,10 @@ const summaryParts = computed(() => {
   return REPORT_COLUMNS.filter(c => s[c] > 0).map(c => t(`deviceSync.result.total.${c}`, { n: s[c] }))
 })
 const relogin = computed(() => (report.value ? needsRelogin(report.value) : false))
-const warningGroups = computed(() => (report.value ? groupWarnings(report.value.warnings) : []))
+const allWarningGroups = computed(() => (report.value ? groupWarnings(report.value.warnings) : []))
+// Accounts already set up here are good news, listed outside the attention box.
+const warningGroups = computed(() => allWarningGroups.value.filter(g => g.group !== 'ready'))
+const readyGroup = computed(() => allWarningGroups.value.find(g => g.group === 'ready'))
 const warningCount = computed(() => warningGroups.value.reduce((n, g) => n + g.items.length, 0))
 const expanded = ref(new Set<SyncWarningGroup>())
 
@@ -177,18 +181,66 @@ const GROUP_ICON = { problems: AlertTriangle, login: KeyRound, ready: Check, fol
 // Login for accounts the pull left signed out here (AWS profile, Azure, Claude), keyed by `loginFor().key`.
 // One AWS login covers every profile on the same sso-session.
 const logins = ref<Record<string, 'running' | 'done' | string>>({})
+// Claude: if the browser can't reach the CLI's localhost callback, the manual sign-in page
+// (URL from the `claude_login_url` event) shows a code to paste here, as in Settings.
+const claudeLoginUrl = ref<Record<string, string>>({})
+const claudeLoginCode = ref<Record<string, string>>({})
+let unlistenClaudeLoginUrl: UnlistenFn | null = null
 
 async function runLogin(w: SyncWarning) {
   const login = loginFor(w)
-  if (!login) return
+  if (!login || logins.value[login.key] === 'running') return
   logins.value = { ...logins.value, [login.key]: 'running' }
+  const claudeId = w.code === 'claude_login_needed' ? w.params.id : ''
+  if (claudeId && !unlistenClaudeLoginUrl) {
+    unlistenClaudeLoginUrl = await listen<{ accountId: string, url: string }>('claude_login_url', (e) => {
+      claudeLoginUrl.value = { ...claudeLoginUrl.value, [e.payload.accountId]: e.payload.url }
+    }).catch(() => null)
+  }
   try {
-    await invoke(login.command, login.args)
-    logins.value = { ...logins.value, [login.key]: 'done' }
+    const result = await invoke<{ logged_in?: boolean } | null>(login.command, login.args)
+    const signedIn = !claudeId || result?.logged_in === true
+    logins.value = { ...logins.value, [login.key]: signedIn ? 'done' : t('deviceSync.login.notSignedIn') }
   }
   catch (e) {
-    logins.value = { ...logins.value, [login.key]: String(e) || t('deviceSync.login.failed') }
+    const msg = String(e)
+    logins.value = { ...logins.value, [login.key]: msg.includes('cancelled') ? '' : msg || t('deviceSync.login.failed') }
   }
+  finally {
+    if (claudeId) {
+      const urls = { ...claudeLoginUrl.value }
+      const codes = { ...claudeLoginCode.value }
+      delete urls[claudeId]
+      delete codes[claudeId]
+      claudeLoginUrl.value = urls
+      claudeLoginCode.value = codes
+    }
+  }
+}
+
+async function submitClaudeCode(id: string) {
+  const code = claudeLoginCode.value[id]?.trim()
+  if (!code) return
+  try {
+    await invoke('submit_claude_login_code', { id, code })
+    claudeLoginCode.value = { ...claudeLoginCode.value, [id]: '' }
+  }
+  catch (e) {
+    logins.value = { ...logins.value, [`claude:${id}`]: String(e) }
+  }
+}
+
+function cancelClaudeLogin(id: string) {
+  void invoke('cancel_claude_account_login', { id }).catch(() => {})
+}
+
+/** Stop background `claude auth login`s started here, so Settings can start a new one. */
+function cancelRunningLogins() {
+  for (const [key, state] of Object.entries(logins.value)) {
+    if (state === 'running' && key.startsWith('claude:')) cancelClaudeLogin(key.slice('claude:'.length))
+  }
+  unlistenClaudeLoginUrl?.()
+  unlistenClaudeLoginUrl = null
 }
 
 function loginState(w: SyncWarning) {
@@ -299,6 +351,8 @@ function reset() {
   expanded.value = new Set()
   progress.value = null
   report.value = null
+  cancelRunningLogins()
+  logins.value = {}
   syncedSettings.value = false
   finishedAt.value = null
 }
@@ -318,6 +372,7 @@ watch(
   (open) => {
     if (!open) {
       stopPolling()
+      cancelRunningLogins()
       return
     }
     reset()
@@ -326,6 +381,7 @@ watch(
   { immediate: true },
 )
 onBeforeUnmount(() => {
+  cancelRunningLogins()
   stopPolling()
   clearSlow()
   unlistenProgress?.()
@@ -574,6 +630,15 @@ onBeforeUnmount(() => {
       </template>
       <p v-else class="text-[11px] text-muted-foreground">{{ t('deviceSync.result.nothing') }}</p>
 
+      <section v-if="readyGroup" class="space-y-1 rounded-md border border-border bg-muted/30 p-2.5">
+        <p class="flex items-center gap-1.5 text-[11px] font-medium text-muted-foreground">
+          <Check class="h-3 w-3 shrink-0 text-success" :stroke-width="2" />
+          {{ t('deviceSync.warningGroups.ready', { n: readyGroup.items.length }) }}
+        </p>
+        <ul class="space-y-0.5 pl-[18px] text-[11px]">
+          <li v-for="(w, i) in readyGroup.items" :key="i" class="break-words">{{ warningText(w) }}</li>
+        </ul>
+      </section>
       <div v-if="warningGroups.length" class="space-y-2 rounded-md border border-warning/30 bg-warning/10 p-2.5">
         <p class="flex items-center gap-1.5 text-[11px] font-medium">
           <AlertTriangle class="h-3.5 w-3.5 text-warning" :stroke-width="2" />{{ t('deviceSync.result.attention', { n: warningCount }) }}
@@ -601,6 +666,41 @@ onBeforeUnmount(() => {
                     <Loader2 v-if="loginState(w) === 'running'" class="h-3 w-3 animate-spin" />
                     {{ t('deviceSync.login.action') }}
                   </Button>
+                </div>
+                <div
+                  v-if="w.code === 'claude_login_needed' && loginState(w) === 'running'"
+                  class="mt-1 space-y-1.5 rounded-md border border-border bg-muted/40 p-2"
+                >
+                  <div class="flex items-center gap-2">
+                    <span class="min-w-0 flex-1 text-muted-foreground">{{ t('settings.claude.loginWaitingHint') }}</span>
+                    <Button variant="ghost" size="xs" @click="cancelClaudeLogin(w.params.id)">{{ t('deviceSync.actions.cancel') }}</Button>
+                  </div>
+                  <template v-if="claudeLoginUrl[w.params.id]">
+                    <button
+                      type="button"
+                      class="text-primary hover:underline cursor-pointer"
+                      @click="openUrl(claudeLoginUrl[w.params.id]).catch(() => {})"
+                    >
+                      {{ t('settings.claude.loginManualLink') }}
+                    </button>
+                    <div class="flex items-center gap-1.5">
+                      <Input
+                        v-model="claudeLoginCode[w.params.id]"
+                        size="xs"
+                        class="flex-1"
+                        :placeholder="t('settings.claude.loginCodePlaceholder')"
+                        @keyup.enter="submitClaudeCode(w.params.id)"
+                      />
+                      <Button
+                        variant="outline"
+                        size="xs"
+                        :disabled="!claudeLoginCode[w.params.id]?.trim()"
+                        @click="submitClaudeCode(w.params.id)"
+                      >
+                        {{ t('settings.claude.loginSubmitCode') }}
+                      </Button>
+                    </div>
+                  </template>
                 </div>
                 <p v-if="loginError(w)" class="text-destructive">{{ loginError(w) }} {{ t('deviceSync.login.settingsHint') }}</p>
               </template>

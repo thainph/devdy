@@ -211,6 +211,7 @@
     "action": "Đăng nhập",
     "done": "Đã đăng nhập",
     "failed": "Đăng nhập thất bại",
-    "settingsHint": "Bạn cũng có thể đăng nhập ở mục của account đó trong Settings."
+    "settingsHint": "Bạn cũng có thể đăng nhập ở mục của account đó trong Settings.",
+    "notSignedIn": "Đã chạy đăng nhập nhưng account vẫn chưa đăng nhập."
   }
 }
