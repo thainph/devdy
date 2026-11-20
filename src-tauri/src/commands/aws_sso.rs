@@ -386,9 +386,17 @@ pub fn merge_profile_def(
     if let (Some(session), Some(kv)) = (profile.get("sso_session"), &def.sso_session) {
         let kv = pick(kv, SSO_SESSION_KEYS);
         let header = format!("sso-session {session}");
+        // A missing session that another existing profile already points at would
+        // silently make that (broken) profile log in through the bundle's portal.
+        let referenced_elsewhere = sections.iter().any(|s| {
+            s.kind == "profile"
+                && s.name != *name
+                && s.kv.get("sso_session").map(String::as_str) == Some(session.as_str())
+        });
         match find(&sections, "sso-session", session) {
             Some(existing) if same_values(&pick(&existing.kv, SSO_SESSION_KEYS), &kv) => {}
             Some(_) => return Ok((ProfileMerge::Conflict(header), None)),
+            None if referenced_elsewhere => return Ok((ProfileMerge::Conflict(header), None)),
             None => append.push((header, kv)),
         }
     }
@@ -595,6 +603,26 @@ fn shown(path: &Path) -> String {
     format!("~/.aws/{file}")
 }
 
+/// Create a new file that is owner-only from the start (no window where a
+/// permissive umask exposes the credentials it is about to hold).
+fn create_private(path: &Path) -> std::io::Result<std::fs::File> {
+    let mut options = std::fs::OpenOptions::new();
+    options.write(true).create_new(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.mode(0o600);
+    }
+    let f = options.open(path)?;
+    #[cfg(unix)]
+    {
+        // `mode` is masked by the umask, which can only remove bits; pin it anyway.
+        use std::os::unix::fs::PermissionsExt;
+        f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
+    }
+    Ok(f)
+}
+
 fn read_existing(path: &Path) -> Result<String, String> {
     match std::fs::read_to_string(path) {
         Ok(text) => Ok(text),
@@ -617,12 +645,7 @@ fn write_config(target: &Path, expected: &str, text: &str) -> Result<bool, Strin
     let tmp = dir.join(format!(".config.devdy.{}.{nanos}.tmp", std::process::id()));
     let write_tmp = || -> std::io::Result<()> {
         use std::io::Write;
-        let mut f = std::fs::File::create(&tmp)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
+        let mut f = create_private(&tmp)?;
         f.write_all(text.as_bytes())?;
         f.sync_all()
     };
@@ -659,6 +682,9 @@ fn merge_item(
         (false, Some(keys)) => Some(keys),
         (false, None) => return Err("access keys were not included".to_string()),
     };
+    if default_section_has_auth(config) {
+        return Ok(ProfileMerge::Conflict("DEFAULT".to_string()));
+    }
     // Never give an existing profile a second way to authenticate: keys appended
     // to `credentials` win over SSO / credential_process in the CLI and SDKs, and
     // an SSO section would shadow existing keys.
@@ -704,13 +730,23 @@ fn merge_item(
 /// process, web identity, or keys inline in config).
 fn has_other_auth(config: &str, name: &str) -> bool {
     let sections = parse_config(config);
-    find(&sections, "profile", name).is_some_and(|s| {
-        s.kv.keys().any(|k| {
-            k.starts_with("sso_")
-                || OTHER_AUTH_KEYS.contains(&k.as_str())
-                || INLINE_KEY_KEYS.contains(&k.as_str())
-        })
+    find(&sections, "profile", name).is_some_and(|s| auth_keys(&s.kv))
+}
+
+fn auth_keys(kv: &BTreeMap<String, String>) -> bool {
+    kv.keys().any(|k| {
+        k.starts_with("sso_")
+            || OTHER_AUTH_KEYS.contains(&k.as_str())
+            || INLINE_KEY_KEYS.contains(&k.as_str())
     })
+}
+
+/// `configparser` copies `[DEFAULT]` keys into every section, so an auth key
+/// there applies to every profile, including one we would add.
+fn default_section_has_auth(config: &str) -> bool {
+    parse_config(config)
+        .iter()
+        .any(|s| s.kind == "DEFAULT" && auth_keys(&s.kv))
 }
 
 /// Back up `original` beside `link` (in `~/.aws`, even for a symlinked file),
@@ -729,15 +765,7 @@ fn write_backup(link: &Path, original: &str) -> Result<(), String> {
             Err(e) if e.kind() != std::io::ErrorKind::NotFound => return Err(e),
             _ => {}
         }
-        let mut f = std::fs::OpenOptions::new()
-            .write(true)
-            .create_new(true)
-            .open(&backup)?;
-        #[cfg(unix)]
-        {
-            use std::os::unix::fs::PermissionsExt;
-            f.set_permissions(std::fs::Permissions::from_mode(0o600))?;
-        }
+        let mut f = create_private(&backup)?;
         f.write_all(original.as_bytes())
     };
     write().map_err(|e| format!("back up ~/.aws/{file}: {e}"))
@@ -1568,6 +1596,58 @@ aws_session_token = tok
         .unwrap();
         assert!(r[0].clone().unwrap_err().starts_with("access keys written"));
         assert_eq!(r[1], Ok(ProfileMerge::Conflict("profile malme2".into())));
+        let _ = std::fs::remove_dir_all(aws.parent().unwrap());
+    }
+
+    // Codex review.
+
+    #[test]
+    fn default_section_auth_blocks_every_write() {
+        let config = "[DEFAULT]\ncredential_process = /bin/get\n[profile other]\nregion = x\n";
+        let (path, aws) = scratch_aws("default-inherit");
+        std::fs::write(&path, config).unwrap();
+        let r = ensure_profile_defs_at(
+            &path,
+            &[
+                ("malme".to_string(), static_def(), Some(keys())),
+                ("yahagi-admin".to_string(), def(), None),
+            ],
+        )
+        .unwrap();
+        assert_eq!(r[0], Ok(ProfileMerge::Conflict("DEFAULT".into())));
+        assert_eq!(r[1], Ok(ProfileMerge::Conflict("DEFAULT".into())));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), config);
+        assert!(!aws.join("credentials").exists());
+        // A harmless DEFAULT (region only) is fine.
+        std::fs::write(&path, "[DEFAULT]\nregion = x\n").unwrap();
+        let r =
+            ensure_profile_defs_at(&path, &[("yahagi-admin".to_string(), def(), None)]).unwrap();
+        assert_eq!(r[0], Ok(ProfileMerge::Added));
+        let _ = std::fs::remove_dir_all(aws.parent().unwrap());
+    }
+
+    #[test]
+    fn missing_session_used_by_another_profile_is_a_conflict() {
+        let target = "[profile old]\nsso_session = yahagi\nsso_account_id = 9\nsso_role_name = r\n";
+        let (outcome, text) = merge_profile_def(target, "yahagi-admin", &def()).unwrap();
+        assert_eq!(outcome, ProfileMerge::Conflict("sso-session yahagi".into()));
+        assert!(text.is_none());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn secret_files_are_private_even_with_an_open_umask() {
+        use std::os::unix::fs::PermissionsExt;
+        let (path, aws) = scratch_aws("umask");
+        let f = aws.join("probe");
+        drop(create_private(&f).unwrap());
+        assert_eq!(
+            std::fs::metadata(&f).unwrap().permissions().mode() & 0o777,
+            0o600
+        );
+        // Refuses to reuse an existing path (no write-through to whatever is there).
+        assert!(create_private(&f).is_err());
+        let _ = path;
         let _ = std::fs::remove_dir_all(aws.parent().unwrap());
     }
 }
