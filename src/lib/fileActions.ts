@@ -67,6 +67,9 @@ export function parentDir(relPath: string): string {
 }
 
 export function absPath(projectPath: string, relPath: string): string {
+  // The file viewer also opens absolute paths (files the agent touched outside
+  // the project, attachments, …) — those must not be glued onto the root.
+  if (relPath.startsWith('/')) return relPath
   const root = projectPath.replace(/\/+$/, '')
   return relPath ? `${root}/${relPath}` : root
 }
@@ -113,11 +116,11 @@ export function useFileActions() {
     const abs = absPath(projectPath, target.path)
     // Folders open themselves; a file reveals itself inside its folder.
     const p = target.isDir ? openPath(abs) : revealItemInDir(abs)
-    return p.catch(() => { /* opener unavailable */ })
+    return p.catch((e) => { toast.error(String(e)) })
   }
 
   function openInDefaultApp(projectPath: string, target: FileTarget) {
-    return openPath(absPath(projectPath, target.path)).catch(() => { /* opener unavailable */ })
+    return openPath(absPath(projectPath, target.path)).catch((e) => { toast.error(String(e)) })
   }
 
   async function openInVscode(projectPath: string, target: FileTarget) {
