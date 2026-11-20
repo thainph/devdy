@@ -150,7 +150,7 @@
     "category_not_sent": "{section}: máy kia không gửi mục này, không xoá gì.",
     "category_empty_no_mirror": "{section}: máy kia không có mục nào, để an toàn không xoá gì.",
     "delete_failed": "{section} '{name}': không xoá được: {error}",
-    "aws_profile_added": "Đã thêm AWS profile '{profile}' (account '{account}') vào ~/.aws/config. Đăng nhập để dùng.",
+    "aws_profile_added": "Đã thêm AWS profile '{profile}' (account '{account}', đăng nhập tại {url}) vào ~/.aws/config. Đăng nhập để dùng.",
     "aws_profile_conflict": "AWS profile '{profile}': [{section}] trong ~/.aws/config có giá trị khác nên được giữ nguyên.",
     "aws_profile_failed": "AWS profile '{profile}': không ghi được ~/.aws/config: {error}",
     "other": "{message}"

@@ -87,7 +87,7 @@ pub struct SyncReport {
 /// - `project_sync_failed` {section, name, detail}: updated skill / rule not refreshed in a project
 /// - `category_not_sent` / `category_empty_no_mirror` {section}: mirror deleted nothing there
 /// - `delete_failed` {section, name, error}
-/// - `aws_profile_added` {profile, account}: SSO profile written to ~/.aws/config, needs login
+/// - `aws_profile_added` {profile, account, url}: SSO profile written to ~/.aws/config, needs login
 /// - `aws_profile_conflict` {profile, section}: a same-named section differs, left unchanged
 /// - `aws_profile_failed` {profile, error}
 /// - `other` {message}
@@ -443,29 +443,31 @@ async fn apply_payload(
         }
         // Claude / AWS / Azure: metadata only. A new one arrives logged out; an existing one keeps
         // its local credentials.
+        let mut imported_aws: Vec<&backup::AwsEntry> = Vec::new();
         for entry in &bundle.aws_accounts {
             let result = backup::import_aws(db, entry).await;
-            let ok = result.is_ok();
-            record(&mut report, w, "awsAccounts", &entry.label, result);
-            if !ok {
-                continue;
+            if result.is_ok() {
+                imported_aws.push(entry);
             }
-            // Recreate the SSO profile in ~/.aws/config (append-only) so the account only
-            // needs `aws sso login` here.
-            match backup::ensure_aws_profile(entry) {
-                Some(Ok((profile, ProfileMerge::Added))) => w.push(SyncWarning::new(
+            record(&mut report, w, "awsAccounts", &entry.label, result);
+        }
+        // Recreate the SSO profiles in ~/.aws/config (append-only, one write) so the
+        // accounts only need `aws sso login` here.
+        for o in backup::ensure_aws_profiles(&imported_aws) {
+            match o.result {
+                Ok(ProfileMerge::Added) => w.push(SyncWarning::new(
                     "aws_profile_added",
-                    &[("profile", &profile), ("account", &entry.label)],
+                    &[("profile", &o.profile), ("account", &o.account), ("url", &o.start_url)],
                 )),
-                Some(Ok((profile, ProfileMerge::Conflict(section)))) => w.push(SyncWarning::new(
+                Ok(ProfileMerge::Conflict(section)) => w.push(SyncWarning::new(
                     "aws_profile_conflict",
-                    &[("profile", &profile), ("section", &section)],
+                    &[("profile", &o.profile), ("section", &section)],
                 )),
-                Some(Err((profile, error))) => w.push(SyncWarning::new(
+                Err(error) => w.push(SyncWarning::new(
                     "aws_profile_failed",
-                    &[("profile", &profile), ("error", &error)],
+                    &[("profile", &o.profile), ("error", &error)],
                 )),
-                Some(Ok((_, ProfileMerge::Unchanged))) | None => {}
+                Ok(ProfileMerge::Unchanged) => {}
             }
         }
         for entry in &bundle.azure_accounts {

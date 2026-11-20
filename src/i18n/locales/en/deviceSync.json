@@ -150,7 +150,7 @@
     "category_not_sent": "{section}: the other device did not send this, nothing deleted.",
     "category_empty_no_mirror": "{section}: the other device has none, nothing deleted to be safe.",
     "delete_failed": "{section} '{name}': could not delete: {error}",
-    "aws_profile_added": "AWS profile '{profile}' (account '{account}') was added to ~/.aws/config. Log in to use it.",
+    "aws_profile_added": "AWS profile '{profile}' (account '{account}', sign-in at {url}) was added to ~/.aws/config. Log in to use it.",
     "aws_profile_conflict": "AWS profile '{profile}': [{section}] in ~/.aws/config has different values, so it was left unchanged.",
     "aws_profile_failed": "AWS profile '{profile}': could not write ~/.aws/config: {error}",
     "other": "{message}"

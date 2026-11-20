@@ -44,7 +44,7 @@ export interface SyncReport {
  * `link_failed` {project, name, error}, `project_failed` {project, error},
  * `item_failed` {section, name, error}, `project_sync_failed` {section, name, detail},
  * `category_not_sent` / `category_empty_no_mirror` {section},
- * `delete_failed` {section, name, error}, `aws_profile_added` {profile, account},
+ * `delete_failed` {section, name, error}, `aws_profile_added` {profile, account, url},
  * `aws_profile_conflict` {profile, section}, `aws_profile_failed` {profile, error}, `other` {message}.
  */
 export interface SyncWarning {
