@@ -20,6 +20,7 @@
 //! when the user allows it). Library files replaced by an import are moved to the legacy backups
 //! first.
 
+use crate::commands::aws_sso::{AwsStaticKeys, ProfileMerge};
 use crate::commands::groups::{set_group_members_inner, GroupKind};
 use crate::commands::mcp::McpServer;
 use crate::commands::settings::PORTABLE_SETTING_KEYS;
@@ -317,6 +318,10 @@ pub(crate) struct AwsEntry {
     pub(crate) profile_name: Option<String>,
     #[serde(default)]
     pub(crate) tags: Option<String>,
+    /// The SSO profile's `~/.aws/config` definition (no credentials), so the
+    /// importing machine can recreate it and only needs `aws sso login`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) profile_config: Option<crate::commands::aws_sso::AwsProfileDef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -572,6 +577,9 @@ pub(crate) struct SecretPayload {
     pub(crate) google_client: Option<GoogleClientCreds>,
     #[serde(default)]
     pub(crate) google_accounts: BTreeMap<String, String>,
+    /// Access keys of access-key AWS profiles (from `~/.aws/credentials`), by AWS account id.
+    #[serde(default)]
+    pub(crate) aws_keys: BTreeMap<String, AwsStaticKeys>,
     /// The secret notes vault as the Keychain holds it: already sealed under the vault
     /// password, so it needs that password too once imported.
     #[serde(default)]
@@ -898,9 +906,10 @@ impl Sections {
     };
 }
 
-/// Account metadata (+ GitHub / GitLab / Google tokens and the Google OAuth client when
-/// `with_secrets`). Claude, AWS and Azure carry metadata only: their credentials live in
-/// per-account CLI config and never leave the machine.
+/// Account metadata (+ GitHub / GitLab / Google tokens, the Google OAuth client and
+/// access-key AWS profiles' keys when `with_secrets`). AWS SSO profiles carry their
+/// `~/.aws/config` definition, no token. Claude and Azure carry metadata only: their
+/// logins live in per-account CLI config and never leave the machine.
 pub(crate) struct AccountsPart {
     pub github: Vec<GithubEntry>,
     pub gitlab: Vec<GitlabEntry>,
@@ -1206,6 +1215,25 @@ pub(crate) async fn collect_accounts(
         region: row.get("region"),
         profile_name: row.get("profile_name"),
         tags: row.get("tags"),
+        profile_config: None,
+    })
+    .map(|mut entry: AwsEntry| {
+        if entry.auth_method != "profile" {
+            return entry;
+        }
+        let Some(name) = entry.profile_name.clone() else {
+            return entry;
+        };
+        entry.profile_config = crate::commands::aws_sso::read_profile_def(&name);
+        // Access-key profile: its keys go only into the sealed payload, so only
+        // when secrets are exported at all.
+        if entry.profile_config.is_none() && with_secrets {
+            if let Some((def, keys)) = crate::commands::aws_sso::read_static_profile(&name) {
+                entry.profile_config = Some(def);
+                secret.aws_keys.insert(entry.id.clone(), keys);
+            }
+        }
+        entry
     })
     .collect();
 
@@ -1800,9 +1828,29 @@ async fn apply_bundle(
         let result = import_gitlab(db, entry, secret.gitlab.get(&entry.id)).await;
         report.record("gitlabAccounts", &entry.label, result);
     }
+    let mut imported_aws: Vec<&AwsEntry> = Vec::new();
     for entry in &bundle.aws_accounts {
         let result = import_aws(db, entry).await;
+        if result.is_ok() {
+            imported_aws.push(entry);
+        }
         report.record("awsAccounts", &entry.label, result);
+    }
+    for o in ensure_aws_profiles(&imported_aws, &secret.aws_keys) {
+        let profile = &o.profile;
+        match o.result {
+            Ok(ProfileMerge::Added) if o.needs_login => report.warnings.push(format!(
+                "AWS profile '{profile}' added to ~/.aws/config: log in to use it"
+            )),
+            Ok(ProfileMerge::Added) => report.warnings.push(format!(
+                "AWS profile '{profile}' and its access keys added to ~/.aws"
+            )),
+            Ok(ProfileMerge::Conflict(section)) => report.warnings.push(format!(
+                "AWS profile '{profile}': [{section}] in ~/.aws differs, left unchanged"
+            )),
+            Err(e) => report.warnings.push(format!("AWS profile '{profile}': {e}")),
+            Ok(ProfileMerge::Unchanged) => {}
+        }
     }
     let app_data = app.path().app_data_dir().ok();
     for entry in &bundle.azure_accounts {
@@ -2384,6 +2432,76 @@ pub(crate) async fn import_gitlab(
         || secrets::get_gitlab_account_pat(&id).ok(),
         |t| secrets::set_gitlab_account_pat(&id, t),
     )
+}
+
+/// What happened to one imported account's SSO profile in `~/.aws/config`.
+pub(crate) struct AwsProfileOutcome {
+    pub(crate) account: String,
+    pub(crate) profile: String,
+    /// SSO portal the profile logs in to, shown next to the login button.
+    pub(crate) start_url: String,
+    /// SSO profile (needs `aws sso login`); else an access-key profile, usable as is.
+    pub(crate) needs_login: bool,
+    pub(crate) result: Result<ProfileMerge, String>,
+}
+
+/// Recreate imported accounts' profiles in `~/.aws/config` (+ an access-key
+/// profile's keys from the sealed payload in `~/.aws/credentials`), append-only,
+/// one write per file. Entries without a carried profile definition are skipped.
+pub(crate) fn ensure_aws_profiles(
+    entries: &[&AwsEntry],
+    keys: &BTreeMap<String, AwsStaticKeys>,
+) -> Vec<AwsProfileOutcome> {
+    // Tests must never write the developer's real ~/.aws; they use the `_at` form.
+    if cfg!(test) {
+        return Vec::new();
+    }
+    match crate::commands::aws_sso::aws_config_path() {
+        Some(path) => ensure_aws_profiles_at(&path, entries, keys),
+        None => Vec::new(),
+    }
+}
+
+pub(crate) fn ensure_aws_profiles_at(
+    path: &Path,
+    entries: &[&AwsEntry],
+    keys: &BTreeMap<String, AwsStaticKeys>,
+) -> Vec<AwsProfileOutcome> {
+    let items: Vec<(&AwsEntry, String, crate::commands::aws_sso::AwsProfileDef)> = entries
+        .iter()
+        .filter(|e| e.auth_method == "profile")
+        .filter_map(|e| {
+            let name = e.profile_name.as_deref()?.trim();
+            let def = e.profile_config.clone()?;
+            (!name.is_empty()).then(|| (*e, name.to_string(), def))
+        })
+        .collect();
+    if items.is_empty() {
+        return Vec::new();
+    }
+    let pairs: Vec<crate::commands::aws_sso::ProfileItem> = items
+        .iter()
+        .map(|(entry, name, def)| (name.clone(), def.clone(), keys.get(&entry.id).cloned()))
+        .collect();
+    let results = crate::commands::aws_sso::ensure_profile_defs_at(path, &pairs)
+        .unwrap_or_else(|e| pairs.iter().map(|_| Err(e.clone())).collect());
+    items
+        .into_iter()
+        .zip(results)
+        .map(|((entry, profile, def), result)| AwsProfileOutcome {
+            account: entry.label.clone(),
+            needs_login: crate::commands::aws_sso::is_sso(&def),
+            start_url: def
+                .sso_session
+                .as_ref()
+                .and_then(|s| s.get("sso_start_url"))
+                .or_else(|| def.profile.get("sso_start_url"))
+                .cloned()
+                .unwrap_or_default(),
+            profile,
+            result,
+        })
+        .collect()
 }
 
 pub(crate) async fn import_aws(db: &Db, entry: &AwsEntry) -> Result<Upsert, String> {
@@ -3447,6 +3565,100 @@ pub(crate) async fn apply_project_links(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    /// Import path for an access-key profile: keys come from the sealed payload
+    /// (`aws_keys`, keyed by the exported account id) and land in `credentials`.
+    #[test]
+    fn imported_access_key_profiles_get_their_keys() {
+        let dir = std::env::temp_dir().join(format!(
+            "devdy-aws-keys-import-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let path = dir.join(".aws").join("config");
+        let entry: AwsEntry = serde_json::from_value(serde_json::json!({
+            "id": "m1", "label": "malme", "auth_method": "profile",
+            "region": "ap-northeast-1", "profile_name": "malme",
+            "profile_config": { "profile": { "region": "ap-northeast-1" } }
+        }))
+        .unwrap();
+        // Sealed payload as it travels: JSON, older payloads have no aws_keys.
+        let old: SecretPayload = serde_json::from_str("{}").unwrap();
+        assert!(old.aws_keys.is_empty());
+        let payload: SecretPayload = serde_json::from_value(serde_json::json!({
+            "aws_keys": { "m1": {
+                "accessKeyId": "AKIAEXAMPLEMALME0001",
+                "secretAccessKey": "s3cr3t/Malme+Key"
+            } }
+        }))
+        .unwrap();
+
+        // Without the keys nothing is written for it.
+        let out = ensure_aws_profiles_at(&path, &[&entry], &old.aws_keys);
+        assert!(out[0].result.is_err());
+        assert!(!path.exists());
+
+        let out = ensure_aws_profiles_at(&path, &[&entry], &payload.aws_keys);
+        assert_eq!(out[0].result, Ok(ProfileMerge::Added));
+        assert!(!out[0].needs_login);
+        let creds = std::fs::read_to_string(path.with_file_name("credentials")).unwrap();
+        assert!(creds.contains("[malme]\naws_access_key_id = AKIAEXAMPLEMALME0001\naws_secret_access_key = s3cr3t/Malme+Key\n"));
+        assert!(std::fs::read_to_string(&path)
+            .unwrap()
+            .contains("[profile malme]\nregion = ap-northeast-1\n"));
+        let _ = std::fs::remove_dir_all(&dir);
+    }
+
+    /// Import path: an exported AWS entry (as JSON) recreates its SSO profile in a
+    /// scratch config; key-based accounts and entries without a definition are skipped.
+    #[test]
+    fn imported_aws_entries_recreate_their_sso_profiles() {
+        let dir = std::env::temp_dir().join(format!(
+            "devdy-aws-import-{}-{}",
+            std::process::id(),
+            chrono::Utc::now().timestamp_nanos_opt().unwrap_or(0)
+        ));
+        let path = dir.join(".aws").join("config");
+        let entry: AwsEntry = serde_json::from_value(serde_json::json!({
+            "id": "a1", "label": "yahagi-admin", "auth_method": "profile",
+            "region": "ap-northeast-1", "profile_name": "malme-sso-ps-admin-229015218011",
+            "profile_config": {
+                "profile": {
+                    "sso_session": "yahagi-admin", "sso_account_id": "229015218011",
+                    "sso_role_name": "malme-sso-ps-admin"
+                },
+                "ssoSession": {
+                    "sso_start_url": "https://d-956795daf5.awsapps.com/start/",
+                    "sso_region": "ap-northeast-1",
+                    "sso_registration_scopes": "sso:account:access"
+                }
+            }
+        }))
+        .unwrap();
+        // An older bundle: no profile_config at all.
+        let legacy: AwsEntry = serde_json::from_value(serde_json::json!({
+            "id": "a2", "label": "malme", "auth_method": "profile",
+            "region": "ap-northeast-1", "profile_name": "malme"
+        }))
+        .unwrap();
+        assert!(legacy.profile_config.is_none());
+
+        let out = ensure_aws_profiles_at(&path, &[&entry, &legacy], &BTreeMap::new());
+        assert_eq!(out.len(), 1);
+        assert_eq!(out[0].account, "yahagi-admin");
+        assert_eq!(out[0].profile, "malme-sso-ps-admin-229015218011");
+        assert_eq!(out[0].start_url, "https://d-956795daf5.awsapps.com/start/");
+        assert_eq!(out[0].result, Ok(ProfileMerge::Added));
+        assert!(out[0].needs_login);
+        let text = std::fs::read_to_string(&path).unwrap();
+        assert!(text.contains("[profile malme-sso-ps-admin-229015218011]"));
+        assert!(text.contains("[sso-session yahagi-admin]"));
+        // Importing again changes nothing.
+        let again = ensure_aws_profiles_at(&path, &[&entry], &BTreeMap::new());
+        assert_eq!(again[0].result, Ok(ProfileMerge::Unchanged));
+        assert_eq!(std::fs::read_to_string(&path).unwrap(), text);
+        let _ = std::fs::remove_dir_all(&dir);
+    }
 
     #[test]
     fn safe_rel_path_rejects_escapes() {

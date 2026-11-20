@@ -14,6 +14,7 @@
 //! skills / rules (+ groups), MCP / VPS servers and accounts only — never secret notes, Slack
 //! threads, projects or settings.
 
+use crate::commands::aws_sso::ProfileMerge;
 use crate::commands::groups::GroupKind;
 use crate::commands::settings_backup::{
     self as backup, Bundle, ImportReport, LinkWarning, ProjectEntry, ProjectMatch, SecretPayload,
@@ -86,6 +87,11 @@ pub struct SyncReport {
 /// - `project_sync_failed` {section, name, detail}: updated skill / rule not refreshed in a project
 /// - `category_not_sent` / `category_empty_no_mirror` {section}: mirror deleted nothing there
 /// - `delete_failed` {section, name, error}
+/// - `aws_profile_added` {profile, account, url}: SSO profile written to ~/.aws/config, needs login
+/// - `aws_keys_added` {profile, account}: access-key profile + keys written to ~/.aws, ready
+/// - `aws_profile_conflict` {profile, section}: a same-named section differs, left unchanged
+/// - `aws_profile_failed` {profile, error}
+/// - `azure_login_needed` / `claude_login_needed` {account, id}: new account, logged out here
 /// - `other` {message}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncWarning {
@@ -106,6 +112,20 @@ impl SyncWarning {
 
     fn other(message: impl Into<String>) -> Self {
         Self::new("other", &[("message", &message.into())])
+    }
+}
+
+/// A Claude / Azure account created by the pull arrives logged out: list it with
+/// its local id so the result can offer a login button.
+async fn push_login_needed(
+    db: &Db,
+    warnings: &mut Vec<SyncWarning>,
+    code: &str,
+    table: &str,
+    label: &str,
+) {
+    if let Ok(Some(id)) = backup::id_by(db, table, "label", label).await {
+        warnings.push(SyncWarning::new(code, &[("account", label), ("id", &id)]));
     }
 }
 
@@ -439,13 +459,44 @@ async fn apply_payload(
         }
         // Claude / AWS / Azure: metadata only. A new one arrives logged out; an existing one keeps
         // its local credentials.
+        let mut imported_aws: Vec<&backup::AwsEntry> = Vec::new();
         for entry in &bundle.aws_accounts {
             let result = backup::import_aws(db, entry).await;
+            if result.is_ok() {
+                imported_aws.push(entry);
+            }
             record(&mut report, w, "awsAccounts", &entry.label, result);
+        }
+        // Recreate the SSO profiles in ~/.aws/config (append-only, one write) so the
+        // accounts only need `aws sso login` here.
+        for o in backup::ensure_aws_profiles(&imported_aws, &secret.aws_keys) {
+            match o.result {
+                Ok(ProfileMerge::Added) if !o.needs_login => w.push(SyncWarning::new(
+                    "aws_keys_added",
+                    &[("profile", &o.profile), ("account", &o.account)],
+                )),
+                Ok(ProfileMerge::Added) => w.push(SyncWarning::new(
+                    "aws_profile_added",
+                    &[("profile", &o.profile), ("account", &o.account), ("url", &o.start_url)],
+                )),
+                Ok(ProfileMerge::Conflict(section)) => w.push(SyncWarning::new(
+                    "aws_profile_conflict",
+                    &[("profile", &o.profile), ("section", &section)],
+                )),
+                Err(error) => w.push(SyncWarning::new(
+                    "aws_profile_failed",
+                    &[("profile", &o.profile), ("error", &error)],
+                )),
+                Ok(ProfileMerge::Unchanged) => {}
+            }
         }
         for entry in &bundle.azure_accounts {
             let result = backup::import_azure(app_data, db, entry).await;
+            let created = matches!(result, Ok(Upsert::Created));
             record(&mut report, w, "azureAccounts", &entry.label, result);
+            if created {
+                push_login_needed(db, w, "azure_login_needed", "azure_accounts", &entry.label).await;
+            }
         }
         if let Some(client) = &secret.google_client {
             let same = secrets::get_google_client().is_some_and(|c| {
@@ -469,7 +520,12 @@ async fn apply_payload(
         }
         for entry in &bundle.claude_accounts {
             let result = backup::import_claude(app_data, db, entry).await;
+            let created = matches!(result, Ok(Upsert::Created));
             record(&mut report, w, "claudeAccounts", &entry.label, result);
+            if created {
+                push_login_needed(db, w, "claude_login_needed", "claude_accounts", &entry.label)
+                    .await;
+            }
         }
     }
 
@@ -1418,7 +1474,14 @@ mod tests {
             ..Default::default()
         };
         let report = apply_payload(&env(&dir), &target, p, &cats).await;
-        assert!(report.warnings.is_empty(), "{:?}", report.warnings);
+        // The new accounts arrive signed out and are listed with a login button.
+        assert_eq!(
+            report.warnings,
+            vec![
+                SyncWarning::new("azure_login_needed", &[("account", "corp"), ("id", "z1")]),
+                SyncWarning::new("claude_login_needed", &[("account", "fresh"), ("id", "c2")]),
+            ]
+        );
 
         // Existing AWS: metadata updated, local key id kept.
         let (region, key): (String, Option<String>) =

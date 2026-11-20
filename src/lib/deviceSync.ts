@@ -44,16 +44,22 @@ export interface SyncReport {
  * `link_failed` {project, name, error}, `project_failed` {project, error},
  * `item_failed` {section, name, error}, `project_sync_failed` {section, name, detail},
  * `category_not_sent` / `category_empty_no_mirror` {section},
- * `delete_failed` {section, name, error}, `other` {message}.
+ * `delete_failed` {section, name, error}, `aws_profile_added` {profile, account, url},
+ * `aws_keys_added` {profile, account}, `aws_profile_conflict` {profile, section}, `aws_profile_failed` {profile, error},
+ * `azure_login_needed` / `claude_login_needed` {account, id}, `other` {message}.
  */
 export interface SyncWarning {
   code: string
   params: Record<string, string>
 }
 
-export type SyncWarningGroup = 'folders' | 'links' | 'mirror' | 'problems'
+export type SyncWarningGroup = 'folders' | 'links' | 'mirror' | 'problems' | 'login' | 'ready'
 
 const WARNING_GROUP: Record<string, SyncWarningGroup> = {
+  aws_profile_added: 'login',
+  aws_keys_added: 'ready',
+  azure_login_needed: 'login',
+  claude_login_needed: 'login',
   project_folder_missing: 'folders',
   link_target_missing: 'links',
   link_failed: 'links',
@@ -61,7 +67,7 @@ const WARNING_GROUP: Record<string, SyncWarningGroup> = {
   category_empty_no_mirror: 'mirror',
 }
 
-const WARNING_GROUP_ORDER: SyncWarningGroup[] = ['problems', 'folders', 'links', 'mirror']
+const WARNING_GROUP_ORDER: SyncWarningGroup[] = ['problems', 'login', 'ready', 'folders', 'links', 'mirror']
 
 /** Warnings shown per group before "show N more". */
 export const WARNING_PREVIEW = 3
@@ -73,7 +79,7 @@ export function normalizeWarning(w: SyncWarning | string): SyncWarning {
 }
 
 /**
- * Warnings by group, real problems first, then folder notes, missing link targets and
+ * Warnings by group, real problems first, then accounts to log in to, accounts set up, folder notes, missing link targets and
  * mirror notes; empty groups dropped, order inside a group kept. Exact repeats are dropped.
  */
 export function groupWarnings(warnings: (SyncWarning | string)[]): { group: SyncWarningGroup, items: SyncWarning[] }[] {
@@ -88,6 +94,25 @@ export function groupWarnings(warnings: (SyncWarning | string)[]): { group: Sync
     byGroup.set(group, [...(byGroup.get(group) ?? []), w])
   }
   return WARNING_GROUP_ORDER.filter(g => byGroup.has(g)).map(group => ({ group, items: byGroup.get(group)! }))
+}
+
+/** The login a report line offers: a stable `key` for its button state and the command to run. */
+export interface SyncLogin {
+  key: string
+  command: string
+  args: Record<string, string>
+}
+
+/** Login for an account the pull left signed out here (AWS profile, Azure, Claude), else `null`. */
+export function loginFor(w: SyncWarning): SyncLogin | null {
+  const p = w.params
+  if (w.code === 'aws_profile_added' && p.profile)
+    return { key: `aws:${p.profile}`, command: 'aws_sso_login_profile', args: { profileName: p.profile } }
+  if (w.code === 'azure_login_needed' && p.id)
+    return { key: `azure:${p.id}`, command: 'azure_login', args: { id: p.id } }
+  if (w.code === 'claude_login_needed' && p.id)
+    return { key: `claude:${p.id}`, command: 'login_claude_account', args: { id: p.id } }
+  return null
 }
 
 export type SyncPhase = 'connecting' | 'auth' | 'downloading' | 'applying' | 'done'

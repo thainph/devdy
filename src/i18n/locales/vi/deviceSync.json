@@ -58,7 +58,7 @@
     "settings": "Theme, ngôn ngữ, model, prompt đã lưu, dịch…",
     "mcpServers": "Đầy đủ cài đặt, gồm env và header bí mật.",
     "vpsServers": "Đầy đủ cài đặt, gồm passphrase và key do Devdy quản lý.",
-    "accounts": "GitHub, GitLab, Google kèm token. Claude/AWS/Azure chỉ tên, cần đăng nhập lại."
+    "accounts": "GitHub, GitLab, Google kèm token. AWS profile kèm cấu hình (cả access key); profile SSO cần đăng nhập lại. Claude/Azure chỉ tên, cần đăng nhập lại."
   },
   "phases": {
     "connecting": "Kết nối tới {name}",
@@ -81,7 +81,7 @@
     "deleted": "Xoá",
     "skipped": "Bỏ qua",
     "nothing": "Không có gì thay đổi.",
-    "reloginHint": "Tài khoản Claude, AWS và Azure cần đăng nhập lại trên máy này.",
+    "reloginHint": "Tài khoản Claude, Azure và AWS SSO cần đăng nhập lại trên máy này.",
     "reloadHint": "Tải lại Devdy để áp dụng theme và cài đặt vừa đồng bộ ở mọi nơi.",
     "showMore": "Xem thêm {n}",
     "showLess": "Thu gọn",
@@ -135,6 +135,8 @@
   },
   "warningGroups": {
     "problems": "Lỗi ({n})",
+    "login": "Tài khoản cần đăng nhập ({n})",
+    "ready": "Đã thiết lập trên máy này ({n})",
     "folders": "Thư mục project không có trên máy này ({n})",
     "links": "Liên kết tới mục không có trên máy này ({n})",
     "mirror": "Không xoá khi đồng bộ y hệt ({n})"
@@ -149,6 +151,12 @@
     "category_not_sent": "{section}: máy kia không gửi mục này, không xoá gì.",
     "category_empty_no_mirror": "{section}: máy kia không có mục nào, để an toàn không xoá gì.",
     "delete_failed": "{section} '{name}': không xoá được: {error}",
+    "aws_profile_added": "Đã thêm AWS profile '{profile}' (account '{account}', đăng nhập tại {url}) vào ~/.aws/config. Đăng nhập để dùng.",
+    "aws_profile_conflict": "AWS profile '{profile}': [{section}] trong ~/.aws/config có giá trị khác nên được giữ nguyên.",
+    "aws_profile_failed": "AWS profile '{profile}': không ghi được ~/.aws/config: {error}",
+    "azure_login_needed": "Đã thêm Azure account '{account}', máy này chưa đăng nhập.",
+    "claude_login_needed": "Đã thêm Claude account '{account}', máy này chưa đăng nhập.",
+    "aws_keys_added": "Đã thêm AWS profile '{profile}' (account '{account}') kèm access key vào ~/.aws. Dùng được ngay.",
     "other": "{message}"
   },
   "linkKinds": {
@@ -179,7 +187,7 @@
     "settings": "Theme, ngôn ngữ, model, prompt…",
     "mcpServers": "Gồm env và header bí mật",
     "vpsServers": "Gồm passphrase và key",
-    "accounts": "GitHub/GitLab/Google kèm token"
+    "accounts": "Token GitHub/GitLab/Google, AWS profile"
   },
   "advanced": {
     "title": "Nâng cao",
@@ -198,5 +206,12 @@
     "earlier": "{date} {time}",
     "counts": "{n} mục · thêm {created}, cập nhật {updated}",
     "never": "Chưa đồng bộ từ máy khác lần nào."
+  },
+  "login": {
+    "action": "Đăng nhập",
+    "done": "Đã đăng nhập",
+    "failed": "Đăng nhập thất bại",
+    "settingsHint": "Bạn cũng có thể đăng nhập ở mục của account đó trong Settings.",
+    "notSignedIn": "Đã chạy đăng nhập nhưng account vẫn chưa đăng nhập."
   }
 }

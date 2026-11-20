@@ -16,6 +16,7 @@ import {
   defaultCategories,
   deviceLabel,
   groupWarnings,
+  loginFor,
   isDeviceGone,
   mirrorDeletions,
   normalizeWarning,
@@ -125,6 +126,15 @@ test('reportTotals sums every row', () => {
   assert.deepEqual(reportTotals({ counts: {}, warnings: [] }), { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 })
 })
 
+test('groupWarnings: accounts to log in to sit right after problems', () => {
+  const groups = groupWarnings([
+    { code: 'project_folder_missing', params: { project: 'pms', path: '/x' } },
+    { code: 'aws_profile_added', params: { profile: 'yahagi-admin', account: 'yahagi' } },
+    { code: 'aws_profile_conflict', params: { profile: 'chemico-admin', section: 'sso-session chemico' } },
+  ])
+  assert.deepEqual(groups.map(g => [g.group, g.items.length]), [['problems', 1], ['login', 1], ['folders', 1]])
+})
+
 test('groupWarnings: problems first, then folders / links / mirror, repeats dropped', () => {
   const folder = (project) => ({ code: 'project_folder_missing', params: { project, path: `/x/${project}` } })
   const groups = groupWarnings([
@@ -222,4 +232,27 @@ test('syncDay buckets a time relative to now', () => {
   assert.equal(syncDay(new Date(2026, 10, 3, 14, 32).toISOString(), now), 'yesterday')
   assert.equal(syncDay(new Date(2026, 10, 2, 23, 59).toISOString(), now), 'earlier')
   assert.equal(syncDay('not a date', now), null)
+})
+
+test('loginFor maps each signed-out account to its login command', () => {
+  assert.deepEqual(loginFor({ code: 'aws_profile_added', params: { profile: 'p', account: 'a', url: 'u' } }),
+    { key: 'aws:p', command: 'aws_sso_login_profile', args: { profileName: 'p' } })
+  assert.deepEqual(loginFor({ code: 'azure_login_needed', params: { account: 'Prod', id: 'z1' } }),
+    { key: 'azure:z1', command: 'azure_login', args: { id: 'z1' } })
+  assert.deepEqual(loginFor({ code: 'claude_login_needed', params: { account: 'Work', id: 'c1' } }),
+    { key: 'claude:c1', command: 'login_claude_account', args: { id: 'c1' } })
+  assert.equal(loginFor({ code: 'claude_login_needed', params: { account: 'Work' } }), null)
+  assert.equal(loginFor({ code: 'item_failed', params: {} }), null)
+  const groups = groupWarnings([
+    { code: 'claude_login_needed', params: { account: 'Work', id: 'c1' } },
+    { code: 'azure_login_needed', params: { account: 'Prod', id: 'z1' } },
+  ])
+  assert.deepEqual(groups.map(g => [g.group, g.items.length]), [['login', 2]])
+})
+
+test('groupWarnings: access-key AWS profiles are listed as set up, without a login', () => {
+  const w = { code: 'aws_keys_added', params: { profile: 'malme', account: 'malme' } }
+  const groups = groupWarnings([{ code: 'aws_profile_added', params: { profile: 'p', account: 'a', url: 'u' } }, w])
+  assert.deepEqual(groups.map(g => [g.group, g.items.length]), [['login', 1], ['ready', 1]])
+  assert.equal(loginFor(w), null)
 })
