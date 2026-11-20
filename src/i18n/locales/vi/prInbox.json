@@ -1,5 +1,6 @@
 {
   "title": "PR Reviews",
+  "pendingTitle": "Đang chờ bạn review",
   "emptyTitle": "Không có PR nào chờ review",
   "emptyBody": "Gom mọi PR bạn được request review trên tất cả GitHub account đã cấu hình. Cấu hình account trong Settings.",
   "reviewing": "AI đang review {repo}#{number}",

@@ -1,5 +1,6 @@
 {
   "title": "PR Reviews",
+  "pendingTitle": "Waiting for your review",
   "emptyTitle": "No PRs waiting for review",
   "emptyBody": "Collect every PR you've been requested to review across all configured GitHub accounts. Configure accounts in Settings.",
   "reviewing": "AI is reviewing {repo}#{number}",

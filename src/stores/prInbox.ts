@@ -1,9 +1,9 @@
 import { defineStore } from 'pinia'
 import { invoke } from '@/lib/tauri'
-import { ref } from 'vue'
+import { computed, ref } from 'vue'
 import { listen } from '@tauri-apps/api/event'
 import { PR_GROUP_BY_OPTIONS, type PrGroupBy } from '@/lib/prInboxGrouping'
-import { normalizeLogin, sanitizeBotLogins, sanitizeFilters, emptyFilters, type PrFilters } from '@/lib/prInboxFilters'
+import { makeBotPredicate, normalizeLogin, sanitizeBotLogins, sanitizeFilters, emptyFilters, type PrFilters } from '@/lib/prInboxFilters'
 
 /** A PR awaiting the user's review — mirrors the Rust `PrInboxItem`. */
 export interface PrInboxItem {
@@ -207,6 +207,14 @@ export const usePrInboxStore = defineStore('prInbox', () => {
   // Background check interval (pr_inbox poller), in minutes; 0 = off.
   const pollMinutes = ref<number | null>(null)
 
+  /** PRs waiting for review (sidebar badge) — the list as the inbox shows it,
+   * so hidden bot PRs don't count. */
+  const pendingCount = computed(() => {
+    if (!hideBots.value) return items.value.length
+    const isBot = makeBotPredicate(botLogins.value)
+    return items.value.filter(i => !isBot(i)).length
+  })
+
   function apply(inbox: CachedPrInbox) {
     items.value = inbox.items
     warnings.value = inbox.errors
@@ -244,6 +252,26 @@ export const usePrInboxStore = defineStore('prInbox', () => {
     }
     const fetchedAt = lastRefreshedAt.value ? Date.parse(lastRefreshedAt.value) : 0
     if (Date.now() - fetchedAt > CACHE_FRESH_MS) await refresh()
+  }
+
+  /** Badge only: follow the backend cache without fetching. The inbox lives in
+   * its own window, so its bot preferences reach this one via `storage`. */
+  let watchingStorage = false
+  async function watchCache() {
+    void listenUpdates()
+    if (!watchingStorage) {
+      watchingStorage = true
+      window.addEventListener('storage', (e) => {
+        if (e.key === HIDE_BOTS_KEY) hideBots.value = loadHideBots()
+        else if (e.key === BOT_LOGINS_KEY) botLogins.value = sanitizeBotLogins(readJson(BOT_LOGINS_KEY))
+      })
+    }
+    try {
+      const cached = await invoke<CachedPrInbox | null>('get_cached_pr_inbox')
+      if (cached && !lastRefreshedAt.value) apply(cached)
+    } catch {
+      /* the first poll will broadcast */
+    }
   }
 
   async function loadPollMinutes() {
@@ -377,8 +405,8 @@ export const usePrInboxStore = defineStore('prInbox', () => {
   return {
     items, loading, error, warnings, lastRefreshedAt, lastAttemptAt, reviewingKeys,
     groupBy, hideBots, collapsedGroups, filters, density, botLogins,
-    pollMinutes,
-    load, refresh, loadPollMinutes, setPollMinutes, loadReReviewPrompt, loadPromptConfig, savePrompt, savePromptId, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
+    pollMinutes, pendingCount,
+    load, watchCache, refresh, loadPollMinutes, setPollMinutes, loadReReviewPrompt, loadPromptConfig, savePrompt, savePromptId, setReviewing, linkRun, setGroupBy, setHideBots, setGroupCollapsed,
     setFilters, clearFilters, setDensity, setBotLogins, addBotLogin, removeBotLogin,
   }
 })
