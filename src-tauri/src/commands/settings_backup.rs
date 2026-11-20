@@ -20,6 +20,7 @@
 //! when the user allows it). Library files replaced by an import are moved to the legacy backups
 //! first.
 
+use crate::commands::aws_sso::ProfileMerge;
 use crate::commands::groups::{set_group_members_inner, GroupKind};
 use crate::commands::mcp::McpServer;
 use crate::commands::settings::PORTABLE_SETTING_KEYS;
@@ -317,6 +318,10 @@ pub(crate) struct AwsEntry {
     pub(crate) profile_name: Option<String>,
     #[serde(default)]
     pub(crate) tags: Option<String>,
+    /// The SSO profile's `~/.aws/config` definition (no credentials), so the
+    /// importing machine can recreate it and only needs `aws sso login`.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) profile_config: Option<crate::commands::aws_sso::AwsProfileDef>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -1206,6 +1211,16 @@ pub(crate) async fn collect_accounts(
         region: row.get("region"),
         profile_name: row.get("profile_name"),
         tags: row.get("tags"),
+        profile_config: None,
+    })
+    .map(|mut entry: AwsEntry| {
+        if entry.auth_method == "profile" {
+            entry.profile_config = entry
+                .profile_name
+                .as_deref()
+                .and_then(crate::commands::aws_sso::read_profile_def);
+        }
+        entry
     })
     .collect();
 
@@ -1802,7 +1817,23 @@ async fn apply_bundle(
     }
     for entry in &bundle.aws_accounts {
         let result = import_aws(db, entry).await;
+        let ok = result.is_ok();
         report.record("awsAccounts", &entry.label, result);
+        if !ok {
+            continue;
+        }
+        match ensure_aws_profile(entry) {
+            Some(Ok((profile, ProfileMerge::Added))) => report.warnings.push(format!(
+                "AWS profile '{profile}' added to ~/.aws/config: log in to use it"
+            )),
+            Some(Ok((profile, ProfileMerge::Conflict(section)))) => report.warnings.push(format!(
+                "AWS profile '{profile}': [{section}] in ~/.aws/config differs, left unchanged"
+            )),
+            Some(Err((profile, e))) => report
+                .warnings
+                .push(format!("AWS profile '{profile}': {e}")),
+            Some(Ok((_, ProfileMerge::Unchanged))) | None => {}
+        }
     }
     let app_data = app.path().app_data_dir().ok();
     for entry in &bundle.azure_accounts {
@@ -2383,6 +2414,23 @@ pub(crate) async fn import_gitlab(
         pat,
         || secrets::get_gitlab_account_pat(&id).ok(),
         |t| secrets::set_gitlab_account_pat(&id, t),
+    )
+}
+
+/// Recreate an imported account's SSO profile in `~/.aws/config` (append-only).
+/// `None` when the entry carries no profile definition.
+pub(crate) fn ensure_aws_profile(
+    entry: &AwsEntry,
+) -> Option<Result<(String, ProfileMerge), (String, String)>> {
+    let def = entry.profile_config.as_ref()?;
+    let name = entry.profile_name.as_deref()?.trim();
+    if entry.auth_method != "profile" || name.is_empty() {
+        return None;
+    }
+    Some(
+        crate::commands::aws_sso::ensure_profile_def(name, def)
+            .map(|outcome| (name.to_string(), outcome))
+            .map_err(|e| (name.to_string(), e)),
     )
 }
 

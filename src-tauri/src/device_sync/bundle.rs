@@ -14,6 +14,7 @@
 //! skills / rules (+ groups), MCP / VPS servers and accounts only — never secret notes, Slack
 //! threads, projects or settings.
 
+use crate::commands::aws_sso::ProfileMerge;
 use crate::commands::groups::GroupKind;
 use crate::commands::settings_backup::{
     self as backup, Bundle, ImportReport, LinkWarning, ProjectEntry, ProjectMatch, SecretPayload,
@@ -86,6 +87,9 @@ pub struct SyncReport {
 /// - `project_sync_failed` {section, name, detail}: updated skill / rule not refreshed in a project
 /// - `category_not_sent` / `category_empty_no_mirror` {section}: mirror deleted nothing there
 /// - `delete_failed` {section, name, error}
+/// - `aws_profile_added` {profile, account}: SSO profile written to ~/.aws/config, needs login
+/// - `aws_profile_conflict` {profile, section}: a same-named section differs, left unchanged
+/// - `aws_profile_failed` {profile, error}
 /// - `other` {message}
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct SyncWarning {
@@ -441,7 +445,28 @@ async fn apply_payload(
         // its local credentials.
         for entry in &bundle.aws_accounts {
             let result = backup::import_aws(db, entry).await;
+            let ok = result.is_ok();
             record(&mut report, w, "awsAccounts", &entry.label, result);
+            if !ok {
+                continue;
+            }
+            // Recreate the SSO profile in ~/.aws/config (append-only) so the account only
+            // needs `aws sso login` here.
+            match backup::ensure_aws_profile(entry) {
+                Some(Ok((profile, ProfileMerge::Added))) => w.push(SyncWarning::new(
+                    "aws_profile_added",
+                    &[("profile", &profile), ("account", &entry.label)],
+                )),
+                Some(Ok((profile, ProfileMerge::Conflict(section)))) => w.push(SyncWarning::new(
+                    "aws_profile_conflict",
+                    &[("profile", &profile), ("section", &section)],
+                )),
+                Some(Err((profile, error))) => w.push(SyncWarning::new(
+                    "aws_profile_failed",
+                    &[("profile", &profile), ("error", &error)],
+                )),
+                Some(Ok((_, ProfileMerge::Unchanged))) | None => {}
+            }
         }
         for entry in &bundle.azure_accounts {
             let result = backup::import_azure(app_data, db, entry).await;

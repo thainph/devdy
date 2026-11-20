@@ -125,6 +125,15 @@ test('reportTotals sums every row', () => {
   assert.deepEqual(reportTotals({ counts: {}, warnings: [] }), { created: 0, updated: 0, unchanged: 0, deleted: 0, skipped: 0 })
 })
 
+test('groupWarnings: AWS profiles to log in to sit right after problems', () => {
+  const groups = groupWarnings([
+    { code: 'project_folder_missing', params: { project: 'pms', path: '/x' } },
+    { code: 'aws_profile_added', params: { profile: 'yahagi-admin', account: 'yahagi' } },
+    { code: 'aws_profile_conflict', params: { profile: 'chemico-admin', section: 'sso-session chemico' } },
+  ])
+  assert.deepEqual(groups.map(g => [g.group, g.items.length]), [['problems', 1], ['awsLogin', 1], ['folders', 1]])
+})
+
 test('groupWarnings: problems first, then folders / links / mirror, repeats dropped', () => {
   const folder = (project) => ({ code: 'project_folder_missing', params: { project, path: `/x/${project}` } })
   const groups = groupWarnings([
