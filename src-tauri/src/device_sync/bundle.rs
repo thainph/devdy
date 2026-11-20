@@ -88,6 +88,7 @@ pub struct SyncReport {
 /// - `category_not_sent` / `category_empty_no_mirror` {section}: mirror deleted nothing there
 /// - `delete_failed` {section, name, error}
 /// - `aws_profile_added` {profile, account, url}: SSO profile written to ~/.aws/config, needs login
+/// - `aws_keys_added` {profile, account}: access-key profile + keys written to ~/.aws, ready
 /// - `aws_profile_conflict` {profile, section}: a same-named section differs, left unchanged
 /// - `aws_profile_failed` {profile, error}
 /// - `azure_login_needed` / `claude_login_needed` {account, id}: new account, logged out here
@@ -468,8 +469,12 @@ async fn apply_payload(
         }
         // Recreate the SSO profiles in ~/.aws/config (append-only, one write) so the
         // accounts only need `aws sso login` here.
-        for o in backup::ensure_aws_profiles(&imported_aws) {
+        for o in backup::ensure_aws_profiles(&imported_aws, &secret.aws_keys) {
             match o.result {
+                Ok(ProfileMerge::Added) if !o.needs_login => w.push(SyncWarning::new(
+                    "aws_keys_added",
+                    &[("profile", &o.profile), ("account", &o.account)],
+                )),
                 Ok(ProfileMerge::Added) => w.push(SyncWarning::new(
                     "aws_profile_added",
                     &[("profile", &o.profile), ("account", &o.account), ("url", &o.start_url)],

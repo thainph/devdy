@@ -45,7 +45,7 @@ export interface SyncReport {
  * `item_failed` {section, name, error}, `project_sync_failed` {section, name, detail},
  * `category_not_sent` / `category_empty_no_mirror` {section},
  * `delete_failed` {section, name, error}, `aws_profile_added` {profile, account, url},
- * `aws_profile_conflict` {profile, section}, `aws_profile_failed` {profile, error},
+ * `aws_keys_added` {profile, account}, `aws_profile_conflict` {profile, section}, `aws_profile_failed` {profile, error},
  * `azure_login_needed` / `claude_login_needed` {account, id}, `other` {message}.
  */
 export interface SyncWarning {
@@ -53,10 +53,11 @@ export interface SyncWarning {
   params: Record<string, string>
 }
 
-export type SyncWarningGroup = 'folders' | 'links' | 'mirror' | 'problems' | 'login'
+export type SyncWarningGroup = 'folders' | 'links' | 'mirror' | 'problems' | 'login' | 'ready'
 
 const WARNING_GROUP: Record<string, SyncWarningGroup> = {
   aws_profile_added: 'login',
+  aws_keys_added: 'ready',
   azure_login_needed: 'login',
   claude_login_needed: 'login',
   project_folder_missing: 'folders',
@@ -66,7 +67,7 @@ const WARNING_GROUP: Record<string, SyncWarningGroup> = {
   category_empty_no_mirror: 'mirror',
 }
 
-const WARNING_GROUP_ORDER: SyncWarningGroup[] = ['problems', 'login', 'folders', 'links', 'mirror']
+const WARNING_GROUP_ORDER: SyncWarningGroup[] = ['problems', 'login', 'ready', 'folders', 'links', 'mirror']
 
 /** Warnings shown per group before "show N more". */
 export const WARNING_PREVIEW = 3
@@ -78,7 +79,7 @@ export function normalizeWarning(w: SyncWarning | string): SyncWarning {
 }
 
 /**
- * Warnings by group, real problems first, then accounts to log in to, folder notes, missing link targets and
+ * Warnings by group, real problems first, then accounts to log in to, accounts set up, folder notes, missing link targets and
  * mirror notes; empty groups dropped, order inside a group kept. Exact repeats are dropped.
  */
 export function groupWarnings(warnings: (SyncWarning | string)[]): { group: SyncWarningGroup, items: SyncWarning[] }[] {

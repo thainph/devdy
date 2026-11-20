@@ -249,3 +249,10 @@ test('loginFor maps each signed-out account to its login command', () => {
   ])
   assert.deepEqual(groups.map(g => [g.group, g.items.length]), [['login', 2]])
 })
+
+test('groupWarnings: access-key AWS profiles are listed as set up, without a login', () => {
+  const w = { code: 'aws_keys_added', params: { profile: 'malme', account: 'malme' } }
+  const groups = groupWarnings([{ code: 'aws_profile_added', params: { profile: 'p', account: 'a', url: 'u' } }, w])
+  assert.deepEqual(groups.map(g => [g.group, g.items.length]), [['login', 1], ['ready', 1]])
+  assert.equal(loginFor(w), null)
+})

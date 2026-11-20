@@ -172,7 +172,7 @@ function visibleWarnings(group: SyncWarningGroup, items: SyncWarning[]) {
   return expanded.value.has(group) ? items : items.slice(0, WARNING_PREVIEW)
 }
 
-const GROUP_ICON = { problems: AlertTriangle, login: KeyRound, folders: FolderX, links: Link2Off, mirror: Info } as const
+const GROUP_ICON = { problems: AlertTriangle, login: KeyRound, ready: Check, folders: FolderX, links: Link2Off, mirror: Info } as const
 
 // Login for accounts the pull left signed out here (AWS profile, Azure, Claude), keyed by `loginFor().key`.
 // One AWS login covers every profile on the same sso-session.

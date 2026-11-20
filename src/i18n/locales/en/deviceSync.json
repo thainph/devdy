@@ -58,7 +58,7 @@
     "settings": "Theme, language, models, saved prompts, translation…",
     "mcpServers": "Full settings, secret env and headers included.",
     "vpsServers": "Full settings, passphrases and Devdy-managed keys included.",
-    "accounts": "GitHub, GitLab, Google with tokens. Claude/AWS/Azure names only — sign in again."
+    "accounts": "GitHub, GitLab, Google with tokens. AWS profiles with their config (access keys too); SSO ones sign in again. Claude/Azure names only — sign in again."
   },
   "phases": {
     "connecting": "Connecting to {name}",
@@ -81,7 +81,7 @@
     "deleted": "Deleted",
     "skipped": "Skipped",
     "nothing": "Nothing was changed.",
-    "reloginHint": "Claude, AWS and Azure accounts need to sign in again on this machine.",
+    "reloginHint": "Claude, Azure and AWS SSO accounts need to sign in again on this machine.",
     "reloadHint": "Reload Devdy to apply the synced theme and settings everywhere.",
     "showMore": "Show {n} more",
     "showLess": "Show less",
@@ -136,6 +136,7 @@
   "warningGroups": {
     "problems": "Problems ({n})",
     "login": "Accounts to sign in to ({n})",
+    "ready": "Set up on this machine ({n})",
     "folders": "Project folders not on this machine ({n})",
     "links": "Links to items not on this machine ({n})",
     "mirror": "Mirror skipped ({n})"
@@ -155,6 +156,7 @@
     "aws_profile_failed": "AWS profile '{profile}': could not write ~/.aws/config: {error}",
     "azure_login_needed": "Azure account '{account}' was added and is signed out on this machine.",
     "claude_login_needed": "Claude account '{account}' was added and is signed out on this machine.",
+    "aws_keys_added": "AWS profile '{profile}' (account '{account}') was added to ~/.aws with its access keys. Ready to use.",
     "other": "{message}"
   },
   "linkKinds": {
@@ -185,7 +187,7 @@
     "settings": "Theme, language, models, prompts…",
     "mcpServers": "Secret env and headers included",
     "vpsServers": "Passphrases and keys included",
-    "accounts": "GitHub/GitLab/Google with tokens"
+    "accounts": "GitHub/GitLab/Google tokens, AWS profiles"
   },
   "advanced": {
     "title": "Advanced",
