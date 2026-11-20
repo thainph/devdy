@@ -666,12 +666,17 @@ fn merge_item(
         Some(_) if has_other_auth(config, name) => {
             return Ok(ProfileMerge::Conflict(format!("profile {name}")))
         }
-        None if credentials_section(&parse_config(credentials), name).is_some() => {
-            return Ok(ProfileMerge::Conflict(format!("credentials {name}")))
-        }
         _ => {}
     }
     let (config_outcome, new_config) = merge_profile_def(config, name, def)?;
+    let adds_profile = matches!(config_outcome, ProfileMerge::Added)
+        && find(&parse_config(config), "profile", name).is_none();
+    if keys.is_none()
+        && adds_profile
+        && credentials_section(&parse_config(credentials), name).is_some()
+    {
+        return Ok(ProfileMerge::Conflict(format!("credentials {name}")));
+    }
     let (cred_outcome, new_credentials) = match keys {
         Some(keys) => merge_credentials(credentials, name, keys)?,
         None => (ProfileMerge::Unchanged, None),
@@ -808,16 +813,17 @@ pub fn ensure_profile_defs_at(
                     done = false;
                     break;
                 }
-                // Keys already written but the config failed: say exactly that.
-                Err(e) if index == 1 && written.iter().any(|w| *w) => {
+                // Keys already written (this or an earlier attempt) but a later write
+                // failed: say exactly that, keep conflicts / unchanged as they are.
+                Err(e) if written.iter().any(|w| *w) => {
                     return Ok(results
                         .into_iter()
                         .zip(&written)
                         .map(|(r, &w)| match r {
-                            Ok(_) if w => Err(format!(
+                            _ if w => Err(format!(
                                 "access keys written to ~/.aws/credentials, ~/.aws/config not updated: {e}"
                             )),
-                            Ok(_) => Err(e.clone()),
+                            Ok(ProfileMerge::Added) => Err(e.clone()),
                             r => r,
                         })
                         .collect());
@@ -1529,6 +1535,39 @@ aws_session_token = tok
             std::fs::read_to_string(&path).unwrap(),
             "[profile other]\nregion = x\n"
         );
+        let _ = std::fs::remove_dir_all(aws.parent().unwrap());
+    }
+
+    #[test]
+    fn identical_sso_profile_with_same_named_keys_stays_unchanged() {
+        let (path, aws) = scratch_aws("same-sso");
+        std::fs::write(&path, SOURCE).unwrap();
+        std::fs::write(
+            aws.join("credentials"),
+            CREDS.replace("malme", "yahagi-admin"),
+        )
+        .unwrap();
+        let r =
+            ensure_profile_defs_at(&path, &[("yahagi-admin".to_string(), def(), None)]).unwrap();
+        assert_eq!(r[0], Ok(ProfileMerge::Unchanged));
+        let _ = std::fs::remove_dir_all(aws.parent().unwrap());
+    }
+
+    #[test]
+    fn partial_failure_keeps_other_items_outcomes() {
+        let (path, aws) = scratch_aws("partial-mixed");
+        std::fs::write(&path, "[profile malme2]\nregion = us-east-1\n").unwrap();
+        std::fs::create_dir_all(aws.join("config.devdy.bak").join("x")).unwrap();
+        let r = ensure_profile_defs_at(
+            &path,
+            &[
+                ("malme".to_string(), static_def(), Some(keys())),
+                ("malme2".to_string(), static_def(), Some(keys())),
+            ],
+        )
+        .unwrap();
+        assert!(r[0].clone().unwrap_err().starts_with("access keys written"));
+        assert_eq!(r[1], Ok(ProfileMerge::Conflict("profile malme2".into())));
         let _ = std::fs::remove_dir_all(aws.parent().unwrap());
     }
 }

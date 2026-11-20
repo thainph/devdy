@@ -185,17 +185,21 @@ const logins = ref<Record<string, 'running' | 'done' | string>>({})
 // (URL from the `claude_login_url` event) shows a code to paste here, as in Settings.
 const claudeLoginUrl = ref<Record<string, string>>({})
 const claudeLoginCode = ref<Record<string, string>>({})
-let unlistenClaudeLoginUrl: UnlistenFn | null = null
+// A failed code submit; the `claude auth login` keeps running, so the login stays `running`.
+const claudeCodeError = ref<Record<string, string>>({})
+let claudeUrlListener: Promise<UnlistenFn | null> | null = null
 
 async function runLogin(w: SyncWarning) {
   const login = loginFor(w)
   if (!login || logins.value[login.key] === 'running') return
   logins.value = { ...logins.value, [login.key]: 'running' }
   const claudeId = w.code === 'claude_login_needed' ? w.params.id : ''
-  if (claudeId && !unlistenClaudeLoginUrl) {
-    unlistenClaudeLoginUrl = await listen<{ accountId: string, url: string }>('claude_login_url', (e) => {
+  if (claudeId) {
+    // One shared listener, registered before the login starts so its URL event isn't missed.
+    claudeUrlListener ??= listen<{ accountId: string, url: string }>('claude_login_url', (e) => {
       claudeLoginUrl.value = { ...claudeLoginUrl.value, [e.payload.accountId]: e.payload.url }
     }).catch(() => null)
+    await claudeUrlListener
   }
   try {
     const result = await invoke<{ logged_in?: boolean } | null>(login.command, login.args)
@@ -208,12 +212,11 @@ async function runLogin(w: SyncWarning) {
   }
   finally {
     if (claudeId) {
-      const urls = { ...claudeLoginUrl.value }
-      const codes = { ...claudeLoginCode.value }
-      delete urls[claudeId]
-      delete codes[claudeId]
-      claudeLoginUrl.value = urls
-      claudeLoginCode.value = codes
+      for (const map of [claudeLoginUrl, claudeLoginCode, claudeCodeError]) {
+        const next = { ...map.value }
+        delete next[claudeId]
+        map.value = next
+      }
     }
   }
 }
@@ -221,12 +224,13 @@ async function runLogin(w: SyncWarning) {
 async function submitClaudeCode(id: string) {
   const code = claudeLoginCode.value[id]?.trim()
   if (!code) return
+  claudeCodeError.value = { ...claudeCodeError.value, [id]: '' }
   try {
     await invoke('submit_claude_login_code', { id, code })
     claudeLoginCode.value = { ...claudeLoginCode.value, [id]: '' }
   }
   catch (e) {
-    logins.value = { ...logins.value, [`claude:${id}`]: String(e) }
+    claudeCodeError.value = { ...claudeCodeError.value, [id]: String(e) }
   }
 }
 
@@ -239,8 +243,9 @@ function cancelRunningLogins() {
   for (const [key, state] of Object.entries(logins.value)) {
     if (state === 'running' && key.startsWith('claude:')) cancelClaudeLogin(key.slice('claude:'.length))
   }
-  unlistenClaudeLoginUrl?.()
-  unlistenClaudeLoginUrl = null
+  const listener = claudeUrlListener
+  claudeUrlListener = null
+  void listener?.then(unlisten => unlisten?.())
 }
 
 function loginState(w: SyncWarning) {
@@ -700,6 +705,7 @@ onBeforeUnmount(() => {
                         {{ t('settings.claude.loginSubmitCode') }}
                       </Button>
                     </div>
+                    <p v-if="claudeCodeError[w.params.id]" class="text-destructive">{{ claudeCodeError[w.params.id] }}</p>
                   </template>
                 </div>
                 <p v-if="loginError(w)" class="text-destructive">{{ loginError(w) }} {{ t('deviceSync.login.settingsHint') }}</p>
