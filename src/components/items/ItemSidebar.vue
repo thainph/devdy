@@ -262,8 +262,8 @@ const groups = computed(() => {
   <aside
     v-if="listPane.shown.value"
     ref="rootEl"
-    class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar"
-    :class="listPane.floatClass.value"
+    class="list-sidebar flex shrink-0 flex-col border-r border-border/60 bg-sidebar"
+    :class="[listPane.widthClass.value, listPane.floatClass.value]"
   >
     <!-- Search + pin / reload, filter + new -->
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">

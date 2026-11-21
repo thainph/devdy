@@ -64,7 +64,7 @@ const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 // The list column hides per screen (⌘B) and with Focus (⌘.).
-provideListPane('mcp')
+provideListPane('mcp', { autoHide: true })
 const { t } = useI18n()
 
 const deletingId = ref<string | null>(null)

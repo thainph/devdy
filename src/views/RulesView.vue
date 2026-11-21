@@ -33,7 +33,7 @@ defineOptions({ name: 'RulesView' })
 
 const { t } = useI18n()
 // The list column hides per screen (⌘B) and with Focus (⌘.).
-provideListPane('rules')
+provideListPane('rules', { autoHide: true })
 const route = useRoute()
 const router = useRouter()
 const store = useRulesStore()

@@ -96,7 +96,7 @@ const params = new URLSearchParams(window.location.search)
 /** The kind this window shows — fixed for its lifetime (one window per kind). */
 const kind: ItemKind = props.kind ?? (params.get('kind') === 'note' ? 'note' : 'todo')
 // The list column hides per screen (⌘B) and with Focus (⌘.).
-provideListPane(kind === 'note' ? 'notes' : 'todos')
+provideListPane(kind === 'note' ? 'notes' : 'todos', { autoHide: true })
 const initialId = props.initialId !== undefined ? props.initialId : params.get('id') || null
 /** The project the window was opened from: the default filter and "+ New" project. */
 const contextProjectId = ref<string | null>(

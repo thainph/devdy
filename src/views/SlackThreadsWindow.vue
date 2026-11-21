@@ -92,7 +92,7 @@ const props = defineProps<{
   add?: boolean
 }>()
 // The list column hides per screen (⌘B) and with Focus (⌘.).
-provideListPane('slack')
+provideListPane('slack', { autoHide: true })
 
 const { t } = useI18n()
 const { toast } = useToast()
