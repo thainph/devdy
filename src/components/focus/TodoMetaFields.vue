@@ -1,8 +1,7 @@
 <script setup lang="ts">
 // The "+ Todo" fields beyond title and project (spec §3.1): deadline (date + optional
 // time), priority, estimate (`30m`, `2h`, `1h30`) and the source the todo was
-// created from, shown as a removable chip. Shared by QuickCaptureForm (item window)
-// and TodoCaptureModal (the "+ Todo" buttons). The host owns the draft.
+// created from, shown as a removable chip. Used by TodoCaptureModal (the "+ Todo" buttons). The host owns the draft.
 //
 // The `suggest` slot hosts "✨ Suggest" (FocusAiSuggestButton, AI fills the form)
 // where the host offers it.

@@ -4,17 +4,19 @@
 // laid out like the Slack threads window:
 //
 //   ┌ (native OS titlebar only: "Notes: <title>" / "Todos") ────────────────┐
-//   ├ sidebar: search · pin · reload,        │ detail header: title /        │
-//   │ project filter + New, segmented filter │ meta · [project][Sessions] |  │
-//   │ (notes All|Linked, todos Open|Done|All)│ (✓ Done) ✎ (⧉) ⋯              │
+//   ├ sidebar: Todos 12 [3 late] [+New] [⋯]  │ detail header: title /        │
+//   │ search (⌘F) with the filter menu,      │ meta · [project][Sessions] |  │
+//   │ "Filtering: …" while filtering         │ (✓ Done) ✎ (⧉) ⋯              │
 //   │ items grouped by project               │ body: markdown, or the inline │
 //   │                                        │ editor while editing          │
 //   └────────────────────────────────────────┴───────────────────────────────┘
 //
 // Reading and editing both happen here: ✎ edits inline, ⌘/Ctrl+Enter saves,
 // Esc cancels, clicking a note's title renames it (a todo: edits). Creating
-// stays in the capture window (lib/itemWindow, "+ New"). Every "open this
-// note / todo" in the app lands here with `id` (or SELECT for an open window).
+// too: "+ New" (or "New todo / note" anywhere, lib/itemWindow) shows the
+// create pane in the detail area, with a draft row on top of the list. Every
+// "open this note / todo" in the app lands here with `id` (or SELECT for an
+// open window).
 //
 // Its own webview means its own store copy: ITEM_CHANGED (from a new item, the
 // backend's link commands, the other windows) refetches; the MCP
@@ -34,10 +36,10 @@ import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { ListTodo, StickyNote, X } from 'lucide-vue-next'
-import { Button, ConfirmModal, ToastHost } from '@/components/ui'
-import QuickCaptureForm from '@/components/QuickCaptureForm.vue'
-import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
+import { ListTodo, StickyNote } from 'lucide-vue-next'
+import { ConfirmModal, ToastHost } from '@/components/ui'
+import ItemCreatePane from '@/components/items/ItemCreatePane.vue'
+import { useQuickCapture } from '@/composables/useQuickCapture'
 import ItemSidebar from '@/components/items/ItemSidebar.vue'
 import ItemHeader from '@/components/items/ItemHeader.vue'
 import ItemBody from '@/components/items/ItemBody.vue'
@@ -75,7 +77,17 @@ import { firstLine } from '@/lib/itemText'
 import { projectOptionsForIds } from '@/lib/projectOptions'
 import { refreshTray } from '@/lib/tray'
 import { secretNoteFromNote, vaultError } from '@/lib/secretVault'
-import { countFocus, latenessById, type FocusRadarStatus } from '@/lib/focusRadar'
+import { latenessById } from '@/lib/focusRadar'
+import {
+  ITEM_NO_PROJECT,
+  defaultItemListView,
+  itemStatusCounts,
+  matchesItemView,
+  parseItemListDisplay,
+  type ItemListView,
+  type RadarById,
+} from '@/lib/itemListView'
+import { formatDate, ymdToDate } from '@/lib/dateValue'
 import { useFocusStore } from '@/stores/focus'
 import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
 import { useFocusAiActions } from '@/components/focus/useFocusAiActions'
@@ -92,7 +104,7 @@ const props = defineProps<{
   projectId?: string | null
 }>()
 
-const { t } = useI18n()
+const { t, locale } = useI18n()
 const { toast } = useToast()
 const { confirm } = useConfirm()
 const notes = useNotesStore()
@@ -114,14 +126,34 @@ const contextProjectId = ref<string | null>(
 /** "Make secret": into the vault, its own window. */
 const canSecret = kind === 'note'
 
-// ── Sidebar: search + project filter + kind filter (all client-side) ───────
+// ── Sidebar: search + the filter menu's view (all client-side) ─────────────
 
-const NO_PROJECT = '__none__'
 const search = ref('')
-/** '' = all projects, NO_PROJECT = items without one, else a project id. */
-const projectFilter = ref<string>(contextProjectId.value ?? '')
-/** notes: '' | 'linked'; todos: 'active' | 'done' | 'all'. */
-const filter = ref<string>(kind === 'note' ? '' : 'active')
+// The display part (sort, grouping, show done) is remembered per kind; the
+// project starts at the one the window was opened from.
+const VIEW_KEY = `items.${kind}.view`
+function loadDisplay() {
+  try {
+    return parseItemListDisplay(kind, JSON.parse(localStorage.getItem(VIEW_KEY) ?? 'null'))
+  } catch {
+    return parseItemListDisplay(kind, null)
+  }
+}
+const view = ref<ItemListView>({
+  ...defaultItemListView(kind),
+  ...loadDisplay(),
+  project: contextProjectId.value ?? '',
+})
+watch(
+  () => [view.value.sort, view.value.grouped, view.value.showDone] as const,
+  ([sort, grouped, showDone]) => {
+    try {
+      localStorage.setItem(VIEW_KEY, JSON.stringify({ sort, grouped, showDone }))
+    } catch {
+      /* storage unavailable */
+    }
+  },
+)
 
 const loadError = computed(() => (kind === 'note' ? notes.error : todos.error))
 
@@ -130,47 +162,23 @@ const loadError = computed(() => (kind === 'note' ? notes.error : todos.error))
 // effective due moment); it stays live through `focus:changed` / `item:changed`.
 const focus = useFocusStore()
 const lateness = computed(() => (kind === 'todo' && focus.loaded ? latenessById(focus.items, focus.now) : null))
-/** null = every lateness status. */
-const latenessFilter = ref<FocusRadarStatus | null>(null)
+/** Lateness status by todo id, for the status filter and its counts. */
+const radar = computed<RadarById | null>(() => {
+  const late = lateness.value
+  if (!late) return null
+  return Object.fromEntries(Object.entries(late).map(([id, item]) => [id, item.radar]))
+})
 
 const allRows = computed<ItemRow[]>(() =>
   kind === 'note' ? notes.notes.map(noteRow) : todos.todos.map(todoRow),
 )
 
 function matchesFilters(row: ItemRow): boolean {
-  if (latenessFilter.value && lateness.value?.[row.id]?.radar !== latenessFilter.value) return false
-  if (filter.value === 'linked' && row.linkedRunCount === 0) return false
-  if (filter.value === 'active' && row.done) return false
-  if (filter.value === 'done' && !row.done) return false
-  if (projectFilter.value === NO_PROJECT) return !row.projectId
-  if (projectFilter.value) return row.projectId === projectFilter.value
-  return true
+  return matchesItemView(kind, row, view.value, radar.value)
 }
 
-/** Lateness tab counts: open todos of the project in scope, before the tab filter. */
-const latenessCounts = computed(() => {
-  const late = lateness.value
-  if (!late) return null
-  const inScope = allRows.value.filter((row) =>
-    !row.done &&
-    (projectFilter.value === NO_PROJECT ? !row.projectId : !projectFilter.value || row.projectId === projectFilter.value),
-  )
-  return countFocus(inScope.map((row) => late[row.id]).filter((x) => !!x))
-})
-
-/** Note tab counts: the project in scope, before the All / Linked filter. */
-const noteCounts = computed(() => {
-  if (kind !== 'note') return null
-  const inScope = allRows.value.filter((row) =>
-    projectFilter.value === NO_PROJECT ? !row.projectId : !projectFilter.value || row.projectId === projectFilter.value,
-  )
-  return { all: inScope.length, linked: inScope.filter((row) => row.linkedRunCount > 0).length }
-})
-
-// Picking a lateness tab means open todos.
-watch(latenessFilter, (s) => {
-  if (s && filter.value === 'done') filter.value = 'active'
-})
+/** The filter menu's status counts: the project in scope, before the status filter. */
+const statusCounts = computed(() => itemStatusCounts(kind, allRows.value, view.value, radar.value))
 
 const visibleRows = computed(() => {
   const q = search.value.trim().toLowerCase()
@@ -181,16 +189,12 @@ const projectNames = computed<Record<string, string>>(() =>
   Object.fromEntries(projects.projects.map((p) => [p.id, p.name])),
 )
 
+/** Projects of the filter menu: those with items, plus the one filtered on. */
 const projectOptions = computed(() => {
   const ids = new Set<string>()
   for (const row of allRows.value) if (row.projectId) ids.add(row.projectId)
-  if (projectFilter.value && projectFilter.value !== NO_PROJECT) ids.add(projectFilter.value)
-  const named = projectOptionsForIds(ids, (id) => projectNames.value[id])
-  return [
-    { value: '', label: t('item.allProjects') },
-    ...named,
-    { value: NO_PROJECT, label: t('item.noProject') },
-  ]
+  if (view.value.project && view.value.project !== ITEM_NO_PROJECT) ids.add(view.value.project)
+  return projectOptionsForIds(ids, (id) => projectNames.value[id])
 })
 
 const emptyStore = computed(() => allRows.value.length === 0)
@@ -256,10 +260,8 @@ function revealRow(id: string) {
   const row = allRows.value.find((r) => r.id === id)
   if (!row) return
   search.value = ''
-  latenessFilter.value = null
   if (!matchesFilters(row)) {
-    projectFilter.value = ''
-    filter.value = kind === 'note' ? '' : 'all'
+    view.value = { ...view.value, status: '', project: '', showDone: view.value.showDone || row.done }
   }
 }
 
@@ -470,7 +472,7 @@ async function copyId() {
 
 const capture = useQuickCapture()
 const creating = ref(false)
-const createFormRef = ref<InstanceType<typeof QuickCaptureForm> | null>(null)
+const createFormRef = ref<InstanceType<typeof ItemCreatePane> | null>(null)
 const placement = props.embedded ? 'tab' : 'window'
 let lastRequestId: string | null = null
 
@@ -495,7 +497,7 @@ async function startCreate(context: { projectId: string | null; runId: string | 
 }
 
 function openCreate() {
-  const scoped = projectFilter.value && projectFilter.value !== NO_PROJECT ? projectFilter.value : null
+  const scoped = view.value.project && view.value.project !== ITEM_NO_PROJECT ? view.value.project : null
   void startCreate({ projectId: scoped ?? contextProjectId.value, runId: null })
 }
 
@@ -505,11 +507,30 @@ function onCreateRequest(req: ItemCreateRequest | undefined) {
   void startCreate({ projectId: req.projectId, runId: req.runId }, req.prefill)
 }
 
-async function onCreated(_tab: QuickCaptureTab, id: string | null) {
+/** Saved: the new item opens — or, with "Keep adding" on, the form stays for the next one. */
+async function onCreated(id: string | null, keepGoing: boolean) {
   emit(ITEM_CHANGED, { kind }).catch(() => {})
+  if (keepGoing) {
+    await refresh()
+    return
+  }
   creating.value = false
   if (id) await selectFresh(id)
 }
+
+/** The draft's row on top of the list: what is typed, its project and deadline. */
+const draftRow = computed(() => {
+  if (!creating.value) return null
+  const title =
+    kind === 'todo'
+      ? firstLine(capture.todoText.value)
+      : capture.noteTitle.value.trim() || firstLine(capture.noteContent.value)
+  const pid = capture.projectId.value
+  const parts = [pid ? projectNames.value[pid] ?? pid : t('item.noProject')]
+  const due = kind === 'todo' ? ymdToDate(capture.todoMeta.value.dueDate) : null
+  if (due) parts.push(formatDate(due, locale.value, { day: 'numeric', month: 'short' }))
+  return { title, sub: parts.join(' · ') }
+})
 
 // Back on this tab while the form is open: the shared draft may point at the
 // other kind (the Notes tab took it meanwhile).
@@ -632,7 +653,7 @@ async function selectFresh(id: string) {
 function applySelect(p: ItemListSelect) {
   if (p.projectId !== undefined) {
     contextProjectId.value = p.projectId ?? null
-    projectFilter.value = p.projectId ?? ''
+    view.value = { ...view.value, project: p.projectId ?? '' }
   }
   if (p.id) void selectFresh(p.id)
 }
@@ -734,13 +755,11 @@ onBeforeUnmount(() => {
   >
     <ItemSidebar
       v-model:search="search"
-      v-model:project="projectFilter"
-      v-model:filter="filter"
-      v-model:lateness-filter="latenessFilter"
+      v-model:view="view"
       :kind="kind"
       :rows="visibleRows"
       :empty-store="emptyStore"
-      :selected-id="selectedId"
+      :selected-id="creating ? null : selectedId"
       :project-options="projectOptions"
       :project-names="projectNames"
       :error="loadError"
@@ -748,10 +767,11 @@ onBeforeUnmount(() => {
       :embedded="embedded"
       :reloading="reloading"
       :lateness="lateness"
-      :lateness-counts="latenessCounts"
-      :note-counts="noteCounts"
+      :counts="statusCounts"
+      :draft="draftRow"
       @select="select"
       @add="openCreate"
+      @open-draft="createFormRef?.focus()"
       @toggle-done="toggleDone"
       @delete-group="removeGroup"
       @toggle-pin="togglePin"
@@ -760,39 +780,14 @@ onBeforeUnmount(() => {
       @retry="reloadAll"
     />
 
-    <!-- New item: the capture form in the detail pane; saved, the item opens here. -->
-    <section v-if="creating" class="flex min-w-0 flex-1 flex-col">
-      <div class="flex h-13 shrink-0 items-center gap-2 border-b border-border/60 px-4">
-        <ListPaneButtons mode="show" />
-        <component :is="kind === 'note' ? StickyNote : ListTodo" class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-        <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">
-          {{ kind === 'note' ? t('item.newNote') : t('item.newTodo') }}
-        </h2>
-        <Button
-          variant="ghost"
-          size="icon"
-          :title="t('common.cancel')"
-          :aria-label="t('common.cancel')"
-          @click="creating = false"
-        >
-          <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-      </div>
-      <div class="min-h-0 flex-1 overflow-auto px-4 py-3">
-        <QuickCaptureForm ref="createFormRef" @saved="onCreated" @dismiss="creating = false" />
-      </div>
-      <div class="flex shrink-0 items-center gap-2 border-t border-border/60 px-4 py-2.5">
-        <span class="mr-auto text-[11px] text-muted-foreground/70">⌘/Ctrl + Enter</span>
-        <Button
-          variant="primary"
-          size="sm"
-          :disabled="!createFormRef?.canSubmit || createFormRef?.saving"
-          @click="createFormRef?.submit()"
-        >
-          {{ kind === 'note' ? t('item.saveNote') : t('item.addTodo') }}
-        </Button>
-      </div>
-    </section>
+    <!-- New item: laid out like an item's detail; saved, the item opens here. -->
+    <ItemCreatePane
+      v-if="creating"
+      ref="createFormRef"
+      :kind="kind"
+      @saved="onCreated"
+      @dismiss="creating = false"
+    />
 
     <section v-else-if="item" class="flex min-w-0 flex-1 flex-col">
       <ItemHeader

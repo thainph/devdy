@@ -1,7 +1,7 @@
 // The new todo / note draft (the Todos / Notes screen's new-item form): which
 // kind, the text being typed, and which project/run it will be filed under.
 //
-// The draft lives HERE rather than inside QuickCaptureForm so switching tab (or
+// The draft lives HERE rather than inside the form (items/ItemCreatePane) so switching tab (or
 // anything else that re-renders the form) can't throw away a half-written note —
 // the fields come back exactly as they were.
 //
