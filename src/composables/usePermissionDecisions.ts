@@ -6,6 +6,11 @@
 //   - the standalone per-run permission windows (PermissionWindowManager) while it
 //     isn't (see lib/permissionSurface for the rules).
 //
+// In split view a RunView docks its own run's request in place of the composer
+// (setDockedRun); the stack then skips that run, and a docked request the user
+// pops out (popOut) gets its standalone window even while the main window is in
+// front.
+//
 // Both answer through `decide` / `answerQuestion` here, which only ever resolve the
 // run's CURRENT head request (a stale or repeated answer is ignored, and
 // liveRuns.respondPermission drops one already in flight), so a request can't be
@@ -24,10 +29,12 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { runDisplayName } from '@/lib/tray'
 import { focusSessionWindow } from '@/lib/sessionWindow'
+import { openPermissionWindow } from '@/lib/permissionWindow'
 import {
   floatWhenBackgroundEnabled,
   permissionSurface,
   promote,
+  stackEntries as filterStackEntries,
   type AppForeground,
 } from '@/lib/permissionSurface'
 
@@ -111,6 +118,27 @@ const stackHosts = ref(0)
 const focusRequest = ref<{ runId: string; nonce: number } | null>(null)
 let focusNonce = 0
 
+// Split view: a RunView answers its own run's request in place of the composer.
+// Each mounted RunView holds one slot (token → the run it docks, if any).
+const dockSlots = ref<Map<symbol, string>>(new Map())
+const dockedRuns = computed(() => new Set(dockSlots.value.values()))
+// Request ids the user popped out of the dock into their own window.
+const poppedOut = ref<Set<string>>(new Set())
+
+/**
+ * Claim (or release, with null) the run whose request a RunView docks. The card
+ * stack skips that run while it is docked. Returns nothing; call again on change
+ * and with null on unmount.
+ */
+export function setDockedRun(token: symbol, runId: string | null) {
+  const cur = dockSlots.value.get(token) ?? null
+  if (cur === runId) return
+  const next = new Map(dockSlots.value)
+  if (runId) next.set(token, runId)
+  else next.delete(token)
+  dockSlots.value = next
+}
+
 export function registerStackHost(): () => void {
   stackHosts.value++
   return () => {
@@ -139,6 +167,15 @@ export function usePermissionDecisions() {
     floatWhenBackgroundEnabled(appSettings.settings?.permission_float_when_background),
   )
   const surface = computed(() => permissionSurface(foreground.value, floatWhenBackground.value))
+
+  /** What the in-app card stack shows: not docked in a RunView, not popped out. */
+  const stackEntries = computed(() =>
+    filterStackEntries(entries.value, dockedRuns.value, poppedOut.value),
+  )
+  /** Runs whose head request the user popped out into its own window. */
+  const poppedOutRuns = computed(() =>
+    entries.value.filter((e) => poppedOut.value.has(e.requestId)).map((e) => e.runId),
+  )
 
   function headOf(runId: string): PermissionRequest | null {
     return live.get(runId)?.permissionQueue[0] ?? null
@@ -195,10 +232,28 @@ export function usePermissionDecisions() {
     promoted.value = promote(promoted.value, runId)
   }
 
-  // Forget collapse / promote marks of requests and runs that are gone.
+  /** Move a run's head request out of the dock into its own permission window. */
+  function popOut(runId: string) {
+    const head = headOf(runId)
+    if (!head || poppedOut.value.has(head.request_id)) return
+    poppedOut.value = new Set(poppedOut.value).add(head.request_id)
+  }
+
+  /** Bring a popped-out request back in-app (its window was closed by the user). */
+  function unpop(requestId: string) {
+    if (!poppedOut.value.has(requestId)) return
+    const next = new Set(poppedOut.value)
+    next.delete(requestId)
+    poppedOut.value = next
+  }
+
+  // Forget collapse / promote / pop-out marks of requests and runs that are gone.
   function prune() {
     const ids = new Set(entries.value.map((e) => e.requestId))
     const runs = new Set(entries.value.map((e) => e.runId))
+    if ([...poppedOut.value].some((id) => !ids.has(id))) {
+      poppedOut.value = new Set([...poppedOut.value].filter((id) => ids.has(id)))
+    }
     if ([...collapsed.value].some((id) => !ids.has(id))) {
       collapsed.value = new Set([...collapsed.value].filter((id) => ids.has(id)))
     }
@@ -218,8 +273,17 @@ export function usePermissionDecisions() {
     router.push({ name: 'project-run-detail', params: { projectId, runId } }).catch(() => {})
   }
 
-  /** Focus a run's in-app card, or open its session when no stack is showing. */
+  /**
+   * Focus a run's in-app card (or its prompt docked in a RunView, which watches
+   * `focusRequest` too), its own window when the user popped it out, or open its
+   * session when no stack is showing.
+   */
   function focusRun(runId: string) {
+    const head = headOf(runId)
+    if (head && poppedOut.value.has(head.request_id)) {
+      void openPermissionWindow(runId).catch(() => {})
+      return
+    }
     if (stackHosts.value > 0 && surface.value === 'inline') {
       bringToFront(runId)
       focusRequest.value = { runId, nonce: ++focusNonce }
@@ -230,6 +294,10 @@ export function usePermissionDecisions() {
 
   return {
     entries,
+    stackEntries,
+    poppedOut,
+    poppedOutRuns,
+    dockedRuns,
     surface,
     foreground,
     collapsed,
@@ -241,6 +309,8 @@ export function usePermissionDecisions() {
     answerQuestion,
     collapse,
     bringToFront,
+    popOut,
+    unpop,
     prune,
     openSession,
     focusRun,

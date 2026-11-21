@@ -418,6 +418,10 @@ function onKeydown(e: KeyboardEvent) {
             {{ t('permission.allowHint') }}
           </p>
         </div>
+        <!-- Host-specific buttons (e.g. a docked prompt's "pop out"). -->
+        <div v-if="$slots['header-actions']" class="flex shrink-0 items-center gap-1" :class="isQuestions ? '-my-1' : '-mt-0.5'">
+          <slot name="header-actions" />
+        </div>
       </div>
 
       <!-- AskUserQuestion: one question at a time (stepper). The question header

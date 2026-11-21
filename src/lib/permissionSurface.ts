@@ -39,21 +39,38 @@ export function permissionSurface(
  *
  * - `window`: every run with a pending request.
  * - `inline`: none — the main window shows them, so open windows are closed
- *   (programmatically, which never counts as a deny).
+ *   (programmatically, which never counts as a deny) — except the runs the user
+ *   popped out on purpose (`poppedOut`, from a prompt docked in a split RunView).
  * - `none`: no new windows, but a window already open for a still-pending run
- *   stays (closing it under the user's cursor would be worse than leaving it).
+ *   stays (closing it under the user's cursor would be worse than leaving it);
+ *   popped-out runs get theirs too.
  */
 export function desiredWindowRuns(
   surface: PermissionSurface,
   pending: Iterable<string>,
   tracked: Iterable<string>,
+  poppedOut: Iterable<string> = [],
 ): Set<string> {
-  if (surface === 'inline') return new Set()
   const pend = new Set(pending)
   if (surface === 'window') return pend
   const out = new Set<string>()
-  for (const runId of tracked) if (pend.has(runId)) out.add(runId)
+  if (surface === 'none') for (const runId of tracked) if (pend.has(runId)) out.add(runId)
+  for (const runId of poppedOut) if (pend.has(runId)) out.add(runId)
   return out
+}
+
+/**
+ * The requests the in-app card stack shows: everything pending except a run whose
+ * request is docked in a RunView (split view answers it in place of the composer)
+ * and a request the user popped out into its own window — so no request is ever
+ * on screen twice.
+ */
+export function stackEntries<T extends PendingEntry>(
+  entries: readonly T[],
+  dockedRuns: ReadonlySet<string>,
+  poppedOutRequestIds: ReadonlySet<string>,
+): T[] {
+  return entries.filter((e) => !dockedRuns.has(e.runId) && !poppedOutRequestIds.has(e.requestId))
 }
 
 export interface PendingEntry {

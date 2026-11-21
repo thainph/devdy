@@ -8,8 +8,10 @@
 // while a request is still pending counts as cancelling (denying) it.
 //
 // While the main window IS in front, requests are answered in-app instead
-// (PermissionInlineStack): open windows are closed programmatically — which never
-// counts as a deny — and come back if the main window loses focus again. With
+// (PermissionInlineStack, or a split RunView's dock): open windows are closed
+// programmatically — which never counts as a deny — and come back if the main
+// window loses focus again. A request the user popped out of the dock keeps its
+// window; closing that one returns the request in-app instead of denying it. With
 // `permission_float_when_background` = "false", a backgrounded Devdy opens no
 // windows and relies on PermissionNotifier's native notification alone.
 //
@@ -122,6 +124,12 @@ async function openFor(runId: string, indexFromRight: number) {
     tracked.delete(runId)
     entry.unlisteners.forEach((off) => off())
     const head = headOf(runId)
+    // A request popped out of a split RunView's dock goes back in-app when the
+    // user closes its window while the main window is in front — not a deny.
+    if (head && perms.surface.value === 'inline' && perms.poppedOut.value.has(head.request_id)) {
+      perms.unpop(head.request_id)
+      return
+    }
     if (head) void perms.decide(runId, head.request_id, 'deny', false)
   })
 
@@ -178,7 +186,12 @@ async function reconcile() {
   try {
     do {
       dirty = false
-      const want = desiredWindowRuns(perms.surface.value, pending.value.keys(), tracked.keys())
+      const want = desiredWindowRuns(
+        perms.surface.value,
+        pending.value.keys(),
+        tracked.keys(),
+        perms.poppedOutRuns.value,
+      )
       for (const runId of [...tracked.keys()]) {
         if (!want.has(runId)) closeFor(runId)
       }
@@ -209,6 +222,8 @@ watch(pending, () => {
   if (perms.foreground.value === 'main') void reconcile()
   else void refreshForeground().finally(() => void reconcile())
 })
+// A docked request popped out into its own window (or back in).
+watch(perms.poppedOutRuns, () => void reconcile())
 // Main window focused / blurred, or the setting changed.
 watch(perms.surface, () => {
   surfaceChangedAt = Date.now()
