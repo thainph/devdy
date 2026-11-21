@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
@@ -68,7 +68,7 @@ import { appDataDir, join } from '@tauri-apps/api/path'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
 import { dockAllSurfaceWindows, listenSurfaceRequests, openSurface } from '@/lib/surfaceOpen'
 import { monitorCount } from '@/lib/surfacePlacement'
-import { cleanParams, shouldDockOnMonitorChange, surfaceForPath } from '@/lib/surfaces'
+import { cleanParams, shouldDockOnMonitorChange, surfaceForPath, surfaceTabId } from '@/lib/surfaces'
 import { SURFACE_META } from '@/lib/surfaceMeta'
 import SurfaceHost from '@/components/surfaces/SurfaceHost.vue'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
@@ -327,16 +327,13 @@ const routeKey = computed(() =>
 // longer fire on navigation, so a timer would otherwise run forever in the
 // background.
 //
-// SurfaceRouteView (PR Inbox, Calendar, Slack, Todos… as tabs) is the exception:
-// a surface tab stands in for a window that keeps running in the background, so
-// its timers / listeners staying alive between tab switches is the point — the
-// tab comes back exactly as it was left.
+// Surface tabs (PR Inbox, Calendar, Todos…) are not cached here: App keeps one
+// SurfaceHost per open tab mounted itself (see `leftSurfaceTabs`).
 const CACHED_VIEWS = [
   'SkillsView',
   'RulesView',
   'McpServersView',
   'ServersView',
-  'SurfaceRouteView',
 ]
 
 // Pin every project the user opens as a workspace tab; remember the run being
@@ -372,6 +369,35 @@ watch(
     if (kind) tabsStore.openSurface(kind, cleanParams(kind, route.query))
   },
   { immediate: true },
+)
+
+/** The surface tab the router shows (left / only pane), if any. */
+const routedSurfaceId = computed(() => {
+  const kind = surfaceForPath(route.path)
+  return kind ? surfaceTabId(kind, cleanParams(kind, route.query)) : null
+})
+
+// Surface tabs live like windows: each open tab keeps its own SurfaceHost
+// mounted (hidden while another tab shows) from its first visit until it is
+// closed, popped out or moved to the split — so switching tabs loses nothing
+// and a closed tab stops running. Mounted lazily: restored tabs cost nothing
+// until opened.
+const visitedSurfaces = reactive(new Set<string>())
+watch(routedSurfaceId, (id) => {
+  if (id) visitedSurfaces.add(id)
+}, { immediate: true })
+const leftSurfaceTabs = computed(() =>
+  tabsStore.entries.filter(
+    (e): e is Extract<typeof e, { type: 'surface' }> =>
+      e.type === 'surface' && e.id !== tabsStore.splitId && visitedSurfaces.has(e.id),
+  ),
+)
+watch(
+  () => tabsStore.entries.length,
+  () => {
+    // Forget closed tabs, so reopening one starts fresh.
+    for (const id of [...visitedSurfaces]) if (!tabsStore.surfaceTab(id)) visitedSurfaces.delete(id)
+  },
 )
 
 /** The surface tab in the right half of a split, if any. */
@@ -1187,6 +1213,14 @@ onMounted(async () => {
                 <component :is="Component" :key="routeKey" />
               </KeepAlive>
             </RouterView>
+            <SurfaceHost
+              v-for="tab in leftSurfaceTabs"
+              v-show="tab.id === routedSurfaceId"
+              :key="tab.id"
+              :surface="tab.surface"
+              :params="tab.params"
+              class="h-full"
+            />
           </div>
           <section
             v-if="splitTab"

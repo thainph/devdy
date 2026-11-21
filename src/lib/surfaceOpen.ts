@@ -7,9 +7,15 @@
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import router from '@/router'
-import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
+import { useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
 import { useGoogleCalendarStore } from '@/stores/googleCalendar'
-import { SLACK_WINDOW_ADD, type SlackWindowAdd } from '@/lib/slackWindow'
+import {
+  SLACK_WINDOW_ADD,
+  SLACK_WINDOW_SELECT,
+  type SlackWindowAdd,
+  type SlackWindowSelect,
+} from '@/lib/slackWindow'
+import { itemListSelectEvent, type ItemListSelect } from '@/lib/itemListWindow'
 import { SURFACE_DOCK, SURFACE_DOCK_ALL, type SurfaceDockRequest } from '@/lib/surfaceDock'
 import {
   cleanParams,
@@ -22,9 +28,10 @@ import {
   type SurfaceParams,
 } from '@/lib/surfaces'
 import {
-  forcedTab,
+  isMainWindow,
   openSurfaceWindow,
   resolvePlacement,
+  surfaceWindowOpen,
   type SurfaceExtras,
 } from '@/lib/surfacePlacement'
 
@@ -48,14 +55,6 @@ export interface OpenSurfaceOptions extends SurfaceExtras {
   split?: boolean
 }
 
-function isMainWindow(): boolean {
-  try {
-    return getCurrentWebviewWindow().label === 'main'
-  } catch {
-    return true
-  }
-}
-
 async function focusMain() {
   try {
     const win = getCurrentWebviewWindow()
@@ -71,16 +70,23 @@ async function focusMain() {
 async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: SurfaceExtras, split = false) {
   const tabs = useWorkspaceTabsStore()
   const tab = tabs.openSurface(kind, params)
-  const routedHere = router.currentRoute.value.path === surfaceLocation(kind).path
+  const routedHere = surfaceTabIdOfRoute() === tab.id
   if (split && !routedHere) {
     tabs.split(tab.id)
   } else if (tabs.splitId === tab.id) {
     // Already in the right half: just bring that half forward.
     tabs.focusedPane = 'right'
   } else {
-    forcedTab.add(kind)
-    await router.push(surfaceLocation(kind, tab.params)).catch(() => {})
-    forcedTab.delete(kind)
+    await router.push(surfaceLocation(kind, tab.params, true)).catch(() => {})
+  }
+  // Re-select even when the tab already pointed there (the user may have
+  // moved on inside it): params alone wouldn't change, the views hear these.
+  if (params.id && kind === 'slack') {
+    void emit(SLACK_WINDOW_SELECT, { id: params.id } satisfies SlackWindowSelect).catch(() => {})
+  } else if (params.id && (kind === 'todos' || kind === 'notes')) {
+    void emit(itemListSelectEvent(kind === 'todos' ? 'todo' : 'note'), { id: params.id } satisfies ItemListSelect).catch(
+      () => {},
+    )
   }
   if (extras.calendarEvent) useGoogleCalendarStore().requestOpenEvent(extras.calendarEvent)
   if (extras.slackAdd) {
@@ -97,7 +103,12 @@ export async function openSurface(
 ): Promise<void> {
   const params = cleanParams(kind, rawParams)
   const extras: SurfaceExtras = { calendarEvent: opts.calendarEvent, slackAdd: opts.slackAdd }
-  const where = opts.placement ?? (await resolvePlacement(kind))
+  // Where it already is wins over where it would open: never a tab beside its
+  // own window, or a window beside its own tab.
+  let where = opts.placement
+  if (!where && (await surfaceWindowOpen(kind, params))) where = 'window'
+  if (!where && isMainWindow() && useWorkspaceTabsStore().surfaceTab(surfaceTabId(kind, params))) where = 'tab'
+  where ??= await resolvePlacement(kind)
   if (where === 'window') {
     await openSurfaceWindow(kind, params, extras)
     return
@@ -118,9 +129,9 @@ export async function popOutSurface(id: string): Promise<void> {
   const tabs = useWorkspaceTabsStore()
   const tab = tabs.surfaceTab(id)
   if (!tab) return
-  const onIt = router.currentRoute.value.path === surfaceLocation(tab.surface).path
+  const onIt = surfaceTabIdOfRoute() === id
   const next = tabs.closeSurface(id)
-  if (onIt) await goToEntry(next)
+  if (onIt) await goToEntry(skipSplit(next))
   await openSurfaceWindow(tab.surface, tab.params)
 }
 
@@ -134,7 +145,12 @@ export async function closeSurfaceTab(id: string): Promise<void> {
   if (!tab) return
   const routed = surfaceTabIdOfRoute() === id
   const next = tabs.closeSurface(id)
-  if (routed) await goToEntry(next && next.type === 'surface' && next.id === tabs.splitId ? null : next)
+  if (routed) await goToEntry(skipSplit(next))
+}
+
+/** The split's right pane is not a destination of the router: skip over it. */
+export function skipSplit(next: TabEntry | null): TabEntry | null {
+  return next && next.type === 'surface' && next.id === useWorkspaceTabsStore().splitId ? null : next
 }
 
 /** The surface tab the router shows right now, if any. */
@@ -145,15 +161,13 @@ export function surfaceTabIdOfRoute(): string | null {
 }
 
 /** Navigate to a tab entry (after closing the current one), or the projects list. */
-export async function goToEntry(next: ReturnType<ReturnType<typeof useWorkspaceTabsStore>['close']>) {
+export async function goToEntry(next: TabEntry | null) {
   if (!next) {
     await router.push({ name: 'projects' }).catch(() => {})
     return
   }
   if (next.type === 'surface') {
-    forcedTab.add(next.surface)
-    await router.push(surfaceLocation(next.surface, next.params)).catch(() => {})
-    forcedTab.delete(next.surface)
+    await router.push(surfaceLocation(next.surface, next.params, true)).catch(() => {})
     return
   }
   if (next.lastRunId) {

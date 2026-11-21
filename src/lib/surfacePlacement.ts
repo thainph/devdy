@@ -2,6 +2,7 @@
 // OS window. No router import here: the router's guards use this module, and
 // lib/surfaceOpen.ts (which does import the router) builds on it.
 import { availableMonitors } from '@tauri-apps/api/window'
+import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import type { CalEvent } from '@/stores/googleCalendar'
 import {
@@ -12,22 +13,46 @@ import {
   type SurfaceKind,
   type SurfaceParams,
 } from '@/lib/surfaces'
-import { openPrInboxWindow } from '@/lib/prInboxWindow'
-import { openGithubMentionsWindow } from '@/lib/githubMentionsWindow'
-import { openCalendarWindow } from '@/lib/calendarWindow'
-import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
-import { openSlackWindow } from '@/lib/slackWindow'
-import { openItemListWindow } from '@/lib/itemListWindow'
-import { openFileWindow } from '@/lib/fileWindow'
+import { PR_INBOX_WINDOW_LABEL, openPrInboxWindow } from '@/lib/prInboxWindow'
+import { GITHUB_MENTIONS_WINDOW_LABEL, openGithubMentionsWindow } from '@/lib/githubMentionsWindow'
+import { CALENDAR_WINDOW_LABEL, openCalendarWindow } from '@/lib/calendarWindow'
+import { DELIVERY_RADAR_WINDOW_LABEL, openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
+import { SLACK_WINDOW_LABEL, openSlackWindow } from '@/lib/slackWindow'
+import { itemListWindowLabel, openItemListWindow } from '@/lib/itemListWindow'
+import { fileWindowLabel, openFileWindow } from '@/lib/fileWindow'
 
-// The surface routes' guards divert to the window when the placement says so;
-// a tab opened on purpose (docking, "open as tab", switching tabs) must get
-// through: lib/surfaceOpen adds the kind around its router.push.
-export const forcedTab = new Set<SurfaceKind>()
+export function isMainWindow(): boolean {
+  try {
+    return getCurrentWebviewWindow().label === 'main'
+  } catch {
+    return true
+  }
+}
 
-/** True (once) when the next navigation to `kind` was explicitly asked as a tab. */
-export function takeForcedTab(kind: SurfaceKind): boolean {
-  return forcedTab.delete(kind)
+/** OS window label of a surface (one per surface; files one per file). */
+function surfaceWindowLabel(kind: SurfaceKind, params: SurfaceParams): string | null {
+  switch (kind) {
+    case 'prInbox': return PR_INBOX_WINDOW_LABEL
+    case 'mentions': return GITHUB_MENTIONS_WINDOW_LABEL
+    case 'calendar': return CALENDAR_WINDOW_LABEL
+    case 'radar': return DELIVERY_RADAR_WINDOW_LABEL
+    case 'slack': return SLACK_WINDOW_LABEL
+    case 'todos': return itemListWindowLabel('todo')
+    case 'notes': return itemListWindowLabel('note')
+    case 'file':
+      return params.projectPath && params.path ? fileWindowLabel(params.projectPath, params.path) : null
+  }
+}
+
+/** True when the surface already has its own window open (it is re-used, not doubled by a tab). */
+export async function surfaceWindowOpen(kind: SurfaceKind, params: SurfaceParams = {}): Promise<boolean> {
+  const label = surfaceWindowLabel(kind, params)
+  if (!label) return false
+  try {
+    return (await WebviewWindow.getByLabel(label)) !== null
+  } catch {
+    return false
+  }
 }
 
 // Monitor count changes rarely; don't ask the OS on every click.
@@ -50,7 +75,10 @@ export async function monitorCount(fresh = false): Promise<number> {
 export async function resolvePlacement(kind: SurfaceKind): Promise<Placement> {
   const settings = useAppSettingsStore()
   try {
-    await settings.ensureLoaded()
+    // Only the main window's store hears about edits in Settings: other
+    // windows (session pop-outs, Todos window…) re-read the row each time.
+    if (isMainWindow()) await settings.ensureLoaded()
+    else await settings.refresh()
   } catch {
     /* settings unavailable: defaults below */
   }

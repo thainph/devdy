@@ -156,6 +156,29 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     return surfaceTab(id)!
   }
 
+  /**
+   * Point a surface tab at new params in place (a renamed file): same strip
+   * position, same half of the split. Returns the tab (its id may change).
+   */
+  function retargetSurface(id: string, rawParams: Record<string, unknown>): SurfaceTab | null {
+    const idx = entries.findIndex((t) => t.type === 'surface' && t.id === id)
+    if (idx === -1) return null
+    const old = entries[idx] as { type: 'surface' } & SurfaceTab
+    const params = cleanParams(old.surface, rawParams)
+    const nextId = surfaceTabId(old.surface, params)
+    // Already open under the new identity: just drop the old tab.
+    if (nextId !== id && surfaceTab(nextId)) {
+      entries.splice(idx, 1)
+      if (splitId.value === id) splitId.value = nextId
+      persist()
+      return surfaceTab(nextId)
+    }
+    entries.splice(idx, 1, { type: 'surface', id: nextId, surface: old.surface, params })
+    if (splitId.value === id) splitId.value = nextId
+    persist()
+    return surfaceTab(nextId)
+  }
+
   /** Close a surface tab; returns its neighbour like `close`. */
   function closeSurface(id: string): TabEntry | null {
     const idx = entries.findIndex((t) => t.type === 'surface' && t.id === id)
@@ -216,6 +239,7 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     surfaceTab,
     openSurface,
     closeSurface,
+    retargetSurface,
     split,
     unsplit,
   }

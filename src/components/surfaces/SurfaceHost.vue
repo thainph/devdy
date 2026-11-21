@@ -1,11 +1,12 @@
 <script setup lang="ts">
-// Renders one surface (PR Inbox, Calendar, Slack threads, Todos, a file…)
-// inside the main window: as the routed tab (views/SurfaceRouteView) or in the
-// right half of a split (App.vue). The same views as the pop-out windows, in
-// their in-app mode.
+// Renders one surface tab (PR Inbox, Calendar, Slack threads, Todos, a file…)
+// inside the main window: one per open tab in the left pane (App.vue shows the
+// routed one) or in the right half of a split. The same views as the pop-out
+// windows, in their in-app mode.
 import { computed } from 'vue'
-import { surfaceTabId, type SurfaceKind, type SurfaceParams } from '@/lib/surfaces'
-import { closeSurfaceTab, openSurface } from '@/lib/surfaceOpen'
+import router from '@/router'
+import { surfaceLocation, surfaceTabId, type SurfaceKind, type SurfaceParams } from '@/lib/surfaces'
+import { closeSurfaceTab, openSurface, surfaceTabIdOfRoute } from '@/lib/surfaceOpen'
 import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import PrInboxView from '@/views/PrInboxView.vue'
 import GithubMentionsView from '@/views/GithubMentionsView.vue'
@@ -37,10 +38,13 @@ function onOpenFile(path: string, at: number | null) {
     { placement: 'tab', split: props.inSplit },
   )
 }
-async function onRenamed(path: string) {
+// A rename can arrive while the tab is hidden: re-point it in place, and move
+// the route along only if the router was showing it.
+function onRenamed(path: string) {
   const old = tabId.value
-  await openSurface('file', { projectPath: props.params.projectPath, path }, { placement: 'tab', split: props.inSplit })
-  if (surfaceTabId('file', { projectPath: props.params.projectPath ?? '', path }) !== old) tabs.closeSurface(old)
+  const routed = surfaceTabIdOfRoute() === old
+  const tab = tabs.retargetSurface(old, { ...props.params, path })
+  if (tab && routed) void router.replace(surfaceLocation('file', tab.params, true)).catch(() => {})
 }
 </script>
 

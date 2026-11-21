@@ -90,3 +90,10 @@ test('only dropping to one monitor docks, and only when enabled', () => {
   assert.equal(shouldDockOnMonitorChange(1, 2, true), false)
   assert.equal(shouldDockOnMonitorChange(2, 1, false), false)
 })
+
+test('the tab-intent flag rides in the query but never in the tab identity', () => {
+  const loc = surfaceLocation('todos', { id: 'a' }, true)
+  assert.equal(loc.query._tab, '1')
+  assert.deepEqual(cleanParams('todos', loc.query), { id: 'a' })
+  assert.equal(surfaceTabId('todos', cleanParams('todos', loc.query)), surfaceTabId('todos', { id: 'a' }))
+})

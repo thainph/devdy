@@ -140,9 +140,21 @@ export function surfaceForPath(path: string): SurfaceKind | null {
   return null
 }
 
-/** Router location of a surface tab. */
-export function surfaceLocation(kind: SurfaceKind, params: SurfaceParams = {}): { path: string; query: SurfaceParams } {
-  return { path: SURFACE_PATHS[kind], query: cleanParams(kind, params) }
+/**
+ * Query flag of a navigation that is explicitly a tab (switching / docking
+ * tabs): the surface route's guard lets it through whatever the placement
+ * says. Carried in the URL, so back / forward to a tab stays a tab too.
+ */
+export const TAB_INTENT = '_tab'
+
+/** Router location of a surface tab (`asTab`: with the tab-intent flag). */
+export function surfaceLocation(
+  kind: SurfaceKind,
+  params: SurfaceParams = {},
+  asTab = false,
+): { path: string; query: SurfaceParams } {
+  const query = cleanParams(kind, params)
+  return { path: SURFACE_PATHS[kind], query: asTab ? { ...query, [TAB_INTENT]: '1' } : query }
 }
 
 /**
