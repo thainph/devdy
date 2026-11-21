@@ -69,7 +69,6 @@
   "clearAll": "Xóa hết",
   "noSessionsYet": "Chưa có session nào",
   "searchSessionsPlaceholder": "Tìm session…",
-  "clearSearch": "Xóa tìm kiếm",
   "noMatchingSessions": "Không có session nào khớp",
   "pinned": "Đã ghim",
   "protected": "Đã bảo vệ",
@@ -77,6 +76,15 @@
   "lastActivity": "Hoạt động gần nhất",
   "waitingForAnswer": "Đang chờ bạn trả lời",
   "waitingForPermission": "Đang chờ bạn cấp quyền",
+  "waitingCount": "{n} đang chờ",
+  "waitingBadgeTitle": "Chỉ hiện các phiên đang chờ bạn",
+  "historyStatusTitle": "Trạng thái",
+  "historyStatus": {
+    "all": "Tất cả phiên",
+    "waiting": "Đang chờ bạn",
+    "unread": "Chưa đọc",
+    "running": "Đang chạy"
+  },
   "openIssueOnGithub": "Mở issue này trên GitHub",
   "openPrOnGithub": "Mở PR này trên GitHub",
   "refetchIssue": "Fetch lại nội dung issue này từ GitHub (giữ nguyên kết quả AI)",
