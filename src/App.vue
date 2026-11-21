@@ -14,7 +14,7 @@ import { tabEntryKey, useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, LockKeyhole, Minimize2, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote } from 'lucide-vue-next'
+import { ListTodo, LockKeyhole, Minimize2, Slack, StickyNote } from 'lucide-vue-next'
 import { activeListPaneHidden, toggleActiveListPane } from '@/composables/useListPane'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
@@ -1174,33 +1174,9 @@ onMounted(async () => {
       <WorkspaceTabs />
 
       <div class="ml-auto flex shrink-0 items-center gap-2">
-        <!-- Runs waiting for an approval; click = that run's card / session. -->
+        <!-- Runs waiting for an approval; click = that run's card / session.
+             Search (⌘K) and the sidebar (⌃⌘S) are keyboard / menu only. -->
         <PendingApprovalsPill />
-
-        <Button
-          variant="ghost"
-          size="xs"
-          class="shrink-0"
-          :title="`${t('palette.open')} (${IS_MAC ? '⌘K' : 'Ctrl+K'})`"
-          :aria-label="t('palette.open')"
-          @click="togglePalette('all')"
-        >
-          <Search class="h-3.5 w-3.5" :stroke-width="1.75" />
-          <span class="hidden lg:inline text-muted-foreground/80">{{ IS_MAC ? '⌘K' : 'Ctrl+K' }}</span>
-        </Button>
-
-        <!-- Sits here rather than inside the sidebar: a "hide" button that
-             disappears along with the thing it hides can't bring it back. -->
-        <Button
-          variant="ghost"
-          size="icon-sm"
-          class="shrink-0"
-          :title="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
-          :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
-          @click="uiLayout.toggleSidebar()"
-        >
-          <component :is="uiLayout.sidebarHidden ? PanelLeftOpen : PanelLeftClose" class="h-4 w-4" :stroke-width="1.75" />
-        </Button>
       </div>
     </header>
 
