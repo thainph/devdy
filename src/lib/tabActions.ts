@@ -14,7 +14,7 @@ import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/work
 import { useRunsStore } from '@/stores/runs'
 import { surfaceForPath } from '@/lib/surfaces'
 import { pageRouteFor } from '@/lib/navigation'
-import { entryTargetFor, entryTargetKey, withOwnRun, type EntryTarget, type PaneSide } from '@/lib/workspaceState'
+import { entryTargetFor, entryTargetKey, withOwnRun, type EntryTarget } from '@/lib/workspaceState'
 import {
   goToEntry,
   openSurface,
@@ -91,83 +91,45 @@ export function closeEntry(e: TabEntry) {
   void removeTab(e)
 }
 
-/**
- * The tab to show beside `key` when splitting it with nothing chosen: the
- * right-most surface (a session beside its PR Inbox / Todos / file), else the
- * nearest neighbour on the strip that may pair with it.
- */
-export function splitCandidateFor(key: string | null): TabEntry | null {
+/** The tab on the left half: the pair's left when split, else what's on screen. */
+function leftKey(): string | null {
   const tabs = useWorkspaceTabsStore()
-  if (!key) return null
-  const ok = tabs.entries.filter((x) => tabs.canSplit(key, tabEntryKey(x)))
-  const surfaces = ok.filter((x) => x.type === 'surface')
-  if (surfaces.length) return surfaces[surfaces.length - 1]
-  const at = tabs.entries.findIndex((x) => tabEntryKey(x) === key)
-  let best: TabEntry | null = null
-  let dist = Infinity
-  for (const x of ok) {
-    const d = Math.abs(tabs.entries.indexOf(x) - at)
-    if (d < dist) {
-      best = x
-      dist = d
-    }
-  }
-  return best
-}
-
-/** What ⌘\ would split the current tab with (null when it can't, or when already split). */
-export function splitCandidate(): TabEntry | null {
-  const tabs = useWorkspaceTabsStore()
-  if (tabs.isSplit) return null
-  return splitCandidateFor(routedTargetKey())
-}
-
-/** Put `key` in one half of the shown split, routing the left half there. */
-function placeInSide(side: PaneSide, key: string): boolean {
-  const tabs = useWorkspaceTabsStore()
-  if (!tabs.replaceSide(side, key)) return false
-  tabs.focusedPane = side
-  if (side === 'left') routeToLeft()
-  return true
+  return tabs.isSplit ? (tabs.pair?.left ?? null) : routedTargetKey()
 }
 
 /**
- * Whether the tab's split button does something: on a half of the pair it
- * closes the split; on any other tab it opens it beside what's on screen (in
- * the half that isn't focused, when already split).
+ * Split view has one rule: the left half is the screen you're on, the right
+ * half is the tab you open on the right. So "Open on the right" works on any
+ * tab but the one on the left (or already on the right) that may sit beside it.
  */
-export function canSplitEntry(e: TabEntry): boolean {
+export function canOpenOnRight(e: TabEntry): boolean {
   const tabs = useWorkspaceTabsStore()
   const key = tabEntryKey(e)
-  const pair = tabs.pair
-  if (pair && tabs.pairShown && (key === pair.left || key === pair.right)) return true
-  if (tabs.isSplit && pair) return tabs.canSplit(pair[tabs.focusedPane], key)
-  const routed = routedTargetKey()
-  if (!routed) return false
-  return routed === key ? !!splitCandidateFor(key) : tabs.canSplit(routed, key)
+  const left = leftKey()
+  if (!left || key === left) return false
+  if (tabs.isSplit && tabs.pair?.right === key) return false
+  return tabs.canSplit(left, key)
 }
 
-/** The split button of a tab (see `canSplitEntry`). */
-export function toggleSplitEntry(e: TabEntry) {
+/** Show `e` in the right half: opens the split, or replaces the right half. */
+export function openOnRight(e: TabEntry) {
+  if (!canOpenOnRight(e)) return
   const tabs = useWorkspaceTabsStore()
   const key = tabEntryKey(e)
-  const pair = tabs.pair
-  if (pair && tabs.pairShown && (key === pair.left || key === pair.right)) {
-    unsplitFocused()
+  if (tabs.isSplit) {
+    if (tabs.replaceSide('right', key)) tabs.focusedPane = 'right'
     return
   }
-  if (tabs.isSplit && pair) {
-    placeInSide(tabs.focusedPane === 'right' ? 'left' : 'right', key)
-    return
-  }
-  const routed = routedTargetKey()
-  if (!routed) return
-  if (routed !== key) {
-    tabs.setPair(routed, key, 'right')
-    return
-  }
-  const other = splitCandidateFor(key)
-  if (other) tabs.setPair(key, tabEntryKey(other), 'right')
+  const left = leftKey()
+  if (left) tabs.setPair(left, key, 'right')
+}
+
+/** Swap the two halves; the focused tab keeps the focus on its new side. */
+export function swapSplit() {
+  const tabs = useWorkspaceTabsStore()
+  const p = tabs.pair
+  if (!p || !tabs.isSplit) return
+  if (tabs.setPair(p.right, p.left, tabs.focusedPane === 'left' ? 'right' : 'left')) routeToLeft()
 }
 
 /** Close the split, keeping the focused half on screen (full width). */
@@ -178,21 +140,24 @@ export function unsplitFocused() {
   if (right) void goToEntry(sanitized(right))
 }
 
-/** ⌘\ — close the split; bring a waiting pair back; or split the current tab. */
+/** The last pair, waiting on the strip while another tab is shown, if any. */
+export function idlePair(): { left: TabEntry; right: TabEntry } | null {
+  const tabs = useWorkspaceTabsStore()
+  if (tabs.isSplit || !tabs.pair) return null
+  const left = tabs.entry(tabs.pair.left)
+  const right = tabs.entry(tabs.pair.right)
+  return left && right ? { left, right } : null
+}
+
+/** ⌘\ — close the split, or bring the last one back. Never guesses a tab. */
 export function toggleSplitCurrent() {
   const tabs = useWorkspaceTabsStore()
   if (tabs.isSplit) {
     unsplitFocused()
     return
   }
-  const pair = tabs.pair
-  const routed = routedTargetKey()
-  if (pair && routed && (routed === pair.left || routed === pair.right)) {
-    selectEntry(tabs.entry(routed)!)
-    return
-  }
-  const target = splitCandidate()
-  if (routed && target) tabs.setPair(routed, tabEntryKey(target), 'right')
+  const pair = idlePair()
+  if (pair) selectEntry(pair.left)
 }
 
 /** ⌘1…⌘8 go to that tab; ⌘9 (n = 9) to the last one, as browsers do. */

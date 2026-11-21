@@ -2,12 +2,12 @@
   "file": "File",
   "tabs": {
     "popOut": "Mở trong cửa sổ riêng",
-    "splitRight": "Hiện ở khung phải",
     "unsplit": "Đóng chế độ chia đôi",
     "focusRight": "Đang hiện ở khung phải",
-    "split": "Mở dạng chia đôi",
     "resizeSplit": "Kéo để đổi tỉ lệ chia đôi (nhấp đúp để về 50/50)",
-    "pair": "Chia đôi: {left} | {right}"
+    "pair": "Chia đôi: {left} | {right}",
+    "openOnRight": "Mở bên phải",
+    "swapSplit": "Đổi chỗ hai bên"
   },
   "dock": "Gắn vào cửa sổ chính",
   "settings": {

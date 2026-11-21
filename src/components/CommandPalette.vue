@@ -15,6 +15,8 @@ import {
   ListTodo,
   MessageSquare,
   PanelRightClose,
+  PanelRightOpen,
+  ArrowLeftRight,
   Plus,
   Search,
   Settings,
@@ -36,7 +38,10 @@ import {
   currentEntry,
   popOutCurrent,
   selectEntry,
-  splitCandidate,
+  canOpenOnRight,
+  idlePair,
+  openOnRight,
+  swapSplit,
   toggleSplitCurrent,
 } from '@/lib/tabActions'
 
@@ -215,26 +220,46 @@ function actionItems(): PaletteItem[] {
     },
   )
   if (tabsStore.splitId) {
-    out.push({
-      key: 'action:unsplit',
-      group: 'actions',
-      label: t('palette.actions.unsplit'),
-      icon: PanelRightClose,
-      shortcut: `${MOD}\\`,
-      run: toggleSplitCurrent,
-    })
-  } else {
-    const target = splitCandidate()
-    if (target && tabsStore.entries.length > 1) {
-      out.push({
-        key: 'action:split',
+    out.push(
+      {
+        key: 'action:unsplit',
         group: 'actions',
-        label: t('palette.actions.split', { name: entryLabel(target) }),
+        label: t('palette.actions.unsplit'),
+        icon: PanelRightClose,
+        shortcut: `${MOD}\\`,
+        run: toggleSplitCurrent,
+      },
+      {
+        key: 'action:swapSplit',
+        group: 'actions',
+        label: t('palette.actions.swapSplit'),
+        icon: ArrowLeftRight,
+        run: swapSplit,
+      },
+    )
+  } else {
+    const pair = idlePair()
+    if (pair) {
+      out.push({
+        key: 'action:restoreSplit',
+        group: 'actions',
+        label: t('palette.actions.restoreSplit', { left: entryLabel(pair.left), right: entryLabel(pair.right) }),
         icon: Columns2,
         shortcut: `${MOD}\\`,
         run: toggleSplitCurrent,
       })
     }
+  }
+  // "Open … on the right" for every other open tab that may sit beside the left one.
+  for (const e of tabsStore.entries) {
+    if (!canOpenOnRight(e)) continue
+    out.push({
+      key: `action:openRight:${tabEntryKey(e)}`,
+      group: 'actions',
+      label: t('palette.actions.openOnRight', { name: entryLabel(e) }),
+      icon: PanelRightOpen,
+      run: () => openOnRight(e),
+    })
   }
   const cur = currentEntry()
   if (cur?.type === 'surface') {

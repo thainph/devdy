@@ -43,7 +43,7 @@
   "commandPalette": "Bảng lệnh…",
   "quickOpen": "Đi tới tab hoặc phiên…",
   "closeTab": "Đóng tab",
-  "toggleSplit": "Chia đôi / bỏ chia đôi tab",
+  "toggleSplit": "Đóng / mở lại chia đôi",
   "popOutTab": "Tách tab ra cửa sổ riêng",
   "goToTab": "Đi tới tab",
   "tabN": "Tab {n}",

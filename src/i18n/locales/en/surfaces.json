@@ -2,12 +2,12 @@
   "file": "File",
   "tabs": {
     "popOut": "Open in a separate window",
-    "splitRight": "Show on the right",
     "unsplit": "Close split view",
     "focusRight": "Shown on the right",
-    "split": "Open in split view",
     "resizeSplit": "Drag to resize the split view (double-click to reset)",
-    "pair": "Split view: {left} | {right}"
+    "pair": "Split view: {left} | {right}",
+    "openOnRight": "Open on the right",
+    "swapSplit": "Swap sides"
   },
   "dock": "Dock into main window",
   "settings": {

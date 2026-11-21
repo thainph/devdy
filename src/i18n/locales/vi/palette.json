@@ -22,11 +22,13 @@
     "newSession": "Phiên mới trong dự án này",
     "newTodo": "Công việc mới",
     "newNote": "Ghi chú mới",
-    "split": "Hiện “{name}” ở bên phải",
     "unsplit": "Đóng khung bên phải",
     "popOut": "Tách “{name}” ra cửa sổ riêng",
     "closeTab": "Đóng tab “{name}”",
-    "windowSettings": "Cài đặt: Cửa sổ & tab"
+    "windowSettings": "Cài đặt: Cửa sổ & tab",
+    "swapSplit": "Đổi chỗ hai bên chia đôi",
+    "restoreSplit": "Mở lại chia đôi: {left} | {right}",
+    "openOnRight": "Mở “{name}” bên phải"
   },
   "hint": {
     "navigate": "để di chuyển",

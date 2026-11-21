@@ -21,7 +21,7 @@
       "gotoTab": "Go to tab 1–8",
       "lastTab": "Go to the last tab",
       "closeTab": "Close the current tab",
-      "split": "Split / unsplit (show a tab on the right)",
+      "split": "Close the split, or bring the last one back",
       "closeWindow": "Close the window",
       "toggleList": "Hide / show the list column",
       "focus": "Focus mode (hide the sidebar, tabs and list)",

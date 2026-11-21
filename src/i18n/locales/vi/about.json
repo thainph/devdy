@@ -21,7 +21,7 @@
       "gotoTab": "Tới tab 1–8",
       "lastTab": "Tới tab cuối",
       "closeTab": "Đóng tab hiện tại",
-      "split": "Chia đôi / bỏ chia (hiện một tab ở khung phải)",
+      "split": "Đóng chia đôi, hoặc mở lại cặp chia đôi gần nhất",
       "closeWindow": "Đóng cửa sổ",
       "toggleList": "Ẩn / hiện cột danh sách",
       "focus": "Chế độ Focus (ẩn sidebar, thanh tab và danh sách)",
