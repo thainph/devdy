@@ -1367,11 +1367,14 @@ onMounted(async () => {
              (the paired tab of WorkspaceTabs). A click in a half focuses it,
              so the next tab click lands there. Both halves start level at the
              top: the pair tab carries their names and close buttons. -->
-        <div ref="splitRef" class="flex h-full min-h-0">
+        <div ref="splitRef" class="split-host flex h-full min-h-0" :class="{ 'is-split': tabsStore.isSplit }">
           <div
             data-pane="left"
             class="h-full min-w-0 flex-1 overflow-auto"
-            :class="tabsStore.isSplit && tabsStore.focusedPane === 'left' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
+            :class="tabsStore.isSplit && [
+              'split-pane',
+              tabsStore.focusedPane === 'left' && 'is-focused shadow-[inset_0_2px_0_hsl(var(--primary))]',
+            ]"
             :style="tabsStore.isSplit ? { flex: `${splitRatio} 1 0`, minWidth: `min(${SPLIT_MIN_LEFT}px, 50%)` } : undefined"
             @pointerdown.capture="tabsStore.focusedPane = 'left'"
           >
@@ -1417,7 +1420,10 @@ onMounted(async () => {
             v-show="tabsStore.isSplit"
             data-pane="right"
             class="flex h-full min-w-0 flex-1 flex-col"
-            :class="tabsStore.focusedPane === 'right' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
+            :class="tabsStore.isSplit && [
+              'split-pane',
+              tabsStore.focusedPane === 'right' && 'is-focused shadow-[inset_0_2px_0_hsl(var(--primary))]',
+            ]"
             :style="tabsStore.isSplit ? { flex: `${1 - splitRatio} 1 0`, minWidth: `min(${SPLIT_MIN_RIGHT}px, 50%)` } : undefined"
             @pointerdown.capture="tabsStore.focusedPane = 'right'"
           >

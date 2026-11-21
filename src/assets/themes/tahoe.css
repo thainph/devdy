@@ -460,3 +460,189 @@
     transform: none;
   }
 }
+
+/* --- Split view (App.vue `.split-host`, `.split-pane`) ---------------------
+ * Each half floats as its own glass pane on the wallpaper, the nav's recipe:
+ * 18px corners, 8px off the window's right and bottom edges, the divider is
+ * the 8px gap between them with a small grip. Focus is a soft accent rim
+ * instead of the 2px top line the other themes use. */
+[data-theme='tahoe'] .split-host.is-split {
+  padding: 0 8px 8px 0;
+}
+[data-theme='tahoe'] .split-pane {
+  border-radius: 18px;
+  background-color: var(--tahoe-pane);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 6px rgba(0, 0, 0, 0.06);
+  transition: box-shadow 160ms ease;
+}
+[data-theme='tahoe'] .split-pane.is-focused {
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 1.5px hsl(var(--primary) / 0.45),
+    0 6px 18px rgba(0, 0, 0, 0.08);
+}
+[data-theme='tahoe'] .split-host .split-divider {
+  width: 8px;
+  margin: 0;
+}
+[data-theme='tahoe'] .split-host .split-divider::before {
+  display: none;
+}
+[data-theme='tahoe'] .split-host .split-divider::after {
+  left: 2.5px;
+  width: 3px;
+  height: 34px;
+  margin-top: -17px;
+  background: hsl(var(--foreground) / 0.16);
+  opacity: 1;
+  transition: opacity 120ms ease, height 120ms ease, margin-top 120ms ease, background-color 120ms ease;
+}
+[data-theme='tahoe'] .split-host .split-divider:is(:hover, :focus-visible, .is-dragging)::after {
+  height: 48px;
+  margin-top: -24px;
+  background: hsl(var(--primary) / 0.7);
+}
+/* The icon-only nav while split keeps the same 8px inset as the full one. */
+[data-theme='tahoe'] .app-shell .app-sidebar.is-compact {
+  width: 68px;
+}
+[data-theme='tahoe'] .app-shell .app-sidebar.is-compact > div {
+  width: 52px;
+}
+
+/* --- Session screen inside a split pane (RunView `.run-*` hooks) -----------
+ * The pane is the glass; inside it the chrome turns to hairlines, History is
+ * a clear inner pane (concentric: 18px pane − 6px inset = 12px), rows are
+ * rounded with an accent-tinted selection, and the composer / docked prompt
+ * float as glass cards. Scoped to `.split-pane` so the unsplit screen keeps
+ * its current look. */
+[data-theme='tahoe'] .split-pane .run-main,
+[data-theme='tahoe'] .split-pane .run-titlebar {
+  background-color: transparent;
+}
+[data-theme='tahoe'] .split-pane :is(.run-titlebar, .run-history-tabs, .run-history-toolbar, .run-history-head) {
+  border-bottom-color: var(--tahoe-hairline);
+}
+[data-theme='tahoe'] .split-pane .run-body {
+  padding: 6px;
+  gap: 6px;
+}
+[data-theme='tahoe'] .split-pane .run-history {
+  border-right: 0;
+  border-radius: 12px;
+  background-color: var(--tahoe-clear);
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), inset 0 0 0 0.5px var(--tahoe-hairline);
+}
+/* Floating over the chat (narrow pane / peek): heavy glass, like a popover. */
+[data-theme='tahoe'] .split-pane .run-history.is-floating {
+  inset: 6px auto 6px 6px;
+  border-radius: 14px;
+  background-color: var(--tahoe-menu);
+  backdrop-filter: var(--tahoe-blur-heavy);
+  -webkit-backdrop-filter: var(--tahoe-blur-heavy);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    var(--tahoe-shadow-lg);
+}
+/* Session / Files: the segmented control instead of underlined tabs. */
+[data-theme='tahoe'] .split-pane .run-history-tabs {
+  margin: 6px 6px 0;
+  padding: 2px;
+  gap: 2px;
+  border-bottom: 0;
+  border-radius: 999px;
+  background-color: hsl(var(--foreground) / 0.06);
+  box-shadow: inset 0 0.5px 1px rgba(0, 0, 0, 0.06), inset 0 0 0 0.5px var(--tahoe-hairline);
+}
+[data-theme='tahoe'] .split-pane .run-history-tabs > button {
+  padding-top: 4px;
+  padding-bottom: 4px;
+  border-radius: 999px;
+  border-bottom-width: 0;
+}
+[data-theme='tahoe'] .split-pane .run-history-tabs > button.is-active {
+  background-color: var(--tahoe-clear-hover);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 3px rgba(0, 0, 0, 0.1);
+}
+[data-theme='tahoe'] .split-pane :is(.run-history-toolbar, .run-history-head) {
+  border-bottom-width: 0;
+}
+/* Rows: rounded, no rules between them, selection = accent tint (the nav's). */
+[data-theme='tahoe'] .split-pane .run-history-list {
+  padding: 0 6px 6px;
+}
+[data-theme='tahoe'] .split-pane .run-history-row {
+  border-bottom-width: 0;
+  border-radius: 10px;
+  margin-top: 2px;
+}
+[data-theme='tahoe'] .split-pane .run-history-row > button {
+  border-radius: 10px;
+}
+[data-theme='tahoe'] .split-pane .run-history-row:is(:hover, :focus-within):not(.is-selected) {
+  background-color: var(--tahoe-clear);
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), inset 0 0 0 0.5px var(--tahoe-hairline);
+}
+[data-theme='tahoe'] .split-pane .run-history-row.is-selected {
+  background-color: hsl(var(--primary) / 0.14);
+  box-shadow: inset 0 1px 0 var(--tahoe-rim), inset 0 0 0 0.5px hsl(var(--primary) / 0.14);
+}
+[data-theme='tahoe'] .split-pane .run-history-bar {
+  display: none;
+}
+/* Composer and docked prompt: glass cards floating at the pane's foot. */
+[data-theme='tahoe'] .split-pane :is(.run-composer, .run-dock) {
+  /* .run-body's 6px padding already sets it off the pane edge. */
+  border-top-width: 0;
+  border-radius: 14px;
+  background-color: var(--tahoe-surface);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 0.5px var(--tahoe-hairline),
+    var(--tahoe-shadow);
+}
+[data-theme='tahoe'] .split-pane .run-composer-input {
+  border-color: transparent;
+  border-radius: 10px;
+  background-color: transparent;
+}
+[data-theme='tahoe'] .split-pane .run-composer-input:focus-within {
+  --tw-ring-color: hsl(var(--primary) / 0.35);
+}
+[data-theme='tahoe'] .split-pane .run-dock {
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 1px hsl(var(--warning) / 0.35),
+    var(--tahoe-shadow);
+}
+/* The prompt drops its own fill and 2px top rule; the card above frames it. */
+[data-theme='tahoe'] .split-pane .run-dock > * {
+  border-top-width: 0;
+  background-color: transparent;
+  background-image: linear-gradient(to bottom, hsl(var(--warning) / 0.1), transparent 64px);
+}
+/* List sidebars (Skills, Todos, Slack…) shown inside a split pane: the pane
+ * already is the glass, so they become a clear inner pane like History. */
+[data-theme='tahoe'] .app-shell .split-pane .list-sidebar {
+  margin: 6px 0 6px 6px;
+  border-radius: 12px;
+  background-color: var(--tahoe-clear);
+  backdrop-filter: none;
+  -webkit-backdrop-filter: none;
+  box-shadow: inset 0 1px 0 var(--tahoe-specular), inset 0 0 0 0.5px var(--tahoe-hairline);
+}

@@ -4093,7 +4093,7 @@ function handleRefInput(val: string) {
       </div>
     </div>
 
-    <div class="relative flex flex-1 overflow-hidden">
+    <div class="run-body relative flex flex-1 overflow-hidden">
       <!-- Left panel: controls + history (hidden in focus mode, and in a session
            pop-out — that window is locked to its one run, no switcher). Below
            NARROW_BODY_PX it never takes room: it floats over the chat, opened by
@@ -4101,15 +4101,15 @@ function handleRefInput(val: string) {
       <div
         v-if="historyVisible"
         ref="leftPanelEl"
-        class="w-72 max-w-[85%] shrink-0 border-r border-border/60 flex flex-col overflow-hidden"
-        :class="historyFloating ? 'absolute inset-y-0 left-0 z-30 bg-card shadow-2xl shadow-black/20' : 'bg-card/20'"
+        class="run-history w-72 max-w-[85%] shrink-0 border-r border-border/60 flex flex-col overflow-hidden"
+        :class="historyFloating ? 'is-floating absolute inset-y-0 left-0 z-30 bg-card shadow-2xl shadow-black/20' : 'bg-card/20'"
       >
 
         <!-- Rail tab switcher: Session (controls + history) vs Files (tree). -->
-        <div class="flex shrink-0 border-b border-border/60 text-xs font-medium">
+        <div class="run-history-tabs flex shrink-0 border-b border-border/60 text-xs font-medium">
           <button
             class="flex-1 flex items-center justify-center gap-1.5 py-2 transition-colors cursor-pointer"
-            :class="leftTab === 'session' ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
+            :class="leftTab === 'session' ? 'is-active text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
             @click="leftTab = 'session'"
           >
             <MessageSquare class="h-3.5 w-3.5" :stroke-width="2" />
@@ -4117,7 +4117,7 @@ function handleRefInput(val: string) {
           </button>
           <button
             class="flex-1 flex items-center justify-center gap-1.5 py-2 transition-colors cursor-pointer"
-            :class="leftTab === 'files' ? 'text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
+            :class="leftTab === 'files' ? 'is-active text-foreground border-b-2 border-primary' : 'text-muted-foreground hover:text-foreground'"
             @click="leftTab = 'files'"
           >
             <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
@@ -4141,7 +4141,7 @@ function handleRefInput(val: string) {
 
         <!-- Compact top toolbar: one New session button (every session is a
              conductor), the Fetch issue/PR popover, and the History density menu. -->
-        <div v-show="leftTab === 'session'" class="p-3 border-b border-border/60">
+        <div v-show="leftTab === 'session'" class="run-history-toolbar p-3 border-b border-border/60">
           <div class="relative flex items-center gap-1.5">
             <Button class="flex-1" :disabled="creatingSession" @click="handleNewSession">
               <Plus class="h-3.5 w-3.5" :stroke-width="2" />
@@ -4266,7 +4266,7 @@ function handleRefInput(val: string) {
              rows below it scroll, so the filter and the bulk action stay
              reachable no matter how far down the list the user is. -->
         <div v-show="leftTab === 'session'" class="flex-1 min-h-0 flex flex-col">
-          <div class="shrink-0 border-b border-border/40">
+          <div class="run-history-head shrink-0 border-b border-border/40">
             <div v-if="runsStore.runs.length > 0" class="px-3 pt-2.5">
               <div class="relative">
                 <Search class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
@@ -4313,7 +4313,7 @@ function handleRefInput(val: string) {
               </button>
             </div>
           </div>
-          <div ref="sessionListEl" class="flex-1 min-h-0 overflow-auto">
+          <div ref="sessionListEl" class="run-history-list flex-1 min-h-0 overflow-auto">
             <!-- The History row's right-click menu (teleported, anchored to the pointer). -->
             <ContextMenu :open="runMenu.open" :x="runMenu.x" :y="runMenu.y" @close="closeRunMenu">
               <template v-if="runMenu.run">
@@ -4333,13 +4333,13 @@ function handleRefInput(val: string) {
               v-for="{ run } in displayRuns"
               :key="run.id"
               :data-run-id="run.id"
-              class="group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
-              :class="{ 'bg-accent/60': currentRunId === run.id, 'bg-accent/40': actionsMenuRunId === run.id && currentRunId !== run.id }"
+              class="run-history-row group relative border-b border-border/30 transition-colors hover:bg-accent/40 focus-within:bg-accent/40"
+              :class="{ 'is-selected bg-accent/60': currentRunId === run.id, 'is-menu bg-accent/40': actionsMenuRunId === run.id && currentRunId !== run.id }"
             >
               <!-- Selected indicator bar -->
               <span
                 v-if="currentRunId === run.id"
-                class="absolute left-0 inset-y-0 w-0.5 bg-primary"
+                class="run-history-bar absolute left-0 inset-y-0 w-0.5 bg-primary"
               />
               <!-- Row layout follows uiLayout.listDensity, in the Dashboard
                    History's language: a kind tile on the left, the status dot
@@ -4489,7 +4489,7 @@ function handleRefInput(val: string) {
       </div>
 
       <!-- Terminal panel (split-pane: Content | AI Result) -->
-      <div class="flex-1 min-w-0 flex flex-col overflow-hidden bg-background">
+      <div class="run-main flex-1 min-w-0 flex flex-col overflow-hidden bg-background">
         <!-- No sessions yet: hide the Content / AI Result panels entirely and
              show a single centered empty state. -->
         <div v-if="noSession" class="flex-1 flex items-center justify-center p-6">
@@ -4586,7 +4586,7 @@ function handleRefInput(val: string) {
                  space the moment the question panel appears/disappears — no
                  intermediate frame where the column is stuck at a fixed width). -->
             <div class="relative flex-1 flex flex-col overflow-hidden min-w-0 min-h-0">
-            <div class="bg-card border-b border-border shrink-0">
+            <div class="run-titlebar bg-card border-b border-border shrink-0">
               <!-- Title row: shows the current run / session title. Fixed h-8
                    (= rail tab bar height) so the header never grows when the
                    mentioned-files / re-dock controls appear. -->
@@ -4845,7 +4845,7 @@ function handleRefInput(val: string) {
              the prompt's hotkeys and stop here, short of app shortcuts. -->
         <div
           v-if="dockedRequest"
-          class="flex max-h-[60%] min-h-0 shrink-0 flex-col overflow-hidden border-t border-border shadow-[0_-6px_18px_rgba(0,0,0,0.08)]"
+          class="run-dock flex max-h-[60%] min-h-0 shrink-0 flex-col overflow-hidden border-t border-border shadow-[0_-6px_18px_rgba(0,0,0,0.08)]"
           role="region"
           :aria-label="t('run.dockedPromptLabel')"
           @keydown.enter.stop
@@ -4879,7 +4879,7 @@ function handleRefInput(val: string) {
         <!-- Composer: prompt input on top, run controls in the footer below -->
         <div
           v-else-if="composerVisible"
-          class="border-t border-border bg-card/40 px-3 py-2 shrink-0"
+          class="run-composer border-t border-border bg-card/40 px-3 py-2 shrink-0"
         >
           <RunAttentionBanner
             v-if="currentStatus === 'running' && session?.attention.length"
@@ -4981,7 +4981,7 @@ function handleRefInput(val: string) {
             </div>
 
             <!-- Prompt input card: textarea on top, controls toolbar below -->
-            <div class="relative rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring transition-colors">
+            <div class="run-composer-input relative rounded-lg border border-border bg-background focus-within:ring-1 focus-within:ring-ring transition-colors">
               <!-- Drag-and-drop hint: shown while an OS file is dragged over the window -->
               <div
                 v-if="isDraggingFile"
