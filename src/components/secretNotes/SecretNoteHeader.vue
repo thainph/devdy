@@ -2,8 +2,8 @@
 // Header of the Secret notes window's detail pane — the sibling of ItemHeader,
 // same layout and controls:
 //
-//   title (click → edit) / updated · encrypted in the vault
-//   right [Project ▾] | 👁 Reveal / Hide · ⧉ Copy · ✎ Edit · ⋯ (Delete)
+//   title (click → edit; wraps up to 3 lines)
+//   updated · encrypted in the vault      [Project ▾] | 👁 Reveal / Hide · ⧉ Copy · ✎ Edit · ⋯ (Delete)
 //
 // While editing (or writing a new note), the actions give way to Cancel · Save
 // (⌘/Ctrl+Enter / Esc do the same inside the fields).
@@ -62,97 +62,102 @@ const metaTitle = computed(() => {
 </script>
 
 <template>
-  <div class="flex shrink-0 items-center gap-3 border-b border-border/60 px-5 py-2.5">
-    <div class="min-w-[6rem] flex-1">
-      <h1
-        class="min-w-0 truncate rounded px-0.5 -mx-0.5 text-[15px] font-bold leading-snug"
-        :class="note && !editing && 'cursor-text transition-colors hover:bg-accent/50'"
-        :title="note && !editing ? `${heading}\n${t('item.editTitle')}` : heading"
-        @click="note && !editing && emit('edit')"
-      >
-        {{ heading }}
-      </h1>
-      <p class="mt-0.5 truncate text-xs text-muted-foreground" :title="metaTitle">{{ meta }}</p>
-    </div>
-
-    <div class="flex min-w-0 items-center gap-1.5">
-      <div class="w-[11rem] min-w-[5.5rem] shrink">
-        <ProjectSelect
-          :model-value="projectId"
-          variant="outline"
-          size="sm"
-          @update:model-value="emit('setProject', $event)"
-        />
+  <!-- Two rows, so a long title can wrap instead of being cut: the title on
+       top (up to 3 lines), the meta line and the actions under it. -->
+  <div class="shrink-0 border-b border-border/60 px-5 pb-2 pt-2.5">
+    <div class="flex items-start gap-3">
+      <div class="min-w-0 flex-1">
+        <h1
+          class="min-w-0 line-clamp-3 break-words rounded px-0.5 -mx-0.5 text-[15px] font-bold leading-snug"
+          :class="note && !editing && 'cursor-text transition-colors hover:bg-accent/50'"
+          :title="note && !editing ? `${heading}\n${t('item.editTitle')}` : heading"
+          @click="note && !editing && emit('edit')"
+        >
+          {{ heading }}
+        </h1>
       </div>
-      <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
+    </div>
+    <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
+      <p class="min-w-0 flex-1 basis-40 truncate text-xs text-muted-foreground" :title="metaTitle">{{ meta }}</p>
+      <div class="ml-auto flex min-w-0 items-center gap-1.5">
+        <div class="w-[11rem] min-w-[5.5rem] shrink">
+          <ProjectSelect
+            :model-value="projectId"
+            variant="outline"
+            size="sm"
+            @update:model-value="emit('setProject', $event)"
+          />
+        </div>
+        <div class="mx-0.5 h-4 w-px shrink-0 bg-border" aria-hidden="true" />
 
-      <template v-if="editing">
-        <Button variant="outline" size="sm" class="shrink-0" @click="emit('cancelEdit')">
-          {{ t('common.cancel') }}
-        </Button>
-        <Button
-          variant="primary"
-          size="sm"
-          class="shrink-0"
-          :disabled="!canSave || saving"
-          :title="'⌘/Ctrl+Enter'"
-          @click="emit('save')"
-        >
-          <Loader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-          {{ t('common.save') }}
-        </Button>
-      </template>
-      <template v-else-if="note">
-        <Button
-          :variant="revealed ? 'primary' : 'outline'"
-          size="icon"
-          class="shrink-0"
-          :aria-pressed="revealed"
-          :disabled="revealing"
-          :title="revealed ? t('secretNotes.hide') : t('secretNotes.reveal')"
-          :aria-label="revealed ? t('secretNotes.hide') : t('secretNotes.reveal')"
-          @click="revealed ? emit('hide') : emit('reveal')"
-        >
-          <Loader2 v-if="revealing" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-          <component :is="revealed ? EyeOff : Eye" v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :title="t('secretNotes.copy')"
-          :aria-label="t('secretNotes.copy')"
-          @click="emit('copy')"
-        >
-          <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :title="t('item.editTitle')"
-          :aria-label="t('item.edit')"
-          @click="emit('edit')"
-        >
-          <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <DropdownMenu align="right" class="shrink-0">
-          <template #trigger>
-            <Button
-              variant="outline"
-              size="icon"
-              :title="t('item.moreActions')"
-              :aria-label="t('item.moreActions')"
-            >
-              <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </Button>
-          </template>
-          <DropdownItem variant="destructive" @click="emit('delete')">
-            <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('common.delete') }}
-          </DropdownItem>
-        </DropdownMenu>
-      </template>
+        <template v-if="editing">
+          <Button variant="outline" size="sm" class="shrink-0" @click="emit('cancelEdit')">
+            {{ t('common.cancel') }}
+          </Button>
+          <Button
+            variant="primary"
+            size="sm"
+            class="shrink-0"
+            :disabled="!canSave || saving"
+            :title="'⌘/Ctrl+Enter'"
+            @click="emit('save')"
+          >
+            <Loader2 v-if="saving" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+            {{ t('common.save') }}
+          </Button>
+        </template>
+        <template v-else-if="note">
+          <Button
+            :variant="revealed ? 'primary' : 'outline'"
+            size="icon"
+            class="shrink-0"
+            :aria-pressed="revealed"
+            :disabled="revealing"
+            :title="revealed ? t('secretNotes.hide') : t('secretNotes.reveal')"
+            :aria-label="revealed ? t('secretNotes.hide') : t('secretNotes.reveal')"
+            @click="revealed ? emit('hide') : emit('reveal')"
+          >
+            <Loader2 v-if="revealing" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+            <component :is="revealed ? EyeOff : Eye" v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            class="shrink-0"
+            :title="t('secretNotes.copy')"
+            :aria-label="t('secretNotes.copy')"
+            @click="emit('copy')"
+          >
+            <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            class="shrink-0"
+            :title="t('item.editTitle')"
+            :aria-label="t('item.edit')"
+            @click="emit('edit')"
+          >
+            <Pencil class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+          <DropdownMenu align="right" class="shrink-0">
+            <template #trigger>
+              <Button
+                variant="outline"
+                size="icon"
+                :title="t('item.moreActions')"
+                :aria-label="t('item.moreActions')"
+              >
+                <MoreHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
+              </Button>
+            </template>
+            <DropdownItem variant="destructive" @click="emit('delete')">
+              <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+              {{ t('common.delete') }}
+            </DropdownItem>
+          </DropdownMenu>
+        </template>
+      </div>
     </div>
   </div>
 </template>
