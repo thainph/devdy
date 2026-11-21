@@ -10,7 +10,8 @@
       "tabs": "Tab & cửa sổ",
       "layout": "Bố cục",
       "session": "Ô chat của session",
-      "editing": "Soạn & xem"
+      "editing": "Soạn & xem",
+      "create": "Tạo mới"
     },
     "items": {
       "palette": "Bảng lệnh: tab, session, màn hình, thao tác",
@@ -32,7 +33,12 @@
       "pick": "Di chuyển và chọn gợi ý",
       "save": "Lưu Todo / Note / ghi chú bí mật đang sửa",
       "cancel": "Huỷ sửa",
-      "find": "Tìm trong file đang xem"
+      "find": "Tìm trong file đang xem",
+      "shortcuts": "Bảng phím tắt này",
+      "prevNextTab": "Tab trước / tab sau",
+      "toggleSidebar": "Ẩn / hiện sidebar",
+      "newSession": "Session mới (khi đang ở màn project)",
+      "newTodo": "Todo mới"
     }
   }
 }

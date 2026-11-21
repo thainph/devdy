@@ -18,6 +18,8 @@ export interface Shortcut {
   id: string
   /** One or more alternative key combos ("or"). */
   keys: ShortcutKey[][]
+  /** Windows / Linux keys when they differ beyond Mod = Ctrl. */
+  otherKeys?: ShortcutKey[][]
   /** macOS only (e.g. ⌘Q is the system's on other platforms). */
   macOnly?: boolean
 }
@@ -35,6 +37,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { id: 'palette', keys: [['Mod', 'K']] },
       { id: 'quickOpen', keys: [['Mod', 'P']] },
       { id: 'settings', keys: [['Mod', ',']] },
+      { id: 'shortcuts', keys: [['Mod', '/']] },
       { id: 'quit', keys: [['Mod', 'Q']], macOnly: true },
     ],
   },
@@ -43,6 +46,7 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
     items: [
       { id: 'gotoTab', keys: [['Mod', '1…8']] },
       { id: 'lastTab', keys: [['Mod', '9']] },
+      { id: 'prevNextTab', keys: [['Mod', 'Shift', '['], ['Mod', 'Shift', ']']] },
       { id: 'closeTab', keys: [['Mod', 'Shift', 'W']] },
       { id: 'split', keys: [['Mod', '\\']] },
       { id: 'closeWindow', keys: [['Mod', 'W']] },
@@ -51,9 +55,17 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   {
     id: 'layout',
     items: [
+      { id: 'toggleSidebar', keys: [['Ctrl', 'Mod', 'S']], otherKeys: [['Ctrl', 'Alt', 'S']] },
       { id: 'toggleList', keys: [['Mod', 'B']] },
       { id: 'focus', keys: [['Mod', '.']] },
       { id: 'escape', keys: [['Esc']] },
+    ],
+  },
+  {
+    id: 'create',
+    items: [
+      { id: 'newSession', keys: [['Mod', 'N']] },
+      { id: 'newTodo', keys: [['Mod', 'Alt', 'N']] },
     ],
   },
   {
@@ -76,15 +88,24 @@ export const SHORTCUT_GROUPS: ShortcutGroup[] = [
   },
 ]
 
-const MAC: Record<string, string> = { Mod: '⌘', Shift: '⇧', Esc: 'Esc', Enter: '↩', Tab: '⇥', Up: '↑', Down: '↓' }
-const OTHER: Record<string, string> = { Mod: 'Ctrl', Shift: 'Shift', Esc: 'Esc', Enter: 'Enter', Tab: 'Tab', Up: '↑', Down: '↓' }
+const MAC: Record<string, string> = {
+  Mod: '⌘', Shift: '⇧', Alt: '⌥', Ctrl: '⌃', Esc: 'Esc', Enter: '↩', Tab: '⇥', Up: '↑', Down: '↓',
+}
+const OTHER: Record<string, string> = {
+  Mod: 'Ctrl', Shift: 'Shift', Alt: 'Alt', Ctrl: 'Ctrl', Esc: 'Esc', Enter: 'Enter', Tab: 'Tab', Up: '↑', Down: '↓',
+}
 
 /** How a key token reads on this platform. */
 export function keyLabel(key: ShortcutKey, mac: boolean): string {
   return (mac ? MAC : OTHER)[key] ?? key
 }
 
-/** The groups shown on this platform (mac-only rows dropped elsewhere). */
+/** The groups shown on this platform: mac-only rows dropped, platform keys picked. */
 export function shortcutGroupsFor(mac: boolean): ShortcutGroup[] {
-  return SHORTCUT_GROUPS.map((g) => ({ ...g, items: g.items.filter((s) => mac || !s.macOnly) }))
+  return SHORTCUT_GROUPS.map((g) => ({
+    ...g,
+    items: g.items
+      .filter((s) => mac || !s.macOnly)
+      .map((s) => (!mac && s.otherKeys ? { ...s, keys: s.otherKeys } : s)),
+  }))
 }

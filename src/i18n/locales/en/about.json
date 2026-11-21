@@ -10,7 +10,8 @@
       "tabs": "Tabs & windows",
       "layout": "Layout",
       "session": "Session composer",
-      "editing": "Editing & viewing"
+      "editing": "Editing & viewing",
+      "create": "Create"
     },
     "items": {
       "palette": "Command palette: tabs, sessions, screens, actions",
@@ -32,7 +33,12 @@
       "pick": "Move through suggestions and pick one",
       "save": "Save a Todo / Note / secret note being edited",
       "cancel": "Cancel the edit",
-      "find": "Find in a file being viewed"
+      "find": "Find in a file being viewed",
+      "shortcuts": "This list of shortcuts",
+      "prevNextTab": "Previous / next tab",
+      "toggleSidebar": "Hide / show the sidebar",
+      "newSession": "New session (on a project screen)",
+      "newTodo": "New todo"
     }
   }
 }

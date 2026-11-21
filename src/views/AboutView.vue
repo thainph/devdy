@@ -1,5 +1,6 @@
 <script setup lang="ts">
-import { onMounted, ref } from 'vue'
+import { nextTick, onMounted, ref, watch } from 'vue'
+import { useRoute } from 'vue-router'
 import { useI18n } from 'vue-i18n'
 import { Globe, Keyboard } from 'lucide-vue-next'
 import { Badge, Card, PageHeader } from '@/components/ui'
@@ -12,6 +13,19 @@ const { t } = useI18n()
 // The app's keyboard shortcuts (lib/shortcuts), in this platform's notation.
 const groups = shortcutGroupsFor(IS_MAC)
 const key = (k: string) => keyLabel(k, IS_MAC)
+
+// Help → Keyboard Shortcuts (⌘/) lands here with #shortcuts: bring the card into view.
+const route = useRoute()
+const shortcutsEl = ref<HTMLElement | null>(null)
+watch(
+  () => route.hash,
+  async (hash) => {
+    if (hash !== '#shortcuts') return
+    await nextTick()
+    shortcutsEl.value?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  },
+  { immediate: true },
+)
 
 // Read from Tauri so it always matches the packaged build (tauri.conf.json).
 const appVersion = ref('')
@@ -56,6 +70,7 @@ onMounted(async () => {
       </div>
 
       <!-- Keyboard shortcuts -->
+      <div ref="shortcutsEl" class="scroll-mt-4" />
       <Card class="mx-auto mt-10 max-w-3xl" body-class="p-4">
         <template #header>
           <Keyboard class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.5" />

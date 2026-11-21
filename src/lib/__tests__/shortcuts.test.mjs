@@ -23,3 +23,10 @@ test('ids are unique within each group', () => {
     assert.equal(new Set(ids).size, ids.length, g.id)
   }
 })
+
+test('platform-specific combos replace the mac ones elsewhere', () => {
+  const find = (mac) => shortcutGroupsFor(mac).flatMap((g) => g.items).find((s) => s.id === 'toggleSidebar')
+  assert.deepEqual(find(true).keys, [['Ctrl', 'Mod', 'S']])
+  assert.deepEqual(find(false).keys, [['Ctrl', 'Alt', 'S']])
+  assert.equal(keyLabel('Alt', true), '⌥')
+})

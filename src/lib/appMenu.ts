@@ -38,6 +38,8 @@ interface MenuSpec {
 export interface MenuState {
   sidebarHidden: boolean
   focusMode: boolean
+  /** The list column of the screen in view: hidden?, or null when it has none. */
+  listHidden: boolean | null
 }
 
 function t(key: string, named?: Record<string, unknown>): string {
@@ -61,11 +63,23 @@ const GO_MENU_EXCLUDED = new Set(['/settings', '/about'])
 
 function goMenuItems(): ItemSpec[] {
   const routes = NAV_ROUTES.filter((r) => !GO_MENU_EXCLUDED.has(r.path))
-  return routes.flatMap((route, index): ItemSpec[] => [
-    // Same grouping as the sidebar dividers.
-    ...(index > 0 && route.group !== routes[index - 1].group ? [SEPARATOR] : []),
-    { kind: 'item', id: `go.${route.path}`, label: t(route.labelKey) },
-  ])
+  return routes.flatMap((route, index): ItemSpec[] => {
+    const nextGroup = routes[index + 1]?.group
+    return [
+      // Same grouping as the sidebar dividers.
+      ...(index > 0 && route.group !== routes[index - 1].group ? [SEPARATOR] : []),
+      { kind: 'item', id: `go.${route.path}`, label: t(route.labelKey) },
+      // Todos, Notes and Slack threads close out the daily-work group, as in the
+      // sidebar (they are tabs too now, not windows — see Window for those).
+      ...(route.group === 'work' && nextGroup !== 'work'
+        ? ([
+            { kind: 'item', id: 'window.todoList', label: t('menu.todoList') },
+            { kind: 'item', id: 'window.noteList', label: t('menu.noteList') },
+            { kind: 'item', id: 'window.slackThreads', label: t('menu.slackThreads') },
+          ] satisfies ItemSpec[])
+        : []),
+    ]
+  })
 }
 
 // Command palette (components/CommandPalette.vue). Rust only dispatches the
@@ -84,6 +98,8 @@ function quickOpenItem(): ItemSpec {
 function tabItems(): ItemSpec[] {
   return [
     // ⌘W stays Close Window (the OS item in File), so closing a tab takes ⇧.
+    { kind: 'item', id: 'tabs.prev', label: t('menu.prevTab'), accelerator: 'CmdOrCtrl+Shift+BracketLeft' },
+    { kind: 'item', id: 'tabs.next', label: t('menu.nextTab'), accelerator: 'CmdOrCtrl+Shift+BracketRight' },
     { kind: 'item', id: 'tabs.close', label: t('menu.closeTab'), accelerator: 'CmdOrCtrl+Shift+W' },
     { kind: 'item', id: 'tabs.toggleSplit', label: t('menu.toggleSplit'), accelerator: 'CmdOrCtrl+Backslash' },
     { kind: 'item', id: 'tabs.popOut', label: t('menu.popOutTab') },
@@ -111,8 +127,8 @@ function buildSpec(state: MenuState): MenuSpec {
     kind: 'item',
     id: 'go./settings',
     label: t('menu.settings'),
-    // ⌘, for Settings is a platform convention. The only other accelerators
-    // are the palette / tab-strip shortcuts (`paletteItems`, `tabItems`).
+    // ⌘, for Settings is a platform convention. Every accelerator is also
+    // listed on the About screen (lib/shortcuts) — keep the two in step.
     accelerator: 'CmdOrCtrl+,',
   }
   const about: ItemSpec = { kind: 'item', id: 'go./about', label: t('menu.about') }
@@ -148,11 +164,12 @@ function buildSpec(state: MenuState): MenuSpec {
         kind: 'item',
         id: 'file.newSession',
         label: t('menu.newSession'),
+        accelerator: 'CmdOrCtrl+N',
         // Only the project screen can start a session (it needs the project);
         // greyed out elsewhere instead of silently doing nothing.
         enabled: isMenuActionBound('file.newSession'),
       },
-      { kind: 'item', id: 'file.newTodo', label: t('menu.newTodo') },
+      { kind: 'item', id: 'file.newTodo', label: t('menu.newTodo'), accelerator: 'CmdOrCtrl+Alt+N' },
       { kind: 'item', id: 'file.newNote', label: t('menu.newNote') },
       SEPARATOR,
       ...(IS_MAC
@@ -187,12 +204,16 @@ function buildSpec(state: MenuState): MenuSpec {
         kind: 'item',
         id: 'view.toggleSidebar',
         label: state.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar'),
+        // macOS's own Show/Hide Sidebar key (Finder, Notes); ⌘B is the list's.
+        accelerator: IS_MAC ? 'Ctrl+Cmd+S' : 'Ctrl+Alt+S',
       },
       {
         kind: 'item',
         id: 'view.toggleList',
-        label: t('menu.toggleList'),
+        // The list column of the screen in view (null: this screen has none).
+        label: state.listHidden ? t('menu.showList') : t('menu.hideList'),
         accelerator: 'CmdOrCtrl+B',
+        enabled: state.listHidden !== null,
       },
       {
         kind: 'item',
@@ -217,10 +238,9 @@ function buildSpec(state: MenuState): MenuSpec {
       os('minimize', 'menu.minimize'),
       os('maximize', IS_MAC ? 'menu.zoom' : 'menu.maximize'),
       SEPARATOR,
-      { kind: 'item', id: 'window.todoList', label: t('menu.todoList') },
-      { kind: 'item', id: 'window.noteList', label: t('menu.noteList') },
+      // Its own window by design (the vault only opens there); Todos / Notes /
+      // Slack threads moved to Go — they open as tabs or windows per Settings.
       { kind: 'item', id: 'window.secretNotes', label: t('menu.secretNotes') },
-      { kind: 'item', id: 'window.slackThreads', label: t('menu.slackThreads') },
       SEPARATOR,
       ...tabItems(),
       SEPARATOR,
@@ -232,6 +252,7 @@ function buildSpec(state: MenuState): MenuSpec {
   submenus.push({
     label: t('menu.help'),
     items: [
+      { kind: 'item', id: 'help.shortcuts', label: t('menu.shortcuts'), accelerator: 'CmdOrCtrl+Slash' },
       { kind: 'item', id: 'help.docs', label: t('menu.docs') },
       { kind: 'item', id: 'help.reportIssue', label: t('menu.reportIssue') },
       { kind: 'item', id: 'help.openLogs', label: t('menu.openLogs') },

@@ -48,5 +48,9 @@
   "goToTab": "Go to Tab",
   "tabN": "Tab {n}",
   "lastTab": "Last Tab",
-  "toggleList": "Hide / Show List"
+  "prevTab": "Previous Tab",
+  "nextTab": "Next Tab",
+  "showList": "Show List",
+  "hideList": "Hide List",
+  "shortcuts": "Keyboard Shortcuts"
 }

@@ -48,5 +48,9 @@
   "goToTab": "Đi tới tab",
   "tabN": "Tab {n}",
   "lastTab": "Tab cuối",
-  "toggleList": "Ẩn / hiện danh sách"
+  "prevTab": "Tab trước",
+  "nextTab": "Tab sau",
+  "showList": "Hiện danh sách",
+  "hideList": "Ẩn danh sách",
+  "shortcuts": "Phím tắt"
 }

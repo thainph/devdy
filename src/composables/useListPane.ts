@@ -54,14 +54,28 @@ function visible(el: Element | null): boolean {
   return !!el && el.isConnected && el.getClientRects().length > 0
 }
 
+/** The pane of the screen in view (in the focused half of a split), if any. */
+function activePane(): ListPane | null {
+  const shown = [...registry].filter((r) => visible(r.el()))
+  if (!shown.length) return null
+  const focusPane = document.activeElement?.closest('[data-pane]')
+  return ((focusPane && shown.find((r) => focusPane.contains(r.el()))) || shown[0]).pane
+}
+
 /** ⌘B: hide / show the list pane of the screen in view. False when there is none. */
 export function toggleActiveListPane(): boolean {
-  const shown = [...registry].filter((r) => visible(r.el()))
-  if (!shown.length) return false
-  const focusPane = document.activeElement?.closest('[data-pane]')
-  const pick = (focusPane && shown.find((r) => focusPane.contains(r.el()))) || shown[0]
-  pick.pane.toggle()
-  return true
+  const pane = activePane()
+  pane?.toggle()
+  return !!pane
+}
+
+/**
+ * For the View menu's label: is the list of the screen in view hidden? null
+ * when that screen has no list. Reads the DOM — call after it has updated.
+ */
+export function activeListPaneHidden(): boolean | null {
+  const pane = activePane()
+  return pane ? pane.hidden.value : null
 }
 
 export function provideListPane(key: ListPaneKey): ListPane {

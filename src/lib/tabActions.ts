@@ -130,6 +130,16 @@ export function goToTabNumber(n: number) {
   if (e) selectEntry(e)
 }
 
+/** ⌘⇧[ / ⌘⇧]: the tab before / after the current one, wrapping around. */
+export function goToTabOffset(delta: number) {
+  const entries = useWorkspaceTabsStore().entries
+  if (!entries.length) return
+  const cur = currentEntry()
+  const at = cur ? entries.findIndex((e) => tabEntryKey(e) === tabEntryKey(cur)) : -1
+  const next = at < 0 ? (delta > 0 ? 0 : entries.length - 1) : (at + delta + entries.length) % entries.length
+  selectEntry(entries[next])
+}
+
 export function closeCurrentTab() {
   const cur = currentEntry()
   if (cur) closeEntry(cur)

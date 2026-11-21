@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
+import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
@@ -15,7 +15,7 @@ import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
 import { ListTodo, LockKeyhole, Minimize2, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote, X } from 'lucide-vue-next'
-import { toggleActiveListPane } from '@/composables/useListPane'
+import { activeListPaneHidden, toggleActiveListPane } from '@/composables/useListPane'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
@@ -63,7 +63,7 @@ import { applySystemAccent } from '@/lib/systemAccent'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 import { applyAppMenu, IS_MAC, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
-import { closeCurrentTab, goToTabNumber, popOutCurrent, toggleSplitCurrent } from '@/lib/tabActions'
+import { closeCurrentTab, goToTabNumber, goToTabOffset, popOutCurrent, toggleSplitCurrent } from '@/lib/tabActions'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { NAV_ROUTES, pageRouteFor, startsNavGroup } from '@/lib/navigation'
@@ -569,9 +569,13 @@ function bindGlobalMenuActions() {
       }
     }),
     registerMenuAction('help.reload', () => window.location.reload()),
+    // The shortcut list on the About screen (lib/shortcuts).
+    registerMenuAction('help.shortcuts', () => router.push({ path: '/about', hash: '#shortcuts' }).catch(() => {})),
     // Palette + tab strip; Rust drops these while a pop-out has the focus.
     registerMenuAction('palette.open', () => togglePalette('all')),
     registerMenuAction('palette.quickOpen', () => togglePalette('quick')),
+    registerMenuAction('tabs.prev', () => goToTabOffset(-1)),
+    registerMenuAction('tabs.next', () => goToTabOffset(1)),
     registerMenuAction('tabs.close', closeCurrentTab),
     registerMenuAction('tabs.toggleSplit', toggleSplitCurrent),
     registerMenuAction('tabs.popOut', popOutCurrent),
@@ -594,12 +598,26 @@ let unlistenMenu: UnlistenFn | null = null
 // the menu is rebuilt whenever any of those moves. Watching the i18n
 // locale rather than the settings row avoids rebuilding with stale labels: the
 // setting is what *drives* the switch, `locale` is what has actually applied.
+// The View menu's list item also names the state of the screen in view, read
+// from the DOM once it has settled (after a navigation or a ⌘B).
+function menuState() {
+  return { sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode, listHidden: activeListPaneHidden() }
+}
 watch(
   () =>
-    [locale.value, uiLayout.sidebarHidden, uiLayout.focusMode, isMenuActionBound('file.newSession')] as const,
-  () => {
+    [
+      locale.value,
+      uiLayout.sidebarHidden,
+      uiLayout.focusMode,
+      isMenuActionBound('file.newSession'),
+      route.fullPath,
+      uiLayout.hiddenPanes.join(),
+      tabsStore.focusedPane,
+    ] as const,
+  async () => {
     if (isPopoutWindow || isSessionWindow) return
-    applyAppMenu({ sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode })
+    await nextTick()
+    applyAppMenu(menuState())
   },
 )
 
@@ -764,7 +782,7 @@ onMounted(async () => {
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
-  applyAppMenu({ sidebarHidden: uiLayout.sidebarHidden, focusMode: uiLayout.focusMode })
+  applyAppMenu(menuState())
 
   // Populate the menu-bar window switcher (just the main window at first; session
   // pop-outs re-send as they open — see lib/tray.ts / lib/sessionWindow.ts).
