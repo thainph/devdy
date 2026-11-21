@@ -520,31 +520,48 @@
   width: 52px;
 }
 
-/* --- Session screen inside a split pane (RunView `.run-*` hooks) -----------
- * The pane is the glass; inside it the chrome turns to hairlines, History is
- * a clear inner pane (concentric: 18px pane − 6px inset = 12px), rows are
- * rounded with an accent-tinted selection, and the composer / docked prompt
- * float as glass cards. Scoped to `.split-pane` so the unsplit screen keeps
- * its current look. */
-[data-theme='tahoe'] .split-pane .run-main,
-[data-theme='tahoe'] .split-pane .run-titlebar {
-  background-color: transparent;
+/* --- Session screen (RunView `.run-pane` + `.run-*` hooks) -----------------
+ * Split or not, the session sits in a glass pane: unsplit, RunView's root is
+ * that pane itself (inset like a split half); split, the half is. Inside, the
+ * chrome turns to hairlines, History is a clear inner pane (concentric: 18px
+ * pane − 6px inset = 12px), rows are rounded with an accent-tinted selection,
+ * and the composer / docked prompt float as glass cards. Main window only
+ * (`.split-host`): the session pop-out window keeps its own look. */
+[data-theme='tahoe'] .split-host:not(.is-split) .run-pane {
+  height: calc(100% - 8px);
+  margin-right: 8px;
+  border-radius: 18px;
+  background-color: var(--tahoe-pane);
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    0 0 0 0.5px var(--tahoe-hairline),
+    0 1px 6px rgba(0, 0, 0, 0.06);
 }
-[data-theme='tahoe'] .split-pane :is(.run-titlebar, .run-history-tabs, .run-history-toolbar, .run-history-head) {
+[data-theme='tahoe'] .split-host .run-pane .run-header {
   border-bottom-color: var(--tahoe-hairline);
 }
-[data-theme='tahoe'] .split-pane .run-body {
+[data-theme='tahoe'] .split-host .run-pane .run-main,
+[data-theme='tahoe'] .split-host .run-pane .run-titlebar {
+  background-color: transparent;
+}
+[data-theme='tahoe'] .split-host .run-pane :is(.run-titlebar, .run-history-tabs, .run-history-toolbar, .run-history-head) {
+  border-bottom-color: var(--tahoe-hairline);
+}
+[data-theme='tahoe'] .split-host .run-pane .run-body {
   padding: 6px;
   gap: 6px;
 }
-[data-theme='tahoe'] .split-pane .run-history {
+[data-theme='tahoe'] .split-host .run-pane .run-history {
   border-right: 0;
   border-radius: 12px;
   background-color: var(--tahoe-clear);
   box-shadow: inset 0 1px 0 var(--tahoe-specular), inset 0 0 0 0.5px var(--tahoe-hairline);
 }
 /* Floating over the chat (narrow pane / peek): heavy glass, like a popover. */
-[data-theme='tahoe'] .split-pane .run-history.is-floating {
+[data-theme='tahoe'] .split-host .run-pane .run-history.is-floating {
   inset: 6px auto 6px 6px;
   border-radius: 14px;
   background-color: var(--tahoe-sheet);
@@ -556,7 +573,7 @@
     var(--tahoe-shadow-lg);
 }
 /* Session / Files: the segmented control instead of underlined tabs. */
-[data-theme='tahoe'] .split-pane .run-history-tabs {
+[data-theme='tahoe'] .split-host .run-pane .run-history-tabs {
   margin: 6px 6px 0;
   padding: 2px;
   gap: 2px;
@@ -565,47 +582,47 @@
   background-color: hsl(var(--foreground) / 0.06);
   box-shadow: inset 0 0.5px 1px rgba(0, 0, 0, 0.06), inset 0 0 0 0.5px var(--tahoe-hairline);
 }
-[data-theme='tahoe'] .split-pane .run-history-tabs > button {
+[data-theme='tahoe'] .split-host .run-pane .run-history-tabs > button {
   padding-top: 4px;
   padding-bottom: 4px;
   border-radius: 999px;
   border-bottom-width: 0;
 }
-[data-theme='tahoe'] .split-pane .run-history-tabs > button.is-active {
+[data-theme='tahoe'] .split-host .run-pane .run-history-tabs > button.is-active {
   background-color: var(--tahoe-clear-hover);
   box-shadow:
     inset 0 1px 0 var(--tahoe-specular),
     0 0 0 0.5px var(--tahoe-hairline),
     0 1px 3px rgba(0, 0, 0, 0.1);
 }
-[data-theme='tahoe'] .split-pane :is(.run-history-toolbar, .run-history-head) {
+[data-theme='tahoe'] .split-host .run-pane :is(.run-history-toolbar, .run-history-head) {
   border-bottom-width: 0;
 }
 /* Rows: rounded, no rules between them, selection = accent tint (the nav's). */
-[data-theme='tahoe'] .split-pane .run-history-list {
+[data-theme='tahoe'] .split-host .run-pane .run-history-list {
   padding: 0 6px 6px;
 }
-[data-theme='tahoe'] .split-pane .run-history-row {
+[data-theme='tahoe'] .split-host .run-pane .run-history-row {
   border-bottom-width: 0;
   border-radius: 10px;
   margin-top: 2px;
 }
-[data-theme='tahoe'] .split-pane .run-history-row > button {
+[data-theme='tahoe'] .split-host .run-pane .run-history-row > button {
   border-radius: 10px;
 }
-[data-theme='tahoe'] .split-pane .run-history-row:is(:hover, :focus-within):not(.is-selected) {
+[data-theme='tahoe'] .split-host .run-pane .run-history-row:is(:hover, :focus-within):not(.is-selected) {
   background-color: var(--tahoe-clear);
   box-shadow: inset 0 1px 0 var(--tahoe-specular), inset 0 0 0 0.5px var(--tahoe-hairline);
 }
-[data-theme='tahoe'] .split-pane .run-history-row.is-selected {
+[data-theme='tahoe'] .split-host .run-pane .run-history-row.is-selected {
   background-color: hsl(var(--primary) / 0.14);
   box-shadow: inset 0 1px 0 var(--tahoe-rim), inset 0 0 0 0.5px hsl(var(--primary) / 0.14);
 }
-[data-theme='tahoe'] .split-pane .run-history-bar {
+[data-theme='tahoe'] .split-host .run-pane .run-history-bar {
   display: none;
 }
 /* Composer and docked prompt: glass cards floating at the pane's foot. */
-[data-theme='tahoe'] .split-pane :is(.run-composer, .run-dock) {
+[data-theme='tahoe'] .split-host .run-pane :is(.run-composer, .run-dock) {
   /* .run-body's 6px padding already sets it off the pane edge. */
   border-top-width: 0;
   border-radius: 14px;
@@ -618,15 +635,15 @@
     0 0 0 0.5px var(--tahoe-hairline),
     var(--tahoe-shadow);
 }
-[data-theme='tahoe'] .split-pane .run-composer-input {
+[data-theme='tahoe'] .split-host .run-pane .run-composer-input {
   border-color: transparent;
   border-radius: 10px;
   background-color: transparent;
 }
-[data-theme='tahoe'] .split-pane .run-composer-input:focus-within {
+[data-theme='tahoe'] .split-host .run-pane .run-composer-input:focus-within {
   --tw-ring-color: hsl(var(--primary) / 0.35);
 }
-[data-theme='tahoe'] .split-pane .run-dock {
+[data-theme='tahoe'] .split-host .run-pane .run-dock {
   box-shadow:
     inset 0 1px 0 var(--tahoe-specular),
     inset 0 0 0 0.5px var(--tahoe-rim),
@@ -634,7 +651,7 @@
     var(--tahoe-shadow);
 }
 /* The prompt drops its own fill and 2px top rule; the card above frames it. */
-[data-theme='tahoe'] .split-pane .run-dock > * {
+[data-theme='tahoe'] .split-host .run-pane .run-dock > * {
   border-top-width: 0;
   background-color: transparent;
   background-image: linear-gradient(to bottom, hsl(var(--warning) / 0.1), transparent 64px);

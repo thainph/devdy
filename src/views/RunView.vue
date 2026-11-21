@@ -3873,12 +3873,12 @@ function handleRefInput(val: string) {
 <template>
   <!-- A size container: RunView fits whichever half of a split it is in (down
        to ~360px), so its layout follows its own width, never the window's. -->
-  <div ref="rootEl" class="@container/run flex h-full min-w-0 flex-col overflow-hidden">
+  <div ref="rootEl" class="run-pane @container/run flex h-full min-w-0 flex-col overflow-hidden">
     <!-- Header. Its left group clips instead of running under the buttons: the
          project name keeps its room (up to 45%), the badges get the rest. Below
          ~660px every account / server / cloud badge folds into one "N accounts"
          chip; below ~520px the open-in buttons fold into one menu. -->
-    <div class="@container/runhdr flex items-center justify-between gap-3 px-3 @[40rem]/run:px-6 h-13 border-b border-border/60 shrink-0">
+    <div class="run-header @container/runhdr flex items-center justify-between gap-3 px-3 @[40rem]/run:px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
         <ListPaneButtons v-if="!isSessionWindow && !bodyNarrow" mode="show" />
         <h1
