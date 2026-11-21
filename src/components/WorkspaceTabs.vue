@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeftRight, ChevronDown, Columns2, PanelRightOpen, X } from 'lucide-vue-next'
+import { ArrowLeftRight, ChevronDown, Columns2, ExternalLink, PanelRightOpen, X } from 'lucide-vue-next'
 import { ContextMenu, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
 import WorkspaceTab from '@/components/WorkspaceTab.vue'
 import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
@@ -23,10 +23,11 @@ import { canOpenOnRight, closeEntry, openOnRight, selectEntry, swapSplit, unspli
  * (lib/surfaces). A surface tab can pop out into its own window.
  *
  * Split view, one rule: the left half is the screen you're on, the right half
- * the tab you "Open on the right" (hover button or right-click); doing it on
+ * the tab you "Open on the right" (right-click menu or ⌘K); doing it on
  * another tab while split replaces the right half. The two then sit side by
- * side on the strip as ONE merged tab with two halves, the focused half lifted,
- * with swap (⇄) and close-split buttons. Clicking another tab shows it full width
+ * side on the strip as ONE merged tab with two halves, the focused half lifted.
+ * A tab itself only carries its close button; split, swap and pop-out are in
+ * its right-click menu. Clicking another tab shows it full width
  * while the pair stays (idle look); clicking a half brings the split back with
  * that half focused. The pair drags as a unit; closing a half ends the split.
  *
@@ -98,16 +99,6 @@ const states = computed(() => {
 
 function stateOf(e: TabEntry): ProjectState {
   return (e.type === 'project' && states.value[e.projectId]) || { running: false, pending: 0 }
-}
-
-/** In the shown pair the button ends the split; elsewhere it opens the tab on the right. */
-function splitAction(e: TabEntry, inPair: boolean): 'open' | 'close' | null {
-  if (inPair) return tabsStore.pairShown ? 'close' : null
-  return canOpenOnRight(e) ? 'open' : null
-}
-function onSplitButton(e: TabEntry, inPair: boolean) {
-  if (inPair) unsplitFocused()
-  else openOnRight(e)
 }
 
 // Right-click menu of a tab: the same split actions, spelled out.
@@ -234,7 +225,6 @@ function inPair(e: TabEntry): boolean {
         :running="stateOf(unit.tab).running"
         :pending="stateOf(unit.tab).pending"
         :look="dragFrom === index ? 'active' : look(unit.tab)"
-        :split-action="splitAction(unit.tab, false)"
         :class="dragFrom === index ? 'shadow-md !cursor-grabbing' : ''"
         :style="[unitStyle(unit), tabStyle(index)]"
         :title="`${label(unit.tab)} — ${t('misc.tabs.dragToReorder')}`"
@@ -242,8 +232,6 @@ function inPair(e: TabEntry): boolean {
         @click="onTabClick(unit.tab)"
         @contextmenu.prevent="openMenu(unit.tab, $event)"
         @close="closeEntry(unit.tab)"
-        @toggle-split="onSplitButton(unit.tab, false)"
-        @pop-out="popOut(unit.tab)"
       />
       <!-- The split pair: both tabs in one frame, the focused half lifted; an
            idle frame while another tab is shown full width. -->
@@ -272,15 +260,10 @@ function inPair(e: TabEntry): boolean {
           :running="stateOf(half).running"
           :pending="stateOf(half).pending"
           :look="tabsStore.pairShown ? (isActive(half) ? 'active' : 'visible') : 'idle'"
-          :split-action="splitAction(half, true)"
-          :swappable="tabsStore.pairShown"
           :title="label(half)"
           @click="onTabClick(half)"
           @contextmenu.prevent="openMenu(half, $event)"
           @close="closeEntry(half)"
-          @toggle-split="onSplitButton(half, true)"
-          @swap="swapSplit()"
-          @pop-out="popOut(half)"
         />
       </div>
     </template>
@@ -301,6 +284,10 @@ function inPair(e: TabEntry): boolean {
       <DropdownItem v-else :disabled="!canOpenOnRight(menu.tab)" @click="runMenu(() => openOnRight(menu.tab!))">
         <PanelRightOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
         {{ t('surfaces.tabs.openOnRight') }}
+      </DropdownItem>
+      <DropdownItem v-if="menu.tab.type === 'surface'" @click="runMenu(() => popOut(menu.tab!))">
+        <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+        {{ t('surfaces.tabs.popOut') }}
       </DropdownItem>
       <DropdownSeparator />
       <DropdownItem @click="runMenu(() => closeEntry(menu.tab!))">

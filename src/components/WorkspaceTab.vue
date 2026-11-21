@@ -4,7 +4,7 @@
 // half of the split pair's merged tab (`half`). Clicks and drags are wired by
 // the strip on this button.
 import { useI18n } from 'vue-i18n'
-import { ArrowLeftRight, Columns2, ExternalLink, FolderOpen, PanelRightOpen, X } from 'lucide-vue-next'
+import { FolderOpen, X } from 'lucide-vue-next'
 import type { TabEntry } from '@/stores/workspaceTabs'
 import { entryIcon } from '@/lib/tabMeta'
 
@@ -18,20 +18,12 @@ defineProps<{
   look: 'active' | 'visible' | 'idle'
   /** A half of the pair's merged tab. */
   half?: boolean
-  /**
-   * The split hover button: 'open' shows this tab on the right, 'close' ends
-   * the split (a half of the shown pair); null hides it.
-   */
-  splitAction?: 'open' | 'close' | null
-  /** A half of the shown pair: offer to swap the two halves. */
-  swappable?: boolean
 }>()
 
+// Only close lives on the tab; split, swap and pop-out are in its right-click
+// menu (WorkspaceTabs).
 const emit = defineEmits<{
   close: []
-  toggleSplit: []
-  swap: []
-  popOut: []
 }>()
 
 const { t } = useI18n()
@@ -39,18 +31,6 @@ const { t } = useI18n()
 function onClose(ev: MouseEvent) {
   ev.stopPropagation()
   emit('close')
-}
-function onSplit(ev: MouseEvent) {
-  ev.stopPropagation()
-  emit('toggleSplit')
-}
-function onSwap(ev: MouseEvent) {
-  ev.stopPropagation()
-  emit('swap')
-}
-function onPopOut(ev: MouseEvent) {
-  ev.stopPropagation()
-  emit('popOut')
 }
 
 </script>
@@ -100,41 +80,6 @@ function onPopOut(ev: MouseEvent) {
       v-if="tab.type === 'project' && (pending ?? 0) > 0"
       class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none shrink-0"
     >{{ pending }}</span>
-
-    <!-- split view: open on the right / swap halves / close the split; pop out -->
-    <span
-      v-if="swappable"
-      class="hidden h-4 w-4 items-center justify-center rounded shrink-0 group-hover:flex hover:bg-foreground/10"
-      role="button"
-      :title="t('surfaces.tabs.swapSplit')"
-      :aria-label="t('surfaces.tabs.swapSplit')"
-      @pointerdown.stop
-      @click="onSwap"
-    >
-      <ArrowLeftRight class="h-3 w-3" :stroke-width="2" />
-    </span>
-    <span
-      v-if="splitAction"
-      class="hidden h-4 w-4 items-center justify-center rounded shrink-0 group-hover:flex hover:bg-foreground/10"
-      role="button"
-      :title="splitAction === 'open' ? t('surfaces.tabs.openOnRight') : t('surfaces.tabs.unsplit')"
-      :aria-label="splitAction === 'open' ? t('surfaces.tabs.openOnRight') : t('surfaces.tabs.unsplit')"
-      @pointerdown.stop
-      @click="onSplit"
-    >
-      <component :is="splitAction === 'open' ? PanelRightOpen : Columns2" class="h-3 w-3" :stroke-width="2" />
-    </span>
-    <span
-      v-if="tab.type === 'surface'"
-      class="hidden h-4 w-4 items-center justify-center rounded shrink-0 group-hover:flex hover:bg-foreground/10"
-      role="button"
-      :title="t('surfaces.tabs.popOut')"
-      :aria-label="t('surfaces.tabs.popOut')"
-      @pointerdown.stop
-      @click="onPopOut"
-    >
-      <ExternalLink class="h-3 w-3" :stroke-width="2" />
-    </span>
 
     <!-- close -->
     <span
