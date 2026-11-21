@@ -82,6 +82,9 @@
   --tahoe-pane: rgba(255, 255, 255, 0.55);
   --tahoe-surface: hsl(var(--card) / 0.82);
   --tahoe-menu: hsl(var(--popover) / 0.72);
+  /* Sheets laid over content (a peeking list, floating History): near-opaque so
+   * the text underneath never reads through. */
+  --tahoe-sheet: hsl(var(--popover) / 0.94);
   --tahoe-clear: rgba(255, 255, 255, 0.6);
   --tahoe-clear-hover: rgba(255, 255, 255, 0.82);
   --tahoe-hairline: rgba(0, 0, 0, 0.08);
@@ -544,7 +547,7 @@
 [data-theme='tahoe'] .split-pane .run-history.is-floating {
   inset: 6px auto 6px 6px;
   border-radius: 14px;
-  background-color: var(--tahoe-menu);
+  background-color: var(--tahoe-sheet);
   backdrop-filter: var(--tahoe-blur-heavy);
   -webkit-backdrop-filter: var(--tahoe-blur-heavy);
   box-shadow:
@@ -645,4 +648,20 @@
   backdrop-filter: none;
   -webkit-backdrop-filter: none;
   box-shadow: inset 0 1px 0 var(--tahoe-specular), inset 0 0 0 0.5px var(--tahoe-hairline);
+}
+/* Peeking over the detail (narrow screen, or hidden + peek): the floating
+ * list needs the heavy popover glass, or the detail text reads through it. */
+[data-theme='tahoe'] .app-shell .list-sidebar.is-floating {
+  background-color: var(--tahoe-sheet);
+  backdrop-filter: var(--tahoe-blur-heavy);
+  -webkit-backdrop-filter: var(--tahoe-blur-heavy);
+  box-shadow:
+    inset 0 1px 0 var(--tahoe-specular),
+    inset 0 0 0 0.5px var(--tahoe-rim),
+    var(--tahoe-shadow-lg);
+}
+[data-theme='tahoe'] .app-shell .split-pane .list-sidebar.is-floating {
+  inset: 6px auto 6px 6px;
+  margin: 0;
+  border-radius: 14px;
 }

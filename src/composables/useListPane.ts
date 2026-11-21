@@ -193,7 +193,7 @@ export function useListPaneSidebar(el: Ref<HTMLElement | null>, own?: ListPane) 
   const shown = computed(() => !pane || !pane.hidden.value || pane.peeking.value)
   const floating = computed(() => !!pane && pane.hidden.value && pane.peeking.value)
   const floatClass = computed(() =>
-    floating.value ? 'absolute inset-y-0 left-0 z-30 shadow-2xl shadow-black/20' : '',
+    floating.value ? 'is-floating absolute inset-y-0 left-0 z-30 shadow-2xl shadow-black/20' : '',
   )
   /**
    * Width of a list-detail sidebar: docked, 40% of the screen between 220 and
