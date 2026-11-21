@@ -3,8 +3,11 @@
   "tabs": {
     "popOut": "Open in a separate window",
     "splitRight": "Show on the right",
-    "unsplit": "Close the right pane",
-    "focusRight": "Shown on the right"
+    "unsplit": "Close split view",
+    "focusRight": "Shown on the right",
+    "split": "Open in split view",
+    "resizeSplit": "Drag to resize the split view (double-click to reset)",
+    "pair": "Split view: {left} | {right}"
   },
   "dock": "Dock into main window",
   "settings": {
@@ -29,7 +32,9 @@
     "dockOnUnplugHint": "When the second screen goes away, its PR Inbox / Calendar / Slack… windows come back into the main window as tabs.",
     "saveFailed": "Couldn't save the setting: {error}",
     "permFloat": "Pop up approval windows while Devdy is in the background",
-    "permFloatHint": "With Devdy in front, permission requests are answered in the main window. Off: only a notification while you're in another app."
+    "permFloatHint": "With Devdy in front, permission requests are answered in the main window. Off: only a notification while you're in another app.",
+    "splitCompactSidebar": "Compact sidebar in split view",
+    "splitCompactSidebarHint": "While the main window shows two tabs side by side, the sidebar shrinks to its icons to give both panes more room."
   },
   "toast": {
     "docked": "Screen unplugged: {n} window moved back into tabs | Screen unplugged: {n} windows moved back into tabs"

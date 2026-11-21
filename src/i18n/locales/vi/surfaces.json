@@ -3,8 +3,11 @@
   "tabs": {
     "popOut": "Mở trong cửa sổ riêng",
     "splitRight": "Hiện ở khung phải",
-    "unsplit": "Đóng khung phải",
-    "focusRight": "Đang hiện ở khung phải"
+    "unsplit": "Đóng chế độ chia đôi",
+    "focusRight": "Đang hiện ở khung phải",
+    "split": "Mở dạng chia đôi",
+    "resizeSplit": "Kéo để đổi tỉ lệ chia đôi (nhấp đúp để về 50/50)",
+    "pair": "Chia đôi: {left} | {right}"
   },
   "dock": "Gắn vào cửa sổ chính",
   "settings": {
@@ -29,7 +32,9 @@
     "dockOnUnplugHint": "Khi màn hình phụ được rút ra, các cửa sổ Duyệt PR / Lịch / Slack… trên đó quay về cửa sổ chính thành tab.",
     "saveFailed": "Không lưu được cài đặt: {error}",
     "permFloat": "Bật cửa sổ duyệt quyền khi Devdy đang ở nền",
-    "permFloatHint": "Khi Devdy đang mở phía trước, yêu cầu quyền được duyệt ngay trong cửa sổ chính. Tắt: chỉ gửi thông báo khi bạn đang ở ứng dụng khác."
+    "permFloatHint": "Khi Devdy đang mở phía trước, yêu cầu quyền được duyệt ngay trong cửa sổ chính. Tắt: chỉ gửi thông báo khi bạn đang ở ứng dụng khác.",
+    "splitCompactSidebar": "Thu gọn sidebar khi chia đôi",
+    "splitCompactSidebarHint": "Khi cửa sổ chính hiện hai tab cạnh nhau, sidebar chỉ còn icon để hai pane có thêm chỗ."
   },
   "toast": {
     "docked": "Đã rút màn hình phụ: {n} cửa sổ đã gắn lại thành tab | Đã rút màn hình phụ: {n} cửa sổ đã gắn lại thành tab"
