@@ -48,6 +48,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { requestDock } from '@/lib/surfaceDock'
+import { useDockAll } from '@/composables/useDockAll'
 import { refreshTray } from '@/lib/tray'
 import { projectOptionsForIds } from '@/lib/projectOptions'
 import { createSeenGuard, isRecent, isUnread, matchesActivity, type ActivityFilter } from '@/lib/slackThreadUtils'
@@ -457,6 +458,7 @@ function dock() {
   if (projectFilter.value && projectFilter.value !== NO_PROJECT) at.projectId = projectFilter.value
   void requestDock('slack', at)
 }
+useDockAll(dock, !props.embedded)
 
 let unlisten: UnlistenFn[] = []
 

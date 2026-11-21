@@ -19,6 +19,7 @@ import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
+import PendingApprovalsPill from '@/components/PendingApprovalsPill.vue'
 import RemoteIndicator from '@/components/RemoteIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
@@ -323,11 +324,17 @@ const routeKey = computed(() =>
 // moved to `onActivated`/`onDeactivated` first — under KeepAlive those hooks no
 // longer fire on navigation, so a timer would otherwise run forever in the
 // background.
+//
+// SurfaceRouteView (PR Inbox, Calendar, Slack, Todos… as tabs) is the exception:
+// a surface tab stands in for a window that keeps running in the background, so
+// its timers / listeners staying alive between tab switches is the point — the
+// tab comes back exactly as it was left.
 const CACHED_VIEWS = [
   'SkillsView',
   'RulesView',
   'McpServersView',
   'ServersView',
+  'SurfaceRouteView',
 ]
 
 // Pin every project the user opens as a workspace tab; remember the run being
@@ -963,18 +970,23 @@ onMounted(async () => {
 
       <WorkspaceTabs />
 
-      <!-- Sits here rather than inside the sidebar: a "hide" button that
-           disappears along with the thing it hides can't bring it back. -->
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="shrink-0 ml-auto"
-        :title="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
-        :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
-        @click="uiLayout.toggleSidebar()"
-      >
-        <component :is="uiLayout.sidebarHidden ? PanelLeftOpen : PanelLeftClose" class="h-4 w-4" :stroke-width="1.75" />
-      </Button>
+      <div class="ml-auto flex shrink-0 items-center gap-2">
+        <!-- Runs waiting for an approval; click = that run's card / session. -->
+        <PendingApprovalsPill />
+
+        <!-- Sits here rather than inside the sidebar: a "hide" button that
+             disappears along with the thing it hides can't bring it back. -->
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
+          :title="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
+          :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
+          @click="uiLayout.toggleSidebar()"
+        >
+          <component :is="uiLayout.sidebarHidden ? PanelLeftOpen : PanelLeftClose" class="h-4 w-4" :stroke-width="1.75" />
+        </Button>
+      </div>
     </header>
 
     <div class="flex flex-1 min-h-0">
@@ -1167,7 +1179,7 @@ onMounted(async () => {
                 <X class="h-3 w-3" :stroke-width="2" />
               </Button>
             </div>
-            <SurfaceHost :key="splitTab.id" :surface="splitTab.surface" :params="splitTab.params" class="min-h-0 flex-1 overflow-auto" />
+            <SurfaceHost :key="splitTab.id" :surface="splitTab.surface" :params="splitTab.params" in-split class="min-h-0 flex-1 overflow-auto" />
           </section>
         </div>
       </div>

@@ -43,6 +43,7 @@ import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { requestDock } from '@/lib/surfaceDock'
+import { useDockAll } from '@/composables/useDockAll'
 import { useProjectsStore } from '@/stores/projects'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
@@ -596,6 +597,7 @@ async function dock() {
   if (contextProjectId.value) at.projectId = contextProjectId.value
   await requestDock(kind === 'note' ? 'notes' : 'todos', at)
 }
+useDockAll(dock, !props.embedded)
 
 onMounted(async () => {
   void projects.fetchProjects()

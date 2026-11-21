@@ -27,7 +27,9 @@
     "monitors": "{n} màn hình | {n} màn hình",
     "dockOnUnplug": "Gắn cửa sổ lại thành tab khi rút màn hình phụ",
     "dockOnUnplugHint": "Khi màn hình phụ được rút ra, các cửa sổ Duyệt PR / Lịch / Slack… trên đó quay về cửa sổ chính thành tab.",
-    "saveFailed": "Không lưu được cài đặt: {error}"
+    "saveFailed": "Không lưu được cài đặt: {error}",
+    "permFloat": "Bật cửa sổ duyệt quyền khi Devdy đang ở nền",
+    "permFloatHint": "Khi Devdy đang mở phía trước, yêu cầu quyền được duyệt ngay trong cửa sổ chính. Tắt: chỉ gửi thông báo khi bạn đang ở ứng dụng khác."
   },
   "toast": {
     "docked": "Đã rút màn hình phụ: {n} cửa sổ đã gắn lại thành tab | Đã rút màn hình phụ: {n} cửa sổ đã gắn lại thành tab"

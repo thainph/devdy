@@ -22,6 +22,7 @@ import { Button, ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
 import { openFileWindow } from '@/lib/fileWindow'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { requestDock } from '@/lib/surfaceDock'
+import { useDockAll } from '@/composables/useDockAll'
 
 const props = defineProps<{
   /** A tab of the main window, not its own OS window. */
@@ -140,6 +141,7 @@ function dock() {
   if (line.value != null) at.line = String(line.value)
   void requestDock('file', at)
 }
+useDockAll(dock, !props.embedded)
 </script>
 
 <template>

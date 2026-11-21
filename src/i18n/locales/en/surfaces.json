@@ -27,7 +27,9 @@
     "monitors": "{n} screen | {n} screens",
     "dockOnUnplug": "Dock windows back as tabs when a screen is unplugged",
     "dockOnUnplugHint": "When the second screen goes away, its PR Inbox / Calendar / Slack… windows come back into the main window as tabs.",
-    "saveFailed": "Couldn't save the setting: {error}"
+    "saveFailed": "Couldn't save the setting: {error}",
+    "permFloat": "Pop up approval windows while Devdy is in the background",
+    "permFloatHint": "With Devdy in front, permission requests are answered in the main window. Off: only a notification while you're in another app."
   },
   "toast": {
     "docked": "Screen unplugged: {n} window moved back into tabs | Screen unplugged: {n} windows moved back into tabs"

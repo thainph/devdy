@@ -14,7 +14,9 @@ import { SURFACE_DOCK, SURFACE_DOCK_ALL, type SurfaceDockRequest } from '@/lib/s
 import {
   cleanParams,
   isSurfaceKind,
+  surfaceForPath,
   surfaceLocation,
+  surfaceTabId,
   type Placement,
   type SurfaceKind,
   type SurfaceParams,
@@ -120,6 +122,26 @@ export async function popOutSurface(id: string): Promise<void> {
   const next = tabs.closeSurface(id)
   if (onIt) await goToEntry(next)
   await openSurfaceWindow(tab.surface, tab.params)
+}
+
+/**
+ * Close a surface tab from code (its view asked: a deleted file…), moving the
+ * router on if the tab was what it showed.
+ */
+export async function closeSurfaceTab(id: string): Promise<void> {
+  const tabs = useWorkspaceTabsStore()
+  const tab = tabs.surfaceTab(id)
+  if (!tab) return
+  const routed = surfaceTabIdOfRoute() === id
+  const next = tabs.closeSurface(id)
+  if (routed) await goToEntry(next && next.type === 'surface' && next.id === tabs.splitId ? null : next)
+}
+
+/** The surface tab the router shows right now, if any. */
+export function surfaceTabIdOfRoute(): string | null {
+  const route = router.currentRoute.value
+  const kind = surfaceForPath(route.path)
+  return kind ? surfaceTabId(kind, cleanParams(kind, route.query)) : null
 }
 
 /** Navigate to a tab entry (after closing the current one), or the projects list. */
