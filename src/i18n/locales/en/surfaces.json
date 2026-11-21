@@ -1,0 +1,35 @@
+{
+  "file": "File",
+  "tabs": {
+    "popOut": "Open in a separate window",
+    "splitRight": "Show on the right",
+    "unsplit": "Close the right pane",
+    "focusRight": "Shown on the right"
+  },
+  "dock": "Dock into main window",
+  "settings": {
+    "title": "Windows & tabs",
+    "desc": "Where the PR Inbox, Calendar, Slack threads, Todos, Notes and file viewers open.",
+    "mode": "Window mode",
+    "modeHint": "Auto: on one screen everything opens as a tab of the main window. With a second screen, the PR Inbox, Mentions, Calendar, Delivery Radar and Slack threads open in their own window.",
+    "modes": {
+      "auto": "Auto",
+      "tab": "Always tabs",
+      "window": "Always windows"
+    },
+    "perScreen": "Per screen",
+    "screen": "Screen",
+    "opensAs": "Opens as",
+    "now": "Right now",
+    "inherit": "Follow window mode",
+    "asTab": "Tab",
+    "asWindow": "Separate window",
+    "monitors": "{n} screen | {n} screens",
+    "dockOnUnplug": "Dock windows back as tabs when a screen is unplugged",
+    "dockOnUnplugHint": "When the second screen goes away, its PR Inbox / Calendar / Slack… windows come back into the main window as tabs.",
+    "saveFailed": "Couldn't save the setting: {error}"
+  },
+  "toast": {
+    "docked": "Screen unplugged: {n} window moved back into tabs | Screen unplugged: {n} windows moved back into tabs"
+  }
+}

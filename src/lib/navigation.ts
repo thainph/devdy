@@ -15,10 +15,7 @@ import {
   Info,
   LayoutDashboard,
 } from 'lucide-vue-next'
-import { openPrInboxWindow } from '@/lib/prInboxWindow'
-import { openGithubMentionsWindow } from '@/lib/githubMentionsWindow'
-import { openCalendarWindow } from '@/lib/calendarWindow'
-import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
+import type { SurfaceKind } from '@/lib/surfaces'
 
 /**
  * The app's top-level destinations, in sidebar order. Shared by the sidebar and
@@ -38,20 +35,20 @@ export interface NavRoute {
   icon: Component
   group: NavGroup
   /**
-   * Set for destinations that live in their own OS window (like the Slack
-   * threads window): the sidebar entry and the Go menu item call this instead
-   * of routing, and the route itself diverts to it.
+   * Set for destinations that are surfaces (lib/surfaces): a tab of the main
+   * window or their own OS window, per the "Windows & tabs" setting. The
+   * sidebar entry and the Go menu item open them through lib/surfaceOpen.
    */
-  openWindow?: () => unknown
+  surface?: SurfaceKind
 }
 
 export const NAV_ROUTES: NavRoute[] = [
   { path: '/dashboard', labelKey: 'nav.dashboard', icon: LayoutDashboard, group: 'work' },
   { path: '/projects', labelKey: 'nav.projects', icon: FolderOpen, group: 'work' },
-  { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', openWindow: openPrInboxWindow },
-  { path: '/github-mentions', labelKey: 'nav.githubMentions', icon: AtSign, group: 'work', openWindow: openGithubMentionsWindow },
-  { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', openWindow: () => openCalendarWindow() },
-  { path: '/radar', labelKey: 'nav.radar', icon: Radar, group: 'work', openWindow: () => openDeliveryRadarWindow() },
+  { path: '/pr-inbox', labelKey: 'nav.prInbox', icon: GitPullRequest, group: 'work', surface: 'prInbox' },
+  { path: '/github-mentions', labelKey: 'nav.githubMentions', icon: AtSign, group: 'work', surface: 'mentions' },
+  { path: '/calendar', labelKey: 'nav.calendar', icon: CalendarDays, group: 'work', surface: 'calendar' },
+  { path: '/radar', labelKey: 'nav.radar', icon: Radar, group: 'work', surface: 'radar' },
   { path: '/skills', labelKey: 'nav.skills', icon: Puzzle, group: 'config' },
   { path: '/rules', labelKey: 'nav.rules', icon: ScrollText, group: 'config' },
   { path: '/mcp', labelKey: 'nav.mcp', icon: Server, group: 'config' },

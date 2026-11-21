@@ -14,7 +14,7 @@ import { computed, nextTick, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { Input, Textarea } from '@/components/ui'
-import { openFileWindow } from '@/lib/fileWindow'
+import { openSurface } from '@/lib/surfaceOpen'
 import { useMarkdown } from '@/lib/markdown'
 import { useToast } from '@/composables/useToast'
 import { useNotesStore, type Note } from '@/stores/notes'
@@ -154,7 +154,7 @@ async function onViewClick(e: MouseEvent) {
   }
   const abs = rel.startsWith('/') ? rel : `${root.replace(/\/$/, '')}/${rel}`
   try {
-    await openFileWindow(root, abs)
+    await openSurface('file', { projectPath: root, path: abs })
   } catch (err) {
     toast.error(t('item.openFileFailed', { path: abs, error: String(err) }))
   }

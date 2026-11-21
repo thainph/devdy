@@ -1,39 +1,91 @@
 import { defineStore } from 'pinia'
-import { reactive } from 'vue'
+import { computed, reactive, ref } from 'vue'
+import {
+  cleanParams,
+  isSurfaceKind,
+  surfaceTabId,
+  type SurfaceKind,
+  type SurfaceParams,
+} from '@/lib/surfaces'
 
 /**
- * A project pinned as a tab in the workspace. Tabs exist purely to switch
- * quickly between PROJECTS — switching between runs inside a project is still
- * done from RunView's History list, not tabs. Each tab remembers the last run
- * the user was viewing in that project so re-selecting the tab returns there.
+ * A project pinned as a tab in the workspace. Switching between runs inside a
+ * project is still done from RunView's History list, not tabs. Each tab
+ * remembers the last run the user was viewing in that project so re-selecting
+ * the tab returns there.
  */
 export interface WorkspaceTab {
   projectId: string
   lastRunId: string | null
 }
 
+/**
+ * A surface (PR Inbox, Calendar, Slack threads, Todos, a file…) opened as a tab
+ * of the main window instead of its own OS window (see lib/surfaces).
+ */
+export interface SurfaceTab {
+  id: string
+  surface: SurfaceKind
+  params: SurfaceParams
+}
+
+/** One entry of the shared tab strip, in display order. */
+export type TabEntry =
+  | ({ type: 'project' } & WorkspaceTab)
+  | ({ type: 'surface' } & SurfaceTab)
+
 const STORAGE_KEY = 'devdy.workspaceTabs'
 
-function load(): WorkspaceTab[] {
+export function tabEntryKey(e: TabEntry): string {
+  return e.type === 'project' ? `project:${e.projectId}` : e.id
+}
+
+function load(): TabEntry[] {
   try {
     const raw = localStorage.getItem(STORAGE_KEY)
     const arr = raw ? JSON.parse(raw) : []
-    return Array.isArray(arr)
-      ? arr
-          .filter((t): t is { projectId: string; lastRunId?: unknown } => !!t && typeof t.projectId === 'string')
-          .map((t) => ({ projectId: t.projectId, lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null }))
-      : []
+    if (!Array.isArray(arr)) return []
+    const out: TabEntry[] = []
+    for (const t of arr) {
+      if (!t || typeof t !== 'object') continue
+      // Entries saved before surface tabs existed have no `type`: projects.
+      if ((t.type === 'project' || t.type === undefined) && typeof t.projectId === 'string') {
+        out.push({
+          type: 'project',
+          projectId: t.projectId,
+          lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
+        })
+      } else if (t.type === 'surface' && isSurfaceKind(t.surface)) {
+        const params = cleanParams(t.surface, t.params)
+        out.push({ type: 'surface', id: surfaceTabId(t.surface, params), surface: t.surface, params })
+      }
+    }
+    return out
   } catch {
     return []
   }
 }
 
 export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
-  const tabs = reactive<WorkspaceTab[]>(load())
+  const entries = reactive<TabEntry[]>(load())
+
+  /** Project tabs only, in strip order (what most callers care about). */
+  const tabs = computed(() =>
+    entries.filter((e): e is { type: 'project' } & WorkspaceTab => e.type === 'project'),
+  )
+
+  /**
+   * The surface tab shown in the right half of a split view, or null when the
+   * main area isn't split. Only surfaces split: a session needs the router (and
+   * its single conductor panel), so it always stays on the left.
+   */
+  const splitId = ref<string | null>(null)
+  /** Which half of a split last took a click — tab clicks land there. */
+  const focusedPane = ref<'left' | 'right'>('left')
 
   function persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...tabs]))
+      localStorage.setItem(STORAGE_KEY, JSON.stringify([...entries]))
     } catch {
       /* storage unavailable — in-memory tabs still work this session */
     }
@@ -45,10 +97,9 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
    */
   function open(projectId: string, runId?: string | null) {
     if (!projectId) return
-    let tab = tabs.find((t) => t.projectId === projectId)
+    const tab = tabs.value.find((t) => t.projectId === projectId)
     if (!tab) {
-      tab = { projectId, lastRunId: runId ?? null }
-      tabs.push(tab)
+      entries.push({ type: 'project', projectId, lastRunId: runId ?? null })
       persist()
       return
     }
@@ -58,39 +109,92 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     }
   }
 
+  /** Index of the entry that slid into a closed one's place, else the one before. */
+  function neighbour(idx: number): TabEntry | null {
+    return entries[idx] ?? entries[idx - 1] ?? null
+  }
+
   /**
-   * Close a project tab. Returns the neighbouring tab to navigate to (the one
+   * Close a project tab. Returns the neighbouring entry to navigate to (the one
    * that slides into its place, else the previous one), or null if none remain.
    */
-  function close(projectId: string): WorkspaceTab | null {
-    const idx = tabs.findIndex((t) => t.projectId === projectId)
+  function close(projectId: string): TabEntry | null {
+    const idx = entries.findIndex((t) => t.type === 'project' && t.projectId === projectId)
     if (idx === -1) return null
-    tabs.splice(idx, 1)
+    entries.splice(idx, 1)
     persist()
-    return tabs[idx] ?? tabs[idx - 1] ?? null
+    return neighbour(idx)
   }
 
   function has(projectId: string): boolean {
-    return tabs.some((t) => t.projectId === projectId)
+    return tabs.value.some((t) => t.projectId === projectId)
+  }
+
+  function surfaceTab(id: string): SurfaceTab | null {
+    const e = entries.find((t) => t.type === 'surface' && t.id === id)
+    return e && e.type === 'surface' ? e : null
   }
 
   /**
-   * Move the tab at `from` to `to` (drag-and-drop reorder). Called repeatedly
+   * Open (or re-point) the tab of a surface. Surfaces have one tab each (files
+   * one per file), so opening Todos on another todo updates the Todos tab.
+   * Returns the tab.
+   */
+  function openSurface(surface: SurfaceKind, rawParams?: Record<string, unknown>): SurfaceTab {
+    const params = cleanParams(surface, rawParams)
+    const id = surfaceTabId(surface, params)
+    const existing = surfaceTab(id)
+    if (existing) {
+      if (JSON.stringify(existing.params) !== JSON.stringify(params)) {
+        existing.params = params
+        persist()
+      }
+      return existing
+    }
+    entries.push({ type: 'surface', id, surface, params })
+    persist()
+    return surfaceTab(id)!
+  }
+
+  /** Close a surface tab; returns its neighbour like `close`. */
+  function closeSurface(id: string): TabEntry | null {
+    const idx = entries.findIndex((t) => t.type === 'surface' && t.id === id)
+    if (idx === -1) return null
+    entries.splice(idx, 1)
+    if (splitId.value === id) unsplit()
+    persist()
+    return neighbour(idx)
+  }
+
+  /** Show a surface tab in the right half (opening the split if needed). */
+  function split(id: string) {
+    if (!surfaceTab(id)) return
+    splitId.value = id
+    focusedPane.value = 'right'
+  }
+
+  function unsplit() {
+    splitId.value = null
+    focusedPane.value = 'left'
+  }
+
+  /**
+   * Move the entry at `from` to `to` (drag-and-drop reorder). Called repeatedly
    * while a drag is in flight, so the tab slides under the cursor live.
    */
   function move(from: number, to: number) {
     if (from === to) return
-    if (from < 0 || from >= tabs.length) return
-    if (to < 0 || to >= tabs.length) return
-    const [moved] = tabs.splice(from, 1)
-    tabs.splice(to, 0, moved)
+    if (from < 0 || from >= entries.length) return
+    if (to < 0 || to >= entries.length) return
+    const [moved] = entries.splice(from, 1)
+    entries.splice(to, 0, moved)
     persist()
   }
 
   /** Forget a deleted run so a tab never resumes onto a run that's gone. */
   function forgetRun(runId: string) {
     let changed = false
-    for (const t of tabs) {
+    for (const t of tabs.value) {
       if (t.lastRunId === runId) {
         t.lastRunId = null
         changed = true
@@ -99,5 +203,20 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     if (changed) persist()
   }
 
-  return { tabs, open, close, has, move, forgetRun }
+  return {
+    entries,
+    tabs,
+    splitId,
+    focusedPane,
+    open,
+    close,
+    has,
+    move,
+    forgetRun,
+    surfaceTab,
+    openSurface,
+    closeSurface,
+    split,
+    unsplit,
+  }
 })

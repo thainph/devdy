@@ -81,7 +81,7 @@ import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
 import { topKByScore } from '@/lib/topK'
-import { openFileWindow } from '@/lib/fileWindow'
+import { openSurface } from '@/lib/surfaceOpen'
 import { openSessionWindow } from '@/lib/sessionWindow'
 import { IS_SESSION_WINDOW } from '@/lib/windowMode'
 import { FILE_MENTION_EVENT } from '@/lib/fileEvents'
@@ -2771,11 +2771,11 @@ function fileMatcher(raw: string): string | null {
   return matchProjectFile(raw, projectFileSet.value)
 }
 
-/** Show a file (optionally scrolled to `line`) in its own window. */
+/** Show a file (optionally scrolled to `line`) beside the session, or in its own window. */
 function openFile(path: string, line?: number | null) {
   const projectPath = project.value?.path
   if (!projectPath || !path) return
-  openFileWindow(projectPath, path, line ?? null)
+  void openSurface('file', { projectPath, path, line: line ?? undefined }, { split: true })
 }
 
 // Directive for RunView's own markdown containers (issue/PR Content, legacy
@@ -3215,7 +3215,7 @@ async function viewLogFile(run: RunRecord) {
   try {
     const path = await runsStore.getRunLogPath(run.id)
     if (!path) { toast.info(t('run.noLogFileYet')); return }
-    await openFileWindow(p.path, path)
+    await openSurface('file', { projectPath: p.path, path }, { split: true })
   } catch (e) {
     toast.error(String(e))
   }

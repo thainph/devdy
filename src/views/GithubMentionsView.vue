@@ -9,6 +9,7 @@
 // configurable check prompt; the user answers on GitHub themselves.
 import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
+import DockWindowButton from '@/components/surfaces/DockWindowButton.vue'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { emit as emitEvent } from '@tauri-apps/api/event'
@@ -291,6 +292,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
           {{ t('common.refresh') }}
         </Button>
+        <DockWindowButton v-if="standalone" surface="mentions" />
       </template>
     </PageHeader>
 

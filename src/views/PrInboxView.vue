@@ -3,6 +3,7 @@ import { computed, onBeforeUnmount, onMounted, ref } from 'vue'
 import { emit as emitEvent } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useI18n } from 'vue-i18n'
+import DockWindowButton from '@/components/surfaces/DockWindowButton.vue'
 import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { usePrInboxStore, prKey, type PrInboxItem, type PrPromptKind } from '@/stores/prInbox'
@@ -387,6 +388,7 @@ async function reviewAll(group: PrGroup) {
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
           {{ t('common.refresh') }}
         </Button>
+        <DockWindowButton v-if="standalone" surface="prInbox" />
       </template>
     </PageHeader>
 

@@ -102,6 +102,16 @@ pub struct AppSettings {
     /// still running: "ask" (default) | "stop_all" | "keep_leftovers". Read by
     /// `procs::quit`.
     pub quit_background_policy: String,
+    /// Where screens like the PR Inbox, Calendar, Slack threads, Todos / Notes
+    /// and file viewers open: "auto" (default — a tab in the main window on one
+    /// monitor, their own window on a second monitor) | "tab" | "window".
+    pub window_mode: String,
+    /// Per-screen overrides of `window_mode`, as a JSON object
+    /// `{ "<surface>": "tab" | "window" }`. Defaults to `"{}"`.
+    pub window_mode_overrides: String,
+    /// When a second monitor is unplugged, dock the screens' windows back into
+    /// the main window as tabs. "true" (default) | "false".
+    pub window_dock_on_unplug: String,
 }
 
 /// `AppSettings` keys carried by a settings backup. `claude_path` / `codex_path` are left out:
@@ -146,6 +156,9 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "cyber_fox_voice_rate",
     "cyber_fox_voice_pitch",
     "quit_background_policy",
+    "window_mode",
+    "window_mode_overrides",
+    "window_dock_on_unplug",
     // PR Inbox poller (pr_inbox).
     "pr_inbox.poll_minutes",
     "pr_inbox.review_prompt",
@@ -215,6 +228,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         cyber_fox_voice_rate: "1".to_string(),
         cyber_fox_voice_pitch: "1.15".to_string(),
         quit_background_policy: "ask".to_string(),
+        window_mode: "auto".to_string(),
+        window_mode_overrides: "{}".to_string(),
+        window_dock_on_unplug: "true".to_string(),
     };
 
     for row in rows {
@@ -265,6 +281,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "cyber_fox_voice_rate" => settings.cyber_fox_voice_rate = value,
             "cyber_fox_voice_pitch" => settings.cyber_fox_voice_pitch = value,
             "quit_background_policy" => settings.quit_background_policy = value,
+            "window_mode" => settings.window_mode = value,
+            "window_mode_overrides" => settings.window_mode_overrides = value,
+            "window_dock_on_unplug" => settings.window_dock_on_unplug = value,
             _ => {}
         }
     }

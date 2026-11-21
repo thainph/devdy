@@ -52,6 +52,12 @@ export interface AppSettings {
   cyber_fox_voice_pitch: string
   /** What quitting does with running sessions / leftover processes: 'ask' | 'stop_all' | 'keep_leftovers'. */
   quit_background_policy: string
+  /** Where surfaces (PR Inbox, Calendar, Slack, Todos…) open: 'auto' | 'tab' | 'window'. */
+  window_mode: string
+  /** JSON object of per-surface overrides: `{ "<surface>": "tab" | "window" }`. */
+  window_mode_overrides: string
+  /** "true" = dock windows from an unplugged monitor back as tabs. */
+  window_dock_on_unplug: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {
