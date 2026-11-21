@@ -328,7 +328,7 @@ const routeKey = computed(() =>
 // background.
 //
 // Surface tabs (PR Inbox, Calendar, Todos…) are not cached here: App keeps one
-// SurfaceHost per open tab mounted itself (see `leftSurfaceTabs`).
+// SurfaceHost per open tab itself (see `hostedSurfaceTabs`).
 const CACHED_VIEWS = [
   'SkillsView',
   'RulesView',
@@ -377,19 +377,27 @@ const routedSurfaceId = computed(() => {
   return kind ? surfaceTabId(kind, cleanParams(kind, route.query)) : null
 })
 
-// Surface tabs live like windows: each open tab keeps its own SurfaceHost
-// mounted (hidden while another tab shows) from its first visit until it is
-// closed, popped out or moved to the split — so switching tabs loses nothing
-// and a closed tab stops running. Mounted lazily: restored tabs cost nothing
-// until opened.
+// Surface tabs live like windows: each open tab has ONE SurfaceHost from its
+// first visit until it is closed or popped out — kept alive (its own KeepAlive,
+// so `onActivated` refreshes still run) while another tab shows, and teleported
+// into the right pane while it is the split tab. Switching tabs or moving one
+// into / out of the split loses nothing; closing one tears it down. Mounted
+// lazily: restored tabs cost nothing until opened.
 const visitedSurfaces = reactive(new Set<string>())
-watch(routedSurfaceId, (id) => {
-  if (id) visitedSurfaces.add(id)
-}, { immediate: true })
-const leftSurfaceTabs = computed(() =>
+watch(
+  () => [routedSurfaceId.value, tabsStore.splitId] as const,
+  ([routed, split]) => {
+    if (routed) visitedSurfaces.add(routed)
+    if (split) visitedSurfaces.add(split)
+    // The router landed on the split tab (history, a redirect): it can't be in
+    // both halves — close the split so it shows on the left.
+    if (routed && routed === split) tabsStore.unsplit()
+  },
+  { immediate: true },
+)
+const hostedSurfaceTabs = computed(() =>
   tabsStore.entries.filter(
-    (e): e is Extract<typeof e, { type: 'surface' }> =>
-      e.type === 'surface' && e.id !== tabsStore.splitId && visitedSurfaces.has(e.id),
+    (e): e is Extract<typeof e, { type: 'surface' }> => e.type === 'surface' && visitedSurfaces.has(e.id),
   ),
 )
 watch(
@@ -1213,22 +1221,29 @@ onMounted(async () => {
                 <component :is="Component" :key="routeKey" />
               </KeepAlive>
             </RouterView>
-            <SurfaceHost
-              v-for="tab in leftSurfaceTabs"
-              v-show="tab.id === routedSurfaceId"
-              :key="tab.id"
-              :surface="tab.surface"
-              :params="tab.params"
-              class="h-full"
-            />
+            <template v-for="tab in hostedSurfaceTabs" :key="tab.id">
+              <Teleport defer to="#devdy-split-body" :disabled="tab.id !== tabsStore.splitId">
+                <KeepAlive>
+                  <SurfaceHost
+                    v-if="tab.id === routedSurfaceId || tab.id === tabsStore.splitId"
+                    :surface="tab.surface"
+                    :params="tab.params"
+                    :in-split="tab.id === tabsStore.splitId"
+                    class="h-full"
+                  />
+                </KeepAlive>
+              </Teleport>
+            </template>
           </div>
+          <!-- Always in the DOM (hidden when not split): the teleport target of
+               the split tab's host. -->
           <section
-            v-if="splitTab"
+            v-show="splitTab"
             class="flex h-full min-w-0 flex-1 flex-col border-l border-border/60"
             :class="tabsStore.focusedPane === 'right' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
             @pointerdown.capture="tabsStore.focusedPane = 'right'"
           >
-            <div class="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 bg-sidebar/60 pl-3 pr-1.5">
+            <div v-if="splitTab" class="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 bg-sidebar/60 pl-3 pr-1.5">
               <component :is="SURFACE_META[splitTab.surface].icon" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
               <span class="min-w-0 flex-1 truncate text-xs font-medium">{{ splitLabel() }}</span>
               <Button
@@ -1241,7 +1256,7 @@ onMounted(async () => {
                 <X class="h-3 w-3" :stroke-width="2" />
               </Button>
             </div>
-            <SurfaceHost :key="splitTab.id" :surface="splitTab.surface" :params="splitTab.params" in-split class="min-h-0 flex-1 overflow-auto" />
+            <div id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
           </section>
         </div>
       </div>

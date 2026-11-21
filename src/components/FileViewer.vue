@@ -920,7 +920,26 @@ watch([content, mode, editing], () => {
   nextTick(runSearch)
 })
 
+const rootEl = ref<HTMLElement | null>(null)
+
+/**
+ * ⌘F belongs to one viewer: several can be mounted in the main window (file
+ * tabs kept alive, a file in each half of a split). A hidden one never takes
+ * it; with two on screen, the one holding focus does (else the first).
+ */
+function ownsShortcuts(): boolean {
+  const el = rootEl.value
+  if (!el || !el.isConnected || el.getClientRects().length === 0) return false
+  const visible = [...document.querySelectorAll<HTMLElement>('[data-file-viewer]')].filter(
+    (v) => v.getClientRects().length > 0,
+  )
+  if (visible.length <= 1) return true
+  const focused = visible.find((v) => v.contains(document.activeElement))
+  return focused ? focused === el : visible[0] === el
+}
+
 function onSearchKeydown(e: KeyboardEvent) {
+  if (!ownsShortcuts()) return
   if ((e.metaKey || e.ctrlKey) && (e.key === 'f' || e.key === 'F')) {
     e.preventDefault()
     openSearch()
@@ -963,7 +982,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
 </script>
 
 <template>
-  <div class="relative flex flex-col h-full min-h-0 bg-card">
+  <div ref="rootEl" data-file-viewer class="relative flex flex-col h-full min-h-0 bg-card">
     <!-- Toolbar -->
     <div class="sticky top-0 z-10 flex items-center gap-2 border-b border-border bg-card px-4 py-3 shrink-0">
       <FileCode2 class="h-4 w-4 text-primary shrink-0" :stroke-width="1.75" />
