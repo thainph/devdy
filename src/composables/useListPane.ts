@@ -28,6 +28,7 @@ import {
   type Ref,
 } from 'vue'
 import { useUILayoutStore } from '@/stores/uiLayout'
+import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { listPaneToggleAction, narrowFromWidth, type ListPaneKey } from '@/lib/listPane'
 
 export interface ListPane {
@@ -69,7 +70,12 @@ function rootElement(node: Node | null | undefined): Element | null {
 function activePane(): ListPane | null {
   const shown = [...registry].filter((r) => visible(r.el()))
   if (!shown.length) return null
-  const focusPane = document.activeElement?.closest('[data-pane]')
+  // While split, the half that last took a click (a press on non-focusable
+  // space moves no DOM focus, only `focusedPane`); else where focus is.
+  const tabs = useWorkspaceTabsStore()
+  const focusPane = tabs.isSplit
+    ? document.querySelector(`[data-pane="${tabs.focusedPane}"]`)
+    : document.activeElement?.closest('[data-pane]')
   return ((focusPane && shown.find((r) => focusPane.contains(r.el()))) || shown[0]).pane
 }
 
