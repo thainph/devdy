@@ -1,6 +1,6 @@
 <script setup lang="ts">
 import { computed, nextTick, onMounted, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
-import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
+import { RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
 import { useFocusStore } from '@/stores/focus'
@@ -10,11 +10,11 @@ import { FOCUS_OPEN_WINDOW, type FocusOpenTodo } from '@/lib/focus'
 import { invoke } from '@/lib/tauri'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
-import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
+import { tabEntryKey, useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, LockKeyhole, Minimize2, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote, X } from 'lucide-vue-next'
+import { ListTodo, LockKeyhole, Minimize2, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote } from 'lucide-vue-next'
 import { activeListPaneHidden, toggleActiveListPane } from '@/composables/useListPane'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
@@ -63,15 +63,26 @@ import { applySystemAccent } from '@/lib/systemAccent'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 import { applyAppMenu, IS_MAC, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
-import { closeCurrentTab, goToTabNumber, goToTabOffset, popOutCurrent, toggleSplitCurrent } from '@/lib/tabActions'
+import {
+  closeCurrentTab,
+  goToTabNumber,
+  goToTabOffset,
+  interceptRightHalf,
+  navigateFocused,
+  navigateRightPane,
+  popOutCurrent,
+  syncPairWithRoute,
+  toggleSplitCurrent,
+} from '@/lib/tabActions'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { NAV_ROUTES, pageRouteFor, startsNavGroup } from '@/lib/navigation'
-import { dockAllSurfaceWindows, listenSurfaceRequests, openSurface } from '@/lib/surfaceOpen'
+import { dockAllSurfaceWindows, entryLocation, listenSurfaceRequests, openSurface, rightPaneLocation } from '@/lib/surfaceOpen'
 import { monitorCount } from '@/lib/surfacePlacement'
-import { cleanParams, shouldDockOnMonitorChange, surfaceForPath, surfaceTabId } from '@/lib/surfaces'
-import { SURFACE_META } from '@/lib/surfaceMeta'
+import { cleanParams, shouldDockOnMonitorChange, SURFACE_PATHS, surfaceForPath, surfaceTabId, type SurfaceKind } from '@/lib/surfaces'
+import { clampRatio, DEFAULT_SPLIT_RATIO, SPLIT_MIN_LEFT, SPLIT_MIN_RIGHT } from '@/lib/workspaceState'
 import SurfaceHost from '@/components/surfaces/SurfaceHost.vue'
+import PaneRouterView from '@/components/PaneRouterView.vue'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import DeliveryRadarView from '@/views/DeliveryRadarView.vue'
 import { getVersion } from '@tauri-apps/api/app'
@@ -367,13 +378,22 @@ watch(
   () => route.fullPath,
   () => {
     if (isSessionWindow) return
-    tabsStore.focusedPane = 'left'
+    // A navigation lands in the left / only pane (while split, a click in the
+    // left pane already focused it — and a tab click may have focused the right).
+    if (!tabsStore.isSplit) tabsStore.focusedPane = 'left'
     const kind = surfaceForPath(route.path)
     if (kind) tabsStore.openSurface(kind, cleanParams(kind, route.query))
     else if (pageRouteFor(route.path)) tabsStore.openPage(route.path, route.fullPath)
+    // The split follows: its left half shows what the router shows.
+    syncPairWithRoute()
   },
   { immediate: true },
 )
+
+// Split view: a navigation to the tab in the right half shows it there instead
+// (never the same tab on both sides). Main window only.
+const offRightHalfGuard =
+  isPopoutWindow || isSessionWindow ? null : router.beforeEach((to) => interceptRightHalf(to))
 
 /** The surface tab the router shows (left / only pane), if any. */
 const routedSurfaceId = computed(() => {
@@ -393,17 +413,13 @@ watch(
   (routed) => {
     if (!routed) return
     visitedSurfaces.add(routed)
-    // The router landed on the split tab (history, a redirect): it can't be in
-    // both halves — close the split so it shows on the left. Only on a route
-    // change: "show on the right" splits first and routes away after.
-    if (routed === tabsStore.splitId) tabsStore.unsplit()
   },
   { immediate: true },
 )
 watch(
   () => tabsStore.splitId,
   (split) => {
-    if (split) visitedSurfaces.add(split)
+    if (split && tabsStore.surfaceTab(split)) visitedSurfaces.add(split)
   },
   { immediate: true },
 )
@@ -420,13 +436,92 @@ watch(
   },
 )
 
-/** The surface tab in the right half of a split, if any. */
-const splitTab = computed(() => (tabsStore.splitId ? tabsStore.surfaceTab(tabsStore.splitId) : null))
-function splitLabel(): string {
-  const tab = splitTab.value
-  if (!tab) return ''
-  if (tab.surface === 'file' && tab.params.path) return tab.params.path.split('/').pop() || tab.params.path
-  return t(SURFACE_META[tab.surface].labelKey)
+// ── Split view ──────────────────────────────────────────────────────────────
+// The right half shows any tab: a surface through its SurfaceHost (teleported
+// into #devdy-split-body above), anything else — a session, Dashboard,
+// Settings… — through a pane-scoped router (PaneRouterView), so it reads its
+// own route and its links navigate the right half.
+
+/** The tab in the right half, while split. */
+const rightEntry = computed(() => tabsStore.entry(tabsStore.splitId))
+/** …when it is a routed screen rather than a surface. */
+const rightRouted = computed(() => (rightEntry.value && rightEntry.value.type !== 'surface' ? rightEntry.value : null))
+const rightLocation = computed(() => {
+  const e = rightRouted.value
+  if (!e) return ''
+  const moved = rightPaneLocation.value
+  if (moved && moved.key === tabEntryKey(e)) return moved.fullPath
+  return router.resolve(entryLocation(e)).fullPath
+})
+// Where the right half moved to inside its tab only holds for that tab.
+watch(
+  () => tabsStore.pair?.right,
+  (key) => {
+    if (rightPaneLocation.value?.key !== key) rightPaneLocation.value = null
+  },
+)
+/** Path the right half shows, for the sidebar highlight. */
+const rightPath = computed(() => {
+  const e = rightEntry.value
+  if (!e) return null
+  if (e.type === 'surface') return SURFACE_PATHS[e.surface]
+  return router.resolve(rightLocation.value).path
+})
+
+// Divider (drag, arrows, double-click = 50/50). The ratio is the left pane's
+// share, persisted with the tabs; both panes keep a minimum width.
+const splitRef = ref<HTMLElement | null>(null)
+const dragRatio = ref<number | null>(null)
+const splitRatio = computed(() => dragRatio.value ?? tabsStore.ratio)
+function splitWidth(): number {
+  return splitRef.value?.getBoundingClientRect().width ?? 0
+}
+function startDividerDrag(e: PointerEvent) {
+  if (e.button !== 0) return
+  const el = e.currentTarget as HTMLElement
+  const rect = splitRef.value?.getBoundingClientRect()
+  if (!rect || rect.width <= 0) return
+  e.preventDefault()
+  el.setPointerCapture(e.pointerId)
+  const move = (ev: PointerEvent) => {
+    dragRatio.value = clampRatio((ev.clientX - rect.left) / rect.width, rect.width)
+  }
+  const up = () => {
+    el.removeEventListener('pointermove', move)
+    el.removeEventListener('pointerup', up)
+    el.removeEventListener('pointercancel', up)
+    if (dragRatio.value != null) tabsStore.setRatio(dragRatio.value, rect.width)
+    dragRatio.value = null
+  }
+  el.addEventListener('pointermove', move)
+  el.addEventListener('pointerup', up)
+  el.addEventListener('pointercancel', up)
+}
+function onDividerKey(e: KeyboardEvent) {
+  const total = splitWidth()
+  const step = e.shiftKey ? 0.1 : 0.02
+  let next: number | null = null
+  if (e.key === 'ArrowLeft') next = splitRatio.value - step
+  else if (e.key === 'ArrowRight') next = splitRatio.value + step
+  else if (e.key === 'Home') next = 0
+  else if (e.key === 'End') next = 1
+  else if (e.key === 'Enter') next = DEFAULT_SPLIT_RATIO
+  if (next == null) return
+  e.preventDefault()
+  tabsStore.setRatio(clampRatio(next, total), total)
+}
+function resetSplitRatio() {
+  tabsStore.setRatio(DEFAULT_SPLIT_RATIO, splitWidth())
+}
+
+// While split, the sidebar shrinks to its icons (Settings → Windows & tabs).
+const compactSidebar = computed(
+  () => tabsStore.isSplit && appSettings.settings?.split_compact_sidebar !== 'false',
+)
+
+/** Sidebar surfaces open in the focused half of a split (else as usual). */
+function openSurfaceFocused(kind: SurfaceKind, params: Record<string, unknown> = {}) {
+  void openSurface(kind, params, tabsStore.isSplit && tabsStore.focusedPane === 'right' ? { pane: 'right' } : {})
 }
 
 // Global listener that mirrors backend-reported active runs into the liveRuns
@@ -631,6 +726,9 @@ watch(locale, () => {
 // File the capture under whatever the user is looking at, so capturing from a
 // run needs no project picking at all.
 function routeCaptureContext() {
+  // The focused right half of a split, when it is a session.
+  const right = tabsStore.focusedPane === 'right' ? rightEntry.value : null
+  if (right?.type === 'project') return { projectId: right.projectId, runId: right.lastRunId }
   return {
     projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
     runId: typeof route.params.runId === 'string' ? route.params.runId : null,
@@ -674,6 +772,7 @@ onBeforeUnmount(() => {
   unlistenMenu = null
   window.removeEventListener('keydown', onGlobalNavKeyGuard, true)
   window.removeEventListener('keydown', onFocusEscape)
+  offRightHalfGuard?.()
 })
 
 // App version shown in the sidebar footer; read from Tauri so it always matches
@@ -689,9 +788,15 @@ onMounted(async () => {
   }
 })
 
-/** Sidebar row look: highlighted while the router shows `path`. */
-function navClass(path: string): string {
-  return route.path === path
+/** Sidebar row: on screen in either half. */
+function navActive(path: string, prefix = false): boolean {
+  const on = (p: string | null) => !!p && (prefix ? p.startsWith(path) : p === path)
+  return on(route.path) || on(rightPath.value)
+}
+
+/** Sidebar row look: highlighted while either half shows `path`. */
+function navClass(path: string, prefix = false): string {
+  return navActive(path, prefix)
     ? 'is-active bg-accent text-foreground font-medium'
     : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
 }
@@ -1107,8 +1212,10 @@ onMounted(async () => {
       <aside
         v-if="sidebarVisible"
         class="app-sidebar shrink-0 overflow-hidden bg-sidebar border-r border-border/50"
+        :class="{ 'is-compact': compactSidebar }"
       >
-        <div class="w-[220px] h-full flex flex-col">
+        <!-- Split view shrinks it to its icons (labels move to tooltips). -->
+        <div class="app-sidebar-inner h-full flex flex-col">
           <!-- No brand header: the logo moved to the title bar, so the nav starts
                at the very top and a view's header owns the first line alone. -->
           <nav class="flex-1 px-2 py-2.5 space-y-0.5">
@@ -1123,13 +1230,13 @@ onMounted(async () => {
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
                   :class="navClass('/todos')"
                   :title="t('item.navTodos')"
-                  @click="openSurface('todos', { projectId: routeCaptureContext().projectId })"
+                  @click="openSurfaceFocused('todos', { projectId: routeCaptureContext().projectId })"
                 >
                   <ListTodo class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                  <span class="flex-1 truncate text-left">{{ t('item.navTodos') }}</span>
+                  <span class="nav-label flex-1 truncate text-left">{{ t('item.navTodos') }}</span>
                   <span
                     v-if="focusStore.overdueCount > 0"
-                    class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground leading-none"
+                    class="nav-badge flex h-4 min-w-[16px] items-center justify-center rounded-full bg-destructive px-1 text-[10px] font-medium text-destructive-foreground leading-none"
                     :title="t('item.lateness.overdue')"
                   >
                     {{ focusStore.overdueCount }}
@@ -1141,10 +1248,10 @@ onMounted(async () => {
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
                   :class="navClass('/notes')"
                   :title="t('item.navNotes')"
-                  @click="openSurface('notes', { projectId: routeCaptureContext().projectId })"
+                  @click="openSurfaceFocused('notes', { projectId: routeCaptureContext().projectId })"
                 >
                   <StickyNote class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                  <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
+                  <span class="nav-label flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
                 </button>
 
                 <!-- Secret notes: their own window. -->
@@ -1155,7 +1262,7 @@ onMounted(async () => {
                   @click="openSecretNotesWindow({ projectId: routeCaptureContext().projectId })"
                 >
                   <LockKeyhole class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                  <span class="flex-1 truncate text-left">{{ t('secretNotes.nav') }}</span>
+                  <span class="nav-label flex-1 truncate text-left">{{ t('secretNotes.nav') }}</span>
                 </button>
 
                 <button
@@ -1163,10 +1270,10 @@ onMounted(async () => {
                   class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
                   :class="navClass('/slack')"
                   :title="t('slackThread.nav')"
-                  @click="openSurface('slack', { projectId: routeCaptureContext().projectId })"
+                  @click="openSurfaceFocused('slack', { projectId: routeCaptureContext().projectId })"
                 >
                   <Slack class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                  <span class="flex-1 truncate text-left">{{ t('slackThread.nav') }}</span>
+                  <span class="nav-label flex-1 truncate text-left">{{ t('slackThread.nav') }}</span>
                 </button>
               </template>
 
@@ -1181,50 +1288,51 @@ onMounted(async () => {
                 class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
                 :class="navClass(item.path)"
                 :title="item.label"
-                @click="openSurface(item.surface)"
+                @click="openSurfaceFocused(item.surface)"
               >
                 <span
-                  v-if="route.path === item.path"
+                  v-if="navActive(item.path)"
                   class="app-nav-indicator absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
                 />
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                <span class="flex-1 truncate text-left">{{ item.label }}</span>
+                <span class="nav-label flex-1 truncate text-left">{{ item.label }}</span>
                 <span
                   v-if="item.path === '/github-mentions' && mentionsStore.pendingCount > 0"
-                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
+                  class="nav-badge flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
                   :title="t('githubMentions.pendingTitle')"
                 >
                   {{ mentionsStore.pendingCount }}
                 </span>
                 <span
                   v-else-if="item.path === '/pr-inbox' && prInboxStore.pendingCount > 0"
-                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
+                  class="nav-badge flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
                   :title="t('prInbox.pendingTitle')"
                 >
                   {{ prInboxStore.pendingCount }}
                 </span>
               </button>
-              <RouterLink
+              <!-- Pages navigate the focused half of a split (lib/tabActions). -->
+              <a
                 v-else
-                :to="item.path"
+                :href="item.path"
                 class="relative flex items-center gap-2.5 px-3 py-2 rounded-md text-sm transition-colors cursor-pointer select-none"
-                :class="route.path.startsWith(item.path)
-                  ? 'is-active bg-accent text-foreground font-medium'
-                  : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'"
+                :class="navClass(item.path, true)"
+                :title="item.label"
+                @click.prevent="navigateFocused(item.path)"
               >
                 <span
-                  v-if="route.path.startsWith(item.path)"
+                  v-if="navActive(item.path, true)"
                   class="app-nav-indicator absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
                 />
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
-                <span class="flex-1 truncate">{{ item.label }}</span>
+                <span class="nav-label flex-1 truncate">{{ item.label }}</span>
                 <span
                   v-if="item.path === '/projects' && (projectsStore.conflicts.length + projectsStore.ruleConflicts.length) > 0"
-                  class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none"
+                  class="nav-badge flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none"
                 >
                   {{ projectsStore.conflicts.length + projectsStore.ruleConflicts.length }}
                 </span>
-              </RouterLink>
+              </a>
             </template>
           </nav>
 
@@ -1233,7 +1341,7 @@ onMounted(async () => {
 
           <!-- Version footer -->
           <div class="flex items-center justify-between gap-2 px-4 py-3 border-t border-border/50">
-            <p v-if="appVersion" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
+            <p v-if="appVersion && !compactSidebar" class="text-[10px] text-muted-foreground/50 font-mono">v{{ appVersion }}</p>
             <!-- This machine's Remote Control dot (+ device sync); hidden until a relay is set up. -->
             <RemoteIndicator />
           </div>
@@ -1250,14 +1358,16 @@ onMounted(async () => {
              point. `routeKey` keeps its existing contract either way (see above):
              run routes get `run-<projectId>` so RunView still remounts per
              project, other routes get a stable per-view key. -->
-        <!-- Split: the routed screen on the left, a surface tab on the right
-             (WorkspaceTabs "Show on the right"). A click in a half focuses it,
-             so the next tab click lands there. -->
-        <div class="flex h-full min-h-0">
+        <!-- Split: the routed screen on the left, any other tab on the right
+             (the paired tab of WorkspaceTabs). A click in a half focuses it,
+             so the next tab click lands there. Both halves start level at the
+             top: the pair tab carries their names and close buttons. -->
+        <div ref="splitRef" class="flex h-full min-h-0">
           <div
             data-pane="left"
             class="h-full min-w-0 flex-1 overflow-auto"
-            :class="splitTab && tabsStore.focusedPane === 'left' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
+            :class="tabsStore.isSplit && tabsStore.focusedPane === 'left' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
+            :style="tabsStore.isSplit ? { flex: `${splitRatio} 1 0`, minWidth: `min(${SPLIT_MIN_LEFT}px, 50%)` } : undefined"
             @pointerdown.capture="tabsStore.focusedPane = 'left'"
           >
             <RouterView v-slot="{ Component }">
@@ -1279,29 +1389,37 @@ onMounted(async () => {
               </Teleport>
             </template>
           </div>
+          <!-- Drag to resize, ←/→ (⇧ for big steps), double-click or Enter = 50/50. -->
+          <div
+            v-if="tabsStore.isSplit"
+            class="split-divider"
+            :class="{ 'is-dragging': dragRatio != null }"
+            role="separator"
+            aria-orientation="vertical"
+            tabindex="0"
+            :aria-valuenow="Math.round(splitRatio * 100)"
+            aria-valuemin="0"
+            aria-valuemax="100"
+            :aria-label="t('surfaces.tabs.resizeSplit')"
+            :title="t('surfaces.tabs.resizeSplit')"
+            @pointerdown="startDividerDrag"
+            @dblclick="resetSplitRatio"
+            @keydown="onDividerKey"
+          />
           <!-- Always in the DOM (hidden when not split): the teleport target of
                the split tab's host. -->
           <section
-            v-show="splitTab"
+            v-show="tabsStore.isSplit"
             data-pane="right"
-            class="flex h-full min-w-0 flex-1 flex-col border-l border-border/60"
+            class="flex h-full min-w-0 flex-1 flex-col"
             :class="tabsStore.focusedPane === 'right' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
+            :style="tabsStore.isSplit ? { flex: `${1 - splitRatio} 1 0`, minWidth: `min(${SPLIT_MIN_RIGHT}px, 50%)` } : undefined"
             @pointerdown.capture="tabsStore.focusedPane = 'right'"
           >
-            <div v-if="splitTab" class="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 bg-sidebar/60 pl-3 pr-1.5">
-              <component :is="SURFACE_META[splitTab.surface].icon" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-              <span class="min-w-0 flex-1 truncate text-xs font-medium">{{ splitLabel() }}</span>
-              <Button
-                variant="ghost"
-                size="icon-xs"
-                :title="t('surfaces.tabs.unsplit')"
-                :aria-label="t('surfaces.tabs.unsplit')"
-                @click="tabsStore.unsplit()"
-              >
-                <X class="h-3 w-3" :stroke-width="2" />
-              </Button>
+            <div v-show="!rightRouted" id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
+            <div v-if="rightRouted" class="min-h-0 flex-1 overflow-auto">
+              <PaneRouterView :key="tabEntryKey(rightRouted)" :location="rightLocation" @navigate="navigateRightPane" />
             </div>
-            <div id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
           </section>
         </div>
       </div>
@@ -1371,9 +1489,82 @@ onMounted(async () => {
   width: 220px;
 }
 
+.app-sidebar-inner {
+  width: 220px;
+  transition: width 180ms ease;
+}
+
+/* Split view: icons only, labels in the rows' tooltips, counts as corner pips. */
+.app-sidebar.is-compact,
+.app-sidebar.is-compact .app-sidebar-inner {
+  width: 52px;
+}
+.app-sidebar {
+  transition: width 180ms ease;
+}
+.app-sidebar.is-compact nav :is(a, button) {
+  justify-content: center;
+  padding-left: 0;
+  padding-right: 0;
+}
+.app-sidebar.is-compact .nav-label {
+  display: none;
+}
+.app-sidebar.is-compact .nav-badge {
+  position: absolute;
+  top: 1px;
+  right: 3px;
+  height: 14px;
+  min-width: 14px;
+  font-size: 9px;
+}
+
 .sidebar-enter-active,
 .sidebar-leave-active {
   transition: width 180ms ease, opacity 180ms ease;
+}
+
+/* Split divider: a wide grab area around a 1px line, with a grip in the middle. */
+.split-divider {
+  position: relative;
+  flex-shrink: 0;
+  width: 7px;
+  margin: 0 -3px;
+  z-index: 5;
+  cursor: col-resize;
+  touch-action: none;
+  outline: none;
+}
+.split-divider::before {
+  content: '';
+  position: absolute;
+  inset: 0 3px;
+  background: hsl(var(--border) / 0.6);
+  transition: background-color 120ms ease;
+}
+.split-divider::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 1px;
+  width: 5px;
+  height: 28px;
+  margin-top: -14px;
+  border-radius: 9999px;
+  background: hsl(var(--muted-foreground) / 0.35);
+  opacity: 0;
+  transition: opacity 120ms ease;
+}
+.split-divider:hover::before,
+.split-divider:focus-visible::before,
+.split-divider.is-dragging::before {
+  inset: 0 2px;
+  background: hsl(var(--primary));
+}
+.split-divider:hover::after,
+.split-divider:focus-visible::after,
+.split-divider.is-dragging::after {
+  opacity: 1;
 }
 
 .sidebar-enter-from,
@@ -1399,7 +1590,9 @@ onMounted(async () => {
     transition: none;
   }
   .sidebar-enter-active,
-  .sidebar-leave-active {
+  .sidebar-leave-active,
+  .app-sidebar,
+  .app-sidebar-inner {
     transition: none;
   }
 }

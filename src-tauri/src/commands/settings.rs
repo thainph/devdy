@@ -117,6 +117,9 @@ pub struct AppSettings {
     /// (= rely on the native notification only). With the main window in front
     /// they are always answered in-app. Read by the frontend only.
     pub permission_float_when_background: String,
+    /// While the main window is split in two, the app sidebar shrinks to its
+    /// icons. "true" (default) | "false". Read by the frontend only.
+    pub split_compact_sidebar: String,
 }
 
 /// `AppSettings` keys carried by a settings backup. `claude_path` / `codex_path` are left out:
@@ -165,6 +168,7 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "window_mode_overrides",
     "window_dock_on_unplug",
     "permission_float_when_background",
+    "split_compact_sidebar",
     // PR Inbox poller (pr_inbox).
     "pr_inbox.poll_minutes",
     "pr_inbox.review_prompt",
@@ -238,6 +242,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         window_mode_overrides: "{}".to_string(),
         window_dock_on_unplug: "true".to_string(),
         permission_float_when_background: "true".to_string(),
+        split_compact_sidebar: "true".to_string(),
     };
 
     for row in rows {
@@ -294,6 +299,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "permission_float_when_background" => {
                 settings.permission_float_when_background = value
             }
+            "split_compact_sidebar" => settings.split_compact_sidebar = value,
             _ => {}
         }
     }

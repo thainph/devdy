@@ -1,92 +1,43 @@
 import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
+import { cleanParams, surfaceTabId, type SurfaceKind } from '@/lib/surfaces'
 import {
-  cleanParams,
-  isSurfaceKind,
-  surfaceTabId,
-  type SurfaceKind,
-  type SurfaceParams,
-} from '@/lib/surfaces'
+  canPair,
+  clampRatio,
+  moveUnit as moveUnitOrder,
+  pageTabId,
+  parseWorkspaceState,
+  placePair,
+  replacePairSide,
+  sanitizeRatio,
+  serializeWorkspaceState,
+  tabEntryKey,
+  type PageTab,
+  type PaneSide,
+  type SplitPair,
+  type SurfaceTab,
+  type TabEntry,
+  type WorkspaceTab,
+} from '@/lib/workspaceState'
 
-/**
- * A project pinned as a tab in the workspace. Switching between runs inside a
- * project is still done from RunView's History list, not tabs. Each tab
- * remembers the last run the user was viewing in that project so re-selecting
- * the tab returns there.
- */
-export interface WorkspaceTab {
-  projectId: string
-  lastRunId: string | null
-}
-
-/**
- * A surface (PR Inbox, Calendar, Slack threads, Todos, a file…) opened as a tab
- * of the main window instead of its own OS window (see lib/surfaces).
- */
-export interface SurfaceTab {
-  id: string
-  surface: SurfaceKind
-  params: SurfaceParams
-}
-
-/**
- * A page of the main window (Dashboard, Skills, Settings… — lib/navigation
- * `pageRouteFor`) as a tab. Remembers its last full path (query included), so
- * coming back lands where the user was.
- */
-export interface PageTab {
-  id: string
-  path: string
-  fullPath: string
-}
-
-/** One entry of the shared tab strip, in display order. */
-export type TabEntry =
-  | ({ type: 'project' } & WorkspaceTab)
-  | ({ type: 'surface' } & SurfaceTab)
-  | ({ type: 'page' } & PageTab)
-
-export function pageTabId(path: string): string {
-  return `page:${path}`
-}
+// The entry types live in lib/workspaceState (pure, unit-tested); re-exported
+// here for the many callers that import them from the store.
+export { pageTabId, tabEntryKey }
+export type { PageTab, PaneSide, SplitPair, SurfaceTab, TabEntry, WorkspaceTab }
 
 const STORAGE_KEY = 'devdy.workspaceTabs'
 
-export function tabEntryKey(e: TabEntry): string {
-  return e.type === 'project' ? `project:${e.projectId}` : e.id
-}
-
-function load(): TabEntry[] {
+function load() {
   try {
-    const raw = localStorage.getItem(STORAGE_KEY)
-    const arr = raw ? JSON.parse(raw) : []
-    if (!Array.isArray(arr)) return []
-    const out: TabEntry[] = []
-    for (const t of arr) {
-      if (!t || typeof t !== 'object') continue
-      // Entries saved before surface tabs existed have no `type`: projects.
-      if ((t.type === 'project' || t.type === undefined) && typeof t.projectId === 'string') {
-        out.push({
-          type: 'project',
-          projectId: t.projectId,
-          lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
-        })
-      } else if (t.type === 'page' && typeof t.path === 'string' && t.path.startsWith('/')) {
-        const fullPath = typeof t.fullPath === 'string' && t.fullPath.startsWith(t.path) ? t.fullPath : t.path
-        out.push({ type: 'page', id: pageTabId(t.path), path: t.path, fullPath })
-      } else if (t.type === 'surface' && isSurfaceKind(t.surface)) {
-        const params = cleanParams(t.surface, t.params)
-        out.push({ type: 'surface', id: surfaceTabId(t.surface, params), surface: t.surface, params })
-      }
-    }
-    return out
+    return parseWorkspaceState(localStorage.getItem(STORAGE_KEY))
   } catch {
-    return []
+    return parseWorkspaceState(null)
   }
 }
 
 export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
-  const entries = reactive<TabEntry[]>(load())
+  const initial = load()
+  const entries = reactive<TabEntry[]>(initial.entries)
 
   /** Project tabs only, in strip order (what most callers care about). */
   const tabs = computed(() =>
@@ -94,19 +45,62 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
   )
 
   /**
-   * The surface tab shown in the right half of a split view, or null when the
-   * main area isn't split. Only surfaces split: a session needs the router (and
-   * its single conductor panel), so it always stays on the left.
+   * The two tabs of the split view (Chrome-style: adjacent on the strip, drawn
+   * as one tab), or null. Any two tabs pair (lib/workspaceState `canPair`):
+   * the left half is what the router shows, the right half is rendered beside
+   * it (App.vue — a surface host or a pane-scoped router view).
+   *
+   * The pair outlives being on screen: clicking a tab outside it shows that tab
+   * full width while the pair waits on the strip (`pairShown` false) until one
+   * of its halves is clicked again.
    */
-  const splitId = ref<string | null>(null)
+  const pair = ref<SplitPair | null>(initial.pair)
+  /** Whether the pair is on screen. Not persisted: a restart shows one tab. */
+  const pairShown = ref(false)
+  /** The left pane's share of the main area while split (persisted). */
+  const ratio = ref(initial.ratio)
+
+  /**
+   * Key (`tabEntryKey`) of the tab in the right half, or null when the main
+   * area isn't split. Non-null exactly while the split is on screen.
+   */
+  const splitId = computed(() => (pair.value && pairShown.value ? pair.value.right : null))
+  /** Whether the main area is split right now. */
+  const isSplit = computed(() => splitId.value != null)
   /** Which half of a split last took a click — tab clicks land there. */
-  const focusedPane = ref<'left' | 'right'>('left')
+  const focusedPane = ref<PaneSide>('left')
 
   function persist() {
     try {
-      localStorage.setItem(STORAGE_KEY, JSON.stringify([...entries]))
+      localStorage.setItem(
+        STORAGE_KEY,
+        serializeWorkspaceState({ entries: [...entries], pair: pair.value, ratio: ratio.value }),
+      )
     } catch {
       /* storage unavailable — in-memory tabs still work this session */
+    }
+  }
+
+  function entry(key: string | null | undefined): TabEntry | null {
+    if (!key) return null
+    return entries.find((e) => tabEntryKey(e) === key) ?? null
+  }
+
+  /** Reorder the strip to `keys` (a permutation of the current keys). */
+  function applyOrder(keys: string[]) {
+    const byKey = new Map(entries.map((e) => [tabEntryKey(e), e]))
+    const next = keys.map((k) => byKey.get(k)).filter((e): e is TabEntry => !!e)
+    if (next.length !== entries.length) return
+    if (next.every((e, i) => e === entries[i])) return
+    entries.splice(0, entries.length, ...next)
+  }
+
+  /** A tab left the strip: a pair it was half of dissolves. */
+  function forgetKey(key: string) {
+    if (pair.value && (pair.value.left === key || pair.value.right === key)) {
+      pair.value = null
+      pairShown.value = false
+      focusedPane.value = 'left'
     }
   }
 
@@ -133,16 +127,20 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     return entries[idx] ?? entries[idx - 1] ?? null
   }
 
+  function removeAt(idx: number): TabEntry | null {
+    const [gone] = entries.splice(idx, 1)
+    if (gone) forgetKey(tabEntryKey(gone))
+    persist()
+    return neighbour(idx)
+  }
+
   /**
    * Close a project tab. Returns the neighbouring entry to navigate to (the one
    * that slides into its place, else the previous one), or null if none remain.
    */
   function close(projectId: string): TabEntry | null {
     const idx = entries.findIndex((t) => t.type === 'project' && t.projectId === projectId)
-    if (idx === -1) return null
-    entries.splice(idx, 1)
-    persist()
-    return neighbour(idx)
+    return idx === -1 ? null : removeAt(idx)
   }
 
   function has(projectId: string): boolean {
@@ -188,12 +186,13 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     // Already open under the new identity: just drop the old tab.
     if (nextId !== id && surfaceTab(nextId)) {
       entries.splice(idx, 1)
-      if (splitId.value === id) splitId.value = nextId
+      forgetKey(id)
       persist()
       return surfaceTab(nextId)
     }
     entries.splice(idx, 1, { type: 'surface', id: nextId, surface: old.surface, params })
-    if (splitId.value === id) splitId.value = nextId
+    if (pair.value?.left === id) pair.value = { ...pair.value, left: nextId }
+    if (pair.value?.right === id) pair.value = { ...pair.value, right: nextId }
     persist()
     return surfaceTab(nextId)
   }
@@ -222,37 +221,89 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
   /** Close a page tab; returns its neighbour like `close`. */
   function closePage(id: string): TabEntry | null {
     const idx = entries.findIndex((t) => t.type === 'page' && t.id === id)
-    if (idx === -1) return null
-    entries.splice(idx, 1)
-    persist()
-    return neighbour(idx)
+    return idx === -1 ? null : removeAt(idx)
   }
 
   /** Close a surface tab; returns its neighbour like `close`. */
   function closeSurface(id: string): TabEntry | null {
     const idx = entries.findIndex((t) => t.type === 'surface' && t.id === id)
-    if (idx === -1) return null
-    entries.splice(idx, 1)
-    if (splitId.value === id) unsplit()
-    persist()
-    return neighbour(idx)
+    return idx === -1 ? null : removeAt(idx)
   }
 
-  /** Show a surface tab in the right half (opening the split if needed). */
-  function split(id: string) {
-    if (!surfaceTab(id)) return
-    splitId.value = id
-    focusedPane.value = 'right'
-  }
-
-  function unsplit() {
-    splitId.value = null
-    focusedPane.value = 'left'
+  /** Whether the tabs `a` and `b` (keys) may be split side by side. */
+  function canSplit(a: string | null | undefined, b: string | null | undefined): boolean {
+    const x = entry(a)
+    const y = entry(b)
+    return !!x && !!y && canPair(x, y)
   }
 
   /**
-   * Move the entry at `from` to `to` (drag-and-drop reorder). Called repeatedly
-   * while a drag is in flight, so the tab slides under the cursor live.
+   * Show `left` and `right` side by side (the router must show `left`; the
+   * caller navigates). Replaces any previous pair, moves `right` next to `left`
+   * on the strip. Returns false when the two can't pair.
+   */
+  function setPair(left: string, right: string, focus: PaneSide = 'right'): boolean {
+    if (!canSplit(left, right)) return false
+    pair.value = { left, right }
+    applyOrder(placePair(entries.map(tabEntryKey), pair.value))
+    pairShown.value = true
+    focusedPane.value = focus
+    persist()
+    return true
+  }
+
+  /**
+   * Put `key` in one half of the shown pair (a navigation inside that half
+   * landed on another tab). The replaced tab stays open next to the pair.
+   * Returns false when it can't pair with the other half.
+   */
+  function replaceSide(side: PaneSide, key: string): boolean {
+    const p = pair.value
+    if (!p) return false
+    if (p[side] === key) return true
+    if (!canSplit(side === 'left' ? p.right : p.left, key)) return false
+    const next = replacePairSide(entries.map(tabEntryKey), p, side, key)
+    if (!next) return false
+    pair.value = next.pair
+    applyOrder(next.keys)
+    persist()
+    return true
+  }
+
+  /** Bring the pair back on screen (the caller routes to its left half). */
+  function showPair(focus: PaneSide = 'left') {
+    if (!pair.value) return
+    pairShown.value = true
+    focusedPane.value = focus
+  }
+
+  /** Show one tab full width; the pair, if any, stays on the strip. */
+  function hidePair() {
+    pairShown.value = false
+    focusedPane.value = 'left'
+  }
+
+  /** Dissolve the pair: both halves become ordinary tabs again. */
+  function unsplit() {
+    if (pair.value) {
+      pair.value = null
+      persist()
+    }
+    pairShown.value = false
+    focusedPane.value = 'left'
+  }
+
+  /** Remember the divider position (`total`: the main area's width, px). */
+  function setRatio(next: number, total?: number) {
+    const r = total ? clampRatio(next, total) : sanitizeRatio(next)
+    if (r === ratio.value) return
+    ratio.value = r
+    persist()
+  }
+
+  /**
+   * Move the entry at `from` to `to` (drag-and-drop reorder). A pair keeps its
+   * halves together: use `moveUnit` for the strip's drawn units.
    */
   function move(from: number, to: number) {
     if (from === to) return
@@ -260,6 +311,13 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     if (to < 0 || to >= entries.length) return
     const [moved] = entries.splice(from, 1)
     entries.splice(to, 0, moved)
+    if (pair.value) applyOrder(placePair(entries.map(tabEntryKey), pair.value))
+    persist()
+  }
+
+  /** Move drawn unit `from` to unit slot `to` (lib/workspaceState `stripUnits`). */
+  function moveUnit(from: number, to: number) {
+    applyOrder(moveUnitOrder(entries.map(tabEntryKey), pair.value, from, to))
     persist()
   }
 
@@ -278,12 +336,18 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
   return {
     entries,
     tabs,
+    pair,
+    pairShown,
+    ratio,
     splitId,
+    isSplit,
     focusedPane,
+    entry,
     open,
     close,
     has,
     move,
+    moveUnit,
     forgetRun,
     surfaceTab,
     openSurface,
@@ -292,7 +356,12 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     pageTab,
     openPage,
     closePage,
-    split,
+    canSplit,
+    setPair,
+    replaceSide,
+    showPair,
+    hidePair,
     unsplit,
+    setRatio,
   }
 })

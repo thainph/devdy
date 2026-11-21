@@ -32,3 +32,27 @@ test('at least one tab shows, and unmeasured shows all', () => {
   assert.deepEqual(tabStripLayout(5, 100, 3, o).shown, [3])
   assert.deepEqual(tabStripLayout(5, 0, 3, o).shown, [0, 1, 2, 3, 4])
 })
+
+test('the split pair takes two slots', () => {
+  // [tab, pair, tab] = 4 slots; 4 * 140 + 3 * 4 = 572 fits in 600.
+  const fit = tabStripLayout([1, 2, 1], 600, 1, o)
+  assert.deepEqual(fit.shown, [0, 1, 2])
+  assert.equal(fit.width, (600 - 12) / 4)
+  // 6 units, 7 slots, room for 3 slots (+ more button): the pair counts double.
+  const l = tabStripLayout([2, 1, 1, 1, 1, 1], 500, 0, o)
+  assert.deepEqual(l.shown, [0, 1])
+  assert.deepEqual(l.hidden, [2, 3, 4, 5])
+})
+
+test('a hidden pair makes room for both of its slots', () => {
+  // cap = 3 slots: [0, 1, 2] shown, then the pair (unit 4) needs two.
+  const l = tabStripLayout([1, 1, 1, 1, 2], 500, 4, o)
+  assert.deepEqual(l.shown, [0, 4])
+  assert.deepEqual(l.hidden, [1, 2, 3])
+})
+
+test('unitWidth: slots plus the gaps between them', async () => {
+  const { unitWidth } = await import('../tabStripLayout.ts')
+  assert.equal(unitWidth(1, 150, 4), 150)
+  assert.equal(unitWidth(2, 150, 4), 304)
+})

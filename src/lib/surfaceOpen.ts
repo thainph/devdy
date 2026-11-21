@@ -5,9 +5,11 @@
 // From a pop-out webview (no router of the main window) a tab request is sent
 // to the main window over SURFACE_OPEN, handled by `listenSurfaceRequests`.
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
+import type { RouteLocationRaw } from 'vue-router'
 import { getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
+import { ref } from 'vue'
 import router from '@/router'
-import { useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
+import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
 import { useGoogleCalendarStore } from '@/stores/googleCalendar'
 import {
   SLACK_WINDOW_ADD,
@@ -34,6 +36,8 @@ import {
   surfaceWindowOpen,
   type SurfaceExtras,
 } from '@/lib/surfacePlacement'
+import { entryTargetFor, entryTargetKey, type EntryTarget } from '@/lib/workspaceState'
+import { pageRouteFor } from '@/lib/navigation'
 
 /** Pop-out → main window: "show this surface as a tab". */
 export const SURFACE_OPEN = 'surface:open'
@@ -50,9 +54,14 @@ export interface OpenSurfaceOptions extends SurfaceExtras {
   /**
    * As a tab, show it in the right half of a split instead of switching the
    * main area to it — e.g. a file opened from a session keeps the session in
-   * view. Main window only.
+   * view (the other half when already split). Main window only.
    */
   split?: boolean
+  /**
+   * As a tab, show it in this half of the shown split (a navigation inside
+   * that half). Main window only.
+   */
+  pane?: 'right'
 }
 
 async function focusMain() {
@@ -67,17 +76,32 @@ async function focusMain() {
 }
 
 /** Open `kind` as a tab of the main window (must run in the main window). */
-async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: SurfaceExtras, split = false) {
+async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: SurfaceExtras, opts: OpenSurfaceOptions = {}) {
   const tabs = useWorkspaceTabsStore()
   const tab = tabs.openSurface(kind, params)
-  const routedHere = surfaceTabIdOfRoute() === tab.id
-  if (split && !routedHere) {
-    tabs.split(tab.id)
-  } else if (tabs.splitId === tab.id) {
+  const routed = routedTargetKey()
+  const pushHere = () => router.push(surfaceLocation(kind, tab.params, true)).catch(() => {})
+  if (tabs.isSplit && tabs.splitId === tab.id) {
     // Already in the right half: just bring that half forward.
     tabs.focusedPane = 'right'
+  } else if (opts.pane === 'right' && tabs.isSplit && tabs.replaceSide('right', tab.id)) {
+    tabs.focusedPane = 'right'
+  } else if (opts.split && routed !== tab.id && tabs.isSplit && tabs.pair?.left !== tab.id) {
+    // Beside the focused half: in the other one.
+    const side = tabs.focusedPane === 'right' ? 'left' : 'right'
+    if (!tabs.replaceSide(side, tab.id)) {
+      tabs.hidePair()
+      await pushHere()
+    } else if (side === 'left') {
+      tabs.focusedPane = 'left'
+      await pushHere()
+    } else {
+      tabs.focusedPane = 'right'
+    }
+  } else if (opts.split && routed && routed !== tab.id && !tabs.isSplit && tabs.setPair(routed, tab.id, 'right')) {
+    // Split opened beside what the router shows.
   } else {
-    await router.push(surfaceLocation(kind, tab.params, true)).catch(() => {})
+    await pushHere()
   }
   // Re-select even when the tab already pointed there (the user may have
   // moved on inside it): params alone wouldn't change, the views hear these.
@@ -114,7 +138,7 @@ export async function openSurface(
     return
   }
   if (isMainWindow()) {
-    await openAsTab(kind, params, extras, opts.split)
+    await openAsTab(kind, params, extras, opts)
   } else if (opts.split) {
     // "Beside what I'm looking at" from a pop-out (a session window): the main
     // window is not beside it, so open its own window as before.
@@ -126,12 +150,9 @@ export async function openSurface(
 
 /** Move a surface tab out to its own window (the tab closes). */
 export async function popOutSurface(id: string): Promise<void> {
-  const tabs = useWorkspaceTabsStore()
-  const tab = tabs.surfaceTab(id)
-  if (!tab) return
-  const onIt = surfaceTabIdOfRoute() === id
-  const next = tabs.closeSurface(id)
-  if (onIt) await goToEntry(skipSplit(next))
+  const tab = useWorkspaceTabsStore().entry(id)
+  if (tab?.type !== 'surface') return
+  await removeTab(tab)
   await openSurfaceWindow(tab.surface, tab.params)
 }
 
@@ -140,17 +161,30 @@ export async function popOutSurface(id: string): Promise<void> {
  * router on if the tab was what it showed.
  */
 export async function closeSurfaceTab(id: string): Promise<void> {
-  const tabs = useWorkspaceTabsStore()
-  const tab = tabs.surfaceTab(id)
-  if (!tab) return
-  const routed = surfaceTabIdOfRoute() === id
-  const next = tabs.closeSurface(id)
-  if (routed) await goToEntry(skipSplit(next))
+  const tab = useWorkspaceTabsStore().entry(id)
+  if (tab?.type === 'surface') await removeTab(tab)
 }
 
-/** The split's right pane is not a destination of the router: skip over it. */
-export function skipSplit(next: TabEntry | null): TabEntry | null {
-  return next && next.type === 'surface' && next.id === useWorkspaceTabsStore().splitId ? null : next
+/**
+ * Close a tab and move the view on: closing a half of the shown split leaves
+ * the other half full width; closing the tab the router shows goes to its
+ * neighbour.
+ */
+export async function removeTab(e: TabEntry): Promise<void> {
+  const tabs = useWorkspaceTabsStore()
+  const key = tabEntryKey(e)
+  const pair = tabs.isSplit ? tabs.pair : null
+  const other = pair ? (key === pair.left ? pair.right : key === pair.right ? pair.left : null) : null
+  const wasRouted = key === routedKey()
+  const next =
+    e.type === 'project' ? tabs.close(e.projectId) : e.type === 'page' ? tabs.closePage(e.id) : tabs.closeSurface(e.id)
+  tabs.focusedPane = 'left'
+  if (other) {
+    // The pair is gone with its half; the right one moves over if needed.
+    if (pair && key === pair.left) await goToEntry(tabs.entry(other))
+    return
+  }
+  if (wasRouted) await goToEntry(next)
 }
 
 /** The surface tab the router shows right now, if any. */
@@ -160,27 +194,48 @@ export function surfaceTabIdOfRoute(): string | null {
   return kind ? surfaceTabId(kind, cleanParams(kind, route.query)) : null
 }
 
-/** Navigate to a tab entry (after closing the current one), or the projects list. */
+/** The tab the router shows (the left / only pane), as data; null for a non-tab screen. */
+export function routedTarget(): EntryTarget | null {
+  return entryTargetFor(router.currentRoute.value, surfaceForPath, (p) => !!pageRouteFor(p))
+}
+
+/** Key of the tab the router shows, or null for a screen that isn't a tab. */
+export function routedTargetKey(): string | null {
+  const t = routedTarget()
+  return t ? entryTargetKey(t) : null
+}
+
+/**
+ * Key of the tab the router's screen belongs to, for highlighting: like
+ * `routedTargetKey`, plus a project's other screens (its settings) count as
+ * its tab.
+ */
+export function routedKey(): string | null {
+  const key = routedTargetKey()
+  if (key) return key
+  const id = router.currentRoute.value.params.projectId
+  return typeof id === 'string' ? `project:${id}` : null
+}
+
+/** Router location of a tab (where clicking it goes). */
+export function entryLocation(e: TabEntry): RouteLocationRaw {
+  if (e.type === 'surface') return surfaceLocation(e.surface, e.params, true)
+  if (e.type === 'page') return e.fullPath
+  return e.lastRunId
+    ? { name: 'project-run-detail', params: { projectId: e.projectId, runId: e.lastRunId } }
+    : { name: 'project-run', params: { projectId: e.projectId } }
+}
+
+/**
+ * Where the right half of the split is inside its tab, when it moved on from
+ * the tab's own location (a navigation in the pane — e.g. a session's bare
+ * project route). Keyed by tab, so it only applies to the tab it was set for.
+ */
+export const rightPaneLocation = ref<{ key: string; fullPath: string } | null>(null)
+
+/** Navigate to a tab entry (after closing the current one), or the dashboard. */
 export async function goToEntry(next: TabEntry | null) {
-  if (!next) {
-    await router.push({ name: 'dashboard' }).catch(() => {})
-    return
-  }
-  if (next.type === 'surface') {
-    await router.push(surfaceLocation(next.surface, next.params, true)).catch(() => {})
-    return
-  }
-  if (next.type === 'page') {
-    await router.push(next.fullPath).catch(() => {})
-    return
-  }
-  if (next.lastRunId) {
-    await router
-      .push({ name: 'project-run-detail', params: { projectId: next.projectId, runId: next.lastRunId } })
-      .catch(() => {})
-  } else {
-    await router.push({ name: 'project-run', params: { projectId: next.projectId } }).catch(() => {})
-  }
+  await router.push(next ? entryLocation(next) : { name: 'dashboard' }).catch(() => {})
 }
 
 // Docks received while `dockAllSurfaceWindows` is collecting them.
