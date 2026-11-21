@@ -215,6 +215,12 @@
 [data-theme='tahoe'] .app-window .list-sidebar {
   margin: 8px 0 8px 8px;
 }
+/* Sticky group headers (listDetail/ListGroupHeader): frosted, not a solid band. */
+[data-theme='tahoe'] .app-shell .list-sidebar .list-group-header {
+  background-color: transparent;
+  backdrop-filter: var(--tahoe-blur);
+  -webkit-backdrop-filter: var(--tahoe-blur);
+}
 
 /* --- Surfaces -------------------------------------------------------------- */
 [data-theme='tahoe'] .ui-card {

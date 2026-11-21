@@ -4,5 +4,16 @@
   "peek": "Xem nhanh danh sách",
   "closePeek": "Đóng danh sách",
   "exitFocus": "Thoát Focus",
-  "focus": "Focus"
+  "focus": "Focus",
+  "more": "Thêm",
+  "search": "Tìm…",
+  "clearSearch": "Xoá tìm kiếm",
+  "filterSort": "Lọc và sắp xếp",
+  "filtering": "Đang lọc:",
+  "clearFilters": "Xoá lọc",
+  "resetView": "Về mặc định",
+  "lateCount": "{n} trễ",
+  "ownWindow": "Khi là cửa sổ riêng",
+  "pin": "Ghim trên cùng",
+  "unpin": "Bỏ ghim trên cùng"
 }

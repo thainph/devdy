@@ -206,7 +206,7 @@ export function useListPaneSidebar(el: Ref<HTMLElement | null>, own?: ListPane) 
     const target = e.target as Node | null
     // A press in a menu / dialog opened from the list (teleported to <body>) stays.
     // So does the ☰ toggle itself (its click closes the peek).
-    if (target instanceof Element && target.closest('[role="dialog"], [role="menu"], .ui-menu-item, [data-list-peek]')) {
+    if (target instanceof Element && target.closest('[role="dialog"], [role="menu"], .ui-popover, .ui-menu-item, [data-list-peek]')) {
       return
     }
     if (el.value && target && !el.value.contains(target)) pane?.closePeek()

@@ -4,5 +4,16 @@
   "peek": "Peek at the list",
   "closePeek": "Close the list",
   "exitFocus": "Exit Focus",
-  "focus": "Focus"
+  "focus": "Focus",
+  "more": "More",
+  "search": "Search…",
+  "clearSearch": "Clear search",
+  "filterSort": "Filter & sort",
+  "filtering": "Filtering:",
+  "clearFilters": "Clear filters",
+  "resetView": "Reset to defaults",
+  "lateCount": "{n} late",
+  "ownWindow": "As its own window",
+  "pin": "Keep on top",
+  "unpin": "Stop keeping on top"
 }

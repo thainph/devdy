@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // Lightweight, on-brand dropdown. Provide the trigger via #trigger slot and
 // menu items (DropdownItem) in the default slot. Closes on outside click,
-// Escape, or after an item is clicked. Emits `update:open` so callers can keep
+// Escape, or after an item is clicked (unless `keepOpen`). Emits `update:open` so callers can keep
 // the trigger visible while open.
 //
 // The panel is teleported to <body> and positioned `fixed` against the trigger,
@@ -12,7 +12,14 @@
 // its size changes while open, staying on the side it opened on.
 import { ref, nextTick, onBeforeUnmount, watch } from 'vue'
 
-const props = withDefaults(defineProps<{ align?: 'left' | 'right' }>(), { align: 'right' })
+const props = withDefaults(
+  defineProps<{
+    align?: 'left' | 'right'
+    /** Stay open after a click inside (a filter menu toggling several options). */
+    keepOpen?: boolean
+  }>(),
+  { align: 'right', keepOpen: false },
+)
 const emit = defineEmits<{ (e: 'update:open', open: boolean): void }>()
 
 const GAP = 6
@@ -139,7 +146,7 @@ onBeforeUnmount(() => {
           ref="panel"
           class="ui-popover fixed z-[100] min-w-44 rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20"
           :style="{ left: `${pos.x}px`, top: `${pos.y}px` }"
-          @click="close"
+          @click="!keepOpen && close()"
         >
           <slot />
         </div>
