@@ -15,15 +15,15 @@
     "emptyHint": "Paste a Slack thread link with “Add thread”, or send one from the Chrome extension.",
     "noResults": "No matching threads.",
     "newCount": "{count} new",
-    "collapse": "Collapse",
-    "expand": "Expand",
-    "activityFilter": "Filter by activity",
     "filterAll": "All",
     "filterUnread": "Unread",
     "filterRecent": "Recently updated",
     "sortByChannel": "By channel",
     "sortByRecent": "Recent activity",
-    "sortByTitle": "Title (A–Z)"
+    "sortByTitle": "Title (A–Z)",
+    "activityTitle": "Activity",
+    "unreadCount": "{n} unread",
+    "unreadBadgeTitle": "Show only threads with new messages (click again to show all)"
   },
   "status": {
     "pending": "Queued",

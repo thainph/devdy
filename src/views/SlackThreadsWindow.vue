@@ -4,9 +4,9 @@
 // Slack and translated into Vietnamese.
 //
 //   ┌ (native OS titlebar only — no custom titlebar row, to stay compact) ───┐
-//   ├ sidebar: search · pin · reload,         │ thread pane header: title /   │
-//   │ project filter + Add, activity filter,  │ #channel · [project][Sessions]│
-//   │ workspace → #channel → threads          │                               │
+//   ├ sidebar: title · N unread · + New · ⋯,  │ thread pane header: title /   │
+//   │ search ⚙︎ (activity / project / sort),   │ #channel · [project][Sessions]│
+//   │ threads (flat or workspace → #channel)  │                               │
 //   │                                         │ | Original · Refresh · Slack ·  │
 //   │                                         │ ⋯ (New session from this      │
 //   │                                         │ thread · Copy ID · Delete)    │
@@ -53,7 +53,16 @@ import { requestDock } from '@/lib/surfaceDock'
 import { useDockAll } from '@/composables/useDockAll'
 import { refreshTray } from '@/lib/tray'
 import { projectOptionsForIds } from '@/lib/projectOptions'
-import { createSeenGuard, isRecent, isUnread, matchesActivity, type ActivityFilter } from '@/lib/slackThreadUtils'
+import { createSeenGuard } from '@/lib/slackThreadUtils'
+import {
+  SLACK_NO_PROJECT,
+  clearSlackFilters,
+  defaultSlackListView,
+  matchesSlackView,
+  parseSlackSort,
+  slackActivityCounts,
+  type SlackListView,
+} from '@/lib/slackListView'
 import {
   SLACK_WINDOW_ADD,
   SLACK_WINDOW_OPEN_ROUTE,
@@ -107,14 +116,33 @@ const params = new URLSearchParams(window.location.search)
 const initialId = props.initialId !== undefined ? props.initialId : params.get('id') || null
 const initialProject = props.projectId !== undefined ? props.projectId : params.get('projectId') || null
 
-// ── Sidebar: search (server-side) + project / activity filters (client-side) 
+// ── Sidebar: search (server-side) + the filter menu's view (client-side) ────
 
-const NO_PROJECT = '__none__'
 const search = ref('')
-/** '' = all projects, NO_PROJECT = threads without one, else a project id. */
-const projectFilter = ref<string>(initialProject ?? '')
-/** '' = all, else only unread / recently updated threads. */
-const activityFilter = ref<ActivityFilter>('')
+/** Activity / project / sort (lib/slackListView); only the sort is remembered. */
+const SORT_KEY = 'slackThreads.order'
+function loadSort() {
+  try {
+    return parseSlackSort(localStorage.getItem(SORT_KEY))
+  } catch {
+    return parseSlackSort(null)
+  }
+}
+const listView = ref<SlackListView>({ ...defaultSlackListView(), sort: loadSort(), project: initialProject ?? '' })
+watch(
+  () => listView.value.sort,
+  (sort) => {
+    try {
+      localStorage.setItem(SORT_KEY, sort)
+    } catch {
+      /* storage unavailable */
+    }
+  },
+)
+/** The project filter as a concrete project id (for Add / dock), else null. */
+const scopedProject = computed(() =>
+  listView.value.project && listView.value.project !== SLACK_NO_PROJECT ? listView.value.project : null,
+)
 
 let searchTimer: ReturnType<typeof setTimeout> | null = null
 watch(search, (q) => {
@@ -122,42 +150,21 @@ watch(search, (q) => {
   searchTimer = setTimeout(() => void store.fetchList(q), 250)
 })
 
-function inProject(th: { projectId: string | null }): boolean {
-  if (projectFilter.value === NO_PROJECT) return !th.projectId
-  return !projectFilter.value || th.projectId === projectFilter.value
-}
-
+// The open thread stays put: opening it marks it read, which would drop it from "Unread".
 const visibleThreads = computed(() => {
   const now = Date.now()
-  return store.threads.filter(
-    (th) =>
-      inProject(th) &&
-      // The open thread stays put: opening it marks it read, which would drop it from "Unread".
-      (th.id === store.selectedId || matchesActivity(th, activityFilter.value, now)),
-  )
+  return store.threads.filter((th) => matchesSlackView(th, listView.value, now, store.selectedId))
 })
 
-/** Activity tab counts: the project in scope, before the activity filter. */
-const activityCounts = computed(() => {
-  const now = Date.now()
-  const inScope = store.threads.filter(inProject)
-  return {
-    all: inScope.length,
-    unread: inScope.filter((th) => isUnread(th)).length,
-    recent: inScope.filter((th) => isRecent(th, now)).length,
-  }
-})
+/** The filter menu's activity counts: the project in scope, before the activity filter. */
+const activityCounts = computed(() => slackActivityCounts(store.threads, listView.value))
 
+/** The projects the filter menu offers (id + name), "All" / "No project" excluded. */
 const projectOptions = computed(() => {
   const ids = new Set<string>()
   for (const th of store.threads) if (th.projectId) ids.add(th.projectId)
-  if (projectFilter.value && projectFilter.value !== NO_PROJECT) ids.add(projectFilter.value)
-  const named = projectOptionsForIds(ids, (id) => projects.projects.find((p) => p.id === id)?.name)
-  return [
-    { value: '', label: t('slackThread.sidebar.allProjects') },
-    ...named,
-    { value: NO_PROJECT, label: t('slackThread.sidebar.noProject') },
-  ]
+  if (scopedProject.value) ids.add(scopedProject.value)
+  return projectOptionsForIds(ids, (id) => projects.projects.find((p) => p.id === id)?.name)
 })
 
 /** Store empty with no search: the "nothing yet" hint rather than "no results". */
@@ -371,12 +378,7 @@ const addOpen = ref(props.embedded ? !!props.add : props.add || params.get('add'
 const addProjectId = ref<string | null>(initialProject)
 
 function openAdd(projectId?: string | null) {
-  addProjectId.value =
-    projectId !== undefined
-      ? projectId
-      : projectFilter.value && projectFilter.value !== NO_PROJECT
-        ? projectFilter.value
-        : null
+  addProjectId.value = projectId !== undefined ? projectId : scopedProject.value
   addOpen.value = true
 }
 
@@ -386,10 +388,7 @@ async function onAdded(res: AddSlackThreadResult) {
   else toast.success(t('slackThread.add.added'))
   // Make sure the new row is visible under the current filters.
   const row = store.threads.find((x) => x.id === res.id)
-  if (row && !visibleThreads.value.some((x) => x.id === res.id)) {
-    projectFilter.value = ''
-    activityFilter.value = ''
-  }
+  if (row && !visibleThreads.value.some((x) => x.id === res.id)) listView.value = clearSlackFilters(listView.value)
   await select(res.id)
 }
 
@@ -445,7 +444,7 @@ watch(
 watch(
   () => props.projectId,
   (projectId) => {
-    if (projectId !== undefined) projectFilter.value = projectId ?? ''
+    if (projectId !== undefined) listView.value = { ...listView.value, project: projectId ?? '' }
   },
 )
 watch(
@@ -459,7 +458,7 @@ watch(
 function dock() {
   const at: Record<string, string> = {}
   if (store.selectedId) at.id = store.selectedId
-  if (projectFilter.value && projectFilter.value !== NO_PROJECT) at.projectId = projectFilter.value
+  if (scopedProject.value) at.projectId = scopedProject.value
   void requestDock('slack', at)
 }
 useDockAll(dock, !props.embedded)
@@ -545,10 +544,9 @@ onBeforeUnmount(() => {
     <div class="relative flex min-h-0 flex-1">
       <SlackSidebar
         v-model:search="search"
-        v-model:project="projectFilter"
-        v-model:activity="activityFilter"
+        v-model:view="listView"
         :threads="visibleThreads"
-        :activity-counts="activityCounts"
+        :counts="activityCounts"
         :empty-store="emptyStore"
         :selected-id="store.selectedId"
         :progress="store.progress"
