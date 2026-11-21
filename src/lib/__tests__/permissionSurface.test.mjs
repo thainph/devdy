@@ -1,0 +1,76 @@
+// Unit tests for lib/permissionSurface.ts (in-app vs window permission prompts).
+// Run: node --test src/lib/__tests__/permissionSurface.test.mjs
+import { test } from 'node:test'
+import assert from 'node:assert/strict'
+import {
+  desiredWindowRuns,
+  floatWhenBackgroundEnabled,
+  permissionSurface,
+  promote,
+  stackLayout,
+  summarizePermissionInput,
+} from '../permissionSurface.ts'
+
+test('setting defaults to on', () => {
+  assert.equal(floatWhenBackgroundEnabled(undefined), true)
+  assert.equal(floatWhenBackgroundEnabled(''), true)
+  assert.equal(floatWhenBackgroundEnabled('true'), true)
+  assert.equal(floatWhenBackgroundEnabled('false'), false)
+})
+
+test('surface follows the foreground window', () => {
+  assert.equal(permissionSurface('main', true), 'inline')
+  assert.equal(permissionSurface('main', false), 'inline')
+  assert.equal(permissionSurface('other', false), 'window')
+  assert.equal(permissionSurface('background', true), 'window')
+  assert.equal(permissionSurface('background', false), 'none')
+})
+
+test('desired windows per surface', () => {
+  const pending = ['a', 'b']
+  assert.deepEqual([...desiredWindowRuns('window', pending, [])], ['a', 'b'])
+  assert.deepEqual([...desiredWindowRuns('inline', pending, ['a'])], [])
+  // none: keep an open window for a still-pending run, open nothing new
+  assert.deepEqual([...desiredWindowRuns('none', pending, ['b', 'z'])], ['b'])
+})
+
+const e = (runId, requestId = `${runId}-1`) => ({ runId, requestId })
+
+test('stack keeps arrival order and caps visible cards', () => {
+  const l = stackLayout([e('a'), e('b'), e('c'), e('d')], new Set(), [])
+  assert.deepEqual(l.visible.map((x) => x.runId), ['a', 'b', 'c'])
+  assert.deepEqual(l.overflow.map((x) => x.runId), ['d'])
+  assert.deepEqual(l.collapsed, [])
+})
+
+test('promoted runs lead, collapsed requests are set aside', () => {
+  const l = stackLayout([e('a'), e('b'), e('c'), e('d')], new Set(['b-1']), ['d', 'c'])
+  assert.deepEqual(l.visible.map((x) => x.runId), ['d', 'c', 'a'])
+  assert.deepEqual(l.overflow, [])
+  assert.deepEqual(l.collapsed.map((x) => x.runId), ['b'])
+})
+
+test('a new request from a collapsed run shows again', () => {
+  const l = stackLayout([e('a', 'a-2')], new Set(['a-1']), [])
+  assert.deepEqual(l.visible.map((x) => x.requestId), ['a-2'])
+})
+
+test('promote dedupes and bounds', () => {
+  assert.deepEqual(promote(['a', 'b'], 'b'), ['b', 'a'])
+  assert.deepEqual(promote(['a', 'b', 'c'], 'd', 3), ['d', 'a', 'b'])
+})
+
+test('input summary picks the meaningful field', () => {
+  assert.equal(summarizePermissionInput('Bash', { command: 'ls  -la\n /tmp' }), 'ls -la /tmp')
+  assert.equal(summarizePermissionInput('Edit', { file_path: '/a/b.ts', old_string: 'x' }), '/a/b.ts')
+  assert.equal(
+    summarizePermissionInput('AskUserQuestion', {
+      questions: [{ question: 'Which DB?' }, { question: 'Port?' }],
+    }),
+    'Which DB? (+1)',
+  )
+  assert.equal(summarizePermissionInput('ExitPlanMode', { plan: '\n# Plan\n- step' }), 'Plan')
+  assert.equal(summarizePermissionInput('X', { a: 1 }), '{"a":1}')
+  assert.equal(summarizePermissionInput('X', null), '')
+  assert.equal(summarizePermissionInput('Bash', { command: 'a'.repeat(50) }, 10), `${'a'.repeat(9)}…`)
+})

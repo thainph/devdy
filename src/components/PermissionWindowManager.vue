@@ -1,31 +1,50 @@
 <script setup lang="ts">
 // Global owner of the per-run permission windows (mounted once, in the main
-// window). It is the SINGLE writer for permission decisions: it watches the shared
-// liveRuns store, opens one standalone window per run that has a pending request —
-// the run being viewed, a popped-out session, or any run streaming in the
-// background — mirrors each run's head request to its window, and runs the real
-// resolve logic when a window forwards the user's choice. Closing a window while a
-// request is still pending counts as cancelling (denying) it.
+// window). It watches the shared liveRuns store and, while the main window is NOT
+// in front, opens one standalone window per run that has a pending request — the
+// run being viewed, a popped-out session, or any run streaming in the background —
+// mirrors each run's head request to its window, and forwards the user's choice to
+// the shared resolve logic (composables/usePermissionDecisions). Closing a window
+// while a request is still pending counts as cancelling (denying) it.
 //
-// Headless (like PermissionNotifier): it renders nothing.
+// While the main window IS in front, requests are answered in-app instead
+// (PermissionInlineStack): open windows are closed programmatically — which never
+// counts as a deny — and come back if the main window loses focus again. With
+// `permission_float_when_background` = "false", a backgrounded Devdy opens no
+// windows and relies on PermissionNotifier's native notification alone.
+//
+// It renders only the in-app card stack (nothing while no request is pending or
+// the main window is in the background).
 import { computed, onBeforeUnmount, watch } from 'vue'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
 import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useAppSettingsStore } from '@/stores/appSettings'
 import {
   openPermissionWindow,
   closePermissionWindow,
   permissionWindowLabel,
 } from '@/lib/permissionWindow'
-import { runDisplayName } from '@/lib/tray'
+import { desiredWindowRuns } from '@/lib/permissionSurface'
+import PermissionInlineStack from '@/components/PermissionInlineStack.vue'
+import {
+  refreshForeground,
+  trackMainForeground,
+  usePermissionDecisions,
+} from '@/composables/usePermissionDecisions'
 
 const live = useLiveRunsStore()
+const perms = usePermissionDecisions()
+const { headOf, sessionOf } = perms
+useAppSettingsStore().ensureLoaded().catch(() => {})
+const stopTracking = trackMainForeground()
 
 interface Tracked {
   win: WebviewWindow
   unlisteners: UnlistenFn[]
-  // True while WE are closing the window (queue emptied / teardown), so the
-  // destroyed handler can tell an app-driven close apart from a user cancel.
+  // True while WE are closing the window (queue emptied / teardown / the main
+  // window came to the front), so the destroyed handler can tell an app-driven
+  // close apart from a user cancel.
   closingProgrammatically: boolean
 }
 const tracked = new Map<string, Tracked>()
@@ -38,22 +57,9 @@ const closing = new Set<string>()
 // runId → head request id, for every run with a pending permission request.
 const pending = computed(() => {
   const map = new Map<string, string>()
-  live.sessions.forEach((s, runId) => {
-    const head = s.permissionQueue[0]
-    if (head) map.set(runId, head.request_id)
-  })
+  for (const e of perms.entries.value) map.set(e.runId, e.requestId)
   return map
 })
-
-function headOf(runId: string) {
-  return live.get(runId)?.permissionQueue[0] ?? null
-}
-
-// Which session / project a run belongs to, so its window can say who is asking.
-function sessionOf(runId: string) {
-  const s = live.get(runId)
-  return runDisplayName(runId, s?.projectId ?? '')
-}
 
 function sync(runId: string) {
   void emit(`permission:sync:${runId}`, {
@@ -63,28 +69,17 @@ function sync(runId: string) {
   })
 }
 
-// The request leaves the queue (and the window moves on) only once the answer
-// reached the backend; on failure it stays as the head so the user can retry.
-function decide(runId: string, decision: 'allow' | 'deny' | 'ask', remember: boolean) {
-  const req = headOf(runId)
-  if (!req) return
-  if (remember && decision === 'allow') live.rememberAllowedTool(runId, req.tool_name, req.request_id)
-  else if (remember && decision === 'deny') live.rememberDeniedTool(runId, req.tool_name, req.request_id)
-  void live.respondPermission(runId, req, decision, { remember }).then((ok) => {
-    if (!ok) sync(runId)
-  })
-}
-
-function answerQuestion(runId: string, answers: Record<string, string>) {
-  const req = headOf(runId)
-  if (!req) return
-  void live.respondPermission(runId, req, 'allow', { answers }).then((ok) => {
-    if (!ok) sync(runId)
-  })
-}
+// When windows become the surface because the user just left the main window
+// (Cmd-Tab to another app, a click into a popped-out session), the windows that
+// open for requests already pending must not grab the keyboard from where the
+// user is now typing — Enter in a focused prompt means "allow". A request that
+// arrives later still gets a focused window, as before.
+const SURFACE_SETTLE_MS = 1500
+let surfaceChangedAt = 0
 
 async function openFor(runId: string, indexFromRight: number) {
-  const win = await openPermissionWindow(runId, indexFromRight)
+  const focus = Date.now() - surfaceChangedAt > SURFACE_SETTLE_MS
+  const win = await openPermissionWindow(runId, indexFromRight, { focus })
   const entry: Tracked = { win, unlisteners: [], closingProgrammatically: false }
   tracked.set(runId, entry)
 
@@ -93,16 +88,21 @@ async function openFor(runId: string, indexFromRight: number) {
     await listen<{ request_id: string; decision: 'allow' | 'deny'; remember: boolean }>(
       `permission:decide:${runId}`,
       (e) => {
-        // Ignore stale decisions that don't match the current head request.
-        if (e.payload?.request_id !== headOf(runId)?.request_id) return
-        decide(runId, e.payload.decision, e.payload.remember)
+        // A stale decision (not the current head request) is ignored by decide.
+        if (!e.payload) return
+        void perms.decide(runId, e.payload.request_id, e.payload.decision, e.payload.remember)
+          .then((ok) => {
+            if (!ok) sync(runId)
+          })
       },
     ),
     await listen<{ request_id: string; answers: Record<string, string> }>(
       `permission:answer:${runId}`,
       (e) => {
-        if (e.payload?.request_id !== headOf(runId)?.request_id) return
-        answerQuestion(runId, e.payload.answers)
+        if (!e.payload) return
+        void perms.answerQuestion(runId, e.payload.request_id, e.payload.answers).then((ok) => {
+          if (!ok) sync(runId)
+        })
       },
     ),
   )
@@ -121,7 +121,8 @@ async function openFor(runId: string, indexFromRight: number) {
     if (tracked.get(runId) !== entry) return
     tracked.delete(runId)
     entry.unlisteners.forEach((off) => off())
-    if (headOf(runId)) decide(runId, 'deny', false)
+    const head = headOf(runId)
+    if (head) void perms.decide(runId, head.request_id, 'deny', false)
   })
 
   // The window failed to open: drop the dead entry (otherwise reconcile keeps
@@ -160,8 +161,9 @@ function closeFor(runId: string) {
   })
 }
 
-// Reconcile the open windows against the runs that currently have a pending
-// request: open the new, sync the existing, close the resolved. Opening is async,
+// Reconcile the open windows against the runs that should have one (every pending
+// run while windows are the surface; none while the main window is in front):
+// open the new, sync the existing, close the rest. Opening is async,
 // so loop until stable — a `pending` change that lands mid-open (e.g. a batch of
 // conductor workers all asking at once) sets `dirty` and gets picked up here
 // rather than dropped.
@@ -176,12 +178,12 @@ async function reconcile() {
   try {
     do {
       dirty = false
-      const map = pending.value
+      const want = desiredWindowRuns(perms.surface.value, pending.value.keys(), tracked.keys())
       for (const runId of [...tracked.keys()]) {
-        if (!map.has(runId)) closeFor(runId)
+        if (!want.has(runId)) closeFor(runId)
       }
       let index = tracked.size
-      for (const runId of map.keys()) {
+      for (const runId of want) {
         if (tracked.has(runId)) {
           sync(runId)
         } else if (!closing.has(runId)) {
@@ -200,7 +202,18 @@ async function reconcile() {
     reconciling = false
   }
 }
-watch(pending, () => void reconcile(), { deep: false })
+// A request arriving while the main window is not in front: re-check which window
+// is (the user may have moved from a popped-out session to another app since the
+// last focus event) before choosing between a window and the notification alone.
+watch(pending, () => {
+  if (perms.foreground.value === 'main') void reconcile()
+  else void refreshForeground().finally(() => void reconcile())
+})
+// Main window focused / blurred, or the setting changed.
+watch(perms.surface, () => {
+  surfaceChangedAt = Date.now()
+  void reconcile()
+})
 
 // Re-sync open windows when a run's name resolves or changes (rename, or runMeta
 // arriving after the window opened) so the header never stays on a stale name.
@@ -215,6 +228,7 @@ watch(
 )
 
 onBeforeUnmount(() => {
+  stopTracking()
   for (const [runId, entry] of tracked) {
     entry.closingProgrammatically = true
     entry.unlisteners.forEach((off) => off())
@@ -226,5 +240,5 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <span hidden />
+  <PermissionInlineStack />
 </template>

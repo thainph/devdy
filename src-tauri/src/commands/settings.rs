@@ -112,6 +112,11 @@ pub struct AppSettings {
     /// When a second monitor is unplugged, dock the screens' windows back into
     /// the main window as tabs. "true" (default) | "false".
     pub window_dock_on_unplug: String,
+    /// While Devdy is in the background, pending permission / question requests
+    /// pop out into their own always-on-top windows. "true" (default) | "false"
+    /// (= rely on the native notification only). With the main window in front
+    /// they are always answered in-app. Read by the frontend only.
+    pub permission_float_when_background: String,
 }
 
 /// `AppSettings` keys carried by a settings backup. `claude_path` / `codex_path` are left out:
@@ -159,6 +164,7 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "window_mode",
     "window_mode_overrides",
     "window_dock_on_unplug",
+    "permission_float_when_background",
     // PR Inbox poller (pr_inbox).
     "pr_inbox.poll_minutes",
     "pr_inbox.review_prompt",
@@ -231,6 +237,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         window_mode: "auto".to_string(),
         window_mode_overrides: "{}".to_string(),
         window_dock_on_unplug: "true".to_string(),
+        permission_float_when_background: "true".to_string(),
     };
 
     for row in rows {
@@ -284,6 +291,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "window_mode" => settings.window_mode = value,
             "window_mode_overrides" => settings.window_mode_overrides = value,
             "window_dock_on_unplug" => settings.window_dock_on_unplug = value,
+            "permission_float_when_background" => {
+                settings.permission_float_when_background = value
+            }
             _ => {}
         }
     }
