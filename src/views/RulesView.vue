@@ -12,8 +12,8 @@ import { useI18n } from 'vue-i18n'
 import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { useRoute, useRouter } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Layers, RefreshCw, ScrollText, Upload } from 'lucide-vue-next'
-import { AppSelect, Badge, Button } from '@/components/ui'
+import { Layers, MoreHorizontal, RefreshCw, ScrollText, Upload } from 'lucide-vue-next'
+import { AppSelect, Badge, Button, DropdownItem, DropdownMenu } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
@@ -358,38 +358,37 @@ async function handleExport(rule: Rule) {
       @retry="refresh"
     >
       <template #toolbar>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :title="t('groups.manageRuleGroups')"
-          :aria-label="t('groups.manageRuleGroups')"
-          @click="groupsOpen = true"
-        >
-          <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="reapplyingId !== null || store.rules.length === 0"
-          :title="reapplyingId === 'all' ? t('rules.list.reapplying') : `${t('rules.list.reapplyAll')} — ${t('rules.list.reapplyAllHint')}`"
-          :aria-label="t('rules.list.reapplyAll')"
-          @click="handleReapply()"
-        >
-          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="importing"
-          :title="importing ? t('rules.list.importing') : t('rules.list.importMd')"
-          :aria-label="t('rules.list.importMd')"
-          @click="handleImport"
-        >
-          <Upload class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-pulse': importing }" />
-        </Button>
+        <!-- Secondary list actions in one menu, so the search box keeps its width. -->
+        <DropdownMenu align="right" class="shrink-0">
+          <template #trigger>
+            <Button
+              variant="outline"
+              size="icon"
+              class="shrink-0"
+              :title="t('common.moreActions')"
+              :aria-label="t('common.moreActions')"
+            >
+              <RefreshCw v-if="reapplyingId === 'all' || importing" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+              <MoreHorizontal v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </Button>
+          </template>
+          <DropdownItem @click="groupsOpen = true">
+            <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('groups.manageRuleGroups') }}
+          </DropdownItem>
+          <DropdownItem
+            :disabled="reapplyingId !== null || store.rules.length === 0"
+            :title="t('rules.list.reapplyAllHint')"
+            @click="handleReapply()"
+          >
+            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ reapplyingId === 'all' ? t('rules.list.reapplying') : t('rules.list.reapplyAll') }}
+          </DropdownItem>
+          <DropdownItem :disabled="importing" @click="handleImport">
+            <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ importing ? t('rules.list.importing') : t('rules.list.importMd') }}
+          </DropdownItem>
+        </DropdownMenu>
       </template>
 
       <template #controls>

@@ -8,12 +8,12 @@ import { useI18n } from 'vue-i18n'
 import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Layers, Plus, Puzzle, RefreshCw, Upload } from 'lucide-vue-next'
+import { Layers, MoreHorizontal, Plus, Puzzle, RefreshCw, Upload } from 'lucide-vue-next'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useSkillsStore, type Skill } from '@/stores/skills'
 import { useProjectsStore } from '@/stores/projects'
 import { useSkillGroupsStore } from '@/stores/groups'
-import { AppSelect, Badge, Button } from '@/components/ui'
+import { AppSelect, Badge, Button, DropdownItem, DropdownMenu } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
@@ -349,39 +349,38 @@ async function handleExport(skill: Skill) {
       @retry="refresh"
     >
       <template #toolbar>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :title="t('groups.manageSkillGroups')"
-          :aria-label="t('groups.manageSkillGroups')"
-          @click="groupsOpen = true"
-        >
-          <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button
-          v-if="store.skills.length > 0"
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="reapplyingId !== null"
-          :title="reapplyingId === 'all' ? t('skills.list.reapplying') : `${t('skills.list.reapplyAll')} — ${t('skills.list.reapplyAllHint')}`"
-          :aria-label="t('skills.list.reapplyAll')"
-          @click="handleReapply()"
-        >
-          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-spin': reapplyingId === 'all' }" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="importingZip"
-          :title="importingZip ? t('skills.list.importing') : t('skills.detail.importHint')"
-          :aria-label="t('skills.list.import')"
-          @click="handleImport"
-        >
-          <Upload class="h-3.5 w-3.5" :stroke-width="1.75" :class="{ 'animate-pulse': importingZip }" />
-        </Button>
+        <!-- Secondary list actions in one menu, so the search box keeps its width. -->
+        <DropdownMenu align="right" class="shrink-0">
+          <template #trigger>
+            <Button
+              variant="outline"
+              size="icon"
+              class="shrink-0"
+              :title="t('common.moreActions')"
+              :aria-label="t('common.moreActions')"
+            >
+              <RefreshCw v-if="reapplyingId === 'all' || importingZip" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
+              <MoreHorizontal v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </Button>
+          </template>
+          <DropdownItem @click="groupsOpen = true">
+            <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ t('groups.manageSkillGroups') }}
+          </DropdownItem>
+          <DropdownItem
+            v-if="store.skills.length > 0"
+            :disabled="reapplyingId !== null"
+            :title="t('skills.list.reapplyAllHint')"
+            @click="handleReapply()"
+          >
+            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ reapplyingId === 'all' ? t('skills.list.reapplying') : t('skills.list.reapplyAll') }}
+          </DropdownItem>
+          <DropdownItem :disabled="importingZip" :title="t('skills.detail.importHint')" @click="handleImport">
+            <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
+            {{ importingZip ? t('skills.list.importing') : t('skills.list.import') }}
+          </DropdownItem>
+        </DropdownMenu>
       </template>
 
       <template #controls>

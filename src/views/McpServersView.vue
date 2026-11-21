@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // MCP servers, Notes-style master-detail:
 //
-//   ┌ sidebar: search · import · refresh   │ detail: name / transport · enabled │
+//   ┌ sidebar: search · import             │ detail: name / transport · enabled │
 //   │ + New, All | Enabled | Disabled      │ · added   [switch][Test][Save][⋯]  │
 //   │ Built-in · stdio · http · sse ·      │ General / Process+Environment or   │
 //   │ Recommended folders                  │ Endpoint+Headers                   │
@@ -20,7 +20,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Plus, RotateCw, Server, Upload } from 'lucide-vue-next'
+import { Plus, Server, Upload } from 'lucide-vue-next'
 import { AppSelect, Button } from '@/components/ui'
 import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
@@ -476,17 +476,6 @@ function dotClass(row: McpRow): string {
           @click="handleImport"
         >
           <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="store.loading"
-          :title="t('common.refresh')"
-          :aria-label="t('common.refresh')"
-          @click="refresh"
-        >
-          <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
         </Button>
       </template>
 

@@ -35,5 +35,6 @@
   "sortByAdded": "Recently added",
   "sortByType": "By type",
   "sortByTag": "By tag",
-  "dockIntoMain": "Dock into main window"
+  "dockIntoMain": "Dock into main window",
+  "moreActions": "More actions"
 }
