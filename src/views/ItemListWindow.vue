@@ -39,7 +39,6 @@ import { ConfirmModal, ToastHost } from '@/components/ui'
 import ItemSidebar from '@/components/items/ItemSidebar.vue'
 import ItemHeader from '@/components/items/ItemHeader.vue'
 import ItemBody from '@/components/items/ItemBody.vue'
-import ItemFields from '@/components/items/ItemFields.vue'
 import { noteRow, todoRow, type ItemRow } from '@/components/items/itemRow'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
@@ -721,13 +720,6 @@ onBeforeUnmount(() => {
         @copy-id="copyId"
         @make-secret="makeSecret"
         @delete="remove"
-        @set-project="setProject"
-      />
-      <!-- Todos only: a note's project is in its header. -->
-      <ItemFields
-        v-if="kind === 'todo'"
-        :kind="kind"
-        :item="item"
         @set-project="setProject"
         @set-due-date="setDueDate"
       />

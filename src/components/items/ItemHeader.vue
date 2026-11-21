@@ -8,8 +8,8 @@
 //          then [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy ID
 //          (not in ⋯) · ⋯ (New session from this … · Copy ID · Delete)
 //
-// A note's project is picked in the header (like a Slack thread's); a todo's
-// project and deadline are edited in the body (ItemFields).
+// The project (and a todo's deadline) are picked in the header's action row,
+// like a Slack thread's project.
 //
 // While editing, the actions give way to Cancel · Save (⌘/Ctrl+Enter / Esc do
 // the same inside the fields). Narrow pane: the meta line truncates, then the
@@ -17,8 +17,8 @@
 import { computed } from 'vue'
 import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { useI18n } from 'vue-i18n'
-import { Check, Copy, LockKeyhole, Pencil, Rocket } from 'lucide-vue-next'
-import { Button, DropdownItem } from '@/components/ui'
+import { Check, Copy, LockKeyhole, Pencil, Rocket, X } from 'lucide-vue-next'
+import { Button, DatePicker, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
 import ProjectSelect from '@/components/ProjectSelect.vue'
@@ -65,6 +65,7 @@ const emit = defineEmits<{
   makeSecret: []
   delete: []
   setProject: [projectId: string | null]
+  setDueDate: [dueDate: string | null]
 }>()
 
 const { t } = useI18n()
@@ -163,15 +164,35 @@ const newSessionLabel = computed(() =>
         </template>
       </p>
       <div class="ml-auto flex min-w-0 items-center gap-1.5">
-        <!-- A note's project sits here, like a Slack thread's (a todo edits it
-             with its deadline in ItemFields); it decides what can be linked. -->
-        <div v-if="note" class="w-[11rem] min-w-[5.5rem] shrink">
+        <!-- The project, like a Slack thread's; it decides what can be linked. -->
+        <div class="w-[11rem] min-w-[5.5rem] shrink">
           <ProjectSelect
-            :model-value="note.project_id"
+            :model-value="item.project_id"
             variant="outline"
             size="sm"
             @update:model-value="emit('setProject', $event)"
           />
+        </div>
+        <!-- A todo's deadline (× clears it). -->
+        <div v-if="todo" class="flex w-[9.5rem] min-w-[7rem] shrink items-center">
+          <DatePicker
+            :model-value="todo.due_date ?? ''"
+            size="sm"
+            class="min-w-0 flex-1"
+            :class="todo.due_date ? 'rounded-r-none' : ''"
+            :placeholder="t('item.setDueDate')"
+            @update:model-value="emit('setDueDate', $event || null)"
+          />
+          <button
+            v-if="todo.due_date"
+            type="button"
+            class="flex h-8 w-7 shrink-0 cursor-pointer items-center justify-center rounded-r-md border border-l-0 border-border bg-background text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
+            :title="t('item.clearDueDate')"
+            :aria-label="t('item.clearDueDate')"
+            @click="emit('setDueDate', null)"
+          >
+            <X class="h-3 w-3" :stroke-width="2" />
+          </button>
         </div>
         <LinkedSessionsMenu
           class="shrink-0"
