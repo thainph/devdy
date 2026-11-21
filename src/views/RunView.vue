@@ -22,7 +22,7 @@ import { useAzureAccountsStore } from '@/stores/azureAccounts'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useModelCatalogStore } from '@/stores/modelCatalog'
-import { useUILayoutStore, type ListDensity } from '@/stores/uiLayout'
+import { useUILayoutStore } from '@/stores/uiLayout'
 import { registerMenuAction } from '@/lib/appMenu'
 import { invoke } from '@/lib/tauri'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -38,8 +38,8 @@ import {
   ShieldQuestion, MessageCircleQuestion,
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
   HardDrive, Cloud, CloudCog, Languages, StickyNote, ListTodo, FolderTree, Loader2,
-  Search, Network, GitBranch, ChevronLeft, ChevronRight,
-  Plus, AlignJustify, Rows2, Rows3, Rows4, ArrowUpDown,
+  Network, GitBranch, ChevronLeft, ChevronRight,
+  Plus, ArrowUpDown,
   KeyRound, SquareArrowOutUpRight, History
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
@@ -68,7 +68,7 @@ import FileTree from '@/components/FileTree.vue'
 import { nativeDropPoint, treeDropTargetAt } from '@/lib/fileTreeDnd'
 import ConductorWorkerPanel from '@/components/conductor/ConductorWorkerPanel.vue'
 import { useConductorStore } from '@/stores/conductor'
-import { Button, Input, Badge, Modal, ContextMenu, DropdownMenu, DropdownItem } from '@/components/ui'
+import { Button, Input, Badge, Modal, ContextMenu, DropdownMenu, DropdownItem, DropdownSeparator } from '@/components/ui'
 import SessionKindTile from '@/components/dashboard/SessionKindTile.vue'
 import { menuPoint } from '@/components/dashboard/SessionMenu.vue'
 import { historyAgo, historyType } from '@/lib/runHistory'
@@ -84,6 +84,23 @@ import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLin
 import { topKByScore } from '@/lib/topK'
 import { provideListPane, useListPaneSidebar } from '@/composables/useListPane'
 import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
+import ListSidebarHeader from '@/components/listDetail/ListSidebarHeader.vue'
+import ListSearchBox from '@/components/listDetail/ListSearchBox.vue'
+import ListFilterSummary from '@/components/listDetail/ListFilterSummary.vue'
+import ListMenuLabel from '@/components/listDetail/ListMenuLabel.vue'
+import ListMenuCheck from '@/components/listDetail/ListMenuCheck.vue'
+import {
+  RUN_HISTORY_DENSITIES,
+  RUN_HISTORY_STATUSES,
+  defaultRunHistoryView,
+  matchesRunHistoryStatus,
+  matchesRunSearch,
+  runHistoryFilterSummary,
+  runHistoryStatusCounts,
+  runHistoryViewChanged,
+  type RunHistoryFlags,
+  type RunHistoryStatus,
+} from '@/lib/runHistoryView'
 import PermissionPrompt from '@/components/PermissionPrompt.vue'
 import { setDockedRun, usePermissionDecisions } from '@/composables/usePermissionDecisions'
 import { openSurface } from '@/lib/surfaceOpen'
@@ -398,21 +415,16 @@ const detectedRef = ref<
   { kind: 'issue' | 'pr'; number: number; repoId: string; repoName: string } | null
 >(null)
 const fetching = ref(false)
-// The fetch form lives in a popover off the rail toolbar's Fetch icon, so the
-// run History gets the space. Closes on outside click (the trigger is ignored
-// so its own click can toggle) and after a successful fetch.
+// The fetch form lives in a panel opened from the History header's ⋯ menu, so
+// the run History gets the space. Closes on outside click, ✕ / Esc and after a
+// successful fetch.
 const fetchOpen = ref(false)
 const fetchPanelEl = ref<HTMLElement | null>(null)
-const fetchTriggerEl = ref<HTMLElement | null>(null)
-onClickOutside(fetchPanelEl, () => { fetchOpen.value = false }, { ignore: [fetchTriggerEl] })
+onClickOutside(fetchPanelEl, () => { fetchOpen.value = false })
 
-// List density menu (persisted in the uiLayout store; shared with the worker panel).
+// Row density (persisted in the uiLayout store; shared with the worker panel),
+// set from the History search box's filter menu.
 const historyDensity = computed(() => uiLayout.listDensity)
-const historyDensityOptions: { value: ListDensity; icon: typeof Rows2 }[] = [
-  { value: 'comfortable', icon: Rows2 },
-  { value: 'compact', icon: Rows3 },
-  { value: 'dense', icon: Rows4 },
-]
 // Left rail view: session controls/history, or the project file tree.
 const leftTab = ref<'session' | 'files'>('session')
 
@@ -1210,24 +1222,55 @@ function runTimestamp(iso: string): string {
 // actually shows (title/label, engine, status, issue/PR number) so whatever the
 // user reads in the list is also what they can type to find it again.
 const sessionSearch = ref('')
+
+// ── History filter menu ──────────────────────────────────────────────────
+// The status filter (and the density above) behind the search box's sliders
+// button, plus the "N waiting" quick filter in the header (lib/runHistoryView).
+const historyStatus = ref<RunHistoryStatus>('')
+function runHistoryFlags(run: RunRecord): RunHistoryFlags {
+  return { waiting: !!pendingRequest(run.id), unread: runIsUnread(run), running: runIsRunning(run) }
+}
+/** Per-status counts over the listed (non-worker) sessions. */
+const historyCounts = computed(() =>
+  runHistoryStatusCounts(runsStore.runs.filter((r) => !r.conductor_run_id).map(runHistoryFlags)),
+)
+/** Statuses of the menu: All and the ones with sessions, plus the picked one. */
+const historyStatuses = computed(() =>
+  RUN_HISTORY_STATUSES.filter((s) => !s || historyCounts.value[s] > 0 || historyStatus.value === s),
+)
+const HISTORY_STATUS_DOT: Partial<Record<RunHistoryStatus, string>> = {
+  waiting: 'bg-warning',
+  unread: 'bg-primary',
+  running: 'bg-success',
+}
+function historyStatusLabel(s: RunHistoryStatus): string {
+  return t(`run.historyStatus.${s || 'all'}`)
+}
+const historyView = computed(() => ({ status: historyStatus.value, density: historyDensity.value }))
+const historyViewChanged = computed(() => runHistoryViewChanged(historyView.value))
+const historyFilterParts = computed(() => runHistoryFilterSummary(historyView.value, historyStatusLabel))
+function resetHistoryView() {
+  const d = defaultRunHistoryView()
+  historyStatus.value = d.status
+  uiLayout.setListDensity(d.density)
+}
+
 const filteredRuns = computed(() => {
-  const q = sessionSearch.value.trim().toLowerCase()
-  if (!q) return runsStore.runs
-  return runsStore.runs.filter((run) => {
-    const haystack = [
+  const q = sessionSearch.value
+  const status = historyStatus.value
+  return runsStore.runs.filter((run) =>
+    matchesRunHistoryStatus(status, runHistoryFlags(run)) &&
+    matchesRunSearch(q, [
       runLabel(run),
-      run.title ?? '',
-      runRefText(run) ?? '',
-      run.ref_author ?? '',
+      run.title,
+      runRefText(run),
+      run.ref_author,
       run.engine,
       run.status,
       run.run_type,
       run.ref_number != null ? `#${run.ref_number}` : '',
-    ]
-      .join(' ')
-      .toLowerCase()
-    return haystack.includes(q)
-  })
+    ]),
+  )
 })
 
 // ── History list ───────────────────────────────────────────────────────────
@@ -4123,7 +4166,8 @@ function handleRefInput(val: string) {
             <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
             {{ t('run.files') }}
           </button>
-          <div class="flex items-center px-1.5">
+          <!-- The Session tab's header carries ⋯ / ✕; the Files tab keeps them here. -->
+          <div v-if="leftTab === 'files'" class="flex items-center px-1.5">
             <Button
               v-if="bodyNarrow"
               variant="ghost"
@@ -4139,178 +4183,184 @@ function handleRefInput(val: string) {
           </div>
         </div>
 
-        <!-- Compact top toolbar: one New session button (every session is a
-             conductor), the Fetch issue/PR popover, and the History density menu. -->
-        <div v-show="leftTab === 'session'" class="run-history-toolbar p-3 border-b border-border/60">
-          <div class="relative flex items-center gap-1.5">
-            <Button class="flex-1" :disabled="creatingSession" @click="handleNewSession">
-              <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-              {{ creatingSession ? t('run.creating') : t('run.newSession') }}
-            </Button>
-            <span ref="fetchTriggerEl" class="inline-flex">
-              <Button
-                variant="outline"
-                size="icon"
-                :class="{ 'bg-accent text-foreground': fetchOpen }"
-                :title="t('run.fetchIssuePr')"
-                :aria-label="t('run.fetchIssuePr')"
-                :aria-expanded="fetchOpen"
-                @click="fetchOpen = !fetchOpen"
-              >
-                <GitPullRequest class="h-3.5 w-3.5" :stroke-width="1.75" />
-              </Button>
-            </span>
-            <DropdownMenu align="right">
-              <template #trigger>
-                <Button
-                  variant="outline"
-                  size="icon"
-                  :title="t('run.density.title')"
-                  :aria-label="t('run.density.title')"
-                >
-                  <AlignJustify class="h-3.5 w-3.5" :stroke-width="1.75" />
-                </Button>
-              </template>
-              <DropdownItem
-                v-for="opt in historyDensityOptions"
-                :key="opt.value"
-                @click="uiLayout.setListDensity(opt.value)"
-              >
-                <component :is="opt.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-                <span class="flex-1">{{ t(`run.density.${opt.value}`) }}</span>
-                <Check
-                  v-if="uiLayout.listDensity === opt.value"
-                  class="h-3.5 w-3.5 shrink-0 text-primary"
-                  :stroke-width="2"
-                />
-              </DropdownItem>
-            </DropdownMenu>
-
-          <!-- Fetch popover: spans the toolbar row (the rail clips overflow, so
-               it can't hang off the icon itself). -->
-          <div
-            v-if="fetchOpen"
-            ref="fetchPanelEl"
-            class="absolute left-0 right-0 top-full z-30 mt-1.5 space-y-3 rounded-md border border-border bg-popover p-3 shadow-lg shadow-black/20"
-          >
-          <p class="text-[11px] font-medium text-foreground/80">{{ t('run.fetchIssuePr') }}</p>
-
-          <div v-if="repos.length === 0" class="text-[10px] text-warning/80 leading-relaxed">
-            {{ t('run.noReposConfigured') }}
-          </div>
-
-          <!-- The URL is the whole form: it names the repo, the kind and the
-               number, so there is nothing left to pick by hand. -->
-          <div>
-            <Input
-              :model-value="refInput"
-              @update:model-value="handleRefInput"
-              :placeholder="t('run.refPlaceholder')"
-              @keyup.enter="handleFetch()"
-            />
-            <p v-if="fetchError" class="mt-1 text-[10px] text-destructive">{{ fetchError }}</p>
-          </div>
-
-          <!-- Echo back what the URL was understood to mean. -->
-          <div
-            v-if="detectedRef"
-            class="flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-md bg-muted text-muted-foreground"
-          >
-            <component
-              :is="detectedRef.kind === 'pr' ? GitPullRequest : Bug"
-              class="h-3 w-3 shrink-0"
-              :stroke-width="1.75"
-            />
-            <span class="truncate">
-              {{ detectedRef.kind === 'pr' ? t('run.labelPr') : t('run.issue') }}
-              #{{ detectedRef.number }} · {{ detectedRef.repoName }}
-            </span>
-          </div>
-
-          <Button
-            v-if="!needsLinkedIssue"
-            variant="outline"
-            class="w-full"
-            :disabled="fetching || !detectedRef"
-            @click="handleFetch()"
-          >
-            {{ fetching
-              ? t('run.fetching')
-              : detectedRef?.kind === 'pr' ? t('run.fetchPr')
-              : detectedRef?.kind === 'issue' ? t('run.fetchIssue')
-              : t('run.fetchIssuePr') }}
-          </Button>
-
-          <!-- Linked issue prompt (shown when PR body has no Fixes/Closes/Resolves #N) -->
-          <div v-if="needsLinkedIssue" class="space-y-2">
-            <Input
-              v-model="linkedIssueInput"
-              :placeholder="t('run.linkedIssuePlaceholder')"
-              @keyup.enter="handleSubmitLinkedIssue"
-            />
-            <Button
-              variant="outline"
-              class="w-full"
-              :disabled="fetching || !linkedIssueInput"
-              @click="handleSubmitLinkedIssue"
-            >
-              {{ fetching ? t('run.fetching') : t('run.fetchWithLinkedIssue') }}
-            </Button>
-          </div>
-          </div>
-          </div>
-        </div>
-
-        <!-- Run history -->
-        <!-- The header (search + title/count + Clear all) is pinned: only the
-             rows below it scroll, so the filter and the bulk action stay
-             reachable no matter how far down the list the user is. -->
+        <!-- Session tab: the shared list-sidebar chrome (components/listDetail).
+               History 12 [2 waiting]               [+ New session] [⋯] [✕]
+               ( 🔍 Search sessions…  (⌘F)                          ⚙︎• )
+               Filtering: Waiting for you                 Clear filters
+             ⋯ holds Fetch issue / PR, Re-sort, Clear all and Hide the list;
+             the search box's menu holds the status filter and row density
+             (lib/runHistoryView). Pinned: only the rows below scroll. -->
         <div v-show="leftTab === 'session'" class="flex-1 min-h-0 flex flex-col">
-          <div class="run-history-head shrink-0 border-b border-border/40">
-            <div v-if="runsStore.runs.length > 0" class="px-3 pt-2.5">
-              <div class="relative">
-                <Search class="pointer-events-none absolute left-2.5 top-1/2 -translate-y-1/2 h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-                <Input
-                  v-model="sessionSearch"
-                  :placeholder="t('run.searchSessionsPlaceholder')"
-                  class="pl-8 pr-8"
-                />
+          <div class="run-history-head relative shrink-0 border-b border-border/40">
+            <ListSidebarHeader
+              :title="t('run.history')"
+              :count="displayRuns.length"
+              :new-label="creatingSession ? t('run.creating') : t('run.newSession')"
+              :new-disabled="creatingSession"
+              :closable="bodyNarrow"
+              @new="handleNewSession"
+              @close="historyOverlay = false"
+            >
+              <template v-if="historyCounts.waiting > 0 || historyStatus === 'waiting'" #badge>
+                <button
+                  type="button"
+                  class="h-5 shrink-0 cursor-pointer rounded-full px-2 text-[11px] font-semibold tabular-nums transition-colors"
+                  :class="historyStatus === 'waiting'
+                    ? 'bg-warning text-warning-foreground'
+                    : 'bg-warning/15 text-warning hover:bg-warning/25'"
+                  :aria-pressed="historyStatus === 'waiting'"
+                  :title="t('run.waitingBadgeTitle')"
+                  @click="historyStatus = historyStatus === 'waiting' ? '' : 'waiting'"
+                >
+                  {{ t('run.waitingCount', { n: historyCounts.waiting }) }}
+                </button>
+              </template>
+              <template #menu>
+                <DropdownItem @click="fetchOpen = true">
+                  <GitPullRequest class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  {{ t('run.fetchIssuePr') }}
+                </DropdownItem>
+                <DropdownItem :disabled="!runsStore.orderStale" :title="t('run.resortSessionsTitle')" @click="runsStore.sortRuns()">
+                  <ArrowUpDown class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  {{ t('run.resortSessions') }}
+                </DropdownItem>
+                <DropdownSeparator />
+                <DropdownItem
+                  variant="destructive"
+                  :disabled="clearingAll || runsStore.runs.length === 0"
+                  :title="t('run.clearAllRunsTitle')"
+                  @click="handleClearAllRuns"
+                >
+                  <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  {{ clearingAll ? t('run.clearing') : t('run.clearAll') }}
+                </DropdownItem>
+              </template>
+            </ListSidebarHeader>
+
+            <div v-if="runsStore.runs.length > 0" class="px-2.5 pb-1.5 pt-0.5">
+              <ListSearchBox
+                v-model="sessionSearch"
+                :placeholder="t('run.searchSessionsPlaceholder')"
+                :filter-active="historyViewChanged"
+              >
+                <template #filters>
+                  <ListMenuLabel>{{ t('run.historyStatusTitle') }}</ListMenuLabel>
+                  <ListMenuCheck
+                    v-for="s in historyStatuses"
+                    :key="s || 'all'"
+                    radio
+                    :checked="historyStatus === s"
+                    :dot="HISTORY_STATUS_DOT[s]"
+                    :count="historyCounts[s]"
+                    @click="historyStatus = s"
+                  >
+                    {{ historyStatusLabel(s) }}
+                  </ListMenuCheck>
+                  <DropdownSeparator />
+                  <ListMenuLabel>{{ t('run.density.title') }}</ListMenuLabel>
+                  <ListMenuCheck
+                    v-for="d in RUN_HISTORY_DENSITIES"
+                    :key="d"
+                    radio
+                    :checked="historyDensity === d"
+                    @click="uiLayout.setListDensity(d)"
+                  >
+                    {{ t(`run.density.${d}`) }}
+                  </ListMenuCheck>
+                  <DropdownSeparator />
+                  <DropdownItem :disabled="!historyViewChanged" @click="resetHistoryView">
+                    <span class="w-3.5 shrink-0" aria-hidden="true" />
+                    {{ t('listPane.resetView') }}
+                  </DropdownItem>
+                </template>
+              </ListSearchBox>
+            </div>
+
+            <ListFilterSummary :parts="historyFilterParts" @clear="historyStatus = ''" />
+
+            <!-- Fetch issue / PR (from ⋯): a panel anchored under this head,
+                 over the rows (the rail clips overflow). -->
+            <div
+              v-if="fetchOpen"
+              ref="fetchPanelEl"
+              class="absolute left-2.5 right-2.5 top-full z-30 mt-1 space-y-3 rounded-md border border-border bg-popover p-3 shadow-lg shadow-black/20"
+              @keydown.esc.stop="fetchOpen = false"
+            >
+              <div class="flex items-center justify-between gap-2">
+                <p class="text-[11px] font-medium text-foreground/80">{{ t('run.fetchIssuePr') }}</p>
                 <Button
-                  v-if="sessionSearch"
                   variant="ghost"
                   size="icon-xs"
-                  class="absolute right-1 top-1/2 -translate-y-1/2"
-                  :title="t('run.clearSearch')"
-                  :aria-label="t('run.clearSearch')"
-                  @click="sessionSearch = ''"
+                  :title="t('common.close')"
+                  :aria-label="t('common.close')"
+                  @click="fetchOpen = false"
                 >
-                  <X class="h-3.5 w-3.5" :stroke-width="2" />
+                  <X class="h-3 w-3" :stroke-width="2" />
                 </Button>
               </div>
-            </div>
-            <div class="flex items-center justify-between px-4 py-1.5">
-              <p class="text-[10px] font-semibold text-muted-foreground uppercase tracking-wider">
-                {{ t('run.history') }}<span v-if="displayRuns.length" class="font-normal"> · {{ displayRuns.length }}</span>
-              </p>
-              <button
-                v-if="runsStore.orderStale"
-                class="ml-auto mr-3 flex items-center gap-1 text-[10px] text-primary/80 hover:text-primary transition-colors cursor-pointer"
-                :title="t('run.resortSessionsTitle')"
-                @click="runsStore.sortRuns()"
+
+              <div v-if="repos.length === 0" class="text-[10px] text-warning/80 leading-relaxed">
+                {{ t('run.noReposConfigured') }}
+              </div>
+
+              <!-- The URL is the whole form: it names the repo, the kind and the
+                   number, so there is nothing left to pick by hand. -->
+              <div>
+                <Input
+                  :model-value="refInput"
+                  @update:model-value="handleRefInput"
+                  :placeholder="t('run.refPlaceholder')"
+                  @keyup.enter="handleFetch()"
+                />
+                <p v-if="fetchError" class="mt-1 text-[10px] text-destructive">{{ fetchError }}</p>
+              </div>
+
+              <!-- Echo back what the URL was understood to mean. -->
+              <div
+                v-if="detectedRef"
+                class="flex items-center gap-1.5 px-2 py-1 text-[11px] rounded-md bg-muted text-muted-foreground"
               >
-                <ArrowUpDown class="h-2.5 w-2.5" :stroke-width="1.75" />
-                {{ t('run.resortSessions') }}
-              </button>
-              <button
-                v-if="runsStore.runs.length > 0"
-                class="flex items-center gap-1 text-[10px] text-muted-foreground/70 hover:text-destructive transition-colors cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed"
-                :disabled="clearingAll"
-                :title="clearingAll ? t('run.clearing') : t('run.clearAllRunsTitle')"
-                @click="handleClearAllRuns"
+                <component
+                  :is="detectedRef.kind === 'pr' ? GitPullRequest : Bug"
+                  class="h-3 w-3 shrink-0"
+                  :stroke-width="1.75"
+                />
+                <span class="truncate">
+                  {{ detectedRef.kind === 'pr' ? t('run.labelPr') : t('run.issue') }}
+                  #{{ detectedRef.number }} · {{ detectedRef.repoName }}
+                </span>
+              </div>
+
+              <Button
+                v-if="!needsLinkedIssue"
+                variant="outline"
+                class="w-full"
+                :disabled="fetching || !detectedRef"
+                @click="handleFetch()"
               >
-                <Trash2 class="h-2.5 w-2.5" :stroke-width="1.75" />
-                {{ clearingAll ? t('run.clearing') : t('run.clearAll') }}
-              </button>
+                {{ fetching
+                  ? t('run.fetching')
+                  : detectedRef?.kind === 'pr' ? t('run.fetchPr')
+                  : detectedRef?.kind === 'issue' ? t('run.fetchIssue')
+                  : t('run.fetchIssuePr') }}
+              </Button>
+
+              <!-- Linked issue prompt (shown when PR body has no Fixes/Closes/Resolves #N) -->
+              <div v-if="needsLinkedIssue" class="space-y-2">
+                <Input
+                  v-model="linkedIssueInput"
+                  :placeholder="t('run.linkedIssuePlaceholder')"
+                  @keyup.enter="handleSubmitLinkedIssue"
+                />
+                <Button
+                  variant="outline"
+                  class="w-full"
+                  :disabled="fetching || !linkedIssueInput"
+                  @click="handleSubmitLinkedIssue"
+                >
+                  {{ fetching ? t('run.fetching') : t('run.fetchWithLinkedIssue') }}
+                </Button>
+              </div>
             </div>
           </div>
           <div ref="sessionListEl" class="run-history-list flex-1 min-h-0 overflow-auto">
@@ -4325,7 +4375,7 @@ function handleRefInput(val: string) {
             <div v-else-if="runsStore.runs.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
               {{ t('run.noSessionsYet') }}
             </div>
-            <div v-else-if="filteredRuns.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
+            <div v-else-if="displayRuns.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
               {{ t('run.noMatchingSessions') }}
             </div>
             <div

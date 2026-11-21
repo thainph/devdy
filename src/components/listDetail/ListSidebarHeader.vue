@@ -13,6 +13,8 @@
 //   (composables/useListPane) the menu always ends with "Hide the list (⌘B)";
 //   while the list floats as a peek, a ✕ closing it replaces the ⋯ instead.
 // - `#actions`: extra controls placed before "+ New" (rarely needed).
+// - `closable`: the screen floats the list its own way (RunView's History over
+//   a narrow body): a ✕ emitting `close` follows the ⋯, which stays.
 import { computed, useSlots } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { MoreHorizontal, PanelLeftClose, Plus, X } from 'lucide-vue-next'
@@ -27,9 +29,13 @@ defineProps<{
   newLabel?: string
   /** Tooltip of "+ New" (defaults to the label). */
   newTitle?: string
+  /** "+ New" is busy (e.g. creating). */
+  newDisabled?: boolean
+  /** Show a ✕ (emits `close`) after the ⋯ menu. */
+  closable?: boolean
 }>()
 
-const emit = defineEmits<{ new: [] }>()
+const emit = defineEmits<{ new: []; close: [] }>()
 
 const { t } = useI18n()
 const slots = useSlots()
@@ -48,7 +54,7 @@ const showMenu = computed(() => !!slots.menu || canHide.value)
     <slot name="badge" />
     <span class="min-w-0 flex-1" />
     <slot name="actions" />
-    <Button v-if="newLabel" size="sm" class="shrink-0 pl-2.5" :title="newTitle ?? newLabel" @click="emit('new')">
+    <Button v-if="newLabel" size="sm" class="shrink-0 pl-2.5" :disabled="newDisabled" :title="newTitle ?? newLabel" @click="emit('new')">
       <Plus class="h-3.5 w-3.5" :stroke-width="2" />
       {{ newLabel }}
     </Button>
@@ -85,5 +91,16 @@ const showMenu = computed(() => !!slots.menu || canHide.value)
         </DropdownItem>
       </template>
     </DropdownMenu>
+    <Button
+      v-if="closable"
+      variant="ghost"
+      size="icon"
+      class="shrink-0"
+      :title="t('listPane.closePeek')"
+      :aria-label="t('listPane.closePeek')"
+      @click="emit('close')"
+    >
+      <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+    </Button>
   </div>
 </template>

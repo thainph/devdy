@@ -553,7 +553,7 @@
 [data-theme='tahoe'] .split-host .run-pane .run-titlebar {
   background-color: transparent;
 }
-[data-theme='tahoe'] .split-host .run-pane :is(.run-titlebar, .run-history-tabs, .run-history-toolbar, .run-history-head) {
+[data-theme='tahoe'] .split-host .run-pane :is(.run-titlebar, .run-history-tabs, .run-history-head) {
   border-bottom-color: var(--tahoe-hairline);
 }
 [data-theme='tahoe'] .split-host .run-pane .run-body {
@@ -601,7 +601,7 @@
     0 0 0 0.5px var(--tahoe-hairline),
     0 1px 3px rgba(0, 0, 0, 0.1);
 }
-[data-theme='tahoe'] .split-host .run-pane :is(.run-history-toolbar, .run-history-head) {
+[data-theme='tahoe'] .split-host .run-pane .run-history-head {
   border-bottom-width: 0;
 }
 /* Rows: rounded, no rules between them, selection = accent tint (the nav's). */

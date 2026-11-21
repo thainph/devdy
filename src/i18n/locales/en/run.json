@@ -69,7 +69,6 @@
   "clearAll": "Clear all",
   "noSessionsYet": "No sessions yet",
   "searchSessionsPlaceholder": "Search sessions…",
-  "clearSearch": "Clear search",
   "noMatchingSessions": "No matching sessions",
   "pinned": "Pinned",
   "protected": "Protected",
@@ -77,6 +76,15 @@
   "lastActivity": "Last activity",
   "waitingForAnswer": "Waiting for your answer",
   "waitingForPermission": "Waiting for your permission",
+  "waitingCount": "{n} waiting",
+  "waitingBadgeTitle": "Show only the sessions waiting for you",
+  "historyStatusTitle": "Status",
+  "historyStatus": {
+    "all": "All sessions",
+    "waiting": "Waiting for you",
+    "unread": "Unread",
+    "running": "Running"
+  },
   "openIssueOnGithub": "Open this issue on GitHub",
   "openPrOnGithub": "Open this PR on GitHub",
   "refetchIssue": "Re-fetch this issue content from GitHub (keeps AI result)",
