@@ -8,7 +8,8 @@
 //          then [Sessions (n) ▾] | (todo) ✓ Done · ✎ Edit · (note) ⧉ Copy ID
 //          (not in ⋯) · ⋯ (New session from this … · Copy ID · Delete)
 //
-// The project (and a todo's deadline) are edited in the body (ItemFields).
+// A note's project is picked in the header (like a Slack thread's); a todo's
+// project and deadline are edited in the body (ItemFields).
 //
 // While editing, the actions give way to Cancel · Save (⌘/Ctrl+Enter / Esc do
 // the same inside the fields). Narrow pane: the meta line truncates, then the
@@ -20,6 +21,7 @@ import { Check, Copy, LockKeyhole, Pencil, Rocket } from 'lucide-vue-next'
 import { Button, DropdownItem } from '@/components/ui'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 import LinkedSessionsMenu from '@/components/sessions/LinkedSessionsMenu.vue'
+import ProjectSelect from '@/components/ProjectSelect.vue'
 import DetailActionsMenu from '@/components/sessions/DetailActionsMenu.vue'
 import { useSessionText } from '@/composables/useSessionText'
 import { firstLine, relativeAge } from '@/lib/itemText'
@@ -62,6 +64,7 @@ const emit = defineEmits<{
   copyId: []
   makeSecret: []
   delete: []
+  setProject: [projectId: string | null]
 }>()
 
 const { t } = useI18n()
@@ -160,7 +163,16 @@ const newSessionLabel = computed(() =>
         </template>
       </p>
       <div class="ml-auto flex min-w-0 items-center gap-1.5">
-        <!-- The project (edited in ItemFields, in the body) decides what can be linked. -->
+        <!-- A note's project sits here, like a Slack thread's (a todo edits it
+             with its deadline in ItemFields); it decides what can be linked. -->
+        <div v-if="note" class="w-[11rem] min-w-[5.5rem] shrink">
+          <ProjectSelect
+            :model-value="note.project_id"
+            variant="outline"
+            size="sm"
+            @update:model-value="emit('setProject', $event)"
+          />
+        </div>
         <LinkedSessionsMenu
           class="shrink-0"
           :project-id="item.project_id"

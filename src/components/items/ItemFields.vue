@@ -1,7 +1,7 @@
 <script setup lang="ts">
-// An item's properties at the top of the Notes / Todos detail body: its project
-// and, for a todo, its deadline (× clears it). Same label-over-field look as
-// TodoMetaFields.
+// An item's properties at the top of the Todos detail body: its project and its
+// deadline (× clears it). Same label-over-field look as TodoMetaFields. (A
+// note's project is picked in its header, ItemHeader, like a Slack thread's.)
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { X } from 'lucide-vue-next'

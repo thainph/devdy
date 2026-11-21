@@ -721,8 +721,11 @@ onBeforeUnmount(() => {
         @copy-id="copyId"
         @make-secret="makeSecret"
         @delete="remove"
+        @set-project="setProject"
       />
+      <!-- Todos only: a note's project is in its header. -->
       <ItemFields
+        v-if="kind === 'todo'"
         :kind="kind"
         :item="item"
         @set-project="setProject"
