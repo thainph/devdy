@@ -385,13 +385,21 @@ const routedSurfaceId = computed(() => {
 // lazily: restored tabs cost nothing until opened.
 const visitedSurfaces = reactive(new Set<string>())
 watch(
-  () => [routedSurfaceId.value, tabsStore.splitId] as const,
-  ([routed, split]) => {
-    if (routed) visitedSurfaces.add(routed)
-    if (split) visitedSurfaces.add(split)
+  routedSurfaceId,
+  (routed) => {
+    if (!routed) return
+    visitedSurfaces.add(routed)
     // The router landed on the split tab (history, a redirect): it can't be in
-    // both halves — close the split so it shows on the left.
-    if (routed && routed === split) tabsStore.unsplit()
+    // both halves — close the split so it shows on the left. Only on a route
+    // change: "show on the right" splits first and routes away after.
+    if (routed === tabsStore.splitId) tabsStore.unsplit()
+  },
+  { immediate: true },
+)
+watch(
+  () => tabsStore.splitId,
+  (split) => {
+    if (split) visitedSurfaces.add(split)
   },
   { immediate: true },
 )
@@ -1212,6 +1220,7 @@ onMounted(async () => {
              so the next tab click lands there. -->
         <div class="flex h-full min-h-0">
           <div
+            data-pane="left"
             class="h-full min-w-0 flex-1 overflow-auto"
             :class="splitTab && tabsStore.focusedPane === 'left' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
             @pointerdown.capture="tabsStore.focusedPane = 'left'"
@@ -1239,6 +1248,7 @@ onMounted(async () => {
                the split tab's host. -->
           <section
             v-show="splitTab"
+            data-pane="right"
             class="flex h-full min-w-0 flex-1 flex-col border-l border-border/60"
             :class="tabsStore.focusedPane === 'right' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
             @pointerdown.capture="tabsStore.focusedPane = 'right'"

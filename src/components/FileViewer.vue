@@ -930,6 +930,10 @@ const rootEl = ref<HTMLElement | null>(null)
 function ownsShortcuts(): boolean {
   const el = rootEl.value
   if (!el || !el.isConnected || el.getClientRects().length === 0) return false
+  // Split main window: typing in the other half isn't for this viewer.
+  const pane = el.closest('[data-pane]')
+  const focusPane = document.activeElement?.closest('[data-pane]')
+  if (pane && focusPane && focusPane !== pane) return false
   const visible = [...document.querySelectorAll<HTMLElement>('[data-file-viewer]')].filter(
     (v) => v.getClientRects().length > 0,
   )
