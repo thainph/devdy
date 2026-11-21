@@ -46,5 +46,19 @@
     "cancel": "Cancel",
     "allowAlways": "Always allow",
     "allowAlwaysFor": "Always allow {tool} for this project"
+  },
+  "inline": {
+    "regionLabel": "Pending permission requests",
+    "openSession": "Open session",
+    "hide": "Hide — the request stays pending",
+    "bringToFront": "Show this request",
+    "more": "+{n} more",
+    "waiting": "{n} waiting for you",
+    "question": "Question",
+    "plan": "Plan review"
+  },
+  "pill": {
+    "label": "waiting",
+    "title": "{n} session(s) waiting for your approval"
   }
 }

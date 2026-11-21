@@ -1,0 +1,37 @@
+{
+  "open": "Search",
+  "placeholder": "Search tabs, sessions, screens and actions…",
+  "quickPlaceholder": "Go to a tab, session or file…",
+  "empty": "No results",
+  "loadingSessions": "Loading sessions…",
+  "groups": {
+    "tabs": "Open tabs",
+    "sessions": "Sessions",
+    "files": "Files",
+    "screens": "Screens",
+    "actions": "Actions"
+  },
+  "kind": {
+    "tab": "Tab",
+    "session": "Session",
+    "file": "File",
+    "screen": "Screen",
+    "action": "Action"
+  },
+  "actions": {
+    "newSession": "New session in this project",
+    "newTodo": "New todo",
+    "newNote": "New note",
+    "split": "Show “{name}” on the right",
+    "unsplit": "Close the right pane",
+    "popOut": "Move “{name}” to its own window",
+    "closeTab": "Close tab “{name}”",
+    "windowSettings": "Settings: Windows & tabs"
+  },
+  "hint": {
+    "navigate": "to navigate",
+    "open": "to open",
+    "close": "to close"
+  },
+  "untitledSession": "Untitled session"
+}

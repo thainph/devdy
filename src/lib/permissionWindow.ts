@@ -36,11 +36,13 @@ export function permissionWindowLabel(runId: string): string {
  * Open (or focus) the permission window for one run.
  *
  * `indexFromRight` stacks multiple permission windows leftward from the right edge
- * so they sit side by side instead of on top of each other.
+ * so they sit side by side instead of on top of each other. `focus: false` shows
+ * the window (on top) without taking keyboard focus from the app in front.
  */
 export async function openPermissionWindow(
   runId: string,
   indexFromRight = 0,
+  { focus = true }: { focus?: boolean } = {},
 ): Promise<WebviewWindow> {
   const label = permissionWindowLabel(runId)
 
@@ -49,7 +51,7 @@ export async function openPermissionWindow(
     try {
       await existing.unminimize()
       await existing.show()
-      await existing.setFocus()
+      if (focus) await existing.setFocus()
     } catch {
       /* window may be mid-teardown */
     }
@@ -73,6 +75,7 @@ export async function openPermissionWindow(
     minWidth: 360,
     minHeight: 320,
     alwaysOnTop: true,
+    focus,
     ...(dock ? { x: dock.x - shift, y: dock.y } : {}),
   })
   win.once('tauri://error', (e) => {

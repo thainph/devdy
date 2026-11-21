@@ -1,0 +1,37 @@
+{
+  "open": "Tìm kiếm",
+  "placeholder": "Tìm tab, phiên, màn hình và thao tác…",
+  "quickPlaceholder": "Đi tới tab, phiên hoặc tệp…",
+  "empty": "Không có kết quả",
+  "loadingSessions": "Đang tải phiên…",
+  "groups": {
+    "tabs": "Tab đang mở",
+    "sessions": "Phiên",
+    "files": "Tệp",
+    "screens": "Màn hình",
+    "actions": "Thao tác"
+  },
+  "kind": {
+    "tab": "Tab",
+    "session": "Phiên",
+    "file": "Tệp",
+    "screen": "Màn hình",
+    "action": "Thao tác"
+  },
+  "actions": {
+    "newSession": "Phiên mới trong dự án này",
+    "newTodo": "Công việc mới",
+    "newNote": "Ghi chú mới",
+    "split": "Hiện “{name}” ở bên phải",
+    "unsplit": "Đóng khung bên phải",
+    "popOut": "Tách “{name}” ra cửa sổ riêng",
+    "closeTab": "Đóng tab “{name}”",
+    "windowSettings": "Cài đặt: Cửa sổ & tab"
+  },
+  "hint": {
+    "navigate": "để di chuyển",
+    "open": "để mở",
+    "close": "để đóng"
+  },
+  "untitledSession": "Phiên chưa đặt tên"
+}

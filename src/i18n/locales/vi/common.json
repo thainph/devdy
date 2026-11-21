@@ -34,5 +34,6 @@
   "sortByUpdated": "Mới sửa gần đây",
   "sortByAdded": "Mới thêm gần đây",
   "sortByType": "Theo loại",
-  "sortByTag": "Theo tag"
+  "sortByTag": "Theo tag",
+  "dockIntoMain": "Gắn vào cửa sổ chính"
 }

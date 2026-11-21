@@ -13,6 +13,7 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotState } from '@/composables/useMascotState'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
+import { appForeground } from '@/composables/usePermissionDecisions'
 
 /**
  * Headless, app-wide notifier for pending permission / question requests on runs
@@ -44,9 +45,20 @@ const appSettings = useAppSettingsStore()
 // its speech bubble, so we suppress the duplicate native OS notification.
 const { enabled: mascotEnabled } = useMascotState()
 
-// The run currently open in RunView — its request is already shown there.
+// The run currently open in RunView — while the main window is in front its
+// request is already in view (the in-app permission card). Once the window is in
+// the background it gets a notification like any other run: with
+// `permission_float_when_background` off, that notification is the only alert.
 const activeRunId = computed(() =>
   typeof route.params.runId === 'string' ? route.params.runId : null,
+)
+const mainInFront = computed(() => appForeground.value === 'main')
+// The request the user is looking at right now: never notified, even after the
+// window goes to the background (it was already seen).
+const inViewRequestId = computed(() =>
+  activeRunId.value && mainInFront.value
+    ? (live.get(activeRunId.value)?.permissionQueue[0]?.request_id ?? null)
+    : null,
 )
 
 const pending = computed<PendingRun[]>(() => {
@@ -54,7 +66,7 @@ const pending = computed<PendingRun[]>(() => {
   live.sessions.forEach((s) => {
     const req = s.permissionQueue[0]
     if (!req) return
-    if (s.runId === activeRunId.value) return
+    if (s.runId === activeRunId.value && mainInFront.value) return
     out.push({ runId: s.runId, projectId: s.projectId, request: req })
   })
   return out
@@ -198,8 +210,9 @@ onBeforeUnmount(() => {
 // user is already viewing). Prune ids that have left every queue so the same
 // request can re-alert only if it genuinely reappears.
 watch(
-  pending,
-  (list) => {
+  [pending, inViewRequestId],
+  ([list, inView]) => {
+    if (inView) notified.add(inView)
     const allPendingIds = new Set<string>()
     live.sessions.forEach((s) => {
       for (const r of s.permissionQueue) allPendingIds.add(r.request_id)

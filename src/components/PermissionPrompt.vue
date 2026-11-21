@@ -29,6 +29,11 @@ const props = defineProps<{
   allowedTools?: string[]
   /** Markdown → HTML renderer (used to show the plan for ExitPlanMode). */
   renderText?: (md: string) => string
+  /**
+   * Don't grab focus on mount. The in-app card sets it: a request arriving while
+   * the user types in the composer must not turn their next Enter into "allow".
+   */
+  noAutofocus?: boolean
 }>()
 
 const emit = defineEmits<{
@@ -301,8 +306,14 @@ function splitLines(s: string): string[] {
 // without stealing them from the composer when the user clicks back into it.
 const rootEl = ref<HTMLElement | null>(null)
 onMounted(() => {
-  rootEl.value?.focus({ preventScroll: true })
+  if (!props.noAutofocus) rootEl.value?.focus({ preventScroll: true })
 })
+
+/** Move keyboard focus into the prompt (hotkeys then apply to it). */
+function focus() {
+  rootEl.value?.focus({ preventScroll: true })
+}
+defineExpose({ focus })
 
 function isEditableTarget(e: KeyboardEvent): boolean {
   const t = e.target as HTMLElement | null

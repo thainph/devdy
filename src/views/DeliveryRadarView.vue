@@ -5,6 +5,7 @@
 // glance who is late. Rendered only in its own OS window (lib/deliveryRadarWindow).
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import DockWindowButton from '@/components/surfaces/DockWindowButton.vue'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
@@ -38,6 +39,11 @@ import {
   type RadarStatus,
 } from '@/lib/deliveryRadar'
 
+const props = defineProps<{
+  /** Narrow to this project (a tab of the main window; the window reads `?project=`). */
+  project?: string
+}>()
+
 const { t, locale } = useI18n()
 const projectsStore = useProjectsStore()
 const store = useDeliveryRadarStore()
@@ -62,6 +68,14 @@ const scopeIds = computed(() => scopeProjects.value.map((p) => p.id))
 function onlyProject(id: string) {
   if (boardProjects.value.some((p) => p.id === id)) selectedProjects.value = new Set([id])
 }
+
+// The tab re-pointed at another project (Projects screen → radar of that project).
+watch(
+  () => props.project,
+  (id) => {
+    if (id) onlyProject(id)
+  },
+)
 
 watch(selectedProjects, (v) => {
   try { localStorage.setItem(PROJECTS_KEY, JSON.stringify([...v])) } catch { /* best-effort */ }
@@ -88,7 +102,7 @@ onMounted(async () => {
   if (projectsStore.projects.length === 0) {
     try { await projectsStore.fetchProjects() } catch { /* ignore */ }
   }
-  const urlProject = new URLSearchParams(window.location.search).get('project')
+  const urlProject = props.project ?? new URLSearchParams(window.location.search).get('project')
   if (urlProject && boardProjects.value.some((p) => p.id === urlProject)) {
     selectedProjects.value = new Set([urlProject])
   } else {
@@ -394,6 +408,12 @@ function relativeTime(ms: number | null | string): string {
   return t('radar.daysAgo', { days: Math.round(hours / 24) })
 }
 
+/** Docking the window back as a tab keeps a single-project scope. */
+function dockParams(): Record<string, string> {
+  const [only] = selectedProjects.value
+  return selectedProjects.value.size === 1 && only ? { project: only } : {}
+}
+
 function openSettings(p: Project) {
   // The radar lives in its own window: ask the main window to show the project settings.
   emit(DELIVERY_RADAR_OPEN_ROUTE, { path: `/projects/${p.id}/settings` } satisfies DeliveryRadarOpenRoute).catch(() => {})
@@ -447,6 +467,11 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
         >
           <Settings2 class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
+        <DockWindowButton
+          v-if="isRadarWindow"
+          surface="radar"
+          :params="dockParams"
+        />
       </div>
     </div>
 

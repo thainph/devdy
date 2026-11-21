@@ -2,7 +2,7 @@
 import { computed, onMounted, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
-import { openDeliveryRadarWindow } from '@/lib/deliveryRadarWindow'
+import { openSurface } from '@/lib/surfaceOpen'
 import { useProjectsStore, type DetectedProjectInfo, type DetectedRepo } from '@/stores/projects'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import { useGitlabAccountsStore } from '@/stores/gitlabAccounts'
@@ -511,7 +511,7 @@ async function handleOpenInFolder(project: { path: string }) {
                 size="icon-sm"
                 :title="t('projects.radar')"
                 :aria-label="t('projects.radar')"
-                @click="openDeliveryRadarWindow(project.id)"
+                @click="openSurface('radar', { project: project.id })"
               >
                 <Radar class="h-3.5 w-3.5" :stroke-width="1.75" />
               </Button>

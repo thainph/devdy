@@ -21,6 +21,13 @@
 // sidecar writes without events, so focusing the window reloads too.
 // Sessions live in the main window: opening a linked one or starting a new one
 // is a request to it (WINDOW_OPEN_RUN / WINDOW_NEW_SESSION, App.vue).
+//
+// `embedded`: rendered as a tab of the main window instead. The props then
+// replace the URL params (kind / id / projectId) and changing `initialId` /
+// `projectId` re-points it like SELECT does; it fills its parent, leaves the
+// window's title, tray row, pin, close and URL alone, and uses the main
+// window's ConfirmModal / ToastHost. The session requests above are global
+// events, so they reach the main window's listeners from here too.
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -35,6 +42,8 @@ import { noteRow, todoRow, type ItemRow } from '@/components/items/itemRow'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
+import { requestDock } from '@/lib/surfaceDock'
+import { useDockAll } from '@/composables/useDockAll'
 import { useProjectsStore } from '@/stores/projects'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
@@ -62,20 +71,34 @@ import FocusAiDialogs from '@/components/focus/FocusAiDialogs.vue'
 import { useFocusAiActions } from '@/components/focus/useFocusAiActions'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 
+const props = defineProps<{
+  /** A tab of the main window, not its own OS window. */
+  embedded?: boolean
+  /** Overrides the URL's `kind`; fixed for the view's lifetime (key the host by it). */
+  kind?: ItemKind
+  /** Item to select (overrides the URL's `id`); a new value selects that item. */
+  initialId?: string | null
+  /** Project scope (overrides the URL's `projectId`); a new value re-points it. */
+  projectId?: string | null
+}>()
+
 const { t } = useI18n()
 const { toast } = useToast()
 const { confirm } = useConfirm()
 const notes = useNotesStore()
 const todos = useTodosStore()
 const projects = useProjectsStore()
-const { pinned, togglePin } = useFloatingWindow()
+// Embedded, the window is the main one: never float / pin it.
+const { pinned, togglePin } = props.embedded ? { pinned: ref(false), togglePin: () => {} } : useFloatingWindow()
 
 const params = new URLSearchParams(window.location.search)
 /** The kind this window shows — fixed for its lifetime (one window per kind). */
-const kind: ItemKind = params.get('kind') === 'note' ? 'note' : 'todo'
-const initialId = params.get('id') || null
+const kind: ItemKind = props.kind ?? (params.get('kind') === 'note' ? 'note' : 'todo')
+const initialId = props.initialId !== undefined ? props.initialId : params.get('id') || null
 /** The project the window was opened from: the default filter and "+ New" project. */
-const contextProjectId = ref<string | null>(params.get('projectId') || null)
+const contextProjectId = ref<string | null>(
+  props.projectId !== undefined ? props.projectId : params.get('projectId') || null,
+)
 /** "Make secret": into the vault, its own window. */
 const canSecret = kind === 'note'
 
@@ -226,8 +249,10 @@ function revealRow(id: string) {
   }
 }
 
-// The URL follows the selection, so a reload reopens it.
+// The URL follows the selection, so a reload reopens it (not the main
+// window's URL: that one is the router's).
 watch(selectedId, (id) => {
+  if (props.embedded) return
   const url = new URL(window.location.href)
   if (id) url.searchParams.set('id', id)
   else url.searchParams.delete('id')
@@ -516,6 +541,7 @@ const windowTitle = computed(() => {
 watch(
   windowTitle,
   async (value) => {
+    if (props.embedded) return
     document.title = value
     try {
       await getCurrentWindow().setTitle(value)
@@ -540,6 +566,39 @@ async function selectFresh(id: string) {
   await select(id)
 }
 
+/** Re-point the project scope and / or select an item (SELECT, or the host's props). */
+function applySelect(p: ItemListSelect) {
+  if (p.projectId !== undefined) {
+    contextProjectId.value = p.projectId ?? null
+    projectFilter.value = p.projectId ?? ''
+  }
+  if (p.id) void selectFresh(p.id)
+}
+
+watch(
+  () => props.projectId,
+  (projectId) => {
+    if (projectId !== undefined) applySelect({ projectId })
+  },
+)
+watch(
+  () => props.initialId,
+  (id) => {
+    if (id) applySelect({ id })
+  },
+)
+
+/** Pop-out → a tab of the main window, at the same item; an unsaved draft asks first. */
+async function dock() {
+  if (!(await confirmDiscard())) return
+  closing = true
+  const at: Record<string, string> = {}
+  if (selectedId.value) at.id = selectedId.value
+  if (contextProjectId.value) at.projectId = contextProjectId.value
+  await requestDock(kind === 'note' ? 'notes' : 'todos', at)
+}
+useDockAll(dock, !props.embedded)
+
 onMounted(async () => {
   void projects.fetchProjects()
   if (kind === 'todo') void focus.start()
@@ -553,27 +612,24 @@ onMounted(async () => {
     unlisten.push(
       // Reopened from the app: re-point the project scope and / or select an item.
       await listen<ItemListSelect>(itemListSelectEvent(kind), (e) => {
-        const p = e.payload
-        if (!p) return
-        if (p.projectId !== undefined) {
-          contextProjectId.value = p.projectId ?? null
-          projectFilter.value = p.projectId ?? ''
-        }
-        if (p.id) void selectFresh(p.id)
+        if (e.payload) applySelect(e.payload)
       }),
     )
     // Closing with an unsaved draft asks first. A listener here makes the close
     // ours: unless prevented, the window is destroyed after it (app quit via
-    // app.exit() is not routed through it).
-    unlisten.push(
-      await getCurrentWindow().onCloseRequested(async (e) => {
-        if (closing || !editing.value || !bodyRef.value?.dirty) return
-        e.preventDefault()
-        if (!(await confirmDiscard())) return
-        closing = true
-        await getCurrentWindow().destroy()
-      }),
-    )
+    // app.exit() is not routed through it). Embedded, the window is the main
+    // one, not ours to hold open.
+    if (!props.embedded) {
+      unlisten.push(
+        await getCurrentWindow().onCloseRequested(async (e) => {
+          if (closing || !editing.value || !bodyRef.value?.dirty) return
+          e.preventDefault()
+          if (!(await confirmDiscard())) return
+          closing = true
+          await getCurrentWindow().destroy()
+        }),
+      )
+    }
     // MCP sidecar writes (notes_* / todos_*) emit no Tauri event.
     unlisten.push(
       await getCurrentWindow().onFocusChanged(({ payload: focused }) => {
@@ -600,7 +656,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell app-window flex h-screen w-screen overflow-hidden bg-background text-foreground">
+  <div
+    class="flex overflow-hidden bg-background text-foreground"
+    :class="embedded ? 'h-full min-h-0 w-full' : 'app-shell app-window h-screen w-screen'"
+  >
     <ItemSidebar
       v-model:search="search"
       v-model:project="projectFilter"
@@ -614,6 +673,7 @@ onBeforeUnmount(() => {
       :project-names="projectNames"
       :error="loadError"
       :pinned="pinned"
+      :embedded="embedded"
       :reloading="reloading"
       :lateness="lateness"
       :lateness-counts="latenessCounts"
@@ -623,6 +683,7 @@ onBeforeUnmount(() => {
       @toggle-done="toggleDone"
       @delete-group="removeGroup"
       @toggle-pin="togglePin"
+      @dock="dock"
       @reload="reloadAll"
       @retry="reloadAll"
     />
@@ -685,9 +746,12 @@ onBeforeUnmount(() => {
       </div>
     </div>
 
-    <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->
+    <!-- The pop-out doesn't mount the main app's dialog/toast hosts (the main
+         window has no FocusAiDialogs either). -->
     <FocusAiDialogs v-if="kind === 'todo'" />
-    <ConfirmModal />
-    <ToastHost />
+    <template v-if="!embedded">
+      <ConfirmModal />
+      <ToastHost />
+    </template>
   </div>
 </template>

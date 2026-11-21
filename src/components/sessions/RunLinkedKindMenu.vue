@@ -15,8 +15,7 @@ import { computed, type Component } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Check, Hash, ListTodo, Plus, Slack, StickyNote } from 'lucide-vue-next'
 import { Button, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
-import { openSlackWindow } from '@/lib/slackWindow'
-import { openItemListWindow } from '@/lib/itemListWindow'
+import { openSurface } from '@/lib/surfaceOpen'
 import { firstLine } from '@/lib/itemText'
 import type { RunLinkedItem } from '@/lib/sessionLinks'
 import type { SlackThreadSummary } from '@/stores/slackThreads'
@@ -76,8 +75,7 @@ function notePreview(it: RunLinkedItem): string {
 }
 
 function open(id: string) {
-  if (props.kind === 'slack') void openSlackWindow({ id })
-  else void openItemListWindow(props.kind, { id })
+  void openSurface(props.kind === 'slack' ? 'slack' : props.kind === 'todo' ? 'todos' : 'notes', { id }, { split: true })
 }
 </script>
 

@@ -1,0 +1,37 @@
+{
+  "file": "File",
+  "tabs": {
+    "popOut": "Mở trong cửa sổ riêng",
+    "splitRight": "Hiện ở khung phải",
+    "unsplit": "Đóng khung phải",
+    "focusRight": "Đang hiện ở khung phải"
+  },
+  "dock": "Gắn vào cửa sổ chính",
+  "settings": {
+    "title": "Cửa sổ & tab",
+    "desc": "Nơi mở Duyệt PR, Lịch, Thread Slack, Todo, Note và trình xem file.",
+    "mode": "Chế độ cửa sổ",
+    "modeHint": "Tự động: với một màn hình, mọi thứ mở thành tab trong cửa sổ chính. Khi có màn hình phụ, Duyệt PR, Mentions, Lịch, Delivery Radar và Thread Slack mở cửa sổ riêng.",
+    "modes": {
+      "auto": "Tự động",
+      "tab": "Luôn mở tab",
+      "window": "Luôn mở cửa sổ"
+    },
+    "perScreen": "Theo từng màn",
+    "screen": "Màn hình",
+    "opensAs": "Cách mở",
+    "now": "Hiện tại",
+    "inherit": "Theo chế độ chung",
+    "asTab": "Tab",
+    "asWindow": "Cửa sổ riêng",
+    "monitors": "{n} màn hình | {n} màn hình",
+    "dockOnUnplug": "Gắn cửa sổ lại thành tab khi rút màn hình phụ",
+    "dockOnUnplugHint": "Khi màn hình phụ được rút ra, các cửa sổ Duyệt PR / Lịch / Slack… trên đó quay về cửa sổ chính thành tab.",
+    "saveFailed": "Không lưu được cài đặt: {error}",
+    "permFloat": "Bật cửa sổ duyệt quyền khi Devdy đang ở nền",
+    "permFloatHint": "Khi Devdy đang mở phía trước, yêu cầu quyền được duyệt ngay trong cửa sổ chính. Tắt: chỉ gửi thông báo khi bạn đang ở ứng dụng khác."
+  },
+  "toast": {
+    "docked": "Đã rút màn hình phụ: {n} cửa sổ đã gắn lại thành tab | Đã rút màn hình phụ: {n} cửa sổ đã gắn lại thành tab"
+  }
+}

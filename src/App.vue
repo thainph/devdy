@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { computed, onMounted, onBeforeUnmount, ref, watch, watchEffect } from 'vue'
+import { computed, onMounted, onBeforeUnmount, reactive, ref, watch, watchEffect } from 'vue'
 import { RouterLink, RouterView, useRoute, useRouter } from 'vue-router'
 import { listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { useProjectsStore } from '@/stores/projects'
@@ -14,11 +14,13 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, LockKeyhole, PanelLeftClose, PanelLeftOpen, Slack, StickyNote } from 'lucide-vue-next'
+import { ListTodo, LockKeyhole, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote, X } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
+import PendingApprovalsPill from '@/components/PendingApprovalsPill.vue'
+import CommandPalette, { type PaletteMode } from '@/components/CommandPalette.vue'
 import RemoteIndicator from '@/components/RemoteIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
@@ -33,7 +35,7 @@ import SecretNotesWindow from '@/views/SecretNotesWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
 import PrInboxWindow from '@/views/PrInboxWindow.vue'
 import GithubMentionsWindow from '@/views/GithubMentionsWindow.vue'
-import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, openPrInboxWindow, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
+import { PR_INBOX_OPEN_WINDOW, PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import CalendarWindow from '@/views/CalendarWindow.vue'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
@@ -42,7 +44,6 @@ import {
   type SlackApiReceived,
   SLACK_NOTIFICATION_CLICKED,
   type SlackNotificationClicked,
-  openSlackWindow,
   SLACK_WINDOW_OPEN_ROUTE,
   type SlackWindowOpenRoute,
 } from '@/lib/slackWindow'
@@ -59,12 +60,17 @@ import { useToast } from '@/composables/useToast'
 import { useAgentAmbient } from '@/composables/useAgentAmbient'
 import { applySystemAccent } from '@/lib/systemAccent'
 import { openItemCreateWindow } from '@/lib/itemWindow'
-import { openItemListWindow } from '@/lib/itemListWindow'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
-import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
+import { applyAppMenu, IS_MAC, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
+import { closeCurrentTab, goToTabNumber, popOutCurrent, toggleSplitCurrent } from '@/lib/tabActions'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
+import { dockAllSurfaceWindows, listenSurfaceRequests, openSurface } from '@/lib/surfaceOpen'
+import { monitorCount } from '@/lib/surfacePlacement'
+import { cleanParams, shouldDockOnMonitorChange, surfaceForPath, surfaceTabId } from '@/lib/surfaces'
+import { SURFACE_META } from '@/lib/surfaceMeta'
+import SurfaceHost from '@/components/surfaces/SurfaceHost.vue'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import DeliveryRadarView from '@/views/DeliveryRadarView.vue'
 import { getVersion } from '@tauri-apps/api/app'
@@ -320,6 +326,9 @@ const routeKey = computed(() =>
 // moved to `onActivated`/`onDeactivated` first — under KeepAlive those hooks no
 // longer fire on navigation, so a timer would otherwise run forever in the
 // background.
+//
+// Surface tabs (PR Inbox, Calendar, Todos…) are not cached here: App keeps one
+// SurfaceHost per open tab itself (see `hostedSurfaceTabs`).
 const CACHED_VIEWS = [
   'SkillsView',
   'RulesView',
@@ -348,6 +357,73 @@ watch(
   },
   { immediate: true },
 )
+
+// A surface shown by the router is a tab of the strip (re-pointed at what it
+// shows). Any navigation lands in the left / only pane.
+watch(
+  () => route.fullPath,
+  () => {
+    if (isSessionWindow) return
+    tabsStore.focusedPane = 'left'
+    const kind = surfaceForPath(route.path)
+    if (kind) tabsStore.openSurface(kind, cleanParams(kind, route.query))
+  },
+  { immediate: true },
+)
+
+/** The surface tab the router shows (left / only pane), if any. */
+const routedSurfaceId = computed(() => {
+  const kind = surfaceForPath(route.path)
+  return kind ? surfaceTabId(kind, cleanParams(kind, route.query)) : null
+})
+
+// Surface tabs live like windows: each open tab has ONE SurfaceHost from its
+// first visit until it is closed or popped out — kept alive (its own KeepAlive,
+// so `onActivated` refreshes still run) while another tab shows, and teleported
+// into the right pane while it is the split tab. Switching tabs or moving one
+// into / out of the split loses nothing; closing one tears it down. Mounted
+// lazily: restored tabs cost nothing until opened.
+const visitedSurfaces = reactive(new Set<string>())
+watch(
+  routedSurfaceId,
+  (routed) => {
+    if (!routed) return
+    visitedSurfaces.add(routed)
+    // The router landed on the split tab (history, a redirect): it can't be in
+    // both halves — close the split so it shows on the left. Only on a route
+    // change: "show on the right" splits first and routes away after.
+    if (routed === tabsStore.splitId) tabsStore.unsplit()
+  },
+  { immediate: true },
+)
+watch(
+  () => tabsStore.splitId,
+  (split) => {
+    if (split) visitedSurfaces.add(split)
+  },
+  { immediate: true },
+)
+const hostedSurfaceTabs = computed(() =>
+  tabsStore.entries.filter(
+    (e): e is Extract<typeof e, { type: 'surface' }> => e.type === 'surface' && visitedSurfaces.has(e.id),
+  ),
+)
+watch(
+  () => tabsStore.entries.length,
+  () => {
+    // Forget closed tabs, so reopening one starts fresh.
+    for (const id of [...visitedSurfaces]) if (!tabsStore.surfaceTab(id)) visitedSurfaces.delete(id)
+  },
+)
+
+/** The surface tab in the right half of a split, if any. */
+const splitTab = computed(() => (tabsStore.splitId ? tabsStore.surfaceTab(tabsStore.splitId) : null))
+function splitLabel(): string {
+  const tab = splitTab.value
+  if (!tab) return ''
+  if (tab.surface === 'file' && tab.params.path) return tab.params.path.split('/').pop() || tab.params.path
+  return t(SURFACE_META[tab.surface].labelKey)
+}
 
 // Global listener that mirrors backend-reported active runs into the liveRuns
 // store (see onMounted). Torn down on unmount to avoid a dangling subscription.
@@ -379,6 +455,25 @@ let unlistenRadarRoute: UnlistenFn | null = null
 // starting a new one (lib/sessionLinks).
 let unlistenWindowRun: UnlistenFn | null = null
 let unlistenWindowNewSession: UnlistenFn | null = null
+let unlistenSurfaces: UnlistenFn | null = null
+
+// Screen count, polled: when the second screen goes away, its surface windows
+// (PR Inbox, Calendar…) come back as tabs if the setting asks for it. macOS has
+// no "monitors changed" event the webview can hear.
+let monitorTimer: ReturnType<typeof setInterval> | null = null
+function startMonitorWatch() {
+  let last = 0
+  const check = async () => {
+    const now = await monitorCount(true)
+    const before = last
+    last = now
+    if (!before || !shouldDockOnMonitorChange(before, now, appSettings.settings?.window_dock_on_unplug !== 'false')) return
+    const n = await dockAllSurfaceWindows()
+    if (n > 0) toast.info(t('surfaces.toast.docked', { n }, n))
+  }
+  void check()
+  monitorTimer = setInterval(() => void check(), 5000)
+}
 
 // True when the event target is a text-entry surface where Backspace/navigation
 // keys are legitimately used to edit text.
@@ -407,6 +502,13 @@ const sidebarVisible = computed(
   () => !uiLayout.sidebarHidden && !(uiLayout.focusMode && isRunRoute.value),
 )
 
+// Command palette (⌘K everything / ⌘P quick open). The same shortcut again
+// closes it; the other one switches mode.
+const paletteMode = ref<PaletteMode | null>(null)
+function togglePalette(mode: PaletteMode) {
+  paletteMode.value = paletteMode.value === mode ? null : mode
+}
+
 // ── Native menu bar ─────────────────────────────────────────────────────────
 // Every menu action that isn't screen-specific is bound here, at the app root,
 // so it works from any route. RunView binds `file.newSession` itself — starting
@@ -423,16 +525,16 @@ function bindGlobalMenuActions() {
       openItemCreateWindow('note', routeCaptureContext()),
     ),
     registerMenuAction('window.todoList', () =>
-      openItemListWindow('todo', { projectId: routeCaptureContext().projectId }),
+      openSurface('todos', { projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('window.noteList', () =>
-      openItemListWindow('note', { projectId: routeCaptureContext().projectId }),
+      openSurface('notes', { projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('window.secretNotes', () =>
       openSecretNotesWindow({ projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('window.slackThreads', () =>
-      openSlackWindow({ projectId: routeCaptureContext().projectId }),
+      openSurface('slack', { projectId: routeCaptureContext().projectId }),
     ),
     registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
     registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
@@ -452,8 +554,15 @@ function bindGlobalMenuActions() {
       }
     }),
     registerMenuAction('help.reload', () => window.location.reload()),
+    // Palette + tab strip; Rust drops these while a pop-out has the focus.
+    registerMenuAction('palette.open', () => togglePalette('all')),
+    registerMenuAction('palette.quickOpen', () => togglePalette('quick')),
+    registerMenuAction('tabs.close', closeCurrentTab),
+    registerMenuAction('tabs.toggleSplit', toggleSplitCurrent),
+    registerMenuAction('tabs.popOut', popOutCurrent),
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => registerMenuAction(`tabs.goto.${n}`, () => goToTabNumber(n))),
     ...NAV_ROUTES.map((r) =>
-      registerMenuAction(`go.${r.path}`, () => (r.openWindow ? r.openWindow() : router.push(r.path))),
+      registerMenuAction(`go.${r.path}`, () => (r.surface ? openSurface(r.surface) : router.push(r.path))),
     ),
   ]
   return () => unbinds.forEach((off) => off())
@@ -522,6 +631,10 @@ onBeforeUnmount(() => {
   unlistenWindowRun = null
   unlistenWindowNewSession?.()
   unlistenWindowNewSession = null
+  unlistenSurfaces?.()
+  unlistenSurfaces = null
+  if (monitorTimer) clearInterval(monitorTimer)
+  monitorTimer = null
   unbindMenuActions?.()
   unbindMenuActions = null
   unlistenMenu?.()
@@ -541,6 +654,13 @@ onMounted(async () => {
   }
 })
 
+/** Sidebar row look: highlighted while the router shows `path`. */
+function navClass(path: string): string {
+  return route.path === path
+    ? 'is-active bg-accent text-foreground font-medium'
+    : 'text-muted-foreground hover:text-foreground hover:bg-accent/50'
+}
+
 // Same source of truth as the native "Go" menu (see lib/navigation.ts).
 const navItems = computed(() =>
   NAV_ROUTES.map((r) => ({
@@ -548,7 +668,7 @@ const navItems = computed(() =>
     label: t(r.labelKey),
     icon: r.icon,
     group: r.group,
-    openWindow: r.openWindow,
+    surface: r.surface,
   })),
 )
 
@@ -695,7 +815,7 @@ onMounted(async () => {
   try {
     unlistenFocusOpen = await listen<FocusOpenTodo>(FOCUS_OPEN_WINDOW, (e) => {
       void invoke('focus_take_open_todo').catch(() => {})
-      void openItemListWindow('todo', e.payload?.todo_id ? { id: e.payload.todo_id } : {})
+      void openSurface('todos', e.payload?.todo_id ? { id: e.payload.todo_id } : {})
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
@@ -705,7 +825,7 @@ onMounted(async () => {
   // closed (pr_inbox::open_window): open it.
   try {
     unlistenPrInboxOpen = await listen(PR_INBOX_OPEN_WINDOW, () => {
-      void openPrInboxWindow()
+      void openSurface('prInbox')
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
@@ -728,7 +848,7 @@ onMounted(async () => {
       SLACK_NOTIFICATION_CLICKED,
       (e) => {
         const { id, kind } = e.payload ?? {}
-        if (id && kind === 'slack') void openSlackWindow({ id })
+        if (id && kind === 'slack') void openSurface('slack', { id })
       },
     )
   } catch {
@@ -739,7 +859,7 @@ onMounted(async () => {
   // window on it right away (it fills in as the background job progresses).
   try {
     unlistenSlackApiReceived = await listen<SlackApiReceived>(SLACK_API_RECEIVED, (e) => {
-      if (e.payload?.id) void openSlackWindow({ id: e.payload.id })
+      if (e.payload?.id) void openSurface('slack', { id: e.payload.id })
     })
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
@@ -796,6 +916,10 @@ onMounted(async () => {
   } catch {
     // Ignore (e.g. running outside the Tauri shell during dev in a browser).
   }
+
+  // Pop-outs asking for a surface tab, and surface windows docking back.
+  unlistenSurfaces = await listenSurfaceRequests()
+  startMonitorWatch()
 
   // Load projects up front so app-wide UI (e.g. permission notifications) can
   // resolve project names without waiting for the Projects view to open.
@@ -904,18 +1028,35 @@ onMounted(async () => {
 
       <WorkspaceTabs />
 
-      <!-- Sits here rather than inside the sidebar: a "hide" button that
-           disappears along with the thing it hides can't bring it back. -->
-      <Button
-        variant="ghost"
-        size="icon-sm"
-        class="shrink-0 ml-auto"
-        :title="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
-        :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
-        @click="uiLayout.toggleSidebar()"
-      >
-        <component :is="uiLayout.sidebarHidden ? PanelLeftOpen : PanelLeftClose" class="h-4 w-4" :stroke-width="1.75" />
-      </Button>
+      <div class="ml-auto flex shrink-0 items-center gap-2">
+        <!-- Runs waiting for an approval; click = that run's card / session. -->
+        <PendingApprovalsPill />
+
+        <Button
+          variant="ghost"
+          size="xs"
+          class="shrink-0"
+          :title="`${t('palette.open')} (${IS_MAC ? '⌘K' : 'Ctrl+K'})`"
+          :aria-label="t('palette.open')"
+          @click="togglePalette('all')"
+        >
+          <Search class="h-3.5 w-3.5" :stroke-width="1.75" />
+          <span class="hidden lg:inline text-muted-foreground/80">{{ IS_MAC ? '⌘K' : 'Ctrl+K' }}</span>
+        </Button>
+
+        <!-- Sits here rather than inside the sidebar: a "hide" button that
+             disappears along with the thing it hides can't bring it back. -->
+        <Button
+          variant="ghost"
+          size="icon-sm"
+          class="shrink-0"
+          :title="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
+          :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
+          @click="uiLayout.toggleSidebar()"
+        >
+          <component :is="uiLayout.sidebarHidden ? PanelLeftOpen : PanelLeftClose" class="h-4 w-4" :stroke-width="1.75" />
+        </Button>
+      </div>
     </header>
 
     <div class="flex flex-1 min-h-0">
@@ -937,17 +1078,17 @@ onMounted(async () => {
                at the very top and a view's header owns the first line alone. -->
           <nav class="flex-1 px-2 py-2.5 space-y-0.5">
             <template v-for="(item, index) in navItems" :key="item.path">
-              <!-- Todos, Notes and Slack threads are overlays, not destinations:
-                   each opens its own window instead of navigating, so whatever
-                   screen (or running session) is underneath survives untouched.
-                   They close out the daily-work group, right before the config
-                   screens. -->
+              <!-- Todos, Notes and Slack threads are surfaces (lib/surfaces): a
+                   tab of this window or their own window, per the "Windows &
+                   tabs" setting. They close out the daily-work group, right
+                   before the config screens. -->
               <template v-if="startsNavGroup(index) && item.group === 'config'">
                 <button
                   type="button"
-                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
+                  :class="navClass('/todos')"
                   :title="t('item.navTodos')"
-                  @click="openItemListWindow('todo', { projectId: routeCaptureContext().projectId })"
+                  @click="openSurface('todos', { projectId: routeCaptureContext().projectId })"
                 >
                   <ListTodo class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                   <span class="flex-1 truncate text-left">{{ t('item.navTodos') }}</span>
@@ -962,9 +1103,10 @@ onMounted(async () => {
 
                 <button
                   type="button"
-                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
+                  :class="navClass('/notes')"
                   :title="t('item.navNotes')"
-                  @click="openItemListWindow('note', { projectId: routeCaptureContext().projectId })"
+                  @click="openSurface('notes', { projectId: routeCaptureContext().projectId })"
                 >
                   <StickyNote class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                   <span class="flex-1 truncate text-left">{{ t('item.navNotes') }}</span>
@@ -981,12 +1123,12 @@ onMounted(async () => {
                   <span class="flex-1 truncate text-left">{{ t('secretNotes.nav') }}</span>
                 </button>
 
-                <!-- Slack threads have their own window. -->
                 <button
                   type="button"
-                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
+                  class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
+                  :class="navClass('/slack')"
                   :title="t('slackThread.nav')"
-                  @click="openSlackWindow({ projectId: routeCaptureContext().projectId })"
+                  @click="openSurface('slack', { projectId: routeCaptureContext().projectId })"
                 >
                   <Slack class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                   <span class="flex-1 truncate text-left">{{ t('slackThread.nav') }}</span>
@@ -996,18 +1138,22 @@ onMounted(async () => {
               <!-- Divider between nav groups (daily work / agent config / app). -->
               <div v-if="startsNavGroup(index)" class="mx-3 !my-2 border-t border-border/50" />
 
-              <!-- Destinations with their own window (PR Inbox) open it, like
-                   the Slack button above, instead of routing. -->
+              <!-- Surfaces (PR Inbox, Calendar…) open as a tab or their own
+                   window (lib/surfaceOpen), like the Slack button above. -->
               <button
-                v-if="item.openWindow"
+                v-if="item.surface"
                 type="button"
-                class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none text-muted-foreground hover:text-foreground hover:bg-accent/50"
-                :title="`${item.label} — ${t('nav.opensInWindow')}`"
-                @click="item.openWindow()"
+                class="relative flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-sm transition-colors cursor-pointer select-none"
+                :class="navClass(item.path)"
+                :title="item.label"
+                @click="openSurface(item.surface)"
               >
+                <span
+                  v-if="route.path === item.path"
+                  class="app-nav-indicator absolute left-0 inset-y-[6px] w-[2px] rounded-r-full bg-primary"
+                />
                 <component :is="item.icon" class="h-[15px] w-[15px] shrink-0" :stroke-width="1.75" />
                 <span class="flex-1 truncate text-left">{{ item.label }}</span>
-                <span class="sr-only">({{ t('nav.opensInWindow') }})</span>
                 <span
                   v-if="item.path === '/github-mentions' && mentionsStore.pendingCount > 0"
                   class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground leading-none"
@@ -1062,18 +1208,67 @@ onMounted(async () => {
 
     <!-- Main content -->
     <main class="flex-1 min-w-0 flex flex-col overflow-hidden">
-      <div class="flex-1 min-w-0 overflow-auto">
+      <div class="flex-1 min-w-0 overflow-hidden">
         <!-- `:key` stays on the inner <component>, NOT on <RouterView>: KeepAlive
              caches entries by their vnode key, and a key on the RouterView would
              tear the whole cache down on every navigation — the opposite of the
              point. `routeKey` keeps its existing contract either way (see above):
              run routes get `run-<projectId>` so RunView still remounts per
              project, other routes get a stable per-view key. -->
-        <RouterView v-slot="{ Component }">
-          <KeepAlive :include="CACHED_VIEWS" :max="8">
-            <component :is="Component" :key="routeKey" />
-          </KeepAlive>
-        </RouterView>
+        <!-- Split: the routed screen on the left, a surface tab on the right
+             (WorkspaceTabs "Show on the right"). A click in a half focuses it,
+             so the next tab click lands there. -->
+        <div class="flex h-full min-h-0">
+          <div
+            data-pane="left"
+            class="h-full min-w-0 flex-1 overflow-auto"
+            :class="splitTab && tabsStore.focusedPane === 'left' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
+            @pointerdown.capture="tabsStore.focusedPane = 'left'"
+          >
+            <RouterView v-slot="{ Component }">
+              <KeepAlive :include="CACHED_VIEWS" :max="8">
+                <component :is="Component" :key="routeKey" />
+              </KeepAlive>
+            </RouterView>
+            <template v-for="tab in hostedSurfaceTabs" :key="tab.id">
+              <Teleport defer to="#devdy-split-body" :disabled="tab.id !== tabsStore.splitId">
+                <KeepAlive>
+                  <SurfaceHost
+                    v-if="tab.id === routedSurfaceId || tab.id === tabsStore.splitId"
+                    :surface="tab.surface"
+                    :params="tab.params"
+                    :in-split="tab.id === tabsStore.splitId"
+                    class="h-full"
+                  />
+                </KeepAlive>
+              </Teleport>
+            </template>
+          </div>
+          <!-- Always in the DOM (hidden when not split): the teleport target of
+               the split tab's host. -->
+          <section
+            v-show="splitTab"
+            data-pane="right"
+            class="flex h-full min-w-0 flex-1 flex-col border-l border-border/60"
+            :class="tabsStore.focusedPane === 'right' ? 'shadow-[inset_0_2px_0_hsl(var(--primary))]' : ''"
+            @pointerdown.capture="tabsStore.focusedPane = 'right'"
+          >
+            <div v-if="splitTab" class="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 bg-sidebar/60 pl-3 pr-1.5">
+              <component :is="SURFACE_META[splitTab.surface].icon" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <span class="min-w-0 flex-1 truncate text-xs font-medium">{{ splitLabel() }}</span>
+              <Button
+                variant="ghost"
+                size="icon-xs"
+                :title="t('surfaces.tabs.unsplit')"
+                :aria-label="t('surfaces.tabs.unsplit')"
+                @click="tabsStore.unsplit()"
+              >
+                <X class="h-3 w-3" :stroke-width="2" />
+              </Button>
+            </div>
+            <div id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
+          </section>
+        </div>
       </div>
     </main>
     </div>
@@ -1095,6 +1290,9 @@ onMounted(async () => {
 
     <!-- Answers the backend's quit prompt when background processes are running -->
     <QuitProcessesDialog />
+
+    <!-- ⌘K / ⌘P command palette (title-bar search button, View / Go menu) -->
+    <CommandPalette v-model:mode="paletteMode" />
 
     <!-- App-wide confirm dialog host (see useConfirm) -->
     <ConfirmModal />

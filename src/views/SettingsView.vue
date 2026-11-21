@@ -13,6 +13,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute } from 'vue-router'
 import { setLocale, SUPPORTED_LOCALES } from '@/i18n'
 import { Banner, Button, Input, Textarea, Card, AppSelect, PageHeader, ToggleSwitch } from '@/components/ui'
+import WindowTabsSettings from '@/components/surfaces/WindowTabsSettings.vue'
 import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
@@ -1470,6 +1471,9 @@ watch(() => settings.value.language, (v) => {
               <p class="text-[11px] text-muted-foreground">{{ t('settings.general.launchAtLoginHint') }}</p>
             </div>
         </Card>
+
+        <!-- Windows & tabs (surfaces): saves its own keys -->
+        <WindowTabsSettings v-show="activeSection === 'general'" class="mt-4" />
 
         <!-- DY Mascot section -->
         <Card v-show="activeSection === 'mascot'" body-class="p-4 space-y-5">

@@ -16,6 +16,11 @@ function hashLabel(s: string): string {
   return `fileviewer-${h.toString(36)}`
 }
 
+/** Window label of the viewer of `path` in the project at `projectPath`. */
+export function fileWindowLabel(projectPath: string, path: string): string {
+  return hashLabel(`${projectPath}|${path}`)
+}
+
 function basename(path: string): string {
   return path.split('/').pop() || path
 }

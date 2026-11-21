@@ -24,6 +24,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  ArrowDownToLine,
   ArrowDownWideNarrow,
   CalendarDays,
   Check,
@@ -68,6 +69,8 @@ const props = defineProps<{
   error: string | null
   pinned: boolean
   reloading: boolean
+  /** Rendered inside the main window: no window pin / dock buttons. */
+  embedded?: boolean
   /** Todos: lateness of each open todo by id (done / unknown ones absent). */
   lateness?: Record<string, FocusRadarItem> | null
   /** Todos: counts behind the lateness tabs. */
@@ -111,6 +114,8 @@ const emit = defineEmits<{
   /** Delete every item of a folder: a project id, or null for "No project". */
   deleteGroup: [projectId: string | null, label: string]
   togglePin: []
+  /** Pop-out: move into the main window as a tab (lib/surfaceDock). */
+  dock: []
   reload: []
   retry: []
 }>()
@@ -268,17 +273,30 @@ const groups = computed(() => {
             <X class="h-3.5 w-3.5" :stroke-width="2" />
           </button>
         </div>
-        <Button
-          :variant="pinned ? 'primary' : 'outline'"
-          size="icon"
-          class="shrink-0"
-          :aria-pressed="pinned"
-          :title="pinned ? t('item.unpin') : t('item.pin')"
-          :aria-label="pinned ? t('item.unpin') : t('item.pin')"
-          @click="emit('togglePin')"
-        >
-          <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
+        <!-- Pop-out only: the window's pin, and docking it into the main window. -->
+        <template v-if="!embedded">
+          <Button
+            :variant="pinned ? 'primary' : 'outline'"
+            size="icon"
+            class="shrink-0"
+            :aria-pressed="pinned"
+            :title="pinned ? t('item.unpin') : t('item.pin')"
+            :aria-label="pinned ? t('item.unpin') : t('item.pin')"
+            @click="emit('togglePin')"
+          >
+            <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            class="shrink-0"
+            :title="t('common.dockIntoMain')"
+            :aria-label="t('common.dockIntoMain')"
+            @click="emit('dock')"
+          >
+            <ArrowDownToLine class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+        </template>
         <!-- Reload from the DB (the MCP sidecar writes without events). -->
         <Button
           variant="outline"
@@ -300,8 +318,10 @@ const groups = computed(() => {
             </template>
           </AppSelect>
         </div>
-        <!-- As wide as pin + reload above: the select lines up with the search box. -->
-        <Button size="sm" class="w-[70px] shrink-0 px-0" @click="emit('add')">
+        <!-- Pop-out: as wide as pin + dock + reload above, so the select lines up
+             with the search box. -->
+        <Button size="sm" :class="embedded ? 'w-[70px]' : 'w-[108px]'"
+          class="shrink-0 px-0" @click="emit('add')">
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
           {{ t('common.new') }}
         </Button>

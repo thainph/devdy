@@ -39,5 +39,13 @@
   "reportIssue": "Báo lỗi…",
   "openLogs": "Mở thư mục log",
   "developer": "Nhà phát triển",
-  "zoom": "Phóng to"
+  "zoom": "Phóng to",
+  "commandPalette": "Bảng lệnh…",
+  "quickOpen": "Đi tới tab hoặc phiên…",
+  "closeTab": "Đóng tab",
+  "toggleSplit": "Chia đôi / bỏ chia đôi tab",
+  "popOutTab": "Tách tab ra cửa sổ riêng",
+  "goToTab": "Đi tới tab",
+  "tabN": "Tab {n}",
+  "lastTab": "Tab cuối"
 }

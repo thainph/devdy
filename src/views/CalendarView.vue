@@ -1,6 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
+import DockWindowButton from '@/components/surfaces/DockWindowButton.vue'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useRouter } from 'vue-router'
 import { onClickOutside } from '@vueuse/core'
@@ -417,6 +418,7 @@ function openForAccount(url: string) {
       </template>
       <template #actions>
         <Loader2 v-if="store.loading" class="h-4 w-4 animate-spin text-muted-foreground" />
+        <DockWindowButton v-if="standalone" surface="calendar" class="order-last" />
 
         <!-- Create event -->
         <Button
