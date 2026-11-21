@@ -34,5 +34,6 @@
   "sortByUpdated": "Recently edited",
   "sortByAdded": "Recently added",
   "sortByType": "By type",
-  "sortByTag": "By tag"
+  "sortByTag": "By tag",
+  "dockIntoMain": "Dock into main window"
 }

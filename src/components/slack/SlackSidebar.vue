@@ -13,6 +13,7 @@
 import { computed, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import {
+  ArrowDownToLine,
   ArrowDownWideNarrow,
   Check,
   ChevronDown,
@@ -48,6 +49,8 @@ const props = defineProps<{
   pinned: boolean
   /** A full reload is in flight. */
   reloading: boolean
+  /** Rendered inside the main window: no window pin / dock buttons. */
+  embedded?: boolean
   /** Counts behind the activity tabs: the project in scope, before the activity filter. */
   activityCounts?: { all: number; unread: number; recent: number } | null
 }>()
@@ -68,6 +71,8 @@ const emit = defineEmits<{
   add: []
   retry: []
   togglePin: []
+  /** Pop-out: move into the main window as a tab (lib/surfaceDock). */
+  dock: []
   reload: []
 }>()
 
@@ -181,17 +186,30 @@ function rowAgeTitle(th: SlackThreadSummary): string {
             <X class="h-3.5 w-3.5" :stroke-width="2" />
           </button>
         </div>
-        <Button
-          :variant="pinned ? 'primary' : 'outline'"
-          size="icon"
-          class="shrink-0"
-          :aria-pressed="pinned"
-          :title="pinned ? t('item.unpin') : t('item.pin')"
-          :aria-label="pinned ? t('item.unpin') : t('item.pin')"
-          @click="emit('togglePin')"
-        >
-          <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
+        <!-- Pop-out only: the window's pin, and docking it into the main window. -->
+        <template v-if="!embedded">
+          <Button
+            :variant="pinned ? 'primary' : 'outline'"
+            size="icon"
+            class="shrink-0"
+            :aria-pressed="pinned"
+            :title="pinned ? t('item.unpin') : t('item.pin')"
+            :aria-label="pinned ? t('item.unpin') : t('item.pin')"
+            @click="emit('togglePin')"
+          >
+            <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+          <Button
+            variant="outline"
+            size="icon"
+            class="shrink-0"
+            :title="t('common.dockIntoMain')"
+            :aria-label="t('common.dockIntoMain')"
+            @click="emit('dock')"
+          >
+            <ArrowDownToLine class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+        </template>
         <!-- Reload the list + open thread from the DB (the MCP sidecar writes without events). -->
         <Button
           variant="outline"
@@ -213,10 +231,12 @@ function rowAgeTitle(th: SlackThreadSummary): string {
             </template>
           </AppSelect>
         </div>
-        <!-- As wide as pin + reload above: the select lines up with the search box. -->
+        <!-- Pop-out: as wide as pin + dock + reload above, so the select lines up
+             with the search box. -->
         <Button
           size="sm"
-          class="w-[70px] shrink-0 px-0"
+          :class="embedded ? 'w-[70px]' : 'w-[108px]'"
+          class="shrink-0 px-0"
           :title="t('slackThread.sidebar.add')"
           :aria-label="t('slackThread.sidebar.add')"
           @click="emit('add')"
