@@ -10,10 +10,18 @@
 // app router's. `<RouterLink>` goes through the same two injections, so links
 // inside the pane stay in the pane too.
 //
+// Before the pane moves, the guards the router would run for that change run
+// here (lib/paneGuards): `onBeforeRouteLeave` / `onBeforeRouteUpdate` of the
+// screen in the pane (e.g. Skills asking before it drops unsaved edits) — a
+// `false` cancels, a location redirects. The pane's route uses its own copies
+// of the route records, so those guards stay the pane's and never run for the
+// left half's navigations (nor the left half's for the pane).
+//
 // Views reading the router singleton (`import router from '@/router'`) would
 // bypass this — screens that can show here use `useRouter()` / `useRoute()`.
 import { computed, provide } from 'vue'
 import {
+  NavigationFailureType,
   RouterView,
   START_LOCATION,
   routeLocationKey,
@@ -22,8 +30,10 @@ import {
   useRouter,
   type RouteLocationNormalizedLoaded,
   type RouteLocationRaw,
+  type RouteRecordNormalized,
   type Router,
 } from 'vue-router'
+import { paneNavigationGuards, paneRecordCopy, runGuardQueue, type GuardRecord } from '@/lib/paneGuards'
 
 const props = defineProps<{
   /** Full path this pane shows. */
@@ -52,7 +62,21 @@ function resolveFinal(to: RouteLocationRaw, from?: RouteLocationNormalizedLoaded
   return r
 }
 
-const paneRoute = computed(() => resolveFinal(props.location))
+// The pane's copy of each route record it shows (stable, so RouterView keeps its component).
+const ownRecords = new Map<RouteRecordNormalized, RouteRecordNormalized>()
+function ownRecord(r: RouteRecordNormalized): RouteRecordNormalized {
+  let own = ownRecords.get(r)
+  if (!own) {
+    own = paneRecordCopy(r as unknown as GuardRecord) as unknown as RouteRecordNormalized
+    ownRecords.set(r, own)
+  }
+  return own
+}
+function inPane(r: RouteLocationNormalizedLoaded): RouteLocationNormalizedLoaded {
+  return { ...r, matched: r.matched.map(ownRecord) }
+}
+
+const paneRoute = computed(() => inPane(resolveFinal(props.location)))
 
 // `useRoute()` inside the pane: a reactive view of the pane's location, built
 // the way vue-router builds the app-level one (a getter per route key).
@@ -64,9 +88,38 @@ for (const key of Object.keys(START_LOCATION)) {
   })
 }
 
-function navigate(to: RouteLocationRaw, replace: boolean): Promise<undefined> {
-  emit('navigate', resolveFinal(to, paneRoute.value), replace)
-  return Promise.resolve(undefined)
+/** A cancelled pane navigation, as the router's push / replace resolve one. */
+function aborted(to: RouteLocationNormalizedLoaded, from: RouteLocationNormalizedLoaded, error?: unknown): Error {
+  const failure = error instanceof Error ? error : new Error(`Navigation aborted from "${from.fullPath}" to "${to.fullPath}"`)
+  return Object.assign(failure, { type: NavigationFailureType.aborted, from, to })
+}
+
+// The latest pane navigation wins: an older one whose guards resolve later is dropped.
+let navSeq = 0
+
+async function navigate(raw: RouteLocationRaw, replace: boolean, redirects = 0): Promise<Error | undefined> {
+  const seq = ++navSeq
+  const from = paneRoute.value
+  const to = inPane(resolveFinal(raw, from))
+  // Same place: nothing changes, so no guard asks (as the router does).
+  if (to.fullPath === from.fullPath) {
+    emit('navigate', to, replace)
+    return undefined
+  }
+  const out = await runGuardQueue(
+    paneNavigationGuards(
+      to as unknown as { matched: GuardRecord[] },
+      from as unknown as { matched: GuardRecord[] },
+    ),
+  )
+  if (seq !== navSeq) return aborted(to, from)
+  if (out.kind === 'abort') return aborted(to, from, out.error)
+  if (out.kind === 'redirect') {
+    if (redirects >= 5) return aborted(to, from)
+    return navigate(out.to as RouteLocationRaw, replace, redirects + 1)
+  }
+  emit('navigate', to, replace)
+  return undefined
 }
 
 const paneRouter = new Proxy(appRouter, {
