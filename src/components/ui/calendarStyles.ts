@@ -5,7 +5,8 @@ import { controlHeight, controlSize } from './controlStyles'
 
 /** Trigger button: same box as AppSelect's default variant. */
 export const pickerTrigger = (size: keyof typeof controlSize) => [
-  'inline-flex items-center gap-2 rounded-md border border-border bg-background text-foreground transition-colors cursor-pointer select-none',
+  // `ui-field`: themed like Input / AppSelect (src/assets/themes).
+  'ui-field inline-flex items-center gap-2 rounded-md border border-border bg-background text-foreground transition-colors cursor-pointer select-none',
   'hover:bg-accent hover:text-accent-foreground focus-visible:outline-none focus-visible:ring-1 focus-visible:ring-ring',
   'disabled:opacity-50 disabled:cursor-not-allowed data-[state=open]:border-ring data-[state=open]:ring-1 data-[state=open]:ring-ring',
   controlSize[size],
@@ -13,7 +14,7 @@ export const pickerTrigger = (size: keyof typeof controlSize) => [
 ]
 
 export const popoverContent =
-  'z-50 rounded-md border border-border bg-popover p-3 text-popover-foreground shadow-lg shadow-black/20 outline-none'
+  'ui-popover z-50 rounded-md border border-border bg-popover p-3 text-popover-foreground shadow-lg shadow-black/20 outline-none'
 
 export const calendarHeader = 'flex items-center justify-between gap-2 pb-2'
 export const calendarHeading = 'text-xs font-semibold capitalize text-foreground'

@@ -729,3 +729,11 @@
 .markdown-output code.file-link:hover {
   background: hsl(var(--primary) / 0.12);
 }
+
+/* A field joined to a button on its right (a date picker + its × clear) keeps
+   its square right edge in every theme — the themes round `.ui-field` with a
+   higher-specificity selector than the `rounded-r-none` utility. */
+.ui-field.rounded-r-none {
+  border-top-right-radius: 0 !important;
+  border-bottom-right-radius: 0 !important;
+}

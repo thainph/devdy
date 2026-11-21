@@ -213,11 +213,14 @@ watch(isOpen, (val) => {
         controlSize[size],
         // Same fixed height as Button / Input of this size.
         controlHeight[size],
+        // The theme hooks (`ui-btn` / `ui-field`, see src/assets/themes) give
+        // the select the same look as the Button / Input beside it in every
+        // color theme, not just the default one.
         variant === 'ghost'
-          ? 'border-transparent bg-transparent hover:bg-accent hover:text-accent-foreground'
+          ? 'ui-btn ui-btn-ghost border-transparent bg-transparent hover:bg-accent hover:text-accent-foreground'
           : variant === 'outline'
-            ? 'border-border bg-secondary shadow-sm hover:bg-accent hover:text-accent-foreground hover:border-primary/40'
-            : 'border-border bg-background hover:bg-accent hover:text-accent-foreground',
+            ? 'ui-btn ui-btn-outline border-border bg-secondary shadow-sm hover:bg-accent hover:text-accent-foreground hover:border-primary/40'
+            : 'ui-field border-border bg-background hover:bg-accent hover:text-accent-foreground',
         isOpen && variant !== 'ghost' && 'border-ring ring-1 ring-ring',
         isOpen && variant === 'ghost' && 'bg-accent text-accent-foreground',
       ]"
@@ -256,7 +259,7 @@ watch(isOpen, (val) => {
         ref="listRef"
         data-app-select-dropdown
         role="listbox"
-        class="z-50 min-w-32 overflow-auto rounded-md border border-border bg-popover py-1 shadow-lg shadow-black/20 focus:outline-none"
+        class="ui-popover z-50 min-w-32 overflow-auto rounded-md border border-border bg-popover p-1 shadow-lg shadow-black/20 focus:outline-none"
         :style="dropdownStyle"
         tabindex="-1"
         @keydown="onKeydown"
@@ -272,7 +275,7 @@ watch(isOpen, (val) => {
             v-else
             role="option"
             :aria-selected="option.value === modelValue"
-            class="relative flex items-start gap-2 cursor-pointer select-none transition-colors"
+            class="ui-menu-item relative flex items-start gap-2 rounded cursor-pointer select-none transition-colors"
             :class="[
               size === 'md' ? controlSize.md : controlSize.sm,
               highlightedIndex === i
