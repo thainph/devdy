@@ -15,7 +15,7 @@ import {
   ListTodo,
   MessageSquare,
   PanelRightClose,
-  PanelRightOpen,
+  SquareSplitHorizontal,
   ArrowLeftRight,
   Plus,
   Search,
@@ -257,7 +257,7 @@ function actionItems(): PaletteItem[] {
       key: `action:openRight:${tabEntryKey(e)}`,
       group: 'actions',
       label: t('palette.actions.openOnRight', { name: entryLabel(e) }),
-      icon: PanelRightOpen,
+      icon: SquareSplitHorizontal,
       run: () => openOnRight(e),
     })
   }

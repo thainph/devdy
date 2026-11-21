@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeftRight, ChevronDown, Columns2, ExternalLink, PanelRightOpen, X } from 'lucide-vue-next'
+import { ArrowLeftRight, ChevronDown, Columns2, ExternalLink, PanelRightClose, SquareSplitHorizontal, X } from 'lucide-vue-next'
 import { ContextMenu, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
 import WorkspaceTab from '@/components/WorkspaceTab.vue'
 import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
@@ -277,12 +277,12 @@ function inPair(e: TabEntry): boolean {
           {{ t('surfaces.tabs.swapSplit') }}
         </DropdownItem>
         <DropdownItem @click="runMenu(unsplitFocused)">
-          <Columns2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+          <PanelRightClose class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
           {{ t('surfaces.tabs.unsplit') }}
         </DropdownItem>
       </template>
       <DropdownItem v-else :disabled="!canOpenOnRight(menu.tab)" @click="runMenu(() => openOnRight(menu.tab!))">
-        <PanelRightOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+        <SquareSplitHorizontal class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
         {{ t('surfaces.tabs.openOnRight') }}
       </DropdownItem>
       <DropdownItem v-if="menu.tab.type === 'surface'" @click="runMenu(() => popOut(menu.tab!))">
