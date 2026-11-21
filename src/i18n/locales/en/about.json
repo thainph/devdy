@@ -1,7 +1,7 @@
 {
   "title": "About",
-  "tagline": "AI coding agent for developers",
-  "description": "Manage AI skills centrally and automate GitHub issue and pull request analysis using claude or codex — all from a single desktop app.",
+  "tagline": "Your whole dev day, with AI beside you",
+  "description": "Work with claude and codex, review pull requests, and keep your todos, notes and Slack threads close at hand. Your skills, rules and MCP servers live here too — all on the CLI plan you already have.",
   "shortcuts": {
     "title": "Keyboard shortcuts",
     "or": "or",

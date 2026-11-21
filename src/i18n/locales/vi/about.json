@@ -1,7 +1,7 @@
 {
   "title": "Giới thiệu",
-  "tagline": "AI coding agent cho lập trình viên",
-  "description": "Quản lý tập trung các AI skill và tự động phân tích issue, pull request trên GitHub bằng claude hoặc codex — tất cả trong một ứng dụng desktop.",
+  "tagline": "Cả ngày làm việc của dev, có AI đồng hành",
+  "description": "Làm việc cùng claude và codex, review pull request, giữ todo, ghi chú và Slack thread luôn trong tầm tay. Skill, rule và MCP server cũng gọn ở đây — chạy ngay trên gói CLI bạn đang dùng.",
   "shortcuts": {
     "title": "Phím tắt",
     "or": "hoặc",

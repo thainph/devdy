@@ -1,6 +1,6 @@
 # Devdy
 
-> A desktop app for developers — centrally manage AI Skills / Rules / MCP servers and automate GitHub & GitLab Issue analysis / Pull Request & Merge Request review, running directly on your existing CLI subscription.
+> Your whole dev day, with AI beside you. Work with claude and codex, review pull requests, and keep your todos, notes and Slack threads close at hand. Your skills, rules and MCP servers live here too — all on the CLI plan you already have.
 
 ## What is Devdy?
 
