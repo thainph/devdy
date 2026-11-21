@@ -16,6 +16,7 @@ import {
   serializeWorkspaceState,
   stripUnits,
   tabEntryKey,
+  withOwnRun,
 } from '../workspaceState.ts'
 import { surfaceForPath } from '../surfaces.ts'
 
@@ -154,4 +155,20 @@ test('entryTargetFor maps routes to tabs', () => {
   assert.equal(entryTargetKey(p), 'page:/skills')
   // A project's settings is not a tab.
   assert.equal(entryTargetFor(r('project-settings', '/projects/p/settings', { projectId: 'p' }), surfaceForPath, isPage), null)
+})
+
+test('withOwnRun drops a remembered run filed under another project', () => {
+  const owners = new Map([['r1', 'p1'], ['r2', 'p2']])
+  const ownerOf = (id) => owners.get(id)
+  const own = { type: 'project', projectId: 'p1', lastRunId: 'r1' }
+  assert.equal(withOwnRun(own, ownerOf), own)
+  assert.deepEqual(withOwnRun({ type: 'project', projectId: 'p1', lastRunId: 'r2' }, ownerOf), {
+    type: 'project',
+    projectId: 'p1',
+    lastRunId: null,
+  })
+  // Unknown owner (not loaded yet): kept.
+  const unknown = { type: 'project', projectId: 'p1', lastRunId: 'r9' }
+  assert.equal(withOwnRun(unknown, ownerOf), unknown)
+  assert.equal(withOwnRun(todos, ownerOf), todos)
 })

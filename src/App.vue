@@ -71,6 +71,7 @@ import {
   navigateFocused,
   navigateRightPane,
   popOutCurrent,
+  sanitized,
   syncPairWithRoute,
   toggleSplitCurrent,
 } from '@/lib/tabActions'
@@ -451,7 +452,8 @@ const rightLocation = computed(() => {
   if (!e) return ''
   const moved = rightPaneLocation.value
   if (moved && moved.key === tabEntryKey(e)) return moved.fullPath
-  return router.resolve(entryLocation(e)).fullPath
+  // Never open a session tab on a run of another project (as routeToLeft / selectEntry).
+  return router.resolve(entryLocation(sanitized(e))).fullPath
 })
 // Where the right half moved to inside its tab only holds for that tab.
 watch(
@@ -727,7 +729,7 @@ watch(locale, () => {
 // run needs no project picking at all.
 function routeCaptureContext() {
   // The focused right half of a split, when it is a session.
-  const right = tabsStore.focusedPane === 'right' ? rightEntry.value : null
+  const right = tabsStore.focusedPane === 'right' && rightEntry.value ? sanitized(rightEntry.value) : null
   if (right?.type === 'project') return { projectId: right.projectId, runId: right.lastRunId }
   return {
     projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,

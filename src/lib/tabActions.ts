@@ -13,7 +13,7 @@ import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/work
 import { useRunsStore } from '@/stores/runs'
 import { surfaceForPath } from '@/lib/surfaces'
 import { pageRouteFor } from '@/lib/navigation'
-import { entryTargetFor, entryTargetKey, type EntryTarget, type PaneSide } from '@/lib/workspaceState'
+import { entryTargetFor, entryTargetKey, withOwnRun, type EntryTarget, type PaneSide } from '@/lib/workspaceState'
 import {
   goToEntry,
   openSurface,
@@ -38,12 +38,9 @@ export function currentEntry(): TabEntry | null {
 }
 
 /** A project tab remembering a run of another project resumes on the project instead. */
-function sanitized(e: TabEntry): TabEntry {
-  if (e.type !== 'project' || !e.lastRunId) return e
-  // A remembered run from another project (pinned before cross-project workers
-  // were filed correctly) would open that project's session under this tab.
-  const owner = useRunsStore().runMeta.get(e.lastRunId)?.project_id
-  return owner && owner !== e.projectId ? { ...e, lastRunId: null } : e
+export function sanitized(e: TabEntry): TabEntry {
+  const runs = useRunsStore()
+  return withOwnRun(e, (runId) => runs.runMeta.get(runId)?.project_id)
 }
 
 /** Make the router show the pair's left half (it is what the left pane shows). */

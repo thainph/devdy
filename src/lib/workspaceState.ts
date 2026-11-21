@@ -74,6 +74,18 @@ export function canPair(a: TabEntry, b: TabEntry): boolean {
   return !(a.type === 'project' && b.type === 'project')
 }
 
+/**
+ * A project tab remembering a run of another project (pinned before
+ * cross-project workers were filed correctly) resumes on its project instead:
+ * it would otherwise open that other project's session under this tab.
+ * `ownerOf` gives a run's project, when known.
+ */
+export function withOwnRun<T extends TabEntry>(e: T, ownerOf: (runId: string) => string | undefined): T {
+  if (e.type !== 'project' || !e.lastRunId) return e
+  const owner = ownerOf(e.lastRunId)
+  return owner && owner !== e.projectId ? { ...e, lastRunId: null } : e
+}
+
 // --- Split ratio --------------------------------------------------------------
 
 export const DEFAULT_SPLIT_RATIO = 0.5
