@@ -7,6 +7,7 @@ import {
   floatWhenBackgroundEnabled,
   permissionSurface,
   promote,
+  stackEntries,
   stackLayout,
   summarizePermissionInput,
 } from '../permissionSurface.ts'
@@ -34,7 +35,24 @@ test('desired windows per surface', () => {
   assert.deepEqual([...desiredWindowRuns('none', pending, ['b', 'z'])], ['b'])
 })
 
+test('popped-out runs keep a window even while the main window is in front', () => {
+  const pending = ['a', 'b']
+  assert.deepEqual([...desiredWindowRuns('inline', pending, [], ['b'])], ['b'])
+  // a popped-out run whose request is gone gets no window
+  assert.deepEqual([...desiredWindowRuns('inline', pending, ['b'], ['z'])], [])
+  assert.deepEqual([...desiredWindowRuns('none', pending, ['a'], ['b'])], ['a', 'b'])
+  assert.deepEqual([...desiredWindowRuns('window', pending, [], ['z'])], ['a', 'b'])
+})
+
 const e = (runId, requestId = `${runId}-1`) => ({ runId, requestId })
+
+test('stack skips docked runs and popped-out requests', () => {
+  const all = [e('a'), e('b'), e('c'), e('d', 'd-2')]
+  assert.deepEqual(stackEntries(all, new Set(), new Set()).map((x) => x.runId), ['a', 'b', 'c', 'd'])
+  assert.deepEqual(stackEntries(all, new Set(['b']), new Set(['c-1'])).map((x) => x.runId), ['a', 'd'])
+  // popping out is per request: a newer request from the same run shows again
+  assert.deepEqual(stackEntries(all, new Set(), new Set(['d-1'])).map((x) => x.runId), ['a', 'b', 'c', 'd'])
+})
 
 test('stack keeps arrival order and caps visible cards', () => {
   const l = stackLayout([e('a'), e('b'), e('c'), e('d')], new Set(), [])

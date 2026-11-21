@@ -38,14 +38,15 @@ const { renderText, loadMarkdown } = useMarkdown()
 
 const MAX_VISIBLE = 3
 
+// Requests docked in a split RunView or popped out into a window aren't stacked.
 const layout = computed(() =>
-  stackLayout(perms.entries.value, perms.collapsed.value, perms.promoted.value, MAX_VISIBLE),
+  stackLayout(perms.stackEntries.value, perms.collapsed.value, perms.promoted.value, MAX_VISIBLE),
 )
 const front = computed(() => layout.value.visible[0] ?? null)
 // Shown top → bottom above the front card, so the next one sits right on top of it.
 const behind = computed(() => layout.value.visible.slice(1).reverse())
 const hidden = computed(() => [...layout.value.overflow, ...layout.value.collapsed])
-const show = computed(() => perms.surface.value === 'inline' && perms.entries.value.length > 0)
+const show = computed(() => perms.surface.value === 'inline' && perms.stackEntries.value.length > 0)
 
 const hiddenOpen = ref(false)
 watch(
@@ -98,7 +99,8 @@ function bring(e: PendingPermission) {
 // focusRun) and move keyboard focus into its prompt.
 const promptRef = ref<InstanceType<typeof PermissionPrompt> | null>(null)
 watch(perms.focusRequest, async (req) => {
-  if (!req) return
+  // A run docked in a RunView focuses its own prompt there.
+  if (!req || perms.dockedRuns.value.has(req.runId)) return
   await nextTick()
   promptRef.value?.focus()
 })
