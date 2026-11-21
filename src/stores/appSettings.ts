@@ -64,6 +64,8 @@ export interface AppSettings {
    * In front, the main window always answers them in-app.
    */
   permission_float_when_background: string
+  /** "true" (default) | "false": while the main window is split, the sidebar shows icons only. */
+  split_compact_sidebar: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {

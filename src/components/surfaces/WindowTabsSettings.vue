@@ -36,6 +36,7 @@ const mode = computed(() => parseWindowMode(appSettings.settings?.window_mode))
 const overrides = computed(() => parseOverrides(appSettings.settings?.window_mode_overrides))
 const dockOnUnplug = computed(() => appSettings.settings?.window_dock_on_unplug !== 'false')
 const permFloat = computed(() => appSettings.settings?.permission_float_when_background !== 'false')
+const splitCompact = computed(() => appSettings.settings?.split_compact_sidebar !== 'false')
 
 const modeOptions = computed(() =>
   (['auto', 'tab', 'window'] as WindowMode[]).map((v) => ({ value: v, label: t(`surfaces.settings.modes.${v}`) })),
@@ -135,6 +136,19 @@ function nowLabel(kind: SurfaceKind): string {
         :checked="permFloat"
         :label="t('surfaces.settings.permFloat')"
         @toggle="save('permission_float_when_background', permFloat ? 'false' : 'true')"
+      />
+    </div>
+
+    <div class="flex items-start justify-between gap-3 border-t border-border/60 pt-3">
+      <div class="min-w-0">
+        <div class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">{{ t('surfaces.settings.splitCompactSidebar') }}</div>
+        <p class="text-[11px] text-muted-foreground leading-relaxed mt-0.5">{{ t('surfaces.settings.splitCompactSidebarHint') }}</p>
+      </div>
+      <ToggleSwitch
+        size="md"
+        :checked="splitCompact"
+        :label="t('surfaces.settings.splitCompactSidebar')"
+        @toggle="save('split_compact_sidebar', splitCompact ? 'false' : 'true')"
       />
     </div>
   </Card>
