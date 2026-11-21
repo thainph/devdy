@@ -80,14 +80,20 @@ export const DEFAULT_SPLIT_RATIO = 0.5
 export const SPLIT_MIN_LEFT = 360
 export const SPLIT_MIN_RIGHT = 320
 
-/** A share (0–1) of the left pane, kept sane for storage. */
+/**
+ * A loaded / persisted share (0–1) of the left pane: anything that isn't a
+ * share strictly between 0 and 1 falls back to 50/50. Values clamped on a wide
+ * window (`clampRatio`, e.g. 0.97) must survive; the panes' CSS min widths keep
+ * them usable on a narrower one.
+ */
 export function sanitizeRatio(v: unknown): number {
-  return typeof v === 'number' && Number.isFinite(v) && v > 0.05 && v < 0.95 ? v : DEFAULT_SPLIT_RATIO
+  return typeof v === 'number' && Number.isFinite(v) && v > 0 && v < 1 ? v : DEFAULT_SPLIT_RATIO
 }
 
 /**
  * The left pane's share of `total` px once both panes keep their minimum
- * width. When both minimums don't fit, they shrink proportionally.
+ * width. When both minimums don't fit, they shrink proportionally. Any finite
+ * input is clamped (a drag past an edge, Home / End), never reset to 50/50.
  */
 export function clampRatio(
   ratio: number,
@@ -95,8 +101,9 @@ export function clampRatio(
   minLeft = SPLIT_MIN_LEFT,
   minRight = SPLIT_MIN_RIGHT,
 ): number {
-  const r = sanitizeRatio(ratio)
-  if (!(total > 0)) return r
+  if (!Number.isFinite(ratio)) return DEFAULT_SPLIT_RATIO
+  const r = Math.min(1, Math.max(0, ratio))
+  if (!(total > 0)) return sanitizeRatio(r)
   if (minLeft + minRight >= total) return minLeft / (minLeft + minRight)
   return Math.min(1 - minRight / total, Math.max(minLeft / total, r))
 }

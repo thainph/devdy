@@ -9,7 +9,6 @@ import {
   parseWorkspaceState,
   placePair,
   replacePairSide,
-  sanitizeRatio,
   serializeWorkspaceState,
   tabEntryKey,
   type PageTab,
@@ -295,7 +294,7 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
 
   /** Remember the divider position (`total`: the main area's width, px). */
   function setRatio(next: number, total?: number) {
-    const r = total ? clampRatio(next, total) : sanitizeRatio(next)
+    const r = clampRatio(next, total ?? 0)
     if (r === ratio.value) return
     ratio.value = r
     persist()

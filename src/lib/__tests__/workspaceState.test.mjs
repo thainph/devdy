@@ -12,6 +12,7 @@ import {
   parseWorkspaceState,
   placePair,
   replacePairSide,
+  sanitizeRatio,
   serializeWorkspaceState,
   stripUnits,
   tabEntryKey,
@@ -74,6 +75,33 @@ test('clampRatio keeps both minimum widths', () => {
   // Too narrow for both minimums: proportional.
   assert.equal(clampRatio(0.5, 500), 360 / 680)
   assert.equal(clampRatio(Number.NaN, 1000), DEFAULT_SPLIT_RATIO)
+})
+
+test('clampRatio clamps a drag past an edge instead of snapping to 50/50', () => {
+  // Near / past the left edge (drag, Home = 0): the left minimum.
+  assert.equal(clampRatio(0.02, 1000), 0.36)
+  assert.equal(clampRatio(0, 1000), 0.36)
+  assert.equal(clampRatio(-0.4, 1000), 0.36)
+  // Near / past the right edge (drag, End = 1): the right minimum.
+  assert.ok(Math.abs(clampRatio(0.98, 1000) - 0.68) < 1e-9)
+  assert.ok(Math.abs(clampRatio(1, 1000) - 0.68) < 1e-9)
+  assert.ok(Math.abs(clampRatio(3, 1000) - 0.68) < 1e-9)
+  // A wide window allows more than 95% — and that survives a reload.
+  const wide = clampRatio(1, 10000)
+  assert.ok(Math.abs(wide - 0.968) < 1e-9)
+  assert.equal(parseWorkspaceState(serializeWorkspaceState({ entries: [], pair: null, ratio: wide })).ratio, wide)
+  // Unknown width: clamped into (0, 1) but never reset for a finite edge value.
+  assert.equal(clampRatio(0.3, 0), 0.3)
+  assert.equal(clampRatio(Number.POSITIVE_INFINITY, 1000), DEFAULT_SPLIT_RATIO)
+})
+
+test('sanitizeRatio accepts any persisted share strictly between 0 and 1', () => {
+  assert.equal(sanitizeRatio(0.97), 0.97)
+  assert.equal(sanitizeRatio(0.03), 0.03)
+  assert.equal(sanitizeRatio(0), DEFAULT_SPLIT_RATIO)
+  assert.equal(sanitizeRatio(1), DEFAULT_SPLIT_RATIO)
+  assert.equal(sanitizeRatio('0.4'), DEFAULT_SPLIT_RATIO)
+  assert.equal(sanitizeRatio(Number.NaN), DEFAULT_SPLIT_RATIO)
 })
 
 test('parseWorkspaceState migrates the v1 bare array (no split saved)', () => {
