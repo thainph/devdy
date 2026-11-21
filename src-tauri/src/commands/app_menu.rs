@@ -217,6 +217,22 @@ pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(),
     rebuild(&app)
 }
 
+/// Items that act on the main window's own UI — the command palette and its tab
+/// strip (`palette.*`, `tabs.*`). Their accelerators (⌘K, ⌘P, ⌘1…⌘9, ⌘⇧W, `⌘\`)
+/// belong to the main window only, but the macOS menu bar is app-wide: pressed
+/// in a pop-out they would yank the main window forward and switch or close a
+/// tab the user isn't looking at. So they're dropped while another window has
+/// the focus.
+fn is_main_window_only(id: &str) -> bool {
+    id.starts_with("palette.") || id.starts_with("tabs.")
+}
+
+fn other_window_focused<R: Runtime>(app: &AppHandle<R>) -> bool {
+    app.webview_windows()
+        .iter()
+        .any(|(label, win)| label != "main" && win.is_focused().unwrap_or(false))
+}
+
 /// Forward a menu click to the main window. Registered once on the builder.
 ///
 /// On macOS the menu bar is app-global, so an item can be clicked while a
@@ -240,6 +256,9 @@ pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
         }
         return;
     }
+    if is_main_window_only(&id) && other_window_focused(app) {
+        return;
+    }
     if let Some(win) = app.get_webview_window("main") {
         let _ = win.set_focus();
     }
@@ -249,6 +268,14 @@ pub fn on_menu_event<R: Runtime>(app: &AppHandle<R>, event: tauri::menu::MenuEve
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn palette_and_tab_items_are_main_window_only() {
+        assert!(is_main_window_only("palette.open"));
+        assert!(is_main_window_only("tabs.goto.9"));
+        assert!(!is_main_window_only("go./settings"));
+        assert!(!is_main_window_only("file.newTodo"));
+    }
 
     #[test]
     fn deserializes_frontend_spec() {

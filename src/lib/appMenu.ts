@@ -40,8 +40,8 @@ export interface MenuState {
   focusMode: boolean
 }
 
-function t(key: string): string {
-  return i18n.global.t(key)
+function t(key: string, named?: Record<string, unknown>): string {
+  return named ? i18n.global.t(key, named) : i18n.global.t(key)
 }
 
 /**
@@ -68,14 +68,51 @@ function goMenuItems(): ItemSpec[] {
   ])
 }
 
+// Command palette (components/CommandPalette.vue). Rust only dispatches the
+// `palette.*` / `tabs.*` ids while no pop-out has the focus (see
+// `is_main_window_only` in app_menu.rs): on macOS the menu bar — and so its
+// accelerators — is app-wide, and these act on the main window alone.
+function paletteItem(): ItemSpec {
+  return { kind: 'item', id: 'palette.open', label: t('menu.commandPalette'), accelerator: 'CmdOrCtrl+K' }
+}
+
+function quickOpenItem(): ItemSpec {
+  return { kind: 'item', id: 'palette.quickOpen', label: t('menu.quickOpen'), accelerator: 'CmdOrCtrl+P' }
+}
+
+/** Tab strip of the main window (lib/tabActions). */
+function tabItems(): ItemSpec[] {
+  return [
+    // ⌘W stays Close Window (the OS item in File), so closing a tab takes ⇧.
+    { kind: 'item', id: 'tabs.close', label: t('menu.closeTab'), accelerator: 'CmdOrCtrl+Shift+W' },
+    { kind: 'item', id: 'tabs.toggleSplit', label: t('menu.toggleSplit'), accelerator: 'CmdOrCtrl+Backslash' },
+    { kind: 'item', id: 'tabs.popOut', label: t('menu.popOutTab') },
+    {
+      kind: 'submenu',
+      label: t('menu.goToTab'),
+      items: [
+        ...[1, 2, 3, 4, 5, 6, 7, 8].map(
+          (n): ItemSpec => ({
+            kind: 'item',
+            id: `tabs.goto.${n}`,
+            label: t('menu.tabN', { n }),
+            accelerator: `CmdOrCtrl+${n}`,
+          }),
+        ),
+        { kind: 'item', id: 'tabs.goto.9', label: t('menu.lastTab'), accelerator: 'CmdOrCtrl+9' },
+      ],
+    },
+  ]
+}
+
 function buildSpec(state: MenuState): MenuSpec {
   const submenus: MenuSpec['submenus'] = []
   const settings: ItemSpec = {
     kind: 'item',
     id: 'go./settings',
     label: t('menu.settings'),
-    // The one accelerator kept on purpose: ⌘, for Settings is a platform
-    // convention, not an app-specific shortcut.
+    // ⌘, for Settings is a platform convention. The only other accelerators
+    // are the palette / tab-strip shortcuts (`paletteItems`, `tabItems`).
     accelerator: 'CmdOrCtrl+,',
   }
   const about: ItemSpec = { kind: 'item', id: 'go./about', label: t('menu.about') }
@@ -144,6 +181,8 @@ function buildSpec(state: MenuState): MenuSpec {
   submenus.push({
     label: t('menu.view'),
     items: [
+      paletteItem(),
+      SEPARATOR,
       {
         kind: 'item',
         id: 'view.toggleSidebar',
@@ -163,7 +202,7 @@ function buildSpec(state: MenuState): MenuSpec {
     ],
   })
 
-  submenus.push({ label: t('menu.go'), items: goMenuItems() })
+  submenus.push({ label: t('menu.go'), items: [quickOpenItem(), SEPARATOR, ...goMenuItems()] })
 
   submenus.push({
     label: t('menu.window'),
@@ -175,6 +214,8 @@ function buildSpec(state: MenuState): MenuSpec {
       { kind: 'item', id: 'window.noteList', label: t('menu.noteList') },
       { kind: 'item', id: 'window.secretNotes', label: t('menu.secretNotes') },
       { kind: 'item', id: 'window.slackThreads', label: t('menu.slackThreads') },
+      SEPARATOR,
+      ...tabItems(),
       SEPARATOR,
       { kind: 'windowList' },
       ...(IS_MAC ? [SEPARATOR, os('bringAllToFront', 'menu.bringAllToFront')] : []),
@@ -236,13 +277,14 @@ export function isMenuActionBound(id: string): boolean {
   return handlers.has(id)
 }
 
-function runMenuAction(id: string): void {
+/** Run a bound action as if its menu item was clicked (e.g. from the command palette). */
+export function triggerMenuAction(id: string): void {
   handlers.get(id)?.()
 }
 
 /** Subscribe to menu clicks coming from Rust. Returns an unlisten function. */
 export async function listenMenuActions(): Promise<UnlistenFn> {
   return listen<string>(MENU_ACTION_EVENT, (event) => {
-    if (typeof event.payload === 'string') runMenuAction(event.payload)
+    if (typeof event.payload === 'string') triggerMenuAction(event.payload)
   })
 }

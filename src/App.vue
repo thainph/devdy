@@ -14,11 +14,12 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, LockKeyhole, PanelLeftClose, PanelLeftOpen, Slack, StickyNote, X } from 'lucide-vue-next'
+import { ListTodo, LockKeyhole, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote, X } from 'lucide-vue-next'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
 import WorkspaceTabs from '@/components/WorkspaceTabs.vue'
+import CommandPalette, { type PaletteMode } from '@/components/CommandPalette.vue'
 import RemoteIndicator from '@/components/RemoteIndicator.vue'
 import FileViewerWindow from '@/views/FileViewerWindow.vue'
 import PermissionWindow from '@/views/PermissionWindow.vue'
@@ -59,7 +60,8 @@ import { useAgentAmbient } from '@/composables/useAgentAmbient'
 import { applySystemAccent } from '@/lib/systemAccent'
 import { openItemCreateWindow } from '@/lib/itemWindow'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
-import { applyAppMenu, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
+import { applyAppMenu, IS_MAC, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
+import { closeCurrentTab, goToTabNumber, popOutCurrent, toggleSplitCurrent } from '@/lib/tabActions'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
 import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
@@ -451,6 +453,13 @@ const sidebarVisible = computed(
   () => !uiLayout.sidebarHidden && !(uiLayout.focusMode && isRunRoute.value),
 )
 
+// Command palette (⌘K everything / ⌘P quick open). The same shortcut again
+// closes it; the other one switches mode.
+const paletteMode = ref<PaletteMode | null>(null)
+function togglePalette(mode: PaletteMode) {
+  paletteMode.value = paletteMode.value === mode ? null : mode
+}
+
 // ── Native menu bar ─────────────────────────────────────────────────────────
 // Every menu action that isn't screen-specific is bound here, at the app root,
 // so it works from any route. RunView binds `file.newSession` itself — starting
@@ -496,6 +505,13 @@ function bindGlobalMenuActions() {
       }
     }),
     registerMenuAction('help.reload', () => window.location.reload()),
+    // Palette + tab strip; Rust drops these while a pop-out has the focus.
+    registerMenuAction('palette.open', () => togglePalette('all')),
+    registerMenuAction('palette.quickOpen', () => togglePalette('quick')),
+    registerMenuAction('tabs.close', closeCurrentTab),
+    registerMenuAction('tabs.toggleSplit', toggleSplitCurrent),
+    registerMenuAction('tabs.popOut', popOutCurrent),
+    ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => registerMenuAction(`tabs.goto.${n}`, () => goToTabNumber(n))),
     ...NAV_ROUTES.map((r) =>
       registerMenuAction(`go.${r.path}`, () => (r.surface ? openSurface(r.surface) : router.push(r.path))),
     ),
@@ -963,12 +979,24 @@ onMounted(async () => {
 
       <WorkspaceTabs />
 
+      <Button
+        variant="ghost"
+        size="xs"
+        class="shrink-0 ml-auto"
+        :title="`${t('palette.open')} (${IS_MAC ? '⌘K' : 'Ctrl+K'})`"
+        :aria-label="t('palette.open')"
+        @click="togglePalette('all')"
+      >
+        <Search class="h-3.5 w-3.5" :stroke-width="1.75" />
+        <span class="hidden lg:inline text-muted-foreground/80">{{ IS_MAC ? '⌘K' : 'Ctrl+K' }}</span>
+      </Button>
+
       <!-- Sits here rather than inside the sidebar: a "hide" button that
            disappears along with the thing it hides can't bring it back. -->
       <Button
         variant="ghost"
         size="icon-sm"
-        class="shrink-0 ml-auto"
+        class="shrink-0"
         :title="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
         :aria-label="uiLayout.sidebarHidden ? t('menu.showSidebar') : t('menu.hideSidebar')"
         @click="uiLayout.toggleSidebar()"
@@ -1191,6 +1219,9 @@ onMounted(async () => {
 
     <!-- Answers the backend's quit prompt when background processes are running -->
     <QuitProcessesDialog />
+
+    <!-- ⌘K / ⌘P command palette (title-bar search button, View / Go menu) -->
+    <CommandPalette v-model:mode="paletteMode" />
 
     <!-- App-wide confirm dialog host (see useConfirm) -->
     <ConfirmModal />

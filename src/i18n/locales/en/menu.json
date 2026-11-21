@@ -39,5 +39,13 @@
   "reportIssue": "Report an Issue…",
   "openLogs": "Open Logs Folder",
   "developer": "Developer",
-  "zoom": "Zoom"
+  "zoom": "Zoom",
+  "commandPalette": "Command Palette…",
+  "quickOpen": "Go to Tab or Session…",
+  "closeTab": "Close Tab",
+  "toggleSplit": "Split / Unsplit Tab",
+  "popOutTab": "Move Tab to Its Own Window",
+  "goToTab": "Go to Tab",
+  "tabN": "Tab {n}",
+  "lastTab": "Last Tab"
 }
