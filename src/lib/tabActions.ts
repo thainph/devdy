@@ -7,6 +7,7 @@
 // The router shows the pair's left half; the right half renders beside it
 // (App.vue). Clicking a tab outside the pair shows it full width and leaves the
 // pair waiting on the strip; clicking a half brings the split back.
+import { nextTick } from 'vue'
 import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import router from '@/router'
 import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
@@ -41,6 +42,24 @@ export function currentEntry(): TabEntry | null {
 export function sanitized(e: TabEntry): TabEntry {
   const runs = useRunsStore()
   return withOwnRun(e, (runId) => runs.runMeta.get(runId)?.project_id)
+}
+
+/**
+ * Startup: the router's first navigation (`/` → `/dashboard`) is not the user
+ * choosing a tab, so it must not change the split restored from the last
+ * session (stores/workspaceTabs `pairShown`). Until it has landed, the pair
+ * neither follows the route nor diverts it; then a restored split routes to
+ * its left half.
+ */
+let startupSettled = false
+
+/** Main window, once: lift the startup gate (see above). */
+export async function settleStartupNavigation() {
+  await router.isReady()
+  // Let the route watcher handle the first navigation while still gated.
+  await nextTick()
+  startupSettled = true
+  if (useWorkspaceTabsStore().isSplit) routeToLeft()
 }
 
 /** Make the router show the pair's left half (it is what the left pane shows). */
@@ -259,6 +278,7 @@ export function navigateRightPane(to: RouteLocationNormalizedLoaded) {
  * split on screen. Returns false to cancel the router's navigation.
  */
 export function interceptRightHalf(to: RouteLocationNormalizedLoaded): boolean {
+  if (!startupSettled) return true
   const tabs = useWorkspaceTabsStore()
   const pair = tabs.pair
   if (!pair) return true
@@ -280,6 +300,7 @@ export function interceptRightHalf(to: RouteLocationNormalizedLoaded): boolean {
  * beside the right half, shows full width.
  */
 export function syncPairWithRoute() {
+  if (!startupSettled) return
   const tabs = useWorkspaceTabsStore()
   const pair = tabs.pair
   if (!pair) return

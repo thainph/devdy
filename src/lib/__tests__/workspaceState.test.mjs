@@ -172,3 +172,22 @@ test('withOwnRun drops a remembered run filed under another project', () => {
   assert.equal(withOwnRun(unknown, ownerOf), unknown)
   assert.equal(withOwnRun(todos, ownerOf), todos)
 })
+
+test('parseWorkspaceState restores whether the pair was on screen', () => {
+  const entries = [proj('p1'), todos]
+  const pair = { left: 'project:p1', right: 'surface:todos' }
+  const shown = parseWorkspaceState(serializeWorkspaceState({ entries, pair, pairShown: true, ratio: 0.5 }))
+  assert.equal(shown.pairShown, true)
+  const waiting = parseWorkspaceState(serializeWorkspaceState({ entries, pair, pairShown: false, ratio: 0.5 }))
+  assert.equal(waiting.pairShown, false)
+  // Saved before pairShown existed: the pair waits on the strip.
+  const old = JSON.stringify({ version: 2, entries, pair, ratio: 0.5 })
+  assert.equal(parseWorkspaceState(old).pairShown, false)
+  // v1 and malformed values: false.
+  assert.equal(parseWorkspaceState(JSON.stringify([{ projectId: 'p1' }])).pairShown, false)
+  assert.equal(parseWorkspaceState(JSON.stringify({ version: 2, entries, pair, pairShown: 'yes' })).pairShown, false)
+  // Shown without a (valid) pair: nothing to show.
+  const noPair = JSON.stringify({ version: 2, entries: [proj('a'), proj('b')], pair: { left: 'project:a', right: 'project:b' }, pairShown: true })
+  assert.equal(parseWorkspaceState(noPair).pairShown, false)
+  assert.equal(JSON.parse(serializeWorkspaceState({ entries, pair: null, pairShown: true, ratio: 0.5 })).pairShown, false)
+})

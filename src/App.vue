@@ -72,6 +72,7 @@ import {
   navigateRightPane,
   popOutCurrent,
   sanitized,
+  settleStartupNavigation,
   syncPairWithRoute,
   toggleSplitCurrent,
 } from '@/lib/tabActions'
@@ -395,6 +396,8 @@ watch(
 // (never the same tab on both sides). Main window only.
 const offRightHalfGuard =
   isPopoutWindow || isSessionWindow ? null : router.beforeEach((to) => interceptRightHalf(to))
+// The startup navigation leaves the restored split as it was (lib/tabActions).
+if (!isPopoutWindow && !isSessionWindow) void settleStartupNavigation()
 
 /** The surface tab the router shows (left / only pane), if any. */
 const routedSurfaceId = computed(() => {

@@ -54,8 +54,8 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
    * of its halves is clicked again.
    */
   const pair = ref<SplitPair | null>(initial.pair)
-  /** Whether the pair is on screen. Not persisted: a restart shows one tab. */
-  const pairShown = ref(false)
+  /** Whether the pair is on screen (persisted: a restart shows what the user had). */
+  const pairShown = ref(initial.pairShown)
   /** The left pane's share of the main area while split (persisted). */
   const ratio = ref(initial.ratio)
 
@@ -73,7 +73,12 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     try {
       localStorage.setItem(
         STORAGE_KEY,
-        serializeWorkspaceState({ entries: [...entries], pair: pair.value, ratio: ratio.value }),
+        serializeWorkspaceState({
+          entries: [...entries],
+          pair: pair.value,
+          pairShown: pairShown.value,
+          ratio: ratio.value,
+        }),
       )
     } catch {
       /* storage unavailable — in-memory tabs still work this session */
@@ -272,24 +277,27 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
   /** Bring the pair back on screen (the caller routes to its left half). */
   function showPair(focus: PaneSide = 'left') {
     if (!pair.value) return
-    pairShown.value = true
     focusedPane.value = focus
+    if (pairShown.value) return
+    pairShown.value = true
+    persist()
   }
 
   /** Show one tab full width; the pair, if any, stays on the strip. */
   function hidePair() {
-    pairShown.value = false
     focusedPane.value = 'left'
+    if (!pairShown.value) return
+    pairShown.value = false
+    persist()
   }
 
   /** Dissolve the pair: both halves become ordinary tabs again. */
   function unsplit() {
-    if (pair.value) {
-      pair.value = null
-      persist()
-    }
+    const changed = !!pair.value || pairShown.value
+    pair.value = null
     pairShown.value = false
     focusedPane.value = 'left'
+    if (changed) persist()
   }
 
   /** Remember the divider position (`total`: the main area's width, px). */

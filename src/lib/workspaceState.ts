@@ -189,8 +189,13 @@ export const WORKSPACE_STATE_VERSION = 2
 
 export interface WorkspaceState {
   entries: TabEntry[]
-  /** Kept across restarts, but not shown until the user clicks the pair. */
+  /** Kept across restarts, on screen or waiting on the strip. */
   pair: SplitPair | null
+  /**
+   * Whether the pair was on screen: a restart shows exactly what the user had.
+   * Missing (v1, early v2) = false: the pair waits on the strip.
+   */
+  pairShown: boolean
   ratio: number
 }
 
@@ -214,11 +219,12 @@ function parseEntry(t: unknown): TabEntry | null {
 
 /**
  * Read the persisted strip. Version 1 was a bare array of entries (the split
- * was never saved); version 2 is `{ version, entries, pair, ratio }`. Anything
- * malformed is dropped rather than failing the whole strip.
+ * was never saved); version 2 is `{ version, entries, pair, pairShown, ratio }`
+ * (`pairShown` added later, absent = false). Anything malformed is dropped
+ * rather than failing the whole strip.
  */
 export function parseWorkspaceState(raw: string | null | undefined): WorkspaceState {
-  const empty: WorkspaceState = { entries: [], pair: null, ratio: DEFAULT_SPLIT_RATIO }
+  const empty: WorkspaceState = { entries: [], pair: null, pairShown: false, ratio: DEFAULT_SPLIT_RATIO }
   if (!raw) return empty
   let data: unknown
   try {
@@ -253,11 +259,17 @@ export function parseWorkspaceState(raw: string | null | undefined): WorkspaceSt
     const order = placePair(entries.map(tabEntryKey), pair)
     entries.sort((a, b) => order.indexOf(tabEntryKey(a)) - order.indexOf(tabEntryKey(b)))
   }
-  return { entries, pair, ratio }
+  return { entries, pair, pairShown: !!pair && obj.pairShown === true, ratio }
 }
 
 export function serializeWorkspaceState(s: WorkspaceState): string {
-  return JSON.stringify({ version: WORKSPACE_STATE_VERSION, entries: s.entries, pair: s.pair, ratio: s.ratio })
+  return JSON.stringify({
+    version: WORKSPACE_STATE_VERSION,
+    entries: s.entries,
+    pair: s.pair,
+    pairShown: !!s.pair && s.pairShown === true,
+    ratio: s.ratio,
+  })
 }
 
 // --- Routes → tabs --------------------------------------------------------------
