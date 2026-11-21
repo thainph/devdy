@@ -521,9 +521,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- As a tab: no fill of its own, so the list floats on the app's background
+       like the Skills / Rules list (the glass themes draw it as a pane). -->
   <div
-    class="flex flex-col overflow-hidden bg-background text-foreground"
-    :class="embedded ? 'h-full min-h-0 w-full' : 'app-shell app-window h-screen w-screen'"
+    class="flex flex-col overflow-hidden text-foreground"
+    :class="embedded ? 'h-full min-h-0 w-full' : 'app-shell app-window h-screen w-screen bg-background'"
   >
     <!-- Reloading the open thread failed: its last good copy stays on screen. -->
     <Banner

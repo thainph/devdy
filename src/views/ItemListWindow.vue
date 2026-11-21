@@ -660,9 +660,11 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
+  <!-- As a tab: no fill of its own, so the list floats on the app's background
+       like the Skills / Rules list (the glass themes draw it as a pane). -->
   <div
-    class="relative flex overflow-hidden bg-background text-foreground"
-    :class="embedded ? 'h-full min-h-0 w-full' : 'app-shell app-window h-screen w-screen'"
+    class="relative flex overflow-hidden text-foreground"
+    :class="embedded ? 'h-full min-h-0 w-full' : 'app-shell app-window h-screen w-screen bg-background'"
   >
     <ItemSidebar
       v-model:search="search"
