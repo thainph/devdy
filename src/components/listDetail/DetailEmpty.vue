@@ -1,5 +1,6 @@
 <script setup lang="ts">
 // Right pane of a list-detail screen when nothing is selected.
+import ListPaneButtons from './ListPaneButtons.vue'
 import type { Component } from 'vue'
 
 defineProps<{
@@ -9,7 +10,10 @@ defineProps<{
 </script>
 
 <template>
-  <div class="flex min-w-0 flex-1 items-center justify-center p-6">
+  <div class="relative flex min-w-0 flex-1 items-center justify-center p-6">
+    <div class="absolute left-3 top-3">
+      <ListPaneButtons mode="show" />
+    </div>
     <div class="text-center">
       <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
         <component :is="icon" class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />

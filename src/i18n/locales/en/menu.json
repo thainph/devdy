@@ -47,5 +47,6 @@
   "popOutTab": "Move Tab to Its Own Window",
   "goToTab": "Go to Tab",
   "tabN": "Tab {n}",
-  "lastTab": "Last Tab"
+  "lastTab": "Last Tab",
+  "toggleList": "Hide / Show List"
 }

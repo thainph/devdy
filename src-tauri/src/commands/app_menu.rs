@@ -218,13 +218,16 @@ pub fn set_app_menu<R: Runtime>(app: AppHandle<R>, spec: MenuSpec) -> Result<(),
 }
 
 /// Items that act on the main window's own UI — the command palette and its tab
-/// strip (`palette.*`, `tabs.*`). Their accelerators (⌘K, ⌘P, ⌘1…⌘9, ⌘⇧W, `⌘\`)
+/// strip (`palette.*`, `tabs.*`), the list pane and Focus (`view.toggleList`,
+/// `view.toggleFocus`). Their accelerators (⌘K, ⌘P, ⌘1…⌘9, ⌘⇧W, `⌘\`)
 /// belong to the main window only, but the macOS menu bar is app-wide: pressed
 /// in a pop-out they would yank the main window forward and switch or close a
 /// tab the user isn't looking at. So they're dropped while another window has
 /// the focus.
 fn is_main_window_only(id: &str) -> bool {
-    id.starts_with("palette.") || id.starts_with("tabs.")
+    // ⌘B / ⌘. too: a pop-out's own editor would lose ⌘B, and neither should
+    // reach for the main window's list or Focus from another window.
+    id.starts_with("palette.") || id.starts_with("tabs.") || id == "view.toggleList" || id == "view.toggleFocus"
 }
 
 fn other_window_focused<R: Runtime>(app: &AppHandle<R>) -> bool {
@@ -273,6 +276,8 @@ mod tests {
     fn palette_and_tab_items_are_main_window_only() {
         assert!(is_main_window_only("palette.open"));
         assert!(is_main_window_only("tabs.goto.9"));
+        assert!(is_main_window_only("view.toggleList"));
+        assert!(is_main_window_only("view.toggleFocus"));
         assert!(!is_main_window_only("go./settings"));
         assert!(!is_main_window_only("file.newTodo"));
     }

@@ -1,13 +1,14 @@
 import { defineStore } from 'pinia'
 import { ref } from 'vue'
+import { parseHiddenPanes, type ListPaneKey } from '@/lib/listPane'
 
 /**
  * App-wide layout visibility state shared between App.vue and RunView.
  *
- * `focusMode` collapses the app down to just the current AI run: the sidebar,
- * workspace tabs, run history and issue/PR Content are hidden, leaving only
- * Claude's output/question area and the composer. It is intentionally a
- * transient, in-memory flag — it resets on reload rather than persisting.
+ * `focusMode` (⌘.) collapses any screen down to its content: the sidebar,
+ * the tab strip and the screen's list pane are hidden (on a run, also its
+ * issue/PR Content). It is intentionally a transient, in-memory flag — it
+ * resets on reload rather than persisting.
  *
  * `sidebarHidden` is the separate, deliberate "give me the full width on every
  * screen" toggle. Unlike focus mode it applies to ALL routes and IS
@@ -15,6 +16,19 @@ import { ref } from 'vue'
  * hidden across restarts rather than to reappear on every launch.
  */
 const SIDEBAR_STORAGE_KEY = 'devdy.sidebarHidden'
+/**
+ * The list panes (left column of a list-detail screen) the user hid, one flag
+ * per screen (lib/listPane), persisted like `sidebarHidden`.
+ */
+const LIST_HIDDEN_KEY = 'devdy.listPanesHidden'
+
+function loadHiddenPanes(): ListPaneKey[] {
+  try {
+    return parseHiddenPanes(localStorage.getItem(LIST_HIDDEN_KEY))
+  } catch {
+    return []
+  }
+}
 
 /**
  * Row density shared by the session lists — the History list (RunView's left
@@ -90,6 +104,23 @@ export const useUILayoutStore = defineStore('uiLayout', () => {
     focusMode.value = !focusMode.value
   }
 
+  const hiddenPanes = ref<ListPaneKey[]>(loadHiddenPanes())
+
+  function isListHidden(key: ListPaneKey): boolean {
+    return hiddenPanes.value.includes(key)
+  }
+
+  function setListHidden(key: ListPaneKey, hidden: boolean) {
+    const next = hiddenPanes.value.filter((k) => k !== key)
+    if (hidden) next.push(key)
+    hiddenPanes.value = next
+    try {
+      localStorage.setItem(LIST_HIDDEN_KEY, JSON.stringify(next))
+    } catch {
+      /* storage unavailable — the in-memory flag still works for this session */
+    }
+  }
+
   function setSidebarHidden(hidden: boolean) {
     sidebarHidden.value = hidden
     try {
@@ -141,6 +172,9 @@ export const useUILayoutStore = defineStore('uiLayout', () => {
   return {
     focusMode,
     toggleFocus,
+    hiddenPanes,
+    isListHidden,
+    setListHidden,
     sidebarHidden,
     setSidebarHidden,
     toggleSidebar,

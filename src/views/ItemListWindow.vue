@@ -28,6 +28,8 @@
 // window's title, tray row, pin, close and URL alone, and uses the main
 // window's ConfirmModal / ToastHost. The session requests above are global
 // events, so they reach the main window's listeners from here too.
+import { provideListPane } from '@/composables/useListPane'
+import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -94,6 +96,8 @@ const { pinned, togglePin } = props.embedded ? { pinned: ref(false), togglePin: 
 const params = new URLSearchParams(window.location.search)
 /** The kind this window shows — fixed for its lifetime (one window per kind). */
 const kind: ItemKind = props.kind ?? (params.get('kind') === 'note' ? 'note' : 'todo')
+// The list column hides per screen (⌘B) and with Focus (⌘.).
+provideListPane(kind === 'note' ? 'notes' : 'todos')
 const initialId = props.initialId !== undefined ? props.initialId : params.get('id') || null
 /** The project the window was opened from: the default filter and "+ New" project. */
 const contextProjectId = ref<string | null>(
@@ -657,7 +661,7 @@ onBeforeUnmount(() => {
 
 <template>
   <div
-    class="flex overflow-hidden bg-background text-foreground"
+    class="relative flex overflow-hidden bg-background text-foreground"
     :class="embedded ? 'h-full min-h-0 w-full' : 'app-shell app-window h-screen w-screen'"
   >
     <ItemSidebar
@@ -731,7 +735,8 @@ onBeforeUnmount(() => {
         @cancel="cancelEdit"
       />
     </section>
-    <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
+    <div v-else class="relative flex min-w-0 flex-1 items-center justify-center p-6">
+      <div class="absolute left-3 top-3"><ListPaneButtons mode="show" /></div>
       <div class="text-center">
         <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
           <component

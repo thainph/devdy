@@ -14,7 +14,8 @@ import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, LockKeyhole, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote, X } from 'lucide-vue-next'
+import { ListTodo, LockKeyhole, Minimize2, PanelLeftClose, PanelLeftOpen, Search, Slack, StickyNote, X } from 'lucide-vue-next'
+import { toggleActiveListPane } from '@/composables/useListPane'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
 import CalendarReminder from '@/components/CalendarReminder.vue'
@@ -493,6 +494,15 @@ function isEditableTarget(el: EventTarget | null): boolean {
 // webview and trigger history "back" navigation — the app appears to jump to a
 // different screen while the user is just typing. Blocking them here is the
 // backstop; RunView still focuses the composer on session open.
+// Esc leaves Focus mode — unless something closer owns the key: a text field,
+// an open dialog / menu, or a peeked list (it stops the event itself).
+function onFocusEscape(e: KeyboardEvent) {
+  if (e.key !== 'Escape' || !uiLayout.focusMode || e.defaultPrevented) return
+  if (isEditableTarget(e.target)) return
+  if (document.querySelector('[role="dialog"], [role="menu"]')) return
+  uiLayout.focusMode = false
+}
+
 function onGlobalNavKeyGuard(e: KeyboardEvent) {
   if (e.key === 'Backspace' && !isEditableTarget(e.target)) {
     e.preventDefault()
@@ -502,7 +512,7 @@ function onGlobalNavKeyGuard(e: KeyboardEvent) {
 // The sidebar is gone either because the user hid it (any route, persisted) or
 // because focus mode is collapsing a run down to its conversation.
 const sidebarVisible = computed(
-  () => !uiLayout.sidebarHidden && !(uiLayout.focusMode && isRunRoute.value),
+  () => !uiLayout.sidebarHidden && !uiLayout.focusMode,
 )
 
 // Command palette (⌘K everything / ⌘P quick open). The same shortcut again
@@ -541,6 +551,8 @@ function bindGlobalMenuActions() {
     ),
     registerMenuAction('view.toggleSidebar', () => uiLayout.toggleSidebar()),
     registerMenuAction('view.toggleFocus', () => uiLayout.toggleFocus()),
+    // ⌘B: the list column of the screen in view (composables/useListPane).
+    registerMenuAction('view.toggleList', () => void toggleActiveListPane()),
     // Windows/Linux only — macOS uses the OS full-screen item (see appMenu.ts).
     registerMenuAction('view.toggleFullscreen', async () => {
       const win = getCurrentWebviewWindow()
@@ -643,6 +655,7 @@ onBeforeUnmount(() => {
   unlistenMenu?.()
   unlistenMenu = null
   window.removeEventListener('keydown', onGlobalNavKeyGuard, true)
+  window.removeEventListener('keydown', onFocusEscape)
 })
 
 // App version shown in the sidebar footer; read from Tauri so it always matches
@@ -650,6 +663,7 @@ onBeforeUnmount(() => {
 const appVersion = ref('')
 onMounted(async () => {
   window.addEventListener('keydown', onGlobalNavKeyGuard, true)
+  if (!isPopoutWindow && !isSessionWindow) window.addEventListener('keydown', onFocusEscape)
   try {
     appVersion.value = await getVersion()
   } catch {
@@ -1022,7 +1036,7 @@ onMounted(async () => {
          line, and the run screen gains back ~52px of height for the conversation.
          Hidden in focus mode, where the point is no chrome at all. -->
     <header
-      v-if="!(uiLayout.focusMode && isRunRoute)"
+      v-if="!uiLayout.focusMode"
       class="app-titlebar flex items-center gap-2 h-11 px-3 shrink-0 bg-sidebar border-b border-border/50"
     >
       <img src="/logo.png" alt="Devdy" class="h-[18px] w-[18px] rounded shrink-0" />
@@ -1276,6 +1290,20 @@ onMounted(async () => {
     </main>
     </div>
 
+    <!-- Focus mode (⌘.): the chrome is gone, so a faint pill at the top is the
+         way back (also ⌘. and Esc). -->
+    <div
+      v-if="uiLayout.focusMode"
+      class="focus-pill fixed left-1/2 top-2 z-40 flex -translate-x-1/2 items-center gap-2 rounded-full border border-border/70 bg-card py-1 pl-3 pr-1 text-[11px] text-muted-foreground shadow-lg"
+    >
+      <span>{{ t('listPane.focus') }}</span>
+      <Button variant="outline" size="xs" @click="uiLayout.focusMode = false">
+        <Minimize2 class="h-3 w-3" :stroke-width="2" />
+        {{ t('listPane.exitFocus') }}
+        <kbd class="ml-0.5 font-mono text-[10px] opacity-70">{{ IS_MAC ? '⌘.' : 'Ctrl+.' }}</kbd>
+      </Button>
+    </div>
+
     <!-- Headless: fires native OS notifications for runs awaiting input while the
          app is backgrounded; the in-app signal is the History attention icon. -->
     <PermissionNotifier />
@@ -1338,7 +1366,20 @@ onMounted(async () => {
   opacity: 0;
 }
 
+/* Faint until reached for, so it doesn't sit on the content. */
+.focus-pill {
+  opacity: 0.4;
+  transition: opacity 150ms ease;
+}
+.focus-pill:hover,
+.focus-pill:focus-within {
+  opacity: 1;
+}
+
 @media (prefers-reduced-motion: reduce) {
+  .focus-pill {
+    transition: none;
+  }
   .sidebar-enter-active,
   .sidebar-leave-active {
     transition: none;

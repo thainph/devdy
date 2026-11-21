@@ -15,6 +15,7 @@ import { open, save } from '@tauri-apps/plugin-dialog'
 import { Layers, RefreshCw, ScrollText, Upload } from 'lucide-vue-next'
 import { AppSelect, Badge, Button } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
+import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
 import RuleDetail from '@/components/rules/RuleDetail.vue'
@@ -31,6 +32,8 @@ import { UNGROUPED, buildRuleGroups } from '@/lib/rulesRows'
 defineOptions({ name: 'RulesView' })
 
 const { t } = useI18n()
+// The list column hides per screen (⌘B) and with Focus (⌘.).
+provideListPane('rules')
 const route = useRoute()
 const router = useRouter()
 const store = useRulesStore()
@@ -336,7 +339,7 @@ async function handleExport(rule: Rule) {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0">
+  <div class="relative flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
       :groups="sidebarGroups"

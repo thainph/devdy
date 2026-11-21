@@ -15,6 +15,7 @@ import { useProjectsStore } from '@/stores/projects'
 import { useSkillGroupsStore } from '@/stores/groups'
 import { AppSelect, Badge, Button } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
+import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
 import SkillDetail from '@/components/skills/SkillDetail.vue'
@@ -27,6 +28,8 @@ import { FILTER_UNGROUPED, buildSkillGroups } from '@/lib/skillRows'
 defineOptions({ name: 'SkillsView' })
 
 const { t } = useI18n()
+// The list column hides per screen (⌘B) and with Focus (⌘.).
+provideListPane('skills')
 const route = useRoute()
 const router = useRouter()
 const store = useSkillsStore()
@@ -327,7 +330,7 @@ async function handleExport(skill: Skill) {
 </script>
 
 <template>
-  <div class="flex h-full overflow-hidden">
+  <div class="relative flex h-full overflow-hidden">
     <ListDetailSidebar
       v-model:search="search"
       :groups="rowGroups"

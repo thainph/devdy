@@ -17,6 +17,8 @@ import { useI18n } from 'vue-i18n'
 import { ArrowDownWideNarrow, Check, ChevronDown, ChevronRight, Folder, Plus, RotateCw, Search, X } from 'lucide-vue-next'
 import { Banner, Button, DropdownItem, DropdownMenu, Input, SegmentedControl } from '@/components/ui'
 import { parseCollapsed, type ListSort, type RowGroup } from '@/lib/listGroups'
+import { useListPaneSidebar } from '@/composables/useListPane'
+import ListPaneButtons from './ListPaneButtons.vue'
 import { groupClass, groupHeaderClass, rowClass, rowListClass, rowSubClass } from './rowStyles'
 
 const props = withDefaults(
@@ -64,6 +66,10 @@ const props = withDefaults(
 
 const search = defineModel<string>('search', { required: true })
 const filter = defineModel<string>('filter', { default: '' })
+
+// Hideable per screen (⌘B) when the screen provides a list pane.
+const rootEl = ref<HTMLElement | null>(null)
+const listPane = useListPaneSidebar(rootEl)
 
 const emit = defineEmits<{
   select: [id: string]
@@ -156,7 +162,12 @@ function showHeaders(): boolean {
 </script>
 
 <template>
-  <aside class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
+  <aside
+    v-if="listPane.shown.value"
+    ref="rootEl"
+    class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar"
+    :class="listPane.floatClass.value"
+  >
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
       <!-- One grid: the controls line up with the search box, "+ New" with the toolbar. -->
       <div class="grid grid-cols-[minmax(0,1fr)_auto] items-center gap-1.5">
@@ -178,6 +189,7 @@ function showHeaders(): boolean {
         </div>
         <div class="flex items-center justify-end gap-1.5">
           <slot name="toolbar" />
+          <ListPaneButtons mode="hide" />
         </div>
         <div class="min-w-0">
           <slot name="controls" />
@@ -277,7 +289,7 @@ function showHeaders(): boolean {
               <button
                 type="button"
                 class="flex min-w-0 flex-1 cursor-pointer flex-col text-left"
-                @click="emit('select', row.id)"
+                @click="emit('select', row.id); listPane.picked()"
               >
                 <slot name="row" :row="row" :selected="row.id === selectedId" />
                 <!-- Flat list: the row's group. -->

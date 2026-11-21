@@ -81,6 +81,8 @@ import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
 import { topKByScore } from '@/lib/topK'
+import { provideListPane, useListPaneSidebar } from '@/composables/useListPane'
+import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { openSurface } from '@/lib/surfaceOpen'
 import { openSessionWindow } from '@/lib/sessionWindow'
 import { IS_SESSION_WINDOW } from '@/lib/windowMode'
@@ -115,6 +117,10 @@ const claudeStore = useClaudeAccountsStore()
 const appSettings = useAppSettingsStore()
 const modelCatalog = useModelCatalogStore()
 const uiLayout = useUILayoutStore()
+// The left column (History / Files) hides per screen (⌘B) and with Focus (⌘.).
+const runPane = provideListPane('run')
+const leftPanelEl = ref<HTMLElement | null>(null)
+const leftPanel = useListPaneSidebar(leftPanelEl, runPane)
 const { confirm } = useConfirm()
 const { toast } = useToast()
 
@@ -286,6 +292,8 @@ const azureChip = computed(() => {
 })
 
 const activeRunId = computed(() => route.params.runId as string | undefined)
+// Picking a session from the peeked History closes the peek.
+watch(activeRunId, () => leftPanel.picked())
 
 const repos = ref<Repo[]>([])
 
@@ -3702,6 +3710,7 @@ function handleRefInput(val: string) {
     <!-- Header -->
     <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
       <div class="flex items-center gap-2 min-w-0">
+        <ListPaneButtons v-if="!isSessionWindow" mode="show" />
         <h1 class="text-sm font-semibold truncate">{{ project?.name ?? t('run.projectFallback') }}</h1>
         <Badge
           v-for="acc in activeAccounts"
@@ -3827,10 +3836,15 @@ function handleRefInput(val: string) {
       </div>
     </div>
 
-    <div class="flex flex-1 overflow-hidden">
+    <div class="relative flex flex-1 overflow-hidden">
       <!-- Left panel: controls + history (hidden in focus mode, and in a session
            pop-out — that window is locked to its one run, no switcher). -->
-      <div v-if="!uiLayout.focusMode && !isSessionWindow" class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden bg-card/20">
+      <div
+        v-if="!isSessionWindow && leftPanel.shown.value"
+        ref="leftPanelEl"
+        class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden"
+        :class="leftPanel.floating.value ? `${leftPanel.floatClass.value} bg-card` : 'bg-card/20'"
+      >
 
         <!-- Rail tab switcher: Session (controls + history) vs Files (tree). -->
         <div class="flex shrink-0 border-b border-border/60 text-xs font-medium">
@@ -3850,6 +3864,9 @@ function handleRefInput(val: string) {
             <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
             {{ t('run.files') }}
           </button>
+          <div class="flex items-center px-1.5">
+            <ListPaneButtons mode="hide" />
+          </div>
         </div>
 
         <!-- Compact top toolbar: one New session button (every session is a

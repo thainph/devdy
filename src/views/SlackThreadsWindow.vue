@@ -33,6 +33,8 @@
 // window's title, tray row, pin and URL alone, and uses the main window's
 // ConfirmModal / ToastHost. The requests above (and SLACK_WINDOW_OPEN_ROUTE)
 // are global events, so they reach the main window's listeners from here too.
+import { provideListPane } from '@/composables/useListPane'
+import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -89,6 +91,8 @@ const props = defineProps<{
   /** Open the add dialog on mount (overrides the URL's `add`). */
   add?: boolean
 }>()
+// The list column hides per screen (⌘B) and with Focus (⌘.).
+provideListPane('slack')
 
 const { t } = useI18n()
 const { toast } = useToast()
@@ -536,7 +540,7 @@ onBeforeUnmount(() => {
       </template>
     </Banner>
 
-    <div class="flex min-h-0 flex-1">
+    <div class="relative flex min-h-0 flex-1">
       <SlackSidebar
         v-model:search="search"
         v-model:project="projectFilter"
@@ -585,7 +589,8 @@ onBeforeUnmount(() => {
         @delete="removeThread"
         @set-project="onProjectChange"
       />
-      <div v-else class="flex min-w-0 flex-1 items-center justify-center p-6">
+      <div v-else class="relative flex min-w-0 flex-1 items-center justify-center p-6">
+        <div class="absolute left-3 top-3"><ListPaneButtons mode="show" /></div>
         <div class="text-center">
           <div class="mx-auto mb-3 flex h-12 w-12 items-center justify-center rounded-xl bg-muted">
             <Slack class="h-6 w-6 text-muted-foreground" :stroke-width="1.5" />

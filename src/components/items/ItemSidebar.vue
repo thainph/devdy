@@ -22,6 +22,8 @@
 // That flat list is the default (todos by deadline, notes by last edit); the
 // choice is remembered in localStorage per kind.
 import { computed, ref, watch } from 'vue'
+import { useListPaneSidebar } from '@/composables/useListPane'
+import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowDownToLine,
@@ -106,6 +108,10 @@ const latenessTab = computed({
 })
 /** Todos: done ones are behind the ⇅ menu ('all'); 'done' alone is legacy. */
 const showDone = computed(() => filter.value !== 'active')
+
+// Hideable per screen (⌘B) when the host provides a list pane.
+const rootEl = ref<HTMLElement | null>(null)
+const listPane = useListPaneSidebar(rootEl)
 
 const emit = defineEmits<{
   select: [id: string]
@@ -253,7 +259,12 @@ const groups = computed(() => {
 </script>
 
 <template>
-  <aside class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
+  <aside
+    v-if="listPane.shown.value"
+    ref="rootEl"
+    class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar"
+    :class="listPane.floatClass.value"
+  >
     <!-- Search + pin / reload, filter + new -->
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
       <div class="flex items-center gap-1.5">
@@ -309,6 +320,7 @@ const groups = computed(() => {
         >
           <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
         </Button>
+        <ListPaneButtons mode="hide" />
       </div>
       <div class="flex items-center gap-1.5">
         <div class="min-w-0 flex-1">
@@ -462,7 +474,7 @@ const groups = computed(() => {
                 type="button"
                 class="flex min-w-0 flex-1 cursor-pointer flex-col text-left"
                 :title="row.title"
-                @click="emit('select', row.id)"
+                @click="emit('select', row.id); listPane.picked()"
               >
                 <span class="flex w-full min-w-0 items-center gap-1.5">
                   <span

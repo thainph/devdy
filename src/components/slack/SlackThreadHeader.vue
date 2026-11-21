@@ -12,6 +12,7 @@
 // Narrow pane: the title gives way first (down to 6rem), then the project name
 // truncates.
 import { computed } from 'vue'
+import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { useI18n } from 'vue-i18n'
 import { ExternalLink, Languages, PencilLine, RefreshCcw, RotateCw } from 'lucide-vue-next'
 import { Button, DropdownItem } from '@/components/ui'
@@ -77,6 +78,7 @@ const metaTitle = computed(() =>
 
 <template>
   <div class="flex shrink-0 items-center gap-3 border-b border-border/60 px-5 py-2.5">
+    <ListPaneButtons mode="show" />
     <div class="min-w-[6rem] flex-1">
       <div class="flex min-w-0 items-center gap-1.5">
         <InlineRenameInput

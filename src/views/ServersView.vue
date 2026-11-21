@@ -10,6 +10,7 @@ import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { HardDrive, RotateCw } from 'lucide-vue-next'
 import { AppSelect, Button } from '@/components/ui'
+import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
 import ServerDetail, { type ServerPrefill } from '@/components/servers/ServerDetail.vue'
@@ -33,6 +34,8 @@ const router = useRouter()
 const store = useServersStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
+// The list column hides per screen (⌘B) and with Focus (⌘.).
+provideListPane('servers')
 const { t } = useI18n()
 
 // ── Sidebar ─────────────────────────────────────────────────────────────────
@@ -257,7 +260,7 @@ async function handleDelete(server: VpsServer) {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0">
+  <div class="relative flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
       :groups="groups"

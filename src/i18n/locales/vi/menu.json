@@ -47,5 +47,6 @@
   "popOutTab": "Tách tab ra cửa sổ riêng",
   "goToTab": "Đi tới tab",
   "tabN": "Tab {n}",
-  "lastTab": "Tab cuối"
+  "lastTab": "Tab cuối",
+  "toggleList": "Ẩn / hiện danh sách"
 }

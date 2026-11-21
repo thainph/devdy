@@ -22,6 +22,7 @@ import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Plus, RotateCw, Server, Upload } from 'lucide-vue-next'
 import { AppSelect, Button } from '@/components/ui'
+import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
 import McpServerDetail from '@/components/mcp/McpServerDetail.vue'
@@ -62,6 +63,8 @@ const store = useMcpServersStore()
 const appSettings = useAppSettingsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
+// The list column hides per screen (⌘B) and with Focus (⌘.).
+provideListPane('mcp')
 const { t } = useI18n()
 
 const deletingId = ref<string | null>(null)
@@ -445,7 +448,7 @@ function dotClass(row: McpRow): string {
 </script>
 
 <template>
-  <div class="flex h-full min-h-0">
+  <div class="relative flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
       :groups="groups"

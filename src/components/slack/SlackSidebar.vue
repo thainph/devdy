@@ -11,6 +11,8 @@
 // error / warning), a link mark with the linked-session count and an "Old"
 // badge for legacy rows.
 import { computed, ref, watch } from 'vue'
+import { useListPaneSidebar } from '@/composables/useListPane'
+import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { useI18n } from 'vue-i18n'
 import {
   ArrowDownToLine,
@@ -65,6 +67,10 @@ const ACTIVITY_FILTERS = [
   { value: 'unread', label: 'slackThread.sidebar.filterUnread', count: 'unread' },
   { value: 'recent', label: 'slackThread.sidebar.filterRecent', count: 'recent' },
 ] as const
+
+// Hideable per screen (⌘B) when the host provides a list pane.
+const rootEl = ref<HTMLElement | null>(null)
+const listPane = useListPaneSidebar(rootEl)
 
 const emit = defineEmits<{
   select: [id: string]
@@ -166,7 +172,12 @@ function rowAgeTitle(th: SlackThreadSummary): string {
 </script>
 
 <template>
-  <aside class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar">
+  <aside
+    v-if="listPane.shown.value"
+    ref="rootEl"
+    class="list-sidebar flex w-[360px] shrink-0 flex-col border-r border-border/60 bg-sidebar"
+    :class="listPane.floatClass.value"
+  >
     <!-- Search + pin / reload, filter + add -->
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
       <div class="flex items-center gap-1.5">
@@ -222,6 +233,7 @@ function rowAgeTitle(th: SlackThreadSummary): string {
         >
           <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
         </Button>
+        <ListPaneButtons mode="hide" />
       </div>
       <div class="flex items-center gap-1.5">
         <div class="min-w-0 flex-1">
@@ -345,7 +357,7 @@ function rowAgeTitle(th: SlackThreadSummary): string {
                   class="group cursor-pointer flex-col pr-2 text-left"
                   :class="[flat ? 'pl-2' : 'pl-8', rowClass(th.id === selectedId)]"
                   :title="th.preview || th.title"
-                  @click="emit('select', th.id)"
+                  @click="emit('select', th.id); listPane.picked()"
                 >
                   <span class="flex w-full min-w-0 items-center gap-1.5">
                   <span

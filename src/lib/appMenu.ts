@@ -190,8 +190,15 @@ function buildSpec(state: MenuState): MenuSpec {
       },
       {
         kind: 'item',
+        id: 'view.toggleList',
+        label: t('menu.toggleList'),
+        accelerator: 'CmdOrCtrl+B',
+      },
+      {
+        kind: 'item',
         id: 'view.toggleFocus',
         label: state.focusMode ? t('menu.exitFocusMode') : t('menu.enterFocusMode'),
+        accelerator: 'CmdOrCtrl+Period',
       },
       SEPARATOR,
       // The OS full-screen item only exists on macOS; elsewhere it's a no-op,

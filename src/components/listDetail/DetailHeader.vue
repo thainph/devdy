@@ -2,6 +2,7 @@
 // Header of a list-detail screen's right pane — the Notes window's ItemHeader
 // look: a bold title (click to rename inline when `renamable`), a muted meta
 // line (slot), and the actions on the right (slot).
+import ListPaneButtons from './ListPaneButtons.vue'
 import { ref } from 'vue'
 import InlineRenameInput from '@/components/InlineRenameInput.vue'
 
@@ -38,6 +39,7 @@ function commit(value: string) {
 
 <template>
   <div class="flex shrink-0 items-center gap-3 border-b border-border/60 px-5 py-2.5">
+    <ListPaneButtons mode="show" />
     <div class="min-w-[6rem] flex-1">
       <div class="flex min-w-0 items-center gap-1.5">
         <slot name="leading" />
