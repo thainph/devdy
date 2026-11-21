@@ -10,7 +10,8 @@ import { useRunsStore } from '@/stores/runs'
 import { useDragSort } from '@/composables/useDragSort'
 import { SURFACE_META } from '@/lib/surfaceMeta'
 import { surfaceForPath, surfaceTabId, cleanParams } from '@/lib/surfaces'
-import { goToEntry, popOutSurface } from '@/lib/surfaceOpen'
+import { popOutSurface } from '@/lib/surfaceOpen'
+import { closeEntry, selectEntry, toggleSplitEntry } from '@/lib/tabActions'
 
 /**
  * The shared tab strip of the main window: one tab per open PROJECT (its runs
@@ -90,32 +91,9 @@ function stateOf(projectId: string): ProjectState {
   return states.value[projectId] ?? { running: false, pending: 0 }
 }
 
-function select(e: TabEntry) {
-  if (e.type === 'surface' && e.id === tabsStore.splitId) {
-    tabsStore.focusedPane = 'right'
-    return
-  }
-  tabsStore.focusedPane = 'left'
-  if (isVisible(e)) return
-  if (e.type === 'project') {
-    // A remembered run from another project (pinned before cross-project workers
-    // were filed correctly) would open that project's session under this tab.
-    const lastOwner = e.lastRunId ? runsStore.runMeta.get(e.lastRunId)?.project_id : undefined
-    void goToEntry(e.lastRunId && lastOwner && lastOwner !== e.projectId ? { ...e, lastRunId: null } : e)
-    return
-  }
-  void goToEntry(e)
-}
-
 function closeTab(e: TabEntry, ev?: MouseEvent) {
   ev?.stopPropagation()
-  const wasRouted = e.type === 'project' ? e.projectId === activeProjectId.value : e.id === routedSurfaceId.value
-  const next = e.type === 'project' ? tabsStore.close(e.projectId) : tabsStore.closeSurface(e.id)
-  if (!wasRouted) return
-  // The split's right pane is not a destination of the router: skip over it.
-  const target = next && next.type === 'surface' && next.id === tabsStore.splitId ? null : next
-  tabsStore.focusedPane = 'left'
-  void goToEntry(target)
+  closeEntry(e)
 }
 
 function popOut(e: TabEntry, ev: MouseEvent) {
@@ -125,18 +103,7 @@ function popOut(e: TabEntry, ev: MouseEvent) {
 
 function toggleRight(e: TabEntry, ev: MouseEvent) {
   ev.stopPropagation()
-  if (e.type !== 'surface') return
-  if (tabsStore.splitId === e.id) {
-    tabsStore.unsplit()
-    return
-  }
-  // Moving the routed surface to the right leaves the left on another tab.
-  const wasRouted = e.id === routedSurfaceId.value
-  tabsStore.split(e.id)
-  if (wasRouted) {
-    const other = tabsStore.entries.find((x) => tabEntryKey(x) !== e.id)
-    void goToEntry(other ?? null)
-  }
+  if (e.type === 'surface') toggleSplitEntry(e)
 }
 
 // --- Drag & drop reorder ---------------------------------------------------
@@ -152,7 +119,7 @@ const { dragFrom, start: startDrag, itemStyle: tabStyle, clickWasDrag } = useDra
 /** Click after a drag means "drop here", not "switch to this tab". */
 function onTabClick(e: TabEntry) {
   if (clickWasDrag()) return
-  select(e)
+  selectEntry(e)
 }
 </script>
 
