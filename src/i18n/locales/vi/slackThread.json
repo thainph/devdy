@@ -15,15 +15,15 @@
     "emptyHint": "Dán link thread Slack bằng nút “Thêm thread”, hoặc gửi từ Chrome extension.",
     "noResults": "Không có thread nào khớp.",
     "newCount": "{count} tin mới",
-    "collapse": "Thu gọn",
-    "expand": "Mở rộng",
-    "activityFilter": "Lọc theo hoạt động",
     "filterAll": "Tất cả",
     "filterUnread": "Chưa đọc",
     "filterRecent": "Cập nhật gần đây",
     "sortByChannel": "Theo kênh",
     "sortByRecent": "Hoạt động gần đây",
-    "sortByTitle": "Tiêu đề (A–Z)"
+    "sortByTitle": "Tiêu đề (A–Z)",
+    "activityTitle": "Hoạt động",
+    "unreadCount": "{n} chưa đọc",
+    "unreadBadgeTitle": "Chỉ hiện thread có tin nhắn mới (bấm lần nữa để hiện tất cả)"
   },
   "status": {
     "pending": "Đang chờ",

@@ -1,76 +1,80 @@
 <script setup lang="ts">
-// Left pane of the Slack threads window, laid out like Slack's sidebar: search
-// + the window's pin / reload (the window has no custom titlebar), project
-// filter + "Add thread" (as wide as pin + reload, so the select lines up with
-// the search box), All | Unread | Recently updated tabs with counts ending in
-// a ⇅ sort menu, then a workspace → #channel tree (each header collapsible,
-// remembered in localStorage) of thread rows. Sorting by recent activity or
-// title instead gives one flat list, each row naming its workspace / channel;
-// recent activity is the default, the sort is remembered in localStorage. A row shows the title, the last reply's age
-// (full date in the tooltip), a new-message badge, a status mark (spinner /
-// error / warning), a link mark with the linked-session count and an "Old"
-// badge for legacy rows.
-import { computed, ref, watch } from 'vue'
+// Left pane of the Slack threads window, built from the shared list-sidebar
+// pieces (components/listDetail):
+//
+//   Slack threads 12 [3 unread]               [+ New] [⋯]
+//   ( 🔍 Search threads…  (⌘F)                     ⚙︎• )
+//   Filtering: Unread · icontruction         Clear filters   ← only while filtering
+//   ─────────────────────────────────────────────────────
+//   ▾ ACME                                                 5   ← "By channel" only
+//     ▾ # general                                          3
+//         thread row …
+//
+// The "N unread" badge toggles the unread filter (the one reached for most).
+// Everything else about the view — activity (with counts), project, sort and
+// "Reset to defaults" — lives in the one menu behind the search box's sliders
+// button (lib/slackListView; the window owns the view and remembers its sort).
+// ⋯ holds Reload, the pop-out's pin / dock, and Hide the list.
+//
+// Sorted "By channel", threads sit in a workspace → #channel tree (each header
+// collapsible, remembered in localStorage); any other sort gives one flat list,
+// each row naming its workspace / channel. A row shows the title, the last
+// reply's age (full date in the tooltip), a new-message badge, a status mark
+// (spinner / error / warning), a link mark with the linked-session count and an
+// "Old" badge for legacy rows.
+import { computed, ref } from 'vue'
 import { useListPaneSidebar } from '@/composables/useListPane'
-import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
 import { useI18n } from 'vue-i18n'
-import {
-  ArrowDownToLine,
-  ArrowDownWideNarrow,
-  Check,
-  ChevronDown,
-  ChevronRight,
-  Folder,
-  Hash,
-  Link2,
-  Pin,
-  PinOff,
-  Plus,
-  RotateCw,
-  Search,
-  X,
-} from 'lucide-vue-next'
-import { AppSelect, Banner, Button, DropdownItem, DropdownMenu, Input, SegmentedControl } from '@/components/ui'
+import { ChevronDown, ChevronRight, Hash, Link2, RotateCw } from 'lucide-vue-next'
+import { Banner, Button, DropdownItem, DropdownSeparator } from '@/components/ui'
+import ListSidebarHeader from '@/components/listDetail/ListSidebarHeader.vue'
+import ListSearchBox from '@/components/listDetail/ListSearchBox.vue'
+import ListFilterSummary from '@/components/listDetail/ListFilterSummary.vue'
+import ListGroupHeader from '@/components/listDetail/ListGroupHeader.vue'
+import ListMenuLabel from '@/components/listDetail/ListMenuLabel.vue'
+import ListMenuCheck from '@/components/listDetail/ListMenuCheck.vue'
+import PopoutMenuItems from '@/components/listDetail/PopoutMenuItems.vue'
 import { relativeAge } from '@/lib/itemText'
 import { formatFullDate, groupThreads, type ActivityFilter } from '@/lib/slackThreadUtils'
+import {
+  SLACK_ACTIVITIES,
+  SLACK_NO_PROJECT,
+  SLACK_SORTS,
+  clearSlackFilters,
+  defaultSlackListView,
+  slackFilterSummary,
+  slackViewDiffersFromDefault,
+  sortSlackThreads,
+  type SlackListView,
+  type SlackSortMode,
+} from '@/lib/slackListView'
 import type { SlackThreadProgress, SlackThreadSummary } from '@/stores/slackThreads'
 import { rowClass, rowListClass, rowSubClass, rowTitleClass } from '@/components/listDetail/rowStyles'
 import SlackStatusIcon from './SlackStatusIcon.vue'
 
 const props = defineProps<{
-  /** Already filtered by project / search. */
+  /** Already filtered by the view and the search. */
   threads: SlackThreadSummary[]
   /** True when there are no threads at all (vs. none matching the filters). */
   emptyStore: boolean
   selectedId: string | null
   progress: Record<string, SlackThreadProgress>
+  /** The projects the filter menu offers (id + name), "All" / "No project" excluded. */
   projectOptions: { value: string; label: string }[]
-  /** The list failed to load (shown above the tree with a retry). */
+  /** The list failed to load (shown above the rows with a retry). */
   error: string | null
   /** Window pinned above other apps (useFloatingWindow). */
   pinned: boolean
   /** A full reload is in flight. */
   reloading: boolean
-  /** Rendered inside the main window: no window pin / dock buttons. */
+  /** Rendered inside the main window: no window pin / dock items. */
   embedded?: boolean
-  /** Counts behind the activity tabs: the project in scope, before the activity filter. */
-  activityCounts?: { all: number; unread: number; recent: number } | null
+  /** Counts behind the filter menu's activities (lib/slackListView slackActivityCounts). */
+  counts: Record<ActivityFilter, number>
 }>()
 
 const search = defineModel<string>('search', { required: true })
-const projectFilter = defineModel<string>('project', { required: true })
-/** '' = all, else only unread / recently updated threads. */
-const activityFilter = defineModel<ActivityFilter>('activity', { required: true })
-
-const ACTIVITY_FILTERS = [
-  { value: '', label: 'slackThread.sidebar.filterAll', count: 'all' },
-  { value: 'unread', label: 'slackThread.sidebar.filterUnread', count: 'unread' },
-  { value: 'recent', label: 'slackThread.sidebar.filterRecent', count: 'recent' },
-] as const
-
-// Hideable per screen (⌘B) when the host provides a list pane.
-const rootEl = ref<HTMLElement | null>(null)
-const listPane = useListPaneSidebar(rootEl)
+const view = defineModel<SlackListView>('view', { required: true })
 
 const emit = defineEmits<{
   select: [id: string]
@@ -83,45 +87,58 @@ const emit = defineEmits<{
 }>()
 
 const { t } = useI18n()
-const activityFilterOptions = computed(() =>
-  ACTIVITY_FILTERS.map((f) => ({
-    value: f.value,
-    label: props.activityCounts ? `${t(f.label)} ${props.activityCounts[f.count]}` : t(f.label),
-  })),
+
+// Hideable per screen (⌘B) when the host provides a list pane.
+const rootEl = ref<HTMLElement | null>(null)
+const listPane = useListPaneSidebar(rootEl)
+
+// ── View (the filter menu) ──────────────────────────────────────────────────
+
+function patch(p: Partial<SlackListView>) {
+  view.value = { ...view.value, ...p }
+}
+
+const ACTIVITY_LABEL: Record<ActivityFilter, string> = {
+  '': 'slackThread.sidebar.filterAll',
+  unread: 'slackThread.sidebar.filterUnread',
+  recent: 'slackThread.sidebar.filterRecent',
+}
+const ACTIVITY_DOT: Partial<Record<ActivityFilter, string>> = { unread: 'bg-primary' }
+const SORT_LABEL: Record<SlackSortMode, string> = {
+  recent: 'slackThread.sidebar.sortByRecent',
+  channel: 'slackThread.sidebar.sortByChannel',
+  title: 'slackThread.sidebar.sortByTitle',
+}
+
+const projectChoices = computed(() => [
+  { value: '', label: t('slackThread.sidebar.allProjects') },
+  ...props.projectOptions,
+  { value: SLACK_NO_PROJECT, label: t('slackThread.sidebar.noProject') },
+])
+function projectLabel(id: string): string {
+  return projectChoices.value.find((o) => o.value === id)?.label ?? id
+}
+
+const changed = computed(() => slackViewDiffersFromDefault(view.value))
+const summary = computed(() =>
+  slackFilterSummary(view.value, { activity: (a) => t(ACTIVITY_LABEL[a]), project: projectLabel }),
 )
+const unread = computed(() => props.counts.unread)
+
+function toggleUnread() {
+  patch({ activity: view.value.activity === 'unread' ? '' : 'unread' })
+}
+function clearFilters() {
+  search.value = ''
+  view.value = clearSlackFilters(view.value)
+}
+function resetView() {
+  view.value = defaultSlackListView()
+}
 
 // ── The workspace → channel tree, or one flat list by another sort ─────────
-type SortMode = 'channel' | 'recent' | 'title'
-const SORT_KEY = 'slackThreads.order'
-const SORTS = computed<{ value: SortMode; label: string }[]>(() => [
-  { value: 'channel', label: t('slackThread.sidebar.sortByChannel') },
-  { value: 'recent', label: t('slackThread.sidebar.sortByRecent') },
-  { value: 'title', label: t('slackThread.sidebar.sortByTitle') },
-])
-const saved = localStorage.getItem(SORT_KEY)
-/** Flat by default: the latest activity first. */
-const DEFAULT_SORT: SortMode = 'recent'
-const sortMode = ref<SortMode>(SORTS.value.find((o) => o.value === saved)?.value ?? DEFAULT_SORT)
-watch(sortMode, (m) => {
-  try {
-    localStorage.setItem(SORT_KEY, m)
-  } catch {
-    /* storage unavailable */
-  }
-})
-const flat = computed(() => sortMode.value !== 'channel')
 
-const flatThreads = computed(() =>
-  [...props.threads].sort((a, b) => {
-    if (sortMode.value === 'recent') {
-      const x = a.lastReplyAt ?? a.updatedAt
-      const y = b.lastReplyAt ?? b.updatedAt
-      return x < y ? 1 : x > y ? -1 : 0
-    }
-    // By title: untitled last.
-    return (!a.title ? 1 : 0) - (!b.title ? 1 : 0) || a.title.localeCompare(b.title)
-  }),
-)
+const flat = computed(() => view.value.sort !== 'channel')
 
 /** "workspace · #channel" under a flat-list row. */
 function rowPlace(th: SlackThreadSummary): string {
@@ -158,8 +175,16 @@ function toggle(key: string) {
 const tree = computed(() =>
   flat.value
     // Any other sort: one header-less workspace / channel.
-    ? [{ key: 'flat', label: null, channels: [{ key: 'flat/ch', label: null, threads: flatThreads.value }] }]
-    : groupThreads(props.threads),
+    ? [{
+        key: 'flat',
+        label: null,
+        count: props.threads.length,
+        channels: [{ key: 'flat/ch', label: null, threads: sortSlackThreads(props.threads, view.value.sort) }],
+      }]
+    : groupThreads(props.threads).map((ws) => ({
+        ...ws,
+        count: ws.channels.reduce((n, ch) => n + ch.threads.length, 0),
+      })),
 )
 
 function rowAge(th: SlackThreadSummary): string {
@@ -178,120 +203,88 @@ function rowAgeTitle(th: SlackThreadSummary): string {
     class="list-sidebar flex shrink-0 flex-col border-r border-border/60 bg-sidebar"
     :class="[listPane.widthClass.value, listPane.floatClass.value]"
   >
-    <!-- Search + pin / reload, filter + add -->
-    <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
-      <div class="flex items-center gap-1.5">
-        <div class="relative min-w-0 flex-1">
-          <Search
-            class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-            :stroke-width="1.75"
-          />
-          <Input v-model="search" class="pl-8 pr-7" :placeholder="t('slackThread.sidebar.search')" />
-          <button
-            v-if="search"
-            type="button"
-            class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
-            :title="t('item.clearSearch')"
-            @click="search = ''"
-          >
-            <X class="h-3.5 w-3.5" :stroke-width="2" />
-          </button>
-        </div>
-        <!-- Pop-out only: the window's pin, and docking it into the main window. -->
-        <template v-if="!embedded">
-          <Button
-            :variant="pinned ? 'primary' : 'outline'"
-            size="icon"
-            class="shrink-0"
-            :aria-pressed="pinned"
-            :title="pinned ? t('item.unpin') : t('item.pin')"
-            :aria-label="pinned ? t('item.unpin') : t('item.pin')"
-            @click="emit('togglePin')"
-          >
-            <component :is="pinned ? Pin : PinOff" class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </Button>
-          <Button
-            variant="outline"
-            size="icon"
-            class="shrink-0"
-            :title="t('common.dockIntoMain')"
-            :aria-label="t('common.dockIntoMain')"
-            @click="emit('dock')"
-          >
-            <ArrowDownToLine class="h-3.5 w-3.5" :stroke-width="1.75" />
-          </Button>
-        </template>
+    <ListSidebarHeader
+      :title="t('slackThread.nav')"
+      :count="threads.length"
+      :new-label="t('common.new')"
+      :new-title="t('slackThread.sidebar.add')"
+      @new="emit('add')"
+    >
+      <template v-if="unread > 0 || view.activity === 'unread'" #badge>
+        <button
+          type="button"
+          class="h-5 shrink-0 cursor-pointer rounded-full px-2 text-[11px] font-semibold tabular-nums transition-colors"
+          :class="view.activity === 'unread'
+            ? 'bg-primary text-primary-foreground'
+            : 'bg-primary/12 text-primary hover:bg-primary/20'"
+          :aria-pressed="view.activity === 'unread'"
+          :title="t('slackThread.sidebar.unreadBadgeTitle')"
+          @click="toggleUnread"
+        >
+          {{ t('slackThread.sidebar.unreadCount', { n: unread }) }}
+        </button>
+      </template>
+      <template #menu>
         <!-- Reload the list + open thread from the DB (the MCP sidecar writes without events). -->
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="reloading"
-          :title="t('item.reload')"
-          :aria-label="t('item.reload')"
-          @click="emit('reload')"
-        >
+        <DropdownItem :disabled="reloading" @click="emit('reload')">
           <RotateCw class="h-3.5 w-3.5" :class="{ 'animate-spin': reloading }" :stroke-width="1.75" />
-        </Button>
-        <ListPaneButtons mode="hide" />
-      </div>
-      <div class="flex items-center gap-1.5">
-        <div class="min-w-0 flex-1">
-          <AppSelect v-model="projectFilter" :options="projectOptions" size="sm">
-            <template #leading>
-              <Folder class="h-3.5 w-3.5 text-muted-foreground" :stroke-width="1.75" />
-            </template>
-          </AppSelect>
-        </div>
-        <!-- Pop-out: as wide as pin + dock + reload above, so the select lines up
-             with the search box. -->
-        <Button
-          size="sm"
-          :class="embedded ? 'w-[70px]' : 'w-[108px]'"
-          class="shrink-0 px-0"
-          :title="t('slackThread.sidebar.add')"
-          :aria-label="t('slackThread.sidebar.add')"
-          @click="emit('add')"
-        >
-          <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ t('common.new') }}
-        </Button>
-      </div>
-      <div class="flex items-center gap-1.5">
-        <SegmentedControl
-          v-model="activityFilter"
-          :options="activityFilterOptions"
-          class="min-w-0 flex-1"
-          :aria-label="t('slackThread.sidebar.activityFilter')"
-        />
-        <!-- Sort; tinted when not on the default. -->
-        <DropdownMenu align="right" class="shrink-0">
-          <template #trigger>
-            <Button
-              variant="outline"
-              size="icon-xs"
-              class="shrink-0"
-              :class="sortMode !== DEFAULT_SORT && 'border-primary/50 text-primary'"
-              :title="t('item.sortTitle')"
-              :aria-label="t('item.sortTitle')"
-            >
-              <ArrowDownWideNarrow class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </Button>
-          </template>
-          <div class="px-2.5 pb-1 pt-1.5 text-[11px] font-medium text-muted-foreground">
-            {{ t('item.sortTitle') }}
-          </div>
-          <DropdownItem v-for="o in SORTS" :key="o.value" @click="sortMode = o.value">
-            <Check class="h-3.5 w-3.5" :class="sortMode === o.value ? '' : 'invisible'" :stroke-width="2" />
-            {{ o.label }}
+          {{ t('item.reload') }}
+        </DropdownItem>
+        <PopoutMenuItems v-if="!embedded" :pinned="pinned" @toggle-pin="emit('togglePin')" @dock="emit('dock')" />
+      </template>
+    </ListSidebarHeader>
+
+    <div class="shrink-0 px-2.5 pb-1.5 pt-0.5">
+      <ListSearchBox v-model="search" :placeholder="t('slackThread.sidebar.search')" :filter-active="changed">
+        <template #filters>
+          <ListMenuLabel>{{ t('slackThread.sidebar.activityTitle') }}</ListMenuLabel>
+          <ListMenuCheck
+            v-for="a in SLACK_ACTIVITIES"
+            :key="a || 'all'"
+            radio
+            :checked="view.activity === a"
+            :dot="ACTIVITY_DOT[a]"
+            :count="counts[a]"
+            @click="patch({ activity: a })"
+          >
+            {{ t(ACTIVITY_LABEL[a]) }}
+          </ListMenuCheck>
+          <DropdownSeparator />
+          <ListMenuLabel>{{ t('item.projectLabel') }}</ListMenuLabel>
+          <ListMenuCheck
+            v-for="p in projectChoices"
+            :key="p.value || 'all'"
+            radio
+            :checked="view.project === p.value"
+            @click="patch({ project: p.value })"
+          >
+            {{ p.label }}
+          </ListMenuCheck>
+          <DropdownSeparator />
+          <ListMenuLabel>{{ t('item.sortTitle') }}</ListMenuLabel>
+          <ListMenuCheck
+            v-for="s in SLACK_SORTS"
+            :key="s"
+            radio
+            :checked="view.sort === s"
+            @click="patch({ sort: s })"
+          >
+            {{ t(SORT_LABEL[s]) }}
+          </ListMenuCheck>
+          <DropdownSeparator />
+          <DropdownItem :disabled="!changed" @click="resetView">
+            <span class="w-3.5 shrink-0" aria-hidden="true" />
+            {{ t('listPane.resetView') }}
           </DropdownItem>
-        </DropdownMenu>
-      </div>
+        </template>
+      </ListSearchBox>
     </div>
 
-    <!-- Tree -->
-    <div class="min-h-0 flex-1 overflow-y-auto px-2 py-2">
-      <Banner v-if="error" tone="destructive" class="mb-2">
+    <ListFilterSummary :parts="summary" @clear="clearFilters" />
+
+    <!-- Rows -->
+    <div class="min-h-0 flex-1 overflow-y-auto border-t border-border/40 px-2 pb-2">
+      <Banner v-if="error" tone="destructive" class="mb-2 mt-2">
         {{ error }}
         <template #actions>
           <Button
@@ -305,37 +298,38 @@ function rowAgeTitle(th: SlackThreadSummary): string {
           </Button>
         </template>
       </Banner>
+
       <div v-if="emptyStore && !error" class="px-3 py-8 text-center">
         <p class="text-xs text-muted-foreground">{{ t('slackThread.sidebar.empty') }}</p>
         <p class="mt-1 text-[11px] text-muted-foreground/70">{{ t('slackThread.sidebar.emptyHint') }}</p>
       </div>
-      <p v-else-if="threads.length === 0" class="px-3 py-8 text-center text-[11px] text-muted-foreground">
-        {{ t('slackThread.sidebar.noResults') }}
-      </p>
-
-      <div v-for="ws in tree" v-else :key="ws.key" class="mb-2">
+      <div v-else-if="threads.length === 0" class="px-3 py-8 text-center text-[11px] text-muted-foreground">
+        <p>{{ t('slackThread.sidebar.noResults') }}</p>
         <button
-          v-if="!flat"
+          v-if="search || summary.length"
           type="button"
-          class="flex w-full cursor-pointer items-center gap-1 rounded px-1.5 py-1 text-left text-[13px] font-semibold text-foreground hover:bg-accent/50"
-          :aria-expanded="!collapsed.has(ws.key)"
-          :title="collapsed.has(ws.key) ? t('slackThread.sidebar.expand') : t('slackThread.sidebar.collapse')"
-          @click="toggle(ws.key)"
+          class="mt-1 cursor-pointer underline underline-offset-2 hover:text-foreground"
+          @click="clearFilters"
         >
-          <component
-            :is="collapsed.has(ws.key) ? ChevronRight : ChevronDown"
-            class="h-3.5 w-3.5 shrink-0 text-muted-foreground"
-            :stroke-width="2"
-          />
-          <span class="truncate">{{ ws.label ?? t('slackThread.sidebar.other') }}</span>
+          {{ t('listPane.clearFilters') }}
         </button>
+      </div>
 
-        <template v-if="flat || !collapsed.has(ws.key)">
-          <div v-for="ch in ws.channels" :key="ch.key" class="mt-0.5">
+      <template v-for="ws in tree" v-else :key="ws.key">
+        <ListGroupHeader
+          v-if="!flat"
+          :label="ws.label ?? t('slackThread.sidebar.other')"
+          :count="ws.count"
+          :collapsed="collapsed.has(ws.key)"
+          @toggle="toggle(ws.key)"
+        />
+
+        <div v-if="flat || !collapsed.has(ws.key)" :class="flat ? 'mt-1.5' : 'mb-2'">
+          <div v-for="ch in ws.channels" :key="ch.key">
             <button
               v-if="!flat"
               type="button"
-              class="flex w-full cursor-pointer items-center gap-1 rounded py-1 pl-4 pr-1.5 text-left text-xs text-muted-foreground hover:bg-accent/50 hover:text-foreground"
+              class="flex w-full cursor-pointer items-center gap-1 rounded py-1 pl-3 pr-2 text-left text-xs text-muted-foreground transition-colors hover:text-foreground"
               :aria-expanded="!collapsed.has(ch.key)"
               @click="toggle(ch.key)"
             >
@@ -345,9 +339,10 @@ function rowAgeTitle(th: SlackThreadSummary): string {
                 :stroke-width="2"
               />
               <Hash v-if="ch.label" class="h-3 w-3 shrink-0" :stroke-width="2" />
-              <span class="truncate font-medium">
+              <span class="min-w-0 flex-1 truncate font-medium">
                 {{ ch.label ? ch.label.slice(1) : t('slackThread.sidebar.other') }}
               </span>
+              <span class="shrink-0 text-[10px] tabular-nums">{{ ch.threads.length }}</span>
             </button>
 
             <ul v-if="flat || !collapsed.has(ch.key)" :class="rowListClass">
@@ -355,45 +350,45 @@ function rowAgeTitle(th: SlackThreadSummary): string {
                 <button
                   type="button"
                   class="group cursor-pointer flex-col pr-2 text-left"
-                  :class="[flat ? 'pl-2' : 'pl-8', rowClass(th.id === selectedId)]"
+                  :class="[flat ? 'pl-2' : 'pl-7', rowClass(th.id === selectedId)]"
                   :title="th.preview || th.title"
                   @click="emit('select', th.id); listPane.picked()"
                 >
                   <span class="flex w-full min-w-0 items-center gap-1.5">
-                  <span
-                    class="min-w-0 flex-1 truncate"
-                    :class="[rowTitleClass, th.newCount > 0 && 'font-semibold text-foreground']"
-                  >
-                    {{ th.title || t('slackThread.untitled') }}
-                  </span>
-                  <span
-                    v-if="th.legacy"
-                    class="shrink-0 rounded border border-border px-1 text-[9px] font-semibold uppercase text-muted-foreground"
-                  >
-                    {{ t('slackThread.legacy.badge') }}
-                  </span>
-                  <SlackStatusIcon :thread="th" :progress="progress[th.id]" />
-                  <span
-                    v-if="th.linkedRunCount > 0"
-                    class="flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums text-muted-foreground"
-                    :title="t('sessionLink.linkedCount', th.linkedRunCount)"
-                  >
-                    <Link2 class="h-3 w-3" :stroke-width="2" />
-                    <template v-if="th.linkedRunCount > 1">{{ th.linkedRunCount }}</template>
-                  </span>
-                  <span
-                    v-if="th.newCount > 0"
-                    class="flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground"
-                    :title="t('slackThread.sidebar.newCount', { count: th.newCount })"
-                  >
-                    {{ th.newCount }}
-                  </span>
-                  <span
-                    class="shrink-0 text-[10px] tabular-nums text-muted-foreground/80"
-                    :title="rowAgeTitle(th)"
-                  >
-                    {{ rowAge(th) }}
-                  </span>
+                    <span
+                      class="min-w-0 flex-1 truncate"
+                      :class="[rowTitleClass, th.newCount > 0 && 'font-semibold text-foreground']"
+                    >
+                      {{ th.title || t('slackThread.untitled') }}
+                    </span>
+                    <span
+                      v-if="th.legacy"
+                      class="shrink-0 rounded border border-border px-1 text-[9px] font-semibold uppercase text-muted-foreground"
+                    >
+                      {{ t('slackThread.legacy.badge') }}
+                    </span>
+                    <SlackStatusIcon :thread="th" :progress="progress[th.id]" />
+                    <span
+                      v-if="th.linkedRunCount > 0"
+                      class="flex shrink-0 items-center gap-0.5 text-[10px] tabular-nums text-muted-foreground"
+                      :title="t('sessionLink.linkedCount', th.linkedRunCount)"
+                    >
+                      <Link2 class="h-3 w-3" :stroke-width="2" />
+                      <template v-if="th.linkedRunCount > 1">{{ th.linkedRunCount }}</template>
+                    </span>
+                    <span
+                      v-if="th.newCount > 0"
+                      class="flex h-4 min-w-[16px] shrink-0 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-semibold leading-none text-primary-foreground"
+                      :title="t('slackThread.sidebar.newCount', { count: th.newCount })"
+                    >
+                      {{ th.newCount }}
+                    </span>
+                    <span
+                      class="shrink-0 text-[10px] tabular-nums text-muted-foreground/80"
+                      :title="rowAgeTitle(th)"
+                    >
+                      {{ rowAge(th) }}
+                    </span>
                   </span>
                   <!-- Flat list: where the thread lives. -->
                   <span v-if="flat" class="flex w-full min-w-0 items-center gap-1" :class="rowSubClass">
@@ -404,8 +399,8 @@ function rowAgeTitle(th: SlackThreadSummary): string {
               </li>
             </ul>
           </div>
-        </template>
-      </div>
+        </div>
+      </template>
     </div>
   </aside>
 </template>
