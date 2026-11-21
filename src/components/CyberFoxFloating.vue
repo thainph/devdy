@@ -11,7 +11,7 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useMascotState } from '@/composables/useMascotState'
 import { useMascotBubble } from '@/composables/useMascotBubble'
 import { useMascotLevelUp } from '@/composables/useMascotLevelUp'
-import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
+import { openItemCreate, type ItemKind } from '@/lib/itemWindow'
 
 interface Position {
   x: number
@@ -73,7 +73,7 @@ function openContextMenu(e: MouseEvent) {
 
 function pickQuickCreate(key: string) {
   // File it under whatever the user is looking at (same rule as File → New Todo in App.vue).
-  openItemCreateWindow(key as ItemKind, {
+  openItemCreate(key as ItemKind, {
     projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
     runId: typeof route.params.runId === 'string' ? route.params.runId : null,
   })

@@ -106,7 +106,6 @@ function rawLabelFor(windowLabel: string, osTitle: string): string {
   if (windowLabel.startsWith('session-')) return meaningful || t('tray.untitledSession')
   if (windowLabel.startsWith('fileviewer-')) return meaningful || t('tray.fileWindow')
   if (windowLabel === 'delivery-radar') return t('tray.radarWindow')
-  if (windowLabel === 'item-create') return meaningful || t('tray.newItem')
   if (windowLabel === 'item-list-todo') return meaningful || t('tray.todoListWindow')
   if (windowLabel === 'item-list-note') return meaningful || t('tray.noteListWindow')
   if (windowLabel === 'secret-notes') return t('secretNotes.window.title')

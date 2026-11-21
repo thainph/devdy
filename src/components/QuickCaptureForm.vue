@@ -1,7 +1,6 @@
 <script setup lang="ts">
-// The "new Todo / Note" fields — deliberately UI-shell-free, hosted by
-// ItemWindow's create mode (the standalone always-on-top window that is the only
-// place either object is written).
+// The "new Todo / Note" fields — deliberately UI-shell-free, hosted by the
+// Todos / Notes screen's new-item pane (views/ItemListWindow).
 //
 // The draft it edits lives in useQuickCapture, not here, so re-rendering or
 // switching tab doesn't discard a half-written capture. Saving writes straight
@@ -22,7 +21,8 @@ import { projectOptions as toProjectOptions } from '@/lib/projectOptions'
 const props = withDefaults(defineProps<{ autofocus?: boolean }>(), { autofocus: true })
 
 const emit = defineEmits<{
-  saved: [tab: QuickCaptureTab]
+  /** `id`: the created item (missing if the store couldn't return it). */
+  saved: [tab: QuickCaptureTab, id: string | null]
   /** Fired on Esc so the host can dismiss itself. */
   dismiss: []
 }>()
@@ -94,16 +94,19 @@ async function submit() {
   const savedTab = tab.value
   const project = projectId.value || null
   try {
+    let id: string | null = null
     if (savedTab === 'todo') {
       const { dueDate, dueTime, priority, estimateMin, sourceUrl } = todoInput.value!
-      await todos.add(todoText.value, project, effectiveRunId.value, { dueDate, dueTime, priority, estimateMin, sourceUrl })
+      const todo = await todos.add(todoText.value, project, effectiveRunId.value, { dueDate, dueTime, priority, estimateMin, sourceUrl })
+      id = todo?.id ?? null
       toast.success(t('item.todoAdded'))
     } else {
-      await notes.add(noteTitle.value, noteContent.value, project, effectiveRunId.value)
+      const note = await notes.add(noteTitle.value, noteContent.value, project, effectiveRunId.value)
+      id = note?.id ?? null
       toast.success(t('item.noteSaved'))
     }
     clearDraft(savedTab)
-    emit('saved', savedTab)
+    emit('saved', savedTab, id)
     focusFirstField()
   } catch (e) {
     toast.error(String(e))

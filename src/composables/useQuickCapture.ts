@@ -1,13 +1,13 @@
-// The capture draft inside the item window: which tab, the text being typed, and
-// which project/run it will be filed under.
+// The new todo / note draft (the Todos / Notes screen's new-item form): which
+// kind, the text being typed, and which project/run it will be filed under.
 //
 // The draft lives HERE rather than inside QuickCaptureForm so switching tab (or
 // anything else that re-renders the form) can't throw away a half-written note —
 // the fields come back exactly as they were.
 //
-// State is module-scope, but that scope is ONE webview: the item window is its
-// own window, so its capture state is naturally isolated from the main window.
-// A capture started elsewhere ("save this selection as a note") arrives as a
+// State is module-scope, so ONE webview's Todos and Notes screens share it (each
+// points it at its kind when its form shows; the fields are per kind). A Todos /
+// Notes window of its own has its own copy. A capture started elsewhere ("save this selection as a note") arrives as a
 // prefill event and is merged through adoptDraft, which only fills fields that
 // are still empty — an in-flight capture is never clobbered.
 import { ref } from 'vue'

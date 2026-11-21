@@ -6,7 +6,7 @@
 //
 // slack  shown only when the session has linked threads (as before).
 // todo / note  always shown (badge hidden at 0, an empty-state line instead),
-//        and end with "+ New todo / note" — the capture window, filed under this
+//        and end with "+ New todo / note" — the Todos / Notes new-item form, filed under this
 //        session's project and run, so the new item comes back as a `captured`
 //        link. That replaces the header's old New todo / New note buttons.
 //

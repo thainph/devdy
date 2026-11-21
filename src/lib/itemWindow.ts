@@ -1,17 +1,15 @@
-// Opens THE capture window — "New todo / note" (views/ItemWindow.vue): one
-// shared, always-on-top OS window (fixed label) with Todo / Note tabs that keeps
-// taking captures until it's closed. Opening it again focuses it and switches
-// tab. Reading and editing an existing item happen in the Notes / Todos windows
-// (lib/itemListWindow).
+// "New todo / note": opens the Todos / Notes screen (views/ItemListWindow.vue,
+// a tab or its own window per the "Windows & tabs" setting) and asks it to show
+// the capture form in its detail pane, where the item then opens once saved.
 //
-// A pre-filled capture ("save this selection as a note") has to travel to a
-// window that may not exist yet, so it goes as an event behind a ready
-// handshake: a freshly spawned webview isn't listening, and Tauri events are not
-// buffered.
-import { WebviewWindow } from '@tauri-apps/api/webviewWindow'
+// The request travels as an app-wide event, because the screen may live in
+// another webview (its own window) and may not exist yet. A freshly mounted list
+// announces itself (ITEM_LIST_READY) and the opener re-sends the request then;
+// Tauri events are not buffered. Requests carry an id, so a list that hears one
+// twice acts once, and the placement the screen opened in, so only that copy of
+// it (tab or window) answers.
 import { emit, listen } from '@tauri-apps/api/event'
-import { trackWindowForTray } from '@/lib/tray'
-import { nextCascadePosition } from '@/lib/windowCascade'
+import type { Placement } from '@/lib/surfaces'
 
 export type ItemKind = 'todo' | 'note'
 
@@ -27,16 +25,24 @@ export interface ItemPrefill {
   content?: string
 }
 
-/** Sent by the create window when reopened: switch tab + re-point the context. */
-export interface ItemWindowSetTab extends ItemContext {
+/** "Show the new-item form": sent to the Todos / Notes screen of `kind`. */
+export interface ItemCreateRequest {
+  id: string
   kind: ItemKind
+  placement: Placement
+  projectId: string | null
+  runId: string | null
+  prefill?: ItemPrefill
 }
 
-const CREATE_WINDOW_LABEL = 'item-create'
+/** A Todos / Notes screen just mounted and is listening for requests. */
+export interface ItemListReady {
+  kind: ItemKind
+  placement: Placement
+}
 
-export const ITEM_WINDOW_READY = 'item:window-ready'
-export const ITEM_WINDOW_SET_TAB = 'item:window-set-tab'
-export const ITEM_WINDOW_PREFILL = 'item:window-prefill'
+export const ITEM_CREATE_REQUEST = 'item:create-request'
+export const ITEM_LIST_READY = 'item:list-ready'
 
 /**
  * Broadcast after any write to a todo / note (create, save, delete, toggle,
@@ -46,100 +52,42 @@ export const ITEM_WINDOW_PREFILL = 'item:window-prefill'
  */
 export const ITEM_CHANGED = 'item:changed'
 
-// Generous: the window has to boot the SPA before it can listen. On timeout we
-// send the prefill anyway; losing it is better than hanging the caller.
+// Generous: a new window has to boot the SPA before it can listen.
 const READY_TIMEOUT_MS = 6000
 
 function hasPrefill(prefill?: ItemPrefill): boolean {
   return !!(prefill?.title?.trim() || prefill?.content?.trim())
 }
 
-/** Bring an existing window to the front. Returns false if it's mid-teardown. */
-async function focusWindow(win: WebviewWindow): Promise<boolean> {
-  try {
-    await win.unminimize()
-    await win.show()
-    await win.setFocus()
-    return true
-  } catch {
-    return false
-  }
-}
-
 /**
- * Wait for the window to say it is listening.
- *
- * Must be armed BEFORE the window is created, otherwise a fast start-up can ping
- * before we are listening and the prefill misses its slot.
+ * Open the Todos / Notes screen of `kind` on its new-item form. `prefill` only
+ * fills fields that are still empty there, so it cannot clobber a capture the
+ * user is already typing.
  */
-async function waitForReady(): Promise<() => Promise<void>> {
-  let signal: () => void = () => {}
-  const ready = new Promise<void>((resolve) => {
-    signal = resolve
-  })
-  const unlisten = await listen(ITEM_WINDOW_READY, () => signal())
-  const timer = setTimeout(signal, READY_TIMEOUT_MS)
-  return async () => {
-    await ready
-    clearTimeout(timer)
-    unlisten()
-  }
-}
-
-/**
- * Open (or focus) the shared "new todo / note" window on the given tab.
- *
- * `prefill` starts the capture with text already in it; it only ever fills
- * fields that are still empty in the window, so it cannot clobber a capture the
- * user is already typing there.
- */
-export async function openItemCreateWindow(
+export async function openItemCreate(
   kind: ItemKind = 'todo',
   context: ItemContext = {},
   prefill?: ItemPrefill,
-): Promise<WebviewWindow> {
-  const payload: ItemWindowSetTab = {
+): Promise<void> {
+  const request: ItemCreateRequest = {
+    id: crypto.randomUUID(),
     kind,
+    placement: 'tab',
     projectId: context.projectId ?? null,
     runId: context.runId ?? null,
+    prefill: hasPrefill(prefill) ? prefill : undefined,
   }
-
-  const existing = await WebviewWindow.getByLabel(CREATE_WINDOW_LABEL)
-  if (existing) {
-    if (await focusWindow(existing)) {
-      // Already listening, so no handshake is needed.
-      await emit(ITEM_WINDOW_SET_TAB, payload)
-      if (hasPrefill(prefill)) await emit(ITEM_WINDOW_PREFILL, prefill)
+  // Armed before opening, so a screen that mounts fast still gets the request.
+  const unlisten = await listen<ItemListReady>(ITEM_LIST_READY, (e) => {
+    if (e.payload?.kind === kind && e.payload.placement === request.placement) {
+      void emit(ITEM_CREATE_REQUEST, request).catch(() => {})
     }
-    return existing
-  }
-
-  const params = new URLSearchParams({ itemWindow: '1', mode: 'create', kind })
-  if (context.projectId) params.set('projectId', context.projectId)
-  if (context.runId) params.set('runId', context.runId)
-
-  const awaitReady = hasPrefill(prefill) ? await waitForReady() : null
-
-  const win = new WebviewWindow(CREATE_WINDOW_LABEL, {
-    url: `index.html?${params.toString()}`,
-    title: 'New — Devdy',
-    width: 420,
-    height: 600,
-    minWidth: 340,
-    minHeight: 380,
-    // Opens focused, so start on top; the window lowers itself on blur unless
-    // pinned (see useFloatingWindow).
-    alwaysOnTop: true,
-    ...(await nextCascadePosition()),
   })
-  win.once('tauri://error', (e) => {
-    console.error('[itemWindow] failed to open create window', e)
-  })
-  trackWindowForTray(win)
-
-  if (awaitReady) {
-    await awaitReady()
-    await emit(ITEM_WINDOW_PREFILL, prefill)
-  }
-  return win
+  setTimeout(unlisten, READY_TIMEOUT_MS)
+  // Loaded on use: stores import ITEM_CHANGED from here, and surfaceOpen imports
+  // the stores — a static import would make a cycle.
+  const { openSurface } = await import('@/lib/surfaceOpen')
+  request.placement = await openSurface(kind === 'todo' ? 'todos' : 'notes')
+  // Already mounted: it hears this one.
+  await emit(ITEM_CREATE_REQUEST, request).catch(() => {})
 }

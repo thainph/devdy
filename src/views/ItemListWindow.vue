@@ -16,8 +16,8 @@
 // stays in the capture window (lib/itemWindow, "+ New"). Every "open this
 // note / todo" in the app lands here with `id` (or SELECT for an open window).
 //
-// Its own webview means its own store copy: ITEM_CHANGED (from the capture
-// window, the backend's link commands, the other windows) refetches; the MCP
+// Its own webview means its own store copy: ITEM_CHANGED (from a new item, the
+// backend's link commands, the other windows) refetches; the MCP
 // sidecar writes without events, so focusing the window reloads too.
 // Sessions live in the main window: opening a linked one or starting a new one
 // is a request to it (WINDOW_OPEN_RUN / WINDOW_NEW_SESSION, App.vue).
@@ -30,12 +30,14 @@
 // events, so they reach the main window's listeners from here too.
 import { provideListPane } from '@/composables/useListPane'
 import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
-import { computed, nextTick, onBeforeUnmount, onMounted, ref, watch } from 'vue'
+import { computed, nextTick, onActivated, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { ListTodo, StickyNote } from 'lucide-vue-next'
-import { ConfirmModal, ToastHost } from '@/components/ui'
+import { ListTodo, StickyNote, X } from 'lucide-vue-next'
+import { Button, ConfirmModal, ToastHost } from '@/components/ui'
+import QuickCaptureForm from '@/components/QuickCaptureForm.vue'
+import { useQuickCapture, type QuickCaptureTab } from '@/composables/useQuickCapture'
 import ItemSidebar from '@/components/items/ItemSidebar.vue'
 import ItemHeader from '@/components/items/ItemHeader.vue'
 import ItemBody from '@/components/items/ItemBody.vue'
@@ -49,7 +51,14 @@ import { useProjectsStore } from '@/stores/projects'
 import { useNotesStore, type Note } from '@/stores/notes'
 import { useTodosStore, type Todo } from '@/stores/todos'
 import { errorCode } from '@/stores/slackThreads'
-import { ITEM_CHANGED, openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
+import {
+  ITEM_CHANGED,
+  ITEM_CREATE_REQUEST,
+  ITEM_LIST_READY,
+  type ItemCreateRequest,
+  type ItemKind,
+  type ItemListReady,
+} from '@/lib/itemWindow'
 import { itemListSelectEvent, type ItemListSelect } from '@/lib/itemListWindow'
 import {
   WINDOW_NEW_SESSION,
@@ -230,6 +239,8 @@ async function confirmDiscard(): Promise<boolean> {
 }
 
 async function select(id: string | null) {
+  // Picking a row leaves the new-item form; its draft stays for next time.
+  creating.value = false
   if (id === selectedId.value) return
   if (!(await confirmDiscard())) return
   editing.value = false
@@ -453,10 +464,58 @@ async function copyId() {
   }
 }
 
+// ── New item ────────────────────────────────────────────────────────────────
+// "+ New" here, or "New todo / note" anywhere in the app (lib/itemWindow), shows
+// the capture form in the detail pane; once saved, the new item opens there.
+
+const capture = useQuickCapture()
+const creating = ref(false)
+const createFormRef = ref<InstanceType<typeof QuickCaptureForm> | null>(null)
+const placement = props.embedded ? 'tab' : 'window'
+let lastRequestId: string | null = null
+
+async function startCreate(context: { projectId: string | null; runId: string | null }, prefill?: ItemCreateRequest['prefill']) {
+  if (editing.value && !(await confirmDiscard())) return
+  editing.value = false
+  renaming.value = false
+  // The capture draft is shared by the Todos and Notes screens of one window:
+  // point it at this kind (its fields are per kind, so nothing is lost).
+  capture.openCapture({ tab: kind, context })
+  capture.tab.value = kind
+  if (prefill) {
+    capture.adoptDraft({
+      noteTitle: kind === 'note' ? prefill.title : undefined,
+      noteContent: kind === 'note' ? prefill.content : undefined,
+      todoText: kind === 'todo' ? prefill.content : undefined,
+    })
+  }
+  creating.value = true
+  await nextTick()
+  createFormRef.value?.focus()
+}
+
 function openCreate() {
   const scoped = projectFilter.value && projectFilter.value !== NO_PROJECT ? projectFilter.value : null
-  void openItemCreateWindow(kind, { projectId: scoped ?? contextProjectId.value })
+  void startCreate({ projectId: scoped ?? contextProjectId.value, runId: null })
 }
+
+function onCreateRequest(req: ItemCreateRequest | undefined) {
+  if (!req || req.kind !== kind || req.placement !== placement || req.id === lastRequestId) return
+  lastRequestId = req.id
+  void startCreate({ projectId: req.projectId, runId: req.runId }, req.prefill)
+}
+
+async function onCreated(_tab: QuickCaptureTab, id: string | null) {
+  emit(ITEM_CHANGED, { kind }).catch(() => {})
+  creating.value = false
+  if (id) await selectFresh(id)
+}
+
+// Back on this tab while the form is open: the shared draft may point at the
+// other kind (the Notes tab took it meanwhile).
+onActivated(() => {
+  if (creating.value) capture.tab.value = kind
+})
 
 // ── Linked sessions ─────────────────────────────────────────────────────────
 
@@ -613,6 +672,10 @@ onMounted(async () => {
       }),
     )
     unlisten.push(
+      // "New todo / note" from anywhere: show the form here (lib/itemWindow).
+      await listen<ItemCreateRequest>(ITEM_CREATE_REQUEST, (e) => onCreateRequest(e.payload)),
+    )
+    unlisten.push(
       // Reopened from the app: re-point the project scope and / or select an item.
       await listen<ItemListSelect>(itemListSelectEvent(kind), (e) => {
         if (e.payload) applySelect(e.payload)
@@ -647,7 +710,11 @@ onMounted(async () => {
   // A stale `id` (deleted since) falls back to the first row.
   const wanted = initialId && allRows.value.some((r) => r.id === initialId) ? initialId : null
   const first = selectedId.value ?? wanted ?? visibleRows.value[0]?.id ?? null
-  if (first) await select(first)
+  // A "new item" request may have landed while loading: keep its form up.
+  if (first && !creating.value) await select(first)
+  // Only now can an opener's request be answered without losing the form to
+  // the first-row selection above (lib/itemWindow).
+  emit(ITEM_LIST_READY, { kind, placement } satisfies ItemListReady).catch(() => {})
 })
 
 onBeforeUnmount(() => {
@@ -693,7 +760,41 @@ onBeforeUnmount(() => {
       @retry="reloadAll"
     />
 
-    <section v-if="item" class="flex min-w-0 flex-1 flex-col">
+    <!-- New item: the capture form in the detail pane; saved, the item opens here. -->
+    <section v-if="creating" class="flex min-w-0 flex-1 flex-col">
+      <div class="flex h-13 shrink-0 items-center gap-2 border-b border-border/60 px-4">
+        <ListPaneButtons mode="show" />
+        <component :is="kind === 'note' ? StickyNote : ListTodo" class="h-4 w-4 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+        <h2 class="min-w-0 flex-1 truncate text-sm font-semibold">
+          {{ kind === 'note' ? t('item.newNote') : t('item.newTodo') }}
+        </h2>
+        <Button
+          variant="ghost"
+          size="icon"
+          :title="t('common.cancel')"
+          :aria-label="t('common.cancel')"
+          @click="creating = false"
+        >
+          <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </Button>
+      </div>
+      <div class="min-h-0 flex-1 overflow-auto px-4 py-3">
+        <QuickCaptureForm ref="createFormRef" @saved="onCreated" @dismiss="creating = false" />
+      </div>
+      <div class="flex shrink-0 items-center gap-2 border-t border-border/60 px-4 py-2.5">
+        <span class="mr-auto text-[11px] text-muted-foreground/70">⌘/Ctrl + Enter</span>
+        <Button
+          variant="primary"
+          size="sm"
+          :disabled="!createFormRef?.canSubmit || createFormRef?.saving"
+          @click="createFormRef?.submit()"
+        >
+          {{ kind === 'note' ? t('item.saveNote') : t('item.addTodo') }}
+        </Button>
+      </div>
+    </section>
+
+    <section v-else-if="item" class="flex min-w-0 flex-1 flex-col">
       <ItemHeader
         :kind="kind"
         :item="item"

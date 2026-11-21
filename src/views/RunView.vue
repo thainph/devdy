@@ -77,7 +77,7 @@ import { useTurnNavigator, turnLabel } from '@/composables/useTurnNavigator'
 import { useScrollMemory } from '@/composables/useScrollMemory'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
-import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
+import { openItemCreate, type ItemKind } from '@/lib/itemWindow'
 import { vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
 import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
@@ -1833,7 +1833,7 @@ function captureContext() {
 }
 
 function openQuickCapture(kind: ItemKind) {
-  openItemCreateWindow(kind, captureContext())
+  openItemCreate(kind, captureContext())
 }
 
 // Slack threads / todos / notes linked to this session, for the header menus.
@@ -1843,7 +1843,7 @@ const linked = useRunLinkedItems(currentRunId)
 function captureSelectionAsNote() {
   const trigger = translateTrigger.value
   if (!trigger) return
-  openItemCreateWindow('note', captureContext(), {
+  openItemCreate('note', captureContext(), {
     title: currentRun.value?.title ?? project.value?.name ?? '',
     content: trigger.text,
   })
@@ -1854,7 +1854,7 @@ function captureSelectionAsNote() {
 function captureSelectionAsTodo() {
   const trigger = translateTrigger.value
   if (!trigger) return
-  openItemCreateWindow('todo', captureContext(), { content: trigger.text })
+  openItemCreate('todo', captureContext(), { content: trigger.text })
   translateTrigger.value = null
 }
 

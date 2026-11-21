@@ -30,7 +30,6 @@ import { Button, ConfirmModal, PromptModal, ToastHost } from '@/components/ui'
 import ImageCompareHost from '@/components/ImageCompareHost.vue'
 import CyberFoxHost from '@/components/CyberFoxHost.vue'
 import MascotWindow from '@/views/MascotWindow.vue'
-import ItemWindow from '@/views/ItemWindow.vue'
 import ItemListWindow from '@/views/ItemListWindow.vue'
 import SecretNotesWindow from '@/views/SecretNotesWindow.vue'
 import SlackThreadsWindow from '@/views/SlackThreadsWindow.vue'
@@ -60,7 +59,7 @@ import { useChatDraftsStore } from '@/stores/chatDrafts'
 import { useToast } from '@/composables/useToast'
 import { useAgentAmbient } from '@/composables/useAgentAmbient'
 import { applySystemAccent } from '@/lib/systemAccent'
-import { openItemCreateWindow } from '@/lib/itemWindow'
+import { openItemCreate } from '@/lib/itemWindow'
 import { openSecretNotesWindow } from '@/lib/secretNotesWindow'
 import { applyAppMenu, IS_MAC, isMenuActionBound, listenMenuActions, registerMenuAction } from '@/lib/appMenu'
 import {
@@ -103,7 +102,6 @@ import QuitProcessesDialog from '@/components/processes/QuitProcessesDialog.vue'
 // chrome-less host (no sidebar / nav / background work) in those cases.
 const isFileWindow = new URLSearchParams(window.location.search).get('fileWindow') === '1'
 const isPermissionWindow = new URLSearchParams(window.location.search).get('permissionWindow') === '1'
-const isItemWindow = new URLSearchParams(window.location.search).get('itemWindow') === '1'
 const isItemListWindow = new URLSearchParams(window.location.search).get('itemListWindow') === '1'
 const isSecretNotesWindow = new URLSearchParams(window.location.search).get('secretNotesWindow') === '1'
 const isRadarWindow = new URLSearchParams(window.location.search).get('radarWindow') === '1'
@@ -122,7 +120,6 @@ const isSessionWindow = IS_SESSION_WINDOW
 const isPopoutWindow =
   isFileWindow ||
   isPermissionWindow ||
-  isItemWindow ||
   isItemListWindow ||
   isSecretNotesWindow ||
   isRadarWindow ||
@@ -628,14 +625,13 @@ function togglePalette(mode: PaletteMode) {
 // a session needs a project, which only that screen has.
 function bindGlobalMenuActions() {
   const unbinds = [
-    // A NEW todo / note is ALWAYS captured in the standalone capture window, from
-    // every entry point — menu, shortcut, mascot, run screen (existing ones are
-    // read and edited in the Notes / Todos windows).
+    // A NEW todo / note is captured in the Todos / Notes screen's detail pane,
+    // from every entry point — menu, shortcut, mascot, run screen (lib/itemWindow).
     registerMenuAction('file.newTodo', () =>
-      openItemCreateWindow('todo', routeCaptureContext()),
+      openItemCreate('todo', routeCaptureContext()),
     ),
     registerMenuAction('file.newNote', () =>
-      openItemCreateWindow('note', routeCaptureContext()),
+      openItemCreate('note', routeCaptureContext()),
     ),
     registerMenuAction('window.todoList', () =>
       openSurface('todos', { projectId: routeCaptureContext().projectId }),
@@ -1090,7 +1086,6 @@ onMounted(async () => {
   <PermissionWindow v-else-if="isPermissionWindow" />
 
   <!-- THE todo / note window: create or edit, the only place either is written. -->
-  <ItemWindow v-else-if="isItemWindow" />
 
   <!-- THE todo / note LIST window: stands beside the main window, replacing the drawer. -->
   <ItemListWindow v-else-if="isItemListWindow" />

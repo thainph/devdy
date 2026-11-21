@@ -16,7 +16,7 @@ import CyberFox from '@/components/CyberFoxCanvas.vue'
 import MascotStars from '@/components/MascotStars.vue'
 import MascotContextMenu, { type MascotMenuItem } from '@/components/MascotContextMenu.vue'
 import MascotBubble from '@/components/MascotBubble.vue'
-import { openItemCreateWindow, type ItemKind } from '@/lib/itemWindow'
+import { openItemCreate, type ItemKind } from '@/lib/itemWindow'
 import {
   MASCOT_STATE_EVENT,
   MASCOT_READY_EVENT,
@@ -57,7 +57,7 @@ function openContextMenu(e: MouseEvent) {
   menuOpen.value = true
 }
 function pickQuickCreate(key: string) {
-  openItemCreateWindow(key as ItemKind)
+  openItemCreate(key as ItemKind)
 }
 
 // Drag = OS-native window move via startDragging(). The compositor moves the

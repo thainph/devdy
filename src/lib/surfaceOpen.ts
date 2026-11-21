@@ -119,12 +119,12 @@ async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: Surfa
   await focusMain()
 }
 
-/** Open a surface where the user wants it (tab or window). */
+/** Open a surface where the user wants it; resolves to where it opened (tab or window). */
 export async function openSurface(
   kind: SurfaceKind,
   rawParams: Record<string, unknown> = {},
   opts: OpenSurfaceOptions = {},
-): Promise<void> {
+): Promise<Placement> {
   const params = cleanParams(kind, rawParams)
   const extras: SurfaceExtras = { calendarEvent: opts.calendarEvent, slackAdd: opts.slackAdd }
   // Where it already is wins over where it would open: never a tab beside its
@@ -135,7 +135,7 @@ export async function openSurface(
   where ??= await resolvePlacement(kind)
   if (where === 'window') {
     await openSurfaceWindow(kind, params, extras)
-    return
+    return 'window'
   }
   if (isMainWindow()) {
     await openAsTab(kind, params, extras, opts)
@@ -143,9 +143,11 @@ export async function openSurface(
     // "Beside what I'm looking at" from a pop-out (a session window): the main
     // window is not beside it, so open its own window as before.
     await openSurfaceWindow(kind, params, extras)
+    return 'window'
   } else {
     await emit(SURFACE_OPEN, { kind, params, extras } satisfies SurfaceOpenRequest).catch(() => {})
   }
+  return 'tab'
 }
 
 /** Move a surface tab out to its own window (the tab closes). */
