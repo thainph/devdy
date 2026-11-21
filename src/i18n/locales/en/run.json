@@ -183,5 +183,15 @@
   "inWorktree": "Runs in its own worktree · branch {branch}",
   "openInVscode": "Open the project in VS Code",
   "openInFolder": "Open the project folder",
-  "openInTerminal": "Open a terminal in the project"
+  "openInTerminal": "Open a terminal in the project",
+  "openIn": "Open the project in…",
+  "accountsSummary": "{n} account | {n} accounts",
+  "accountsSummaryTitle": "Accounts and servers this session can use",
+  "accountsGroupGit": "Git",
+  "accountsGroupVps": "VPS",
+  "accountsGroupCloud": "Cloud",
+  "historyToggle": "Show the session list",
+  "historyToggleWaiting": "Show the session list — a session is waiting for you",
+  "dockedPromptLabel": "Pending request for this session",
+  "popOutPrompt": "Pop out into its own window"
 }

@@ -39,7 +39,8 @@ import {
   Pin, Shield, Pencil, Check, Github, Gitlab, UserCircle,
   HardDrive, Cloud, CloudCog, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   Search, Network, GitBranch, ChevronLeft, ChevronRight,
-  Plus, AlignJustify, Rows2, Rows3, Rows4, ArrowUpDown
+  Plus, AlignJustify, Rows2, Rows3, Rows4, ArrowUpDown,
+  KeyRound, SquareArrowOutUpRight, History
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
@@ -83,6 +84,8 @@ import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLin
 import { topKByScore } from '@/lib/topK'
 import { provideListPane, useListPaneSidebar } from '@/composables/useListPane'
 import ListPaneButtons from '@/components/listDetail/ListPaneButtons.vue'
+import PermissionPrompt from '@/components/PermissionPrompt.vue'
+import { setDockedRun, usePermissionDecisions } from '@/composables/usePermissionDecisions'
 import { openSurface } from '@/lib/surfaceOpen'
 import { openSessionWindow } from '@/lib/sessionWindow'
 import { IS_SESSION_WINDOW } from '@/lib/windowMode'
@@ -121,6 +124,69 @@ const uiLayout = useUILayoutStore()
 const runPane = provideListPane('run')
 const leftPanelEl = ref<HTMLElement | null>(null)
 const leftPanel = useListPaneSidebar(leftPanelEl, runPane)
+
+// RunView can sit in either half of a split, so it adapts to its OWN width (not
+// the window's). The header collapses through CSS container queries; the body
+// needs the width in JS: below NARROW_BODY_PX the History column stops taking
+// room and floats over the conversation instead (and the conductor worker panel
+// floats too), so nothing ever scrolls sideways.
+const NARROW_BODY_PX = 640
+const rootEl = ref<HTMLElement | null>(null)
+const rootWidth = ref(0)
+let rootRO: ResizeObserver | null = null
+onMounted(() => {
+  if (!rootEl.value || typeof ResizeObserver === 'undefined') return
+  rootRO = new ResizeObserver(([entry]) => {
+    rootWidth.value = Math.round(entry.contentRect.width)
+  })
+  rootRO.observe(rootEl.value)
+})
+onBeforeUnmount(() => rootRO?.disconnect())
+const bodyNarrow = computed(() => rootWidth.value > 0 && rootWidth.value < NARROW_BODY_PX)
+
+// History while narrow: an overlay opened by the toggle in the conversation
+// header, independent of the user's remembered hide (⌘B) choice.
+const historyOverlay = ref(false)
+watch(bodyNarrow, () => {
+  historyOverlay.value = false
+  runPane.closePeek()
+})
+const historyVisible = computed(() =>
+  !isSessionWindow && (bodyNarrow.value ? historyOverlay.value : leftPanel.shown.value),
+)
+const historyFloating = computed(() => bodyNarrow.value || leftPanel.floating.value)
+/** The History column isn't docked beside the chat (narrow, or hidden by the user). */
+const historyUndocked = computed(() => !isSessionWindow && (bodyNarrow.value || runPane.hidden.value))
+const historyToggleOpen = computed(() => (bodyNarrow.value ? historyOverlay.value : runPane.peeking.value))
+function toggleHistory() {
+  if (bodyNarrow.value) historyOverlay.value = !historyOverlay.value
+  else runPane.togglePeek()
+}
+function onHistoryOverlayPointerDown(e: PointerEvent) {
+  const target = e.target as Node | null
+  // Menus / dialogs opened from the list (teleported) and the toggle itself stay.
+  if (target instanceof Element && target.closest('[role="dialog"], [role="menu"], .ui-menu-item, .ui-popover, [data-list-peek]')) return
+  if (leftPanelEl.value && target && !leftPanelEl.value.contains(target)) historyOverlay.value = false
+}
+function onHistoryOverlayKeyDown(e: KeyboardEvent) {
+  if (e.key !== 'Escape') return
+  e.stopPropagation()
+  historyOverlay.value = false
+}
+const historyOverlayOpen = computed(() => bodyNarrow.value && historyOverlay.value)
+watch(historyOverlayOpen, (on) => {
+  if (on) {
+    document.addEventListener('pointerdown', onHistoryOverlayPointerDown, true)
+    document.addEventListener('keydown', onHistoryOverlayKeyDown, true)
+  } else {
+    document.removeEventListener('pointerdown', onHistoryOverlayPointerDown, true)
+    document.removeEventListener('keydown', onHistoryOverlayKeyDown, true)
+  }
+})
+onBeforeUnmount(() => {
+  document.removeEventListener('pointerdown', onHistoryOverlayPointerDown, true)
+  document.removeEventListener('keydown', onHistoryOverlayKeyDown, true)
+})
 const { confirm } = useConfirm()
 const { toast } = useToast()
 
@@ -228,7 +294,7 @@ async function loadProjectServers() {
 const MAX_SERVER_CHIPS = 2
 // Tone follows connection status; the shared Badge renders the solid high-contrast fill.
 type ServerTone = 'success' | 'error' | 'neutral'
-type ServerChip = { key: string; label: string; tone: ServerTone; title: string }
+type ServerChip = { key: string; label: string; tone: ServerTone; title: string; host: string }
 const serverChips = computed<ServerChip[]>(() =>
   projectServers.value.map((s) => {
     const tone: ServerTone = s.status === 'online' ? 'success' : s.status === 'offline' ? 'error' : 'neutral'
@@ -239,6 +305,7 @@ const serverChips = computed<ServerChip[]>(() =>
       label: s.label,
       tone,
       title: `${s.role}: ${s.username}@${s.host}:${s.port} · auth ${auth}${status}`,
+      host: s.host,
     }
   }),
 )
@@ -291,9 +358,27 @@ const azureChip = computed(() => {
   return { label: acc.label, subscription: acc.subscription_name ?? '', title, tag: others.length ? `+${others.length}` : undefined }
 })
 
+// A narrow header folds every account / server / cloud badge above into one
+// "N accounts" chip; its menu lists them by group with the same tooltips.
+const accountCount = computed(() =>
+  activeAccounts.value.length + serverChips.value.length + (awsChip.value ? 1 : 0) + (azureChip.value ? 1 : 0),
+)
+// Icon tint per badge tone, for the rows of that menu.
+const TONE_TEXT: Record<string, string> = {
+  info: 'text-info',
+  warning: 'text-warning',
+  success: 'text-success',
+  error: 'text-destructive',
+  neutral: 'text-muted-foreground',
+  primary: 'text-primary',
+}
+
 const activeRunId = computed(() => route.params.runId as string | undefined)
 // Picking a session from the peeked History closes the peek.
-watch(activeRunId, () => leftPanel.picked())
+watch(activeRunId, () => {
+  leftPanel.picked()
+  historyOverlay.value = false
+})
 
 const repos = ref<Repo[]>([])
 
@@ -829,12 +914,23 @@ const anchorWorkerCount = computed(() => {
   const fromRuns = id ? runsStore.runs.filter((r) => r.conductor_run_id === id).length : 0
   return Math.max(conductorWorkers.value.length, fromRuns)
 })
+// While the body is narrow the panel floats over the chat when expanded, so it
+// starts on the rail there and its open state is not remembered.
+const workerOverlay = ref(false)
+watch(bodyNarrow, () => {
+  workerOverlay.value = false
+})
 const workerPanelOpen = computed(() => {
+  if (bodyNarrow.value) return workerOverlay.value
   const id = conductorAnchorId.value
   const manual = id ? workerPanelChoice.value.get(id) : undefined
   return manual ?? anchorWorkerCount.value > 0
 })
 function setWorkerPanelOpen(open: boolean) {
+  if (bodyNarrow.value) {
+    workerOverlay.value = open
+    return
+  }
   const id = conductorAnchorId.value
   if (id) workerPanelChoice.value.set(id, open)
 }
@@ -3096,9 +3192,66 @@ async function handleSendFollowUp() {
   }
 }
 
-// Permission / question prompts no longer live in this view at all: the global
-// PermissionWindowManager opens one standalone window per run that is asking (this
-// run, a popped-out session, or a background run) and owns the resolve logic.
+// Permission / question prompts are owned by the global PermissionWindowManager
+// (the in-app card stack while the main window is in front, standalone windows
+// otherwise) and answered through usePermissionDecisions. One exception: while
+// the main window is split, the stack's bottom-right corner and a pop-out window
+// would both cover the other pane, so this view docks its own run's request in
+// place of the composer. The user can still pop it out into its window.
+const perms = usePermissionDecisions()
+// The ONE place that decides "split": swap for tabsStore.isSplit when it exists.
+const isSplit = computed(() => tabsStore.splitId != null)
+const dockedRequest = computed(() => {
+  if (isSessionWindow || !isSplit.value || perms.surface.value !== 'inline') return null
+  const id = currentRunId.value
+  const head = id ? perms.headOf(id) : null
+  if (!id || !head || perms.poppedOut.value.has(head.request_id)) return null
+  return { runId: id, request: head }
+})
+const dockToken = Symbol('runViewDock')
+watch(
+  () => dockedRequest.value?.runId ?? null,
+  (runId) => setDockedRun(dockToken, runId),
+  { immediate: true },
+)
+onBeforeUnmount(() => setDockedRun(dockToken, null))
+
+const dockPromptRef = ref<InstanceType<typeof PermissionPrompt> | null>(null)
+// A docked prompt takes the keyboard only when the user wasn't typing: a request
+// arriving mid-sentence must not turn their next Enter into "allow".
+watch(
+  () => dockedRequest.value?.request.request_id ?? null,
+  (id, prev) => {
+    if (!id || id === prev) return
+    const el = document.activeElement as HTMLElement | null
+    const typing = !!el && (el.tagName === 'INPUT' || el.tagName === 'TEXTAREA' || el.isContentEditable)
+    if (typing) return
+    void nextTick(() => dockPromptRef.value?.focus())
+  },
+  { flush: 'pre' },
+)
+// The title-bar pill asking to focus this run's request.
+watch(perms.focusRequest, async (req) => {
+  if (!req || req.runId !== dockedRequest.value?.runId) return
+  await nextTick()
+  dockPromptRef.value?.focus()
+})
+function onDockDecide(decision: 'allow' | 'deny', remember: boolean) {
+  const d = dockedRequest.value
+  if (d) void perms.decide(d.runId, d.request.request_id, decision, remember)
+}
+function onDockAnswer(answers: Record<string, string>) {
+  const d = dockedRequest.value
+  if (d) void perms.answerQuestion(d.runId, d.request.request_id, answers)
+}
+function popOutDocked() {
+  const d = dockedRequest.value
+  if (d) perms.popOut(d.runId)
+}
+
+// History toggle dot: some session in the list is waiting for the user while
+// the list itself is out of sight.
+const anyRunWaiting = computed(() => runsStore.runs.some((r) => !!pendingRequest(r.id)))
 
 // A file menu anywhere (including another webview) asking for an @mention here.
 let mentionUnlisten: UnlistenFn | null = null
@@ -3706,72 +3859,142 @@ function handleRefInput(val: string) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
-    <!-- Header -->
-    <div class="flex items-center justify-between gap-3 px-6 h-13 border-b border-border/60 shrink-0">
-      <div class="flex items-center gap-2 min-w-0">
-        <ListPaneButtons v-if="!isSessionWindow" mode="show" />
-        <h1 class="text-sm font-semibold truncate">{{ project?.name ?? t('run.projectFallback') }}</h1>
-        <Badge
-          v-for="acc in activeAccounts"
-          :key="acc.key"
-          :tone="acc.tone"
-          size="sm"
-          class="font-mono shrink-0 inline-flex items-center gap-1"
-          :title="acc.title"
-        >
-          <component :is="acc.icon" class="h-3 w-3" :stroke-width="1.75" />
-          {{ acc.username }}
-          <span v-if="acc.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ acc.tag }}</span>
-        </Badge>
-        <!-- VPS servers wired to this project (transparent SSH per run). -->
-        <Badge
-          v-for="chip in visibleServerChips"
-          :key="chip.key"
-          :tone="chip.tone"
-          size="sm"
-          class="shrink-0 inline-flex items-center gap-1"
-          :title="chip.title"
-        >
-          <HardDrive class="h-3 w-3" :stroke-width="2" />
-          {{ chip.label }}
-        </Badge>
-        <Badge
-          v-if="hiddenServerChips.length"
-          tone="neutral"
-          size="sm"
-          class="shrink-0 inline-flex items-center gap-1"
-          :title="hiddenServerTitle"
-        >
-          <HardDrive class="h-3 w-3" :stroke-width="2" />
-          +{{ hiddenServerChips.length }}
-        </Badge>
-        <!-- Default AWS account (credentials brokered per run); +N other enabled. -->
-        <Badge
-          v-if="awsChip"
-          tone="primary"
-          size="sm"
-          class="shrink-0 inline-flex items-center gap-1"
-          :title="awsChip.title"
-        >
-          <Cloud class="h-3 w-3" :stroke-width="2" />
-          {{ awsChip.label }}
-          <span class="opacity-90 font-mono">{{ awsChip.region }}</span>
-          <span v-if="awsChip.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ awsChip.tag }}</span>
-        </Badge>
-        <!-- Default Azure account (az login isolated per account); +N other enabled. -->
-        <Badge
-          v-if="azureChip"
-          tone="primary"
-          size="sm"
-          class="shrink-0 inline-flex items-center gap-1"
-          :title="azureChip.title"
-        >
-          <CloudCog class="h-3 w-3" :stroke-width="2" />
-          {{ azureChip.label }}
-          <span v-if="azureChip.subscription" class="opacity-90">{{ azureChip.subscription }}</span>
-          <span v-if="azureChip.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ azureChip.tag }}</span>
-        </Badge>
+  <!-- A size container: RunView fits whichever half of a split it is in (down
+       to ~360px), so its layout follows its own width, never the window's. -->
+  <div ref="rootEl" class="@container/run flex h-full min-w-0 flex-col overflow-hidden">
+    <!-- Header. Its left group clips instead of running under the buttons: the
+         project name keeps its room (up to 45%), the badges get the rest. Below
+         ~660px every account / server / cloud badge folds into one "N accounts"
+         chip; below ~520px the open-in buttons fold into one menu. -->
+    <div class="@container/runhdr flex items-center justify-between gap-3 px-3 @[40rem]/run:px-6 h-13 border-b border-border/60 shrink-0">
+      <div class="flex min-w-0 flex-1 items-center gap-2 overflow-hidden">
+        <ListPaneButtons v-if="!isSessionWindow && !bodyNarrow" mode="show" />
+        <h1
+          class="min-w-0 truncate text-sm font-semibold"
+          :class="accountCount ? 'max-w-[45%] shrink-0' : ''"
+          :title="project?.name"
+        >{{ project?.name ?? t('run.projectFallback') }}</h1>
+        <div class="hidden min-w-0 items-center gap-2 @[41.25rem]/runhdr:flex">
+          <Badge
+            v-for="acc in activeAccounts"
+            :key="acc.key"
+            :tone="acc.tone"
+            size="sm"
+            class="font-mono shrink-0 inline-flex items-center gap-1"
+            :title="acc.title"
+          >
+            <component :is="acc.icon" class="h-3 w-3" :stroke-width="1.75" />
+            {{ acc.username }}
+            <span v-if="acc.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ acc.tag }}</span>
+          </Badge>
+          <!-- VPS servers wired to this project (transparent SSH per run). -->
+          <Badge
+            v-for="chip in visibleServerChips"
+            :key="chip.key"
+            :tone="chip.tone"
+            size="sm"
+            class="shrink-0 inline-flex items-center gap-1"
+            :title="chip.title"
+          >
+            <HardDrive class="h-3 w-3" :stroke-width="2" />
+            {{ chip.label }}
+          </Badge>
+          <Badge
+            v-if="hiddenServerChips.length"
+            tone="neutral"
+            size="sm"
+            class="shrink-0 inline-flex items-center gap-1"
+            :title="hiddenServerTitle"
+          >
+            <HardDrive class="h-3 w-3" :stroke-width="2" />
+            +{{ hiddenServerChips.length }}
+          </Badge>
+          <!-- Default AWS account (credentials brokered per run); +N other enabled. -->
+          <Badge
+            v-if="awsChip"
+            tone="primary"
+            size="sm"
+            class="shrink-0 inline-flex items-center gap-1"
+            :title="awsChip.title"
+          >
+            <Cloud class="h-3 w-3" :stroke-width="2" />
+            {{ awsChip.label }}
+            <span class="opacity-90 font-mono">{{ awsChip.region }}</span>
+            <span v-if="awsChip.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ awsChip.tag }}</span>
+          </Badge>
+          <!-- Default Azure account (az login isolated per account); +N other enabled. -->
+          <Badge
+            v-if="azureChip"
+            tone="primary"
+            size="sm"
+            class="shrink-0 inline-flex items-center gap-1"
+            :title="azureChip.title"
+          >
+            <CloudCog class="h-3 w-3" :stroke-width="2" />
+            {{ azureChip.label }}
+            <span v-if="azureChip.subscription" class="opacity-90">{{ azureChip.subscription }}</span>
+            <span v-if="azureChip.tag" class="font-sans text-[10px] uppercase tracking-wide opacity-70">{{ azureChip.tag }}</span>
+          </Badge>
+        </div>
+        <!-- Narrow header: the same badges as one chip + a grouped menu. -->
+        <DropdownMenu v-if="accountCount" align="left" class="min-w-0 @[41.25rem]/runhdr:hidden">
+          <template #trigger="{ open }">
+            <button
+              type="button"
+              class="inline-flex h-6 min-w-0 cursor-pointer items-center gap-1 rounded-md border border-info/25 bg-info/10 px-2 font-mono text-[11px] text-info transition-colors hover:bg-info/15"
+              :title="t('run.accountsSummaryTitle')"
+              :aria-expanded="open"
+              aria-haspopup="true"
+            >
+              <KeyRound class="h-3 w-3 shrink-0" :stroke-width="2" />
+              <span class="truncate">{{ t('run.accountsSummary', { n: accountCount }, accountCount) }}</span>
+              <ChevronDown class="h-3 w-3 shrink-0" :stroke-width="2" />
+            </button>
+          </template>
+          <div class="w-72 max-w-[calc(100vw-2rem)] text-xs">
+            <template v-if="activeAccounts.length">
+              <p class="px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{{ t('run.accountsGroupGit') }}</p>
+              <div
+                v-for="acc in activeAccounts"
+                :key="acc.key"
+                class="flex items-center gap-2 rounded px-2.5 py-1.5"
+                :title="acc.title"
+              >
+                <component :is="acc.icon" class="h-3.5 w-3.5 shrink-0" :class="TONE_TEXT[acc.tone]" :stroke-width="1.75" />
+                <span class="min-w-0 truncate font-mono text-popover-foreground">{{ acc.username }}</span>
+                <span v-if="acc.tag" class="ml-auto shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">{{ acc.tag }}</span>
+              </div>
+            </template>
+            <template v-if="serverChips.length">
+              <p class="px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{{ t('run.accountsGroupVps') }}</p>
+              <div
+                v-for="chip in serverChips"
+                :key="chip.key"
+                class="flex items-center gap-2 rounded px-2.5 py-1.5"
+                :title="chip.title"
+              >
+                <HardDrive class="h-3.5 w-3.5 shrink-0" :class="TONE_TEXT[chip.tone]" :stroke-width="1.75" />
+                <span class="min-w-0 truncate text-popover-foreground">{{ chip.label }}</span>
+                <span class="ml-auto min-w-0 truncate font-mono text-[11px] text-muted-foreground">{{ chip.host }}</span>
+              </div>
+            </template>
+            <template v-if="awsChip || azureChip">
+              <p class="px-2.5 pb-0.5 pt-1.5 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">{{ t('run.accountsGroupCloud') }}</p>
+              <div v-if="awsChip" class="flex items-center gap-2 rounded px-2.5 py-1.5" :title="awsChip.title">
+                <Cloud class="h-3.5 w-3.5 shrink-0 text-primary" :stroke-width="1.75" />
+                <span class="min-w-0 truncate text-popover-foreground">AWS {{ awsChip.label }}</span>
+                <span class="ml-auto min-w-0 truncate font-mono text-[11px] text-muted-foreground">{{ awsChip.region }}</span>
+                <span v-if="awsChip.tag" class="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">{{ awsChip.tag }}</span>
+              </div>
+              <div v-if="azureChip" class="flex items-center gap-2 rounded px-2.5 py-1.5" :title="azureChip.title">
+                <CloudCog class="h-3.5 w-3.5 shrink-0 text-primary" :stroke-width="1.75" />
+                <span class="min-w-0 truncate text-popover-foreground">Azure {{ azureChip.label }}</span>
+                <span v-if="azureChip.subscription" class="ml-auto min-w-0 truncate text-[11px] text-muted-foreground">{{ azureChip.subscription }}</span>
+                <span v-if="azureChip.tag" class="shrink-0 text-[10px] uppercase tracking-wide text-muted-foreground">{{ azureChip.tag }}</span>
+              </div>
+            </template>
+          </div>
+        </DropdownMenu>
       </div>
       <!-- Icon-only actions: the linked Slack / todo / note menus, then the
            project's buttons. Labels live in the tooltips so the header stays
@@ -3803,15 +4026,37 @@ function handleRefInput(val: string) {
              project settings. The session's own actions are on its
              History row's right-click menu (RunActionItems), not repeated here. -->
         <span class="mx-1 h-[18px] w-px bg-border" aria-hidden="true" />
-        <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInVscode')" :aria-label="t('run.openInVscode')" @click="handleOpenInVscode">
-          <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInFolder')" :aria-label="t('run.openInFolder')" @click="handleOpenInFolder">
-          <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-        <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInTerminal')" :aria-label="t('run.openInTerminal')" @click="handleOpenInTerminal">
-          <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
+        <div class="hidden items-center gap-1 @[32.5rem]/runhdr:flex">
+          <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInVscode')" :aria-label="t('run.openInVscode')" @click="handleOpenInVscode">
+            <Code2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+          <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInFolder')" :aria-label="t('run.openInFolder')" @click="handleOpenInFolder">
+            <FolderOpen class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+          <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openInTerminal')" :aria-label="t('run.openInTerminal')" @click="handleOpenInTerminal">
+            <Terminal class="h-3.5 w-3.5" :stroke-width="1.75" />
+          </Button>
+        </div>
+        <!-- Narrow header: the three as one "Open in…" menu. -->
+        <DropdownMenu align="right" class="@[32.5rem]/runhdr:hidden">
+          <template #trigger>
+            <Button variant="outline" size="icon" :disabled="!project" :title="t('run.openIn')" :aria-label="t('run.openIn')" aria-haspopup="menu">
+              <SquareArrowOutUpRight class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </Button>
+          </template>
+          <DropdownItem @click="handleOpenInVscode">
+            <Code2 class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            {{ t('run.openInVscode') }}
+          </DropdownItem>
+          <DropdownItem @click="handleOpenInFolder">
+            <FolderOpen class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            {{ t('run.openInFolder') }}
+          </DropdownItem>
+          <DropdownItem @click="handleOpenInTerminal">
+            <Terminal class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+            {{ t('run.openInTerminal') }}
+          </DropdownItem>
+        </DropdownMenu>
         <span class="mx-1 h-[18px] w-px bg-border" aria-hidden="true" />
         <Button
           variant="outline"
@@ -3838,12 +4083,14 @@ function handleRefInput(val: string) {
 
     <div class="relative flex flex-1 overflow-hidden">
       <!-- Left panel: controls + history (hidden in focus mode, and in a session
-           pop-out — that window is locked to its one run, no switcher). -->
+           pop-out — that window is locked to its one run, no switcher). Below
+           NARROW_BODY_PX it never takes room: it floats over the chat, opened by
+           the toggle in the conversation header. -->
       <div
-        v-if="!isSessionWindow && leftPanel.shown.value"
+        v-if="historyVisible"
         ref="leftPanelEl"
-        class="w-72 shrink-0 border-r border-border/60 flex flex-col overflow-hidden"
-        :class="leftPanel.floating.value ? `${leftPanel.floatClass.value} bg-card` : 'bg-card/20'"
+        class="w-72 max-w-[85%] shrink-0 border-r border-border/60 flex flex-col overflow-hidden"
+        :class="historyFloating ? 'absolute inset-y-0 left-0 z-30 bg-card shadow-2xl shadow-black/20' : 'bg-card/20'"
       >
 
         <!-- Rail tab switcher: Session (controls + history) vs Files (tree). -->
@@ -3865,7 +4112,18 @@ function handleRefInput(val: string) {
             {{ t('run.files') }}
           </button>
           <div class="flex items-center px-1.5">
-            <ListPaneButtons mode="hide" />
+            <Button
+              v-if="bodyNarrow"
+              variant="ghost"
+              size="icon"
+              class="shrink-0"
+              :title="t('listPane.closePeek')"
+              :aria-label="t('listPane.closePeek')"
+              @click="historyOverlay = false"
+            >
+              <X class="h-3.5 w-3.5" :stroke-width="1.75" />
+            </Button>
+            <ListPaneButtons v-else mode="hide" />
           </div>
         </div>
 
@@ -4219,7 +4477,7 @@ function handleRefInput(val: string) {
       </div>
 
       <!-- Terminal panel (split-pane: Content | AI Result) -->
-      <div class="flex-1 flex flex-col overflow-hidden bg-background">
+      <div class="flex-1 min-w-0 flex flex-col overflow-hidden bg-background">
         <!-- No sessions yet: hide the Content / AI Result panels entirely and
              show a single centered empty state. -->
         <div v-if="noSession" class="flex-1 flex items-center justify-center p-6">
@@ -4320,15 +4578,36 @@ function handleRefInput(val: string) {
               <!-- Title row: shows the current run / session title. Fixed h-8
                    (= rail tab bar height) so the header never grows when the
                    mentioned-files / re-dock controls appear. -->
-              <div class="flex items-center gap-2 px-3 h-8">
-                <MessageSquare class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.5" />
+              <div class="flex items-center gap-2 px-3 h-8 min-w-0">
+                <!-- History out of sight (narrow pane, or hidden): open it over
+                     the chat from here; an orange dot while a session waits. -->
+                <Button
+                  v-if="historyUndocked"
+                  variant="ghost"
+                  size="icon-xs"
+                  class="relative -ml-1.5 shrink-0"
+                  data-list-peek
+                  :aria-pressed="historyToggleOpen"
+                  :aria-expanded="historyToggleOpen"
+                  :title="anyRunWaiting && !historyToggleOpen ? t('run.historyToggleWaiting') : t('run.historyToggle')"
+                  :aria-label="anyRunWaiting && !historyToggleOpen ? t('run.historyToggleWaiting') : t('run.historyToggle')"
+                  @click="toggleHistory"
+                >
+                  <History class="h-3.5 w-3.5" :stroke-width="1.75" />
+                  <span
+                    v-if="anyRunWaiting && !historyToggleOpen"
+                    class="absolute right-0.5 top-0.5 h-[7px] w-[7px] rounded-full bg-warning ring-2 ring-card"
+                    aria-hidden="true"
+                  />
+                </Button>
+                <MessageSquare v-else class="h-3.5 w-3.5 text-foreground/40 shrink-0" :stroke-width="1.5" />
                 <span class="text-xs font-medium text-foreground/90 truncate">
                   {{ currentRun ? runLabel(currentRun) : t('run.noRunSelected') }}
                 </span>
                 <!-- Which repo / PR / author this run is about. -->
                 <span
                   v-if="currentRun && runRefText(currentRun)"
-                  class="shrink-0 max-w-[45%] truncate font-mono text-[11px] text-muted-foreground"
+                  class="hidden shrink-0 max-w-[45%] truncate font-mono text-[11px] text-muted-foreground @[30rem]/run:inline"
                   :title="runRefText(currentRun) ?? undefined"
                 >
                   {{ runRefText(currentRun) }}
@@ -4400,11 +4679,12 @@ function handleRefInput(val: string) {
                     class="flex items-center gap-1 rounded h-6 px-1.5 text-[11px] font-medium transition-colors cursor-pointer"
                     :class="contentVisible ? 'bg-primary/15 text-primary' : 'text-foreground/50 hover:text-foreground/80 hover:bg-accent/60'"
                     :title="t('run.toggleContentPanel')"
+                    :aria-label="t('run.toggleContentPanel')"
                     :aria-pressed="contentVisible"
                     @click="showContent = !showContent"
                   >
                     <FileText class="h-3.5 w-3.5" :stroke-width="1.75" />
-                    {{ t('run.content') }}
+                    <span class="hidden @[30rem]/run:inline">{{ t('run.content') }}</span>
                   </button>
                   <MentionedFiles :entries="mentionedFileEntries" @open-file="openFile" />
                 </div>
@@ -4543,16 +4823,50 @@ function handleRefInput(val: string) {
             </button>
             </div>
 
-            <!-- The permission / question prompt is no longer an inline drawer:
-                 it pops out into its own window the instant a request arrives
-                 (see the openPermissionPopout watch), so the chat is never
-                 covered. -->
           </div>
+        </div>
+
+        <!-- Split view: this run's permission / question prompt, docked in place
+             of the composer (at most ~60% of the column, so the chat above stays
+             readable). Not split, it is answered in the app-wide card stack or
+             its own window instead (PermissionWindowManager). Enter / Esc are
+             the prompt's hotkeys and stop here, short of app shortcuts. -->
+        <div
+          v-if="dockedRequest"
+          class="flex max-h-[60%] min-h-0 shrink-0 flex-col overflow-hidden border-t border-border shadow-[0_-6px_18px_rgba(0,0,0,0.08)]"
+          role="region"
+          :aria-label="t('run.dockedPromptLabel')"
+          @keydown.enter.stop
+          @keydown.esc.stop
+        >
+          <PermissionPrompt
+            ref="dockPromptRef"
+            :key="dockedRequest.request.request_id"
+            class="min-h-0 flex-1"
+            :request="dockedRequest.request"
+            :allowed-tools="live.get(dockedRequest.runId)?.allowedTools ?? []"
+            :render-text="renderText"
+            no-autofocus
+            @decide="onDockDecide"
+            @answer="onDockAnswer"
+          >
+            <template #header-actions>
+              <Button
+                variant="ghost"
+                size="icon-sm"
+                :title="t('run.popOutPrompt')"
+                :aria-label="t('run.popOutPrompt')"
+                @click="popOutDocked"
+              >
+                <SquareArrowOutUpRight class="h-3 w-3" :stroke-width="2" />
+              </Button>
+            </template>
+          </PermissionPrompt>
         </div>
 
         <!-- Composer: prompt input on top, run controls in the footer below -->
         <div
-          v-if="composerVisible"
+          v-else-if="composerVisible"
           class="border-t border-border bg-card/40 px-3 py-2 shrink-0"
         >
           <RunAttentionBanner
@@ -4564,7 +4878,7 @@ function handleRefInput(val: string) {
             <!-- Slash-command palette (anchored above the textarea) -->
             <div
               v-if="slashOpen && slashItems.length"
-              class="absolute bottom-full left-0 mb-1 max-h-60 w-72 max-w-[80vw] overflow-y-auto rounded-md border border-border bg-popover shadow-lg z-20"
+              class="absolute bottom-full left-0 mb-1 max-h-60 w-72 max-w-full overflow-y-auto rounded-md border border-border bg-popover shadow-lg z-20"
             >
               <ul class="py-1 text-xs">
                 <li
@@ -4584,7 +4898,7 @@ function handleRefInput(val: string) {
             <!-- @-mention autocomplete popup (anchored above the textarea) -->
             <div
               v-if="mentionOpen && mentionItems.length"
-              class="absolute bottom-full left-0 mb-1 max-h-60 w-[28rem] max-w-[80vw] overflow-y-auto rounded-md border border-border bg-popover shadow-lg z-20"
+              class="absolute bottom-full left-0 mb-1 max-h-60 w-[28rem] max-w-full overflow-y-auto rounded-md border border-border bg-popover shadow-lg z-20"
             >
               <ul class="py-1 text-xs">
                 <li
@@ -4643,7 +4957,7 @@ function handleRefInput(val: string) {
                  plan-usage chips filling the width that used to sit empty.
                  Both parts self-hide, so the row collapses when there is
                  nothing to report. -->
-            <div class="flex items-center gap-2 px-1 pb-1.5 min-w-0">
+            <div class="flex flex-wrap items-center gap-x-2 gap-y-1 px-1 pb-1.5 min-w-0">
               <ContextMeter
                 :tokens="contextTokens"
                 :model="contextModel"
@@ -4751,7 +5065,7 @@ function handleRefInput(val: string) {
                     <div
                       v-if="runSettingsOpen"
                       role="dialog"
-                      class="absolute bottom-full left-1/2 z-30 mb-2 w-72 max-w-[calc(100vw-2rem)] -translate-x-1/2 rounded-md border border-border bg-popover p-3 shadow-lg shadow-black/20"
+                      class="absolute bottom-full left-0 z-30 mb-2 w-72 max-w-[calc(100vw-2rem)] rounded-md border border-border bg-popover p-3 shadow-lg shadow-black/20 @[30rem]/run:left-1/2 @[30rem]/run:-translate-x-1/2"
                       :aria-label="t('run.runSettingsMenu')"
                     >
                       <div class="space-y-3">
@@ -4859,8 +5173,10 @@ function handleRefInput(val: string) {
            collapsible to a thin rail. -->
       <aside
         v-if="showWorkerPanel"
-        class="shrink-0 border-l border-border/60 flex flex-col overflow-hidden bg-card/20 transition-[width]"
-        :class="workerPanelOpen ? 'w-80' : 'w-9'"
+        class="shrink-0 border-l border-border/60 flex flex-col overflow-hidden transition-[width]"
+        :class="workerPanelOpen
+          ? bodyNarrow ? 'absolute inset-y-0 right-0 z-30 w-80 max-w-[85%] bg-card shadow-2xl shadow-black/20' : 'w-80 bg-card/20'
+          : 'w-9 bg-card/20'"
       >
         <div class="flex items-center gap-1.5 px-2 h-8 border-b border-border/60 shrink-0">
           <Button

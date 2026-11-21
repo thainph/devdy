@@ -183,5 +183,15 @@
   "inWorktree": "Chạy trong bản sao riêng · nhánh {branch}",
   "openInVscode": "Mở project bằng VS Code",
   "openInFolder": "Mở thư mục project",
-  "openInTerminal": "Mở terminal ở project"
+  "openInTerminal": "Mở terminal ở project",
+  "openIn": "Mở project bằng…",
+  "accountsSummary": "{n} tài khoản | {n} tài khoản",
+  "accountsSummaryTitle": "Tài khoản và server session này dùng được",
+  "accountsGroupGit": "Git",
+  "accountsGroupVps": "VPS",
+  "accountsGroupCloud": "Cloud",
+  "historyToggle": "Hiện danh sách session",
+  "historyToggleWaiting": "Hiện danh sách session — có session đang chờ bạn",
+  "dockedPromptLabel": "Yêu cầu đang chờ của session này",
+  "popOutPrompt": "Tách ra cửa sổ riêng"
 }
