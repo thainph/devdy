@@ -1,5 +1,5 @@
 <script setup lang="ts">
-import { ref, shallowRef, computed, onMounted, onBeforeUnmount, onUnmounted, watch, nextTick, type ComponentPublicInstance } from 'vue'
+import { ref, shallowRef, computed, onMounted, onBeforeUnmount, onUnmounted, onActivated, onDeactivated, watch, nextTick, type ComponentPublicInstance } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { useProjectsStore, type Repo } from '@/stores/projects'
@@ -3199,10 +3199,15 @@ async function handleSendFollowUp() {
 // would both cover the other pane, so this view docks its own run's request in
 // place of the composer. The user can still pop it out into its window.
 const perms = usePermissionDecisions()
-// The ONE place that decides "split": swap for tabsStore.isSplit when it exists.
-const isSplit = computed(() => tabsStore.splitId != null)
+// The ONE place that decides "split".
+const isSplit = computed(() => tabsStore.isSplit)
+// KeepAlive keeps a hidden RunView around while other tabs are on screen: only
+// the one in view may dock, or the request would vanish from the card stack.
+const viewActive = ref(true)
+onActivated(() => (viewActive.value = true))
+onDeactivated(() => (viewActive.value = false))
 const dockedRequest = computed(() => {
-  if (isSessionWindow || !isSplit.value || perms.surface.value !== 'inline') return null
+  if (isSessionWindow || !isSplit.value || !viewActive.value || perms.surface.value !== 'inline') return null
   const id = currentRunId.value
   const head = id ? perms.headOf(id) : null
   if (!id || !head || perms.poppedOut.value.has(head.request_id)) return null
