@@ -40,3 +40,11 @@ test('listPaneToggleAction: a narrow screen peeks, else show / hide', () => {
   assert.equal(listPaneToggleAction({ hidden: true, narrow: false }), 'show')
   assert.equal(listPaneToggleAction({ hidden: false, narrow: false }), 'hide')
 })
+
+test('listPaneToggleAction: narrow never shows / hides (the saved choice stays untouched)', () => {
+  // A narrow session screen whose History the user never hid: ⌘B peeks the
+  // overlay rather than saving a hide nothing on screen would reflect.
+  for (const hidden of [true, false]) {
+    assert.equal(listPaneToggleAction({ hidden, narrow: true }), 'peek')
+  }
+})

@@ -95,10 +95,24 @@ export function activeListPaneHidden(): boolean | null {
   return pane ? pane.hidden.value : null
 }
 
-export function provideListPane(key: ListPaneKey, opts: { autoHide?: boolean } = {}): ListPane {
+export interface ListPaneOptions {
+  /** Follow the screen's own width: narrow below LIST_PANE_NARROW_BELOW. */
+  autoHide?: boolean
+  /**
+   * The screen decides itself when it is narrow (RunView's body width) and
+   * floats its list its own way: while `narrow`, a peek calls `peekNarrow`
+   * instead of floating the docked list. Either way ⌘B never touches the
+   * user's remembered hide choice while narrow.
+   */
+  narrow?: Readonly<Ref<boolean>>
+  peekNarrow?: () => void
+}
+
+export function provideListPane(key: ListPaneKey, opts: ListPaneOptions = {}): ListPane {
   const ui = useUILayoutStore()
   const peeking = ref(false)
-  const narrow = ref(false)
+  const ownNarrow = ref(false)
+  const narrow: Readonly<Ref<boolean>> = opts.narrow ?? ownNarrow
   const byFocus = computed(() => ui.focusMode)
   const hidden = computed(() => ui.focusMode || ui.isListHidden(key) || narrow.value)
 
@@ -123,7 +137,8 @@ export function provideListPane(key: ListPaneKey, opts: { autoHide?: boolean } =
       else pane.hide()
     },
     togglePeek: () => {
-      peeking.value = hidden.value && !peeking.value
+      if (narrow.value && opts.peekNarrow) opts.peekNarrow()
+      else peeking.value = hidden.value && !peeking.value
     },
     closePeek: () => {
       peeking.value = false
@@ -143,16 +158,16 @@ export function provideListPane(key: ListPaneKey, opts: { autoHide?: boolean } =
   onBeforeUnmount(() => registry.delete(entry))
 
   // autoHide: follow the screen's own width (not the window's).
-  if (opts.autoHide && typeof ResizeObserver !== 'undefined') {
+  if (opts.autoHide && !opts.narrow && typeof ResizeObserver !== 'undefined') {
     let observer: ResizeObserver | null = null
     onMounted(() => {
       const root = el()
       if (!root) return
       // Measured now too, so a narrow screen never flashes its docked list.
-      narrow.value = narrowFromWidth(root.getBoundingClientRect().width, narrow.value)
+      ownNarrow.value = narrowFromWidth(root.getBoundingClientRect().width, ownNarrow.value)
       observer = new ResizeObserver((entries) => {
         const width = entries[entries.length - 1]?.contentRect.width ?? 0
-        narrow.value = narrowFromWidth(width, narrow.value)
+        ownNarrow.value = narrowFromWidth(width, ownNarrow.value)
       })
       observer.observe(root)
     })

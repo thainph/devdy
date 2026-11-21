@@ -120,11 +120,6 @@ const claudeStore = useClaudeAccountsStore()
 const appSettings = useAppSettingsStore()
 const modelCatalog = useModelCatalogStore()
 const uiLayout = useUILayoutStore()
-// The left column (History / Files) hides per screen (⌘B) and with Focus (⌘.).
-const runPane = provideListPane('run')
-const leftPanelEl = ref<HTMLElement | null>(null)
-const leftPanel = useListPaneSidebar(leftPanelEl, runPane)
-
 // RunView can sit in either half of a split, so it adapts to its OWN width (not
 // the window's). The header collapses through CSS container queries; the body
 // needs the width in JS: below NARROW_BODY_PX the History column stops taking
@@ -147,6 +142,18 @@ const bodyNarrow = computed(() => rootWidth.value > 0 && rootWidth.value < NARRO
 // History while narrow: an overlay opened by the toggle in the conversation
 // header, independent of the user's remembered hide (⌘B) choice.
 const historyOverlay = ref(false)
+
+// The left column (History / Files) hides per screen (⌘B) and with Focus (⌘.).
+// While the body is narrow the pane is `narrow`: ⌘B then peeks — opening the
+// History overlay above — and never saves a hide choice nothing on screen shows.
+const runPane = provideListPane('run', {
+  narrow: bodyNarrow,
+  peekNarrow: () => {
+    historyOverlay.value = !historyOverlay.value
+  },
+})
+const leftPanelEl = ref<HTMLElement | null>(null)
+const leftPanel = useListPaneSidebar(leftPanelEl, runPane)
 watch(bodyNarrow, () => {
   historyOverlay.value = false
   runPane.closePeek()
