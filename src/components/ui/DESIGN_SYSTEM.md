@@ -105,6 +105,12 @@ Every icon-only button needs `:title` and `:aria-label`.
   `listDetail/DetailSection`s, and `listDetail/DetailEmpty` when nothing is
   selected. The sidebar is 40% of the screen, 220–360px (`widthClass` of
   `useListPaneSidebar`); never give it a fixed width.
+  A sidebar has one header row (`ListSidebarHeader`: title + count, optional
+  quick-filter badge, "+ New", ⋯ with Reload / secondary actions / Hide the
+  list), one `ListSearchBox` whose sliders menu holds every filter, sort and
+  display option plus "Reset to defaults" (`ListMenuLabel` / `ListMenuCheck`),
+  `ListFilterSummary` while filtering, then `ListGroupHeader` folders. No other
+  control rows (selects, segmented controls, chip or button rows).
 
 ### Narrow panes (split view)
 

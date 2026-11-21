@@ -1,27 +1,28 @@
 <script setup lang="ts">
 // MCP servers, Notes-style master-detail:
 //
-//   ┌ sidebar: search · import             │ detail: name / transport · enabled │
-//   │ + New, All | Enabled | Disabled      │ · added   [switch][Test][Save][⋯]  │
+//   ┌ sidebar: MCP n · + New · ⋯ (import)  │ detail: name / transport · enabled │
+//   │ search (type · sort · folders menu)  │ · added   [switch][Test][Save][⋯]  │
 //   │ Built-in · stdio · http · sse ·      │ General / Process+Environment or   │
 //   │ Recommended folders                  │ Endpoint+Headers                   │
 //   └──────────────────────────────────────┴────────────────────────────────────┘
 //
 // Folders are by transport: it decides the whole shape of a server's config
 // (process + env vs. URL + headers) and Codex support (sse is Claude-only);
-// the type dropdown narrows to one folder. The built-in native
+// the search menu's Type section narrows to one folder. The built-in native
 // servers and the not-yet-added catalog are rows too, with a read-only pane.
 //
 // Selection lives in the URL (`?id=` a server or a `builtin:` / `catalog:`
 // row, `?new=1` a blank draft) — never anything secret.
 import { computed, onMounted, ref, watch } from 'vue'
 import { byText, type ListSort } from '@/lib/listGroups'
+import type { ListFilterDef, ListFilterValues } from '@/lib/listSidebarView'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
 import { invoke } from '@tauri-apps/api/core'
 import { open, save } from '@tauri-apps/plugin-dialog'
 import { Plus, Server, Upload } from 'lucide-vue-next'
-import { AppSelect, Button } from '@/components/ui'
+import { Button, DropdownItem } from '@/components/ui'
 import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
@@ -147,13 +148,8 @@ const builtins = computed<Builtin[]>(() => {
 // ── Sidebar rows ────────────────────────────────────────────────────────────
 
 const search = ref('')
-/** '' = all types, else a folder key (see mcpRowType). */
-const typeFilter = ref('')
-
-const typeOptions = computed(() => [
-  { value: '', label: t('mcp.list.allTypes') },
-  ...MCP_TYPES.map((type) => ({ value: type, label: typeLabel(type) })),
-])
+/** `type`: '' = all types, else a folder key (see mcpRowType). */
+const filters = ref<ListFilterValues>({ type: '' })
 
 function typeLabel(type: string): string {
   if (type === GROUP_CATALOG) return t('mcp.list.recommended')
@@ -168,10 +164,20 @@ const allRows = computed<McpRow[]>(() => [
   ...catalog.value.map(catalogRow),
 ])
 
+const filterDefs = computed<ListFilterDef[]>(() => {
+  const counts = new Map<string, number>()
+  for (const r of allRows.value) counts.set(mcpRowType(r), (counts.get(mcpRowType(r)) ?? 0) + 1)
+  return [{
+    key: 'type',
+    title: t('listPane.filterType'),
+    options: MCP_TYPES.map((type) => ({ value: type, label: typeLabel(type), count: counts.get(type) ?? 0 })),
+  }]
+})
+
 const groups = computed(() =>
   groupMcpRows(
     allRows.value.filter((r) =>
-      (!typeFilter.value || mcpRowType(r) === typeFilter.value)
+      (!filters.value.type || mcpRowType(r) === filters.value.type)
       && matchesMcpRow(r, search.value)),
     {
       builtin: t('mcp.list.groups.builtin'),
@@ -451,36 +457,29 @@ function dotClass(row: McpRow): string {
   <div class="relative flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
+      v-model:filters="filters"
+      :title="t('nav.mcp')"
       :groups="groups"
       :selected-id="isNew ? null : selectedId"
       collapse-key="mcp.collapsed"
+      :filter-defs="filterDefs"
       :sorts="sorts"
       default-sort="name"
-      :grouped-label="t('common.sortByType')"
+      :grouped-label="t('listPane.groupByType')"
       :search-placeholder="t('mcp.list.searchPlaceholder')"
       :loading="store.loading"
       :error="store.error"
       :flat-when-single="false"
+      :busy="importing ? t('mcp.list.importing') : null"
       @select="select"
       @add="startNew()"
-      @retry="refresh"
+      @reload="refresh"
     >
-      <template #toolbar>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="importing"
-          :title="importing ? t('mcp.list.importing') : t('mcp.list.import')"
-          :aria-label="t('mcp.list.import')"
-          @click="handleImport"
-        >
+      <template #menu>
+        <DropdownItem :disabled="importing" @click="handleImport">
           <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-        </Button>
-      </template>
-
-      <template #controls>
-        <AppSelect v-model="typeFilter" :options="typeOptions" :title="t('mcp.list.filterByType')" />
+          {{ importing ? t('mcp.list.importing') : t('mcp.list.import') }}
+        </DropdownItem>
       </template>
 
       <template #row="{ row }">

@@ -15,5 +15,14 @@
   "lateCount": "{n} late",
   "ownWindow": "As its own window",
   "pin": "Keep on top",
-  "unpin": "Stop keeping on top"
+  "unpin": "Stop keeping on top",
+  "reload": "Reload",
+  "all": "All",
+  "display": "Display",
+  "filterGroup": "Group",
+  "filterType": "Type",
+  "filterTag": "Tag",
+  "groupByGroup": "Show group folders",
+  "groupByType": "Group by type",
+  "groupByTag": "Group by tag"
 }

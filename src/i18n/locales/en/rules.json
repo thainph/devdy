@@ -55,7 +55,6 @@
   },
   "detail": {
     "searchPlaceholder": "Search rules",
-    "allGroups": "All groups",
     "noSelection": "Select a rule, or create a new one",
     "metaDraft": "Not saved yet",
     "metaUpdated": "Updated {age}",

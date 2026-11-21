@@ -8,7 +8,6 @@
   "close": "Close",
   "clear": "Clear",
   "loading": "Loading…",
-  "search": "Search",
   "noResults": "No matches",
   "refresh": "Refresh",
   "remove": "Remove",
@@ -28,13 +27,8 @@
     "draft": "Draft"
   },
   "sort": "Sort",
-  "sortByGroup": "By group",
-  "itemCount": "{n} item | {n} items",
   "sortByName": "Name (A–Z)",
   "sortByUpdated": "Recently edited",
   "sortByAdded": "Recently added",
-  "sortByType": "By type",
-  "sortByTag": "By tag",
-  "dockIntoMain": "Dock into main window",
-  "moreActions": "More actions"
+  "dockIntoMain": "Dock into main window"
 }

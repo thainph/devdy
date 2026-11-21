@@ -24,8 +24,6 @@
   "deleteGroup": "Xóa nhóm",
   "applyToAll": "Áp dụng nhóm cho tất cả dự án",
   "dragToReorder": "Kéo để sắp xếp",
-  "filterByGroup": "Lọc theo nhóm",
-  "allGroups": "Tất cả",
   "ungrouped": "Chưa thuộc nhóm",
   "confirmDeleteTitle": "Xóa nhóm",
   "confirmDeleteMessage": "Xóa nhóm \"{name}\"? Các mục bên trong vẫn được giữ nguyên, chỉ liên kết nhóm bị gỡ.",
