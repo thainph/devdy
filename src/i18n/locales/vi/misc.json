@@ -45,7 +45,8 @@
   "tabs": {
     "project": "Dự án",
     "closeTab": "Đóng tab",
-    "dragToReorder": "Kéo để sắp xếp lại"
+    "dragToReorder": "Kéo để sắp xếp lại",
+    "allTabs": "Tất cả tab ({n} tab đang ẩn)"
   },
   "translate": {
     "heading": "Bản dịch",

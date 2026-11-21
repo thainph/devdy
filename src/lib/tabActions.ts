@@ -25,6 +25,7 @@ export function routedSurfaceId(): string | null {
 /** Shown in either half of the main area. */
 export function isEntryVisible(e: TabEntry): boolean {
   if (e.type === 'project') return e.projectId === activeProjectId()
+  if (e.type === 'page') return e.path === router.currentRoute.value.path
   return e.id === useWorkspaceTabsStore().splitId || e.id === routedSurfaceId()
 }
 
@@ -36,9 +37,10 @@ export function currentEntry(): TabEntry | null {
   }
   const surfaceId = routedSurfaceId()
   const projectId = activeProjectId()
+  const path = router.currentRoute.value.path
   return (
     tabs.entries.find((e) =>
-      e.type === 'surface' ? e.id === surfaceId : e.projectId === projectId,
+      e.type === 'surface' ? e.id === surfaceId : e.type === 'page' ? e.path === path : e.projectId === projectId,
     ) ?? null
   )
 }
@@ -65,8 +67,14 @@ export function selectEntry(e: TabEntry) {
 /** Close a tab; when the router was showing it, move to its neighbour. */
 export function closeEntry(e: TabEntry) {
   const tabs = useWorkspaceTabsStore()
-  const wasRouted = e.type === 'project' ? e.projectId === activeProjectId() : e.id === routedSurfaceId()
-  const next = e.type === 'project' ? tabs.close(e.projectId) : tabs.closeSurface(e.id)
+  const wasRouted =
+    e.type === 'project'
+      ? e.projectId === activeProjectId()
+      : e.type === 'page'
+        ? e.path === router.currentRoute.value.path
+        : e.id === routedSurfaceId()
+  const next =
+    e.type === 'project' ? tabs.close(e.projectId) : e.type === 'page' ? tabs.closePage(e.id) : tabs.closeSurface(e.id)
   if (!wasRouted) return
   // The split's right pane is not a destination of the router: skip over it.
   const target = next && next.type === 'surface' && next.id === tabs.splitId ? null : next

@@ -65,7 +65,7 @@ import { applyAppMenu, IS_MAC, isMenuActionBound, listenMenuActions, registerMen
 import { closeCurrentTab, goToTabNumber, popOutCurrent, toggleSplitCurrent } from '@/lib/tabActions'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
-import { NAV_ROUTES, startsNavGroup } from '@/lib/navigation'
+import { NAV_ROUTES, pageRouteFor, startsNavGroup } from '@/lib/navigation'
 import { dockAllSurfaceWindows, listenSurfaceRequests, openSurface } from '@/lib/surfaceOpen'
 import { monitorCount } from '@/lib/surfacePlacement'
 import { cleanParams, shouldDockOnMonitorChange, surfaceForPath, surfaceTabId } from '@/lib/surfaces'
@@ -358,8 +358,10 @@ watch(
   { immediate: true },
 )
 
-// A surface shown by the router is a tab of the strip (re-pointed at what it
-// shows). Any navigation lands in the left / only pane.
+// Every screen the router shows is a tab of the strip: a surface (re-pointed at
+// what it shows) or a page (Dashboard, Skills, Settings…, remembering its query).
+// Projects get theirs from the run-route watcher above. Any navigation lands in
+// the left / only pane.
 watch(
   () => route.fullPath,
   () => {
@@ -367,6 +369,7 @@ watch(
     tabsStore.focusedPane = 'left'
     const kind = surfaceForPath(route.path)
     if (kind) tabsStore.openSurface(kind, cleanParams(kind, route.query))
+    else if (pageRouteFor(route.path)) tabsStore.openPage(route.path, route.fullPath)
   },
   { immediate: true },
 )
@@ -1024,7 +1027,7 @@ onMounted(async () => {
     >
       <img src="/logo.png" alt="Devdy" class="h-[18px] w-[18px] rounded shrink-0" />
       <p class="text-[13px] font-semibold leading-none tracking-tight shrink-0">Devdy</p>
-      <div v-if="tabsStore.tabs.length > 0" class="h-4 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
+      <div v-if="tabsStore.entries.length > 0" class="h-4 w-px bg-border shrink-0 mx-1" aria-hidden="true" />
 
       <WorkspaceTabs />
 

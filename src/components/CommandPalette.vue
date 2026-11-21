@@ -6,12 +6,12 @@
 // accelerators are the shortcuts — see lib/appMenu). Matching and ranking live
 // in lib/paletteSearch (accent-insensitive, so "lich" finds "Lịch").
 import { computed, nextTick, ref, watch, type Component } from 'vue'
+import { entryIcon, entryLabel as tabEntryLabel } from '@/lib/tabMeta'
 import { useI18n } from 'vue-i18n'
 import { useRouter } from 'vue-router'
 import {
   Columns2,
   ExternalLink,
-  FolderOpen,
   ListTodo,
   MessageSquare,
   PanelRightClose,
@@ -95,14 +95,8 @@ function projectName(projectId: string): string {
   return projectsStore.projects.find((p) => p.id === projectId)?.name ?? ''
 }
 
-function fileName(path: string): string {
-  return path.split('/').pop() || path
-}
-
 function entryLabel(e: TabEntry): string {
-  if (e.type === 'project') return projectName(e.projectId) || t('misc.tabs.project')
-  if (e.surface === 'file' && e.params.path) return fileName(e.params.path)
-  return t(SURFACE_META[e.surface].labelKey)
+  return tabEntryLabel(e, t, (id) => projectName(id) || t('misc.tabs.project'))
 }
 
 function tabItem(e: TabEntry, index: number, group: GroupId): PaletteItem {
@@ -113,7 +107,7 @@ function tabItem(e: TabEntry, index: number, group: GroupId): PaletteItem {
     group,
     label: entryLabel(e),
     detail: isFile ? e.params.path : undefined,
-    icon: e.type === 'project' ? FolderOpen : SURFACE_META[e.surface].icon,
+    icon: entryIcon(e),
     // Same numbering as ⌘1…⌘8 / ⌘9 = last (lib/tabActions.goToTabNumber).
     shortcut: index < 8 ? `${MOD}${index + 1}` : index === count - 1 ? `${MOD}9` : undefined,
     run: () => selectEntry(e),
