@@ -29,11 +29,12 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import type { PermissionRequest } from '@/components/PermissionPrompt.vue'
 import { runDisplayName } from '@/lib/tray'
 import { focusSessionWindow } from '@/lib/sessionWindow'
-import { openPermissionWindow } from '@/lib/permissionWindow'
+import { openPermissionWindow, permissionWindowLabel } from '@/lib/permissionWindow'
 import {
   floatWhenBackgroundEnabled,
   permissionSurface,
   promote,
+  resolveForeground,
   stackEntries as filterStackEntries,
   type AppForeground,
 } from '@/lib/permissionSurface'
@@ -54,19 +55,43 @@ const foreground = ref<AppForeground>(
 /** Read-only view of which window is in front (tracked by the manager). */
 export const appForeground = readonly(foreground)
 
+/**
+ * True while the main window counts as in front only because the user moved
+ * into a permission window they popped out of the dock (lib/permissionSurface
+ * `resolveForeground`). Re-checked on the next request and when that window
+ * loses focus.
+ */
+const heldByPopout = ref(false)
+export const foregroundHeldByPopout = readonly(heldByPopout)
+
+/** Window labels of the requests popped out of the dock (still pending). */
+function poppedOutLabels(): Set<string> {
+  const out = new Set<string>()
+  if (!poppedOut.value.size) return out
+  useLiveRunsStore().sessions.forEach((s, runId) => {
+    const head = s.permissionQueue[0]
+    if (head && poppedOut.value.has(head.request_id)) out.add(permissionWindowLabel(runId))
+  })
+  return out
+}
+
 /** Re-read which window is in front: main, another Devdy window, or none. */
 export async function refreshForeground(): Promise<AppForeground> {
   try {
     const main = getCurrentWindow()
-    if ((await main.isFocused()) && !(await main.isMinimized())) {
-      foreground.value = 'main'
-    } else {
+    const mainFocused = (await main.isFocused()) && !(await main.isMinimized())
+    let focusedOthers: string[] = []
+    if (!mainFocused) {
       const others = (await getAllWebviewWindows()).filter((w) => w.label !== main.label)
       const focused = await Promise.all(others.map((w) => w.isFocused().catch(() => false)))
-      foreground.value = focused.some(Boolean) ? 'other' : 'background'
+      focusedOthers = others.filter((_, i) => focused[i]).map((w) => w.label)
     }
+    const next = resolveForeground(foreground.value, mainFocused, focusedOthers, poppedOutLabels())
+    foreground.value = next.foreground
+    heldByPopout.value = next.held
   } catch {
     foreground.value = document.hasFocus() ? 'main' : 'background'
+    heldByPopout.value = false
   }
   return foreground.value
 }
@@ -90,8 +115,10 @@ export function trackMainForeground(): () => void {
   getCurrentWindow()
     .onFocusChanged(({ payload: focused }) => {
       clear()
-      if (focused) foreground.value = 'main'
-      else timer = setTimeout(() => void refreshForeground(), BLUR_SETTLE_MS)
+      if (focused) {
+        foreground.value = 'main'
+        heldByPopout.value = false
+      } else timer = setTimeout(() => void refreshForeground(), BLUR_SETTLE_MS)
     })
     .then((unlisten) => {
       if (stopped) unlisten()

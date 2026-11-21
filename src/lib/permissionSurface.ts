@@ -24,6 +24,27 @@ export function floatWhenBackgroundEnabled(value: string | null | undefined): bo
   return value !== 'false'
 }
 
+/**
+ * Which window is in front, from the focus of Devdy's windows. One exception:
+ * focus moving from the main window into a permission window the user popped
+ * out of a split RunView's dock (`poppedOutLabels`) keeps the main window "in
+ * front" (`held`). That window belongs to the main window's flow — answering it
+ * must not flip every other pending request out of the dock / card stack into
+ * windows of their own. Anywhere else (another app, another Devdy window) ends
+ * the hold.
+ */
+export function resolveForeground(
+  prev: AppForeground,
+  mainFocused: boolean,
+  focusedOthers: readonly string[],
+  poppedOutLabels: ReadonlySet<string>,
+): { foreground: AppForeground; held: boolean } {
+  if (mainFocused) return { foreground: 'main', held: false }
+  if (!focusedOthers.length) return { foreground: 'background', held: false }
+  if (prev === 'main' && focusedOthers.every((l) => poppedOutLabels.has(l))) return { foreground: 'main', held: true }
+  return { foreground: 'other', held: false }
+}
+
 export function permissionSurface(
   foreground: AppForeground,
   floatWhenBackground: boolean,
@@ -44,14 +65,20 @@ export function permissionSurface(
  * - `none`: no new windows, but a window already open for a still-pending run
  *   stays (closing it under the user's cursor would be worse than leaving it);
  *   popped-out runs get theirs too.
+ *
+ * `dismissed`: runs whose popped-out window the user just closed — the request
+ * went back to the main window, so it gets no window again (not even while
+ * Devdy is in the background) until the main window has been in front.
  */
 export function desiredWindowRuns(
   surface: PermissionSurface,
   pending: Iterable<string>,
   tracked: Iterable<string>,
   poppedOut: Iterable<string> = [],
+  dismissed: Iterable<string> = [],
 ): Set<string> {
   const pend = new Set(pending)
+  for (const runId of dismissed) pend.delete(runId)
   if (surface === 'window') return pend
   const out = new Set<string>()
   if (surface === 'none') for (const runId of tracked) if (pend.has(runId)) out.add(runId)

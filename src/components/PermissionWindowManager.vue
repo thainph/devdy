@@ -11,7 +11,12 @@
 // (PermissionInlineStack, or a split RunView's dock): open windows are closed
 // programmatically — which never counts as a deny — and come back if the main
 // window loses focus again. A request the user popped out of the dock keeps its
-// window; closing that one returns the request in-app instead of denying it. With
+// window; closing that one returns the request in-app instead of denying it —
+// whichever window is in front — and it gets no window again until the main
+// window has been in front (else a backgrounded Devdy would reopen it at once).
+// Moving from the main window into a popped-out window keeps the main window
+// "in front" (usePermissionDecisions `foregroundHeldByPopout`), so the other
+// requests stay in the dock / card stack instead of each getting a window. With
 // `permission_float_when_background` = "false", a backgrounded Devdy opens no
 // windows and relies on PermissionNotifier's native notification alone.
 //
@@ -30,6 +35,7 @@ import {
 import { desiredWindowRuns } from '@/lib/permissionSurface'
 import PermissionInlineStack from '@/components/PermissionInlineStack.vue'
 import {
+  foregroundHeldByPopout,
   refreshForeground,
   trackMainForeground,
   usePermissionDecisions,
@@ -55,6 +61,22 @@ const tracked = new Map<string, Tracked>()
 // (it would adopt the dying window, whose destroyed event then reads as a user
 // cancel) — it waits, and the destroyed handler re-runs reconcile instead.
 const closing = new Set<string>()
+// Request ids whose popped-out window the user closed: back in-app, and no
+// window for them until the main window has been in front again.
+const dismissed = new Set<string>()
+
+// Re-check which window is in front a moment after focus left a window (focus
+// lands on its next owner first).
+const FOCUS_SETTLE_MS = 300
+function refreshSoon(then?: () => void) {
+  setTimeout(
+    () =>
+      void refreshForeground()
+        .then(() => then?.())
+        .finally(() => void reconcile()),
+    FOCUS_SETTLE_MS,
+  )
+}
 
 // runId → head request id, for every run with a pending permission request.
 const pending = computed(() => {
@@ -107,6 +129,11 @@ async function openFor(runId: string, indexFromRight: number) {
         })
       },
     ),
+    // Leaving a popped-out window that held the main window "in front" (to
+    // another app, say): find out where the user went.
+    await win.onFocusChanged(({ payload: focused }) => {
+      if (!focused && foregroundHeldByPopout.value) refreshSoon()
+    }),
   )
 
   // User closing the window while a request is still pending = cancel (deny it).
@@ -125,9 +152,17 @@ async function openFor(runId: string, indexFromRight: number) {
     entry.unlisteners.forEach((off) => off())
     const head = headOf(runId)
     // A request popped out of a split RunView's dock goes back in-app when the
-    // user closes its window while the main window is in front — not a deny.
-    if (head && perms.surface.value === 'inline' && perms.poppedOut.value.has(head.request_id)) {
-      perms.unpop(head.request_id)
+    // user closes its window — not a deny, even with the main window in the
+    // background (the popped-out window had focus, so it usually is).
+    if (head && perms.poppedOut.value.has(head.request_id)) {
+      const requestId = head.request_id
+      dismissed.add(requestId)
+      perms.unpop(requestId)
+      // Focus went back to the main window: the request is on screen there, so
+      // a later trip to the background may give it a window again.
+      refreshSoon(() => {
+        if (perms.foreground.value === 'main' && !foregroundHeldByPopout.value) dismissed.delete(requestId)
+      })
       return
     }
     if (head) void perms.decide(runId, head.request_id, 'deny', false)
@@ -186,11 +221,14 @@ async function reconcile() {
   try {
     do {
       dirty = false
+      const dismissedRuns: string[] = []
+      for (const [runId, requestId] of pending.value) if (dismissed.has(requestId)) dismissedRuns.push(runId)
       const want = desiredWindowRuns(
         perms.surface.value,
         pending.value.keys(),
         tracked.keys(),
         perms.poppedOutRuns.value,
+        dismissedRuns,
       )
       for (const runId of [...tracked.keys()]) {
         if (!want.has(runId)) closeFor(runId)
@@ -218,8 +256,11 @@ async function reconcile() {
 // A request arriving while the main window is not in front: re-check which window
 // is (the user may have moved from a popped-out session to another app since the
 // last focus event) before choosing between a window and the notification alone.
-watch(pending, () => {
-  if (perms.foreground.value === 'main') void reconcile()
+watch(pending, (map) => {
+  // Forget the closed-window marks of answered requests.
+  const live = new Set(map.values())
+  for (const id of [...dismissed]) if (!live.has(id)) dismissed.delete(id)
+  if (perms.foreground.value === 'main' && !foregroundHeldByPopout.value) void reconcile()
   else void refreshForeground().finally(() => void reconcile())
 })
 // A docked request popped out into its own window (or back in).
@@ -229,6 +270,14 @@ watch(perms.surface, () => {
   surfaceChangedAt = Date.now()
   void reconcile()
 })
+// The main window is really in front: the requests whose window the user closed
+// are on screen in it, and may get a window again the next time it isn't.
+watch(
+  () => perms.foreground.value === 'main' && !foregroundHeldByPopout.value,
+  (mainInFront) => {
+    if (mainInFront) dismissed.clear()
+  },
+)
 
 // Re-sync open windows when a run's name resolves or changes (rename, or runMeta
 // arriving after the window opened) so the header never stays on a stale name.
@@ -251,6 +300,7 @@ onBeforeUnmount(() => {
   }
   tracked.clear()
   closing.clear()
+  dismissed.clear()
 })
 </script>
 
