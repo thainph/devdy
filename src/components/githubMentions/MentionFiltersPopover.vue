@@ -6,7 +6,7 @@ import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
-import { Button } from '@/components/ui'
+import { Button, pageHeaderCompactButton, pageHeaderWideLabel } from '@/components/ui'
 import type { MentionFilterDimension, MentionFilterOption, MentionFilters } from '@/lib/githubMentions'
 import { Check, ListFilter } from 'lucide-vue-next'
 
@@ -50,7 +50,7 @@ function toggle(d: MentionFilterDimension, value: string) {
   <div ref="wrap" class="relative shrink-0">
     <Button
       variant="outline"
-      :class="open ? 'bg-accent text-foreground' : ''"
+      :class="[pageHeaderCompactButton, open && 'bg-accent text-foreground']"
       aria-haspopup="dialog"
       :aria-expanded="open"
       :title="t('githubMentions.filters.button')"
@@ -58,7 +58,7 @@ function toggle(d: MentionFilterDimension, value: string) {
       @click="open = !open"
     >
       <ListFilter class="h-3.5 w-3.5" :stroke-width="1.75" />
-      <span class="hidden lg:inline">{{ t('githubMentions.filters.button') }}</span>
+      <span :class="pageHeaderWideLabel">{{ t('githubMentions.filters.button') }}</span>
       <span
         v-if="activeCount > 0"
         class="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"

@@ -81,7 +81,7 @@ Always `<Button>`; a raw `<button>` is only for non-button-looking hit areas
 
 | Place | Size | Variant |
 |---|---|---|
-| `PageHeader` actions | `sm` / `icon` | `outline` (primary action `primary`) |
+| `PageHeader` actions | `sm` / `icon` — a labelled one as `PageHeaderButton` (§4 Narrow panes) | `outline` (primary action `primary`) |
 | List sidebar toolbar (next to search) | `icon` | `outline` (`primary` when toggled on, e.g. pin) |
 | List sidebar "+ New" | `sm` | `primary` |
 | Detail-pane header (`DetailHeader`, Note/Todo/Secret/Slack headers): Save, Cancel, More ⋯, Edit, Done, plus the project select / due date / Sessions in that row | `sm` / `icon` (32px — same as the list sidebar toolbar beside it) | Save `primary`, others `outline` |
@@ -97,12 +97,46 @@ Every icon-only button needs `:title` and `:aria-label`.
 
 ## 4. Layout patterns
 
-- **Full-page view**: `PageHeader` (h-13, px-6) → optional toolbar strip
-  (`border-b border-border/60 px-6 py-2`) → scrolling content.
+- **Full-page view**: `PageHeader` (h-13, px-6 → px-3 when narrow) → optional
+  toolbar strip (`border-b border-border/60 px-6 py-2`) → scrolling content.
 - **List-detail screen** (Skills, Rules, MCP, Servers, Notes/Todos, Slack, Secret
-  notes): `listDetail/ListDetailSidebar` (280px) + right pane with
-  `listDetail/DetailHeader`, body of `listDetail/DetailSection`s, and
-  `listDetail/DetailEmpty` when nothing is selected.
+  notes): list sidebar (`listDetail/ListDetailSidebar`, `items/ItemSidebar`,
+  `slack/SlackSidebar`) + right pane with `listDetail/DetailHeader`, body of
+  `listDetail/DetailSection`s, and `listDetail/DetailEmpty` when nothing is
+  selected. The sidebar is 40% of the screen, 220–360px (`widthClass` of
+  `useListPaneSidebar`); never give it a fixed width.
+
+### Narrow panes (split view)
+
+Any screen can be shown in half of a split, so every screen must work from a
+~360px pane with no horizontal page scroll. Size against the screen's own
+width with container queries, never the window (`sm:` / `md:` / `lg:` read
+the window and are wrong in a split):
+
+- Put `@container/screen` on the screen root and use `@[40rem]/screen:…`
+  (narrow below 640px): padding `p-3 @[40rem]/screen:p-6`, grids that gain
+  columns, a section nav (Settings, Project settings) that goes icon-only
+  (`w-12`, labels `hidden @[40rem]/screen:block`, `title` + `aria-label` kept).
+- `PageHeader` is its own `@container/page-header`. The title always truncates.
+  Below 40rem its actions go compact:
+  - `PageHeaderButton` (`label` + icon in the slot): icon-only when narrow, the
+    label stays as `title` / `aria-label`.
+  - `PageHeaderSearch` (`v-model`, `placeholder`): a w-56 field when wide, an
+    icon button that opens the field over the header row when narrow.
+  - Custom buttons (popover triggers…): `pageHeaderCompactButton` on the
+    Button and `pageHeaderLabel` on the label (`pageHeaderWideLabel` for a
+    secondary button in a crowded header, labelled from 56rem).
+  - Header `#meta` content that doesn't fit (Stats filters) moves to a wrapping
+    toolbar strip below the header: render it in `#meta` behind
+    `hidden @[64rem]/page-header:flex` and in the strip behind `@[64rem]/screen:hidden`.
+- List-detail screens: `provideListPane(key, { autoHide: true })` takes the list
+  out of the layout below 640px of screen width (`LIST_PANE_NARROW_BELOW`); the
+  detail header's ☰ (`ListPaneButtons mode="show"`) floats it as a peek, ⌘B
+  peeks too. This never changes the user's remembered hide / show choice.
+- Detail headers wrap: the actions drop under the title, right-aligned
+  (`flex-wrap` + `ml-auto justify-end`), instead of overflowing.
+- A wide data table (Processes) may scroll inside its own card
+  (`overflow-x-auto` + `min-w-[…]`); the page itself never scrolls sideways.
 - **Switchers** (filters, view modes, auth method): `SegmentedControl`.
 - **Dropdowns**: `AppSelect` for values, `DropdownMenu` + `DropdownItem` for actions.
 - **Dialogs**: `Modal`, `ConfirmModal`, `PromptModal`, `Drawer` — never a custom overlay.
@@ -164,7 +198,7 @@ Skin rules: keep text readable (the contrast test still runs on the tokens), put
 
 ## 7. Checklist for a new screen
 
-1. Layout from §4, primitives from `@/components/ui`.
+1. Layout from §4, primitives from `@/components/ui`; works in a 360px pane (§4 Narrow panes).
 2. Buttons and controls follow §2–§3; same-row controls share one size.
 3. Colors only from §1 tokens; icons per the icon table.
 4. i18n keys in both `en` and `vi`; titles/aria-labels on icon buttons.

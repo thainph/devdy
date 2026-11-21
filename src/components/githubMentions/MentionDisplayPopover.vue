@@ -8,7 +8,7 @@ import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
-import { Button, ToggleSwitch } from '@/components/ui'
+import { Button, ToggleSwitch, pageHeaderCompactButton, pageHeaderWideLabel } from '@/components/ui'
 import { useToast } from '@/composables/useToast'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { MENTION_GROUP_BYS, type MentionMute } from '@/lib/githubMentions'
@@ -53,7 +53,7 @@ function unmute(m: MentionMute) {
   <div ref="wrap" class="relative shrink-0">
     <Button
       variant="outline"
-      :class="open ? 'bg-accent text-foreground' : ''"
+      :class="[pageHeaderCompactButton, open && 'bg-accent text-foreground']"
       aria-haspopup="dialog"
       :aria-expanded="open"
       :title="t('githubMentions.display.button')"
@@ -61,7 +61,7 @@ function unmute(m: MentionMute) {
       @click="open = !open"
     >
       <SlidersHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-      <span class="hidden lg:inline">{{ t('githubMentions.display.button') }}</span>
+      <span :class="pageHeaderWideLabel">{{ t('githubMentions.display.button') }}</span>
     </Button>
 
     <div

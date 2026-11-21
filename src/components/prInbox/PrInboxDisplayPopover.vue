@@ -15,7 +15,7 @@ import { usePopoverFocus } from '@/composables/usePopoverFocus'
 import { useToast } from '@/composables/useToast'
 import { usePrInboxStore, PR_POLL_MINUTES_OPTIONS, type PrInboxDensity, type PrPromptKind } from '@/stores/prInbox'
 import { PR_GROUP_BY_OPTIONS, type PrGroupBy } from '@/lib/prInboxGrouping'
-import { Button, SegmentedControl } from '@/components/ui'
+import { Button, SegmentedControl, pageHeaderCompactButton, pageHeaderWideLabel } from '@/components/ui'
 import { Check, EyeOff, KeyRound, SlidersHorizontal, ChevronRight, RotateCcw, Sparkles } from 'lucide-vue-next'
 
 const PROMPT_ITEMS: { kind: PrPromptKind; icon: typeof Sparkles }[] = [
@@ -87,7 +87,7 @@ function editPrompt(kind: PrPromptKind) {
   <div ref="wrap" class="relative shrink-0">
     <Button
       variant="outline"
-      :class="open ? 'bg-accent text-foreground' : ''"
+      :class="[pageHeaderCompactButton, open && 'bg-accent text-foreground']"
       aria-haspopup="dialog"
       :aria-expanded="open"
       :title="t('prInbox.display.button')"
@@ -95,7 +95,7 @@ function editPrompt(kind: PrPromptKind) {
       @click="open = !open"
     >
       <SlidersHorizontal class="h-3.5 w-3.5" :stroke-width="1.75" />
-      <span class="hidden lg:inline">{{ t('prInbox.display.button') }}</span>
+      <span :class="pageHeaderWideLabel">{{ t('prInbox.display.button') }}</span>
     </Button>
 
     <div

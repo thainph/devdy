@@ -12,8 +12,8 @@
 import { computed, onMounted, onUnmounted, reactive, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { ChevronRight, Cpu, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
-import { Button, Input, PageHeader, Banner, SegmentedControl, type SegmentedOption } from '@/components/ui'
+import { ChevronRight, CircleStop, Cpu, RefreshCw, Search, Trash2 } from 'lucide-vue-next'
+import { Button, Input, PageHeader, PageHeaderButton, Banner, SegmentedControl, type SegmentedOption } from '@/components/ui'
 import ProcessEntryRow from '@/components/processes/ProcessEntryRow.vue'
 import ProcessSummary from '@/components/processes/ProcessSummary.vue'
 import { PROC_GRID } from '@/components/processes/grid'
@@ -213,7 +213,7 @@ async function openSession(e: BgEntry) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- Page header -->
     <PageHeader :title="t('processes.title')" :count="counts.all > 0 ? counts.all : null">
       <template v-if="fromDashboard" #leading>
@@ -230,26 +230,26 @@ async function openSession(e: BgEntry) {
         <Button variant="outline" size="icon" :title="t('processes.refresh')" :aria-label="t('processes.refresh')" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
         </Button>
-        <Button
+        <PageHeaderButton
           v-if="strays.length > 0"
           variant="destructive"
+          :label="t('processes.stopAllLeftovers')"
           :disabled="bulkBusy"
           @click="stopLeftovers"
         >
           <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('processes.stopAllLeftovers') }}
-        </Button>
-        <Button v-if="entries.length > 0" variant="outline" :disabled="bulkBusy" @click="stopEverything">
-          {{ t('processes.stopAll') }}
-        </Button>
+        </PageHeaderButton>
+        <PageHeaderButton v-if="entries.length > 0" :label="t('processes.stopAll')" :disabled="bulkBusy" @click="stopEverything">
+          <CircleStop class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </PageHeaderButton>
       </template>
     </PageHeader>
 
     <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
+    <div class="flex-1 overflow-auto p-3 @[40rem]/screen:p-6">
       <!-- Loading skeleton (first snapshot only) -->
       <div v-if="store.loading && !store.snapshot" class="space-y-3">
-        <div class="grid grid-cols-2 gap-3 xl:grid-cols-4">
+        <div class="grid grid-cols-1 gap-3 @[28rem]/screen:grid-cols-2 @[64rem]/screen:grid-cols-4">
           <div v-for="i in 4" :key="i" class="h-32 rounded-lg border border-border bg-card animate-pulse" />
         </div>
         <div class="h-64 rounded-lg border border-border bg-card animate-pulse" />
@@ -288,7 +288,7 @@ async function openSession(e: BgEntry) {
         <!-- Toolbar -->
         <div class="flex flex-wrap items-center gap-2">
           <SegmentedControl v-model="filter" :options="filterOptions" :stretch="false" />
-          <div class="relative w-64 max-w-full">
+          <div class="relative w-64 min-w-0 max-w-full">
             <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
             <Input v-model="query" type="search" size="sm" class="pl-7" :placeholder="t('processes.search')" :aria-label="t('processes.search')" />
           </div>

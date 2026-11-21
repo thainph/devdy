@@ -10,7 +10,7 @@ import { usePrInboxStore, prKey, type PrInboxItem, type PrPromptKind } from '@/s
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import {
-  Button, Skeleton, Input, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, Banner,
+  Button, Skeleton, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderButton, PageHeaderSearch, Banner,
 } from '@/components/ui'
 import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
 import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
@@ -49,7 +49,7 @@ import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
   GitPullRequest, RefreshCw, Sparkles, User, Bot, ChevronRight, Folder, BookMarked,
-  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, Search, X, RotateCcw,
+  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, X, RotateCcw,
 } from 'lucide-vue-next'
 
 // Named explicitly (devtools / warnings): an inferred name is a build detail
@@ -335,7 +335,7 @@ async function reviewAll(group: PrGroup) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- Page header -->
     <PageHeader
       :title="t('prInbox.title')"
@@ -347,33 +347,10 @@ async function reviewAll(group: PrGroup) {
       <template #actions>
         <!-- Search + Filters / Display popovers live in the header, same
              compact pattern as Delivery Radar / Projects. The popover buttons
-             go icon-only on narrow windows. Everything but the search is
+             (and the search) go compact in a narrow pane. Everything but the search is
              persisted. -->
         <template v-if="store.items.length > 0">
-          <div class="relative">
-            <Search
-              class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-              :stroke-width="1.75"
-            />
-            <Input
-              v-model="search"
-              size="sm"
-              class="w-56 pl-7 pr-7"
-              :placeholder="t('prInbox.searchPlaceholder')"
-              :aria-label="t('prInbox.searchPlaceholder')"
-              @keydown.esc="search = ''"
-            />
-            <button
-              v-if="search"
-              type="button"
-              class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
-              :title="t('prInbox.clearSearch')"
-              :aria-label="t('prInbox.clearSearch')"
-              @click="search = ''"
-            >
-              <X class="h-3.5 w-3.5" :stroke-width="2" />
-            </button>
-          </div>
+          <PageHeaderSearch v-model="search" :placeholder="t('prInbox.searchPlaceholder')" :clear-label="t('prInbox.clearSearch')" />
           <PrInboxFiltersPopover
             :options="filterOptions"
             :model-value="store.filters"
@@ -384,10 +361,9 @@ async function reviewAll(group: PrGroup) {
           />
           <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" @edit-prompt="editPrompt" />
         </template>
-        <Button variant="outline" :disabled="store.loading || bulk !== null" @click="store.refresh()">
+        <PageHeaderButton :label="t('common.refresh')" :disabled="store.loading || bulk !== null" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
-          {{ t('common.refresh') }}
-        </Button>
+        </PageHeaderButton>
         <DockWindowButton v-if="standalone" surface="prInbox" />
       </template>
     </PageHeader>
@@ -396,7 +372,7 @@ async function reviewAll(group: PrGroup) {
          SkillsView's group filter chips). -->
     <div
       v-if="activeFilterChips.length > 0"
-      class="flex flex-wrap items-center gap-1.5 px-6 py-2 border-b border-border/60 shrink-0"
+      class="flex flex-wrap items-center gap-1.5 px-3 py-2 border-b border-border/60 shrink-0 @[40rem]/screen:px-6"
     >
       <span
         v-for="chip in activeFilterChips"
@@ -425,7 +401,7 @@ async function reviewAll(group: PrGroup) {
     </div>
 
     <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
+    <div class="flex-1 overflow-auto p-3 @[40rem]/screen:p-6">
       <!-- Partial-failure warning: some accounts failed to load (rate limit,
            network, bad PAT). Shown above the list so a missing PR reads as
            "some accounts failed, try refresh" rather than "no PRs". -->

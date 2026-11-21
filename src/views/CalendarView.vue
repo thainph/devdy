@@ -17,7 +17,7 @@ import { getCurrentWindow } from '@tauri-apps/api/window'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { CALENDAR_WINDOW_OPEN_ROUTE, type CalendarWindowOpenRoute } from '@/lib/calendarWindow'
 import { translateText } from '@/lib/translate'
-import { Button, Badge, Drawer, AppSelect, Modal, PageHeader, SegmentedControl, Banner } from '@/components/ui'
+import { Button, Badge, Drawer, AppSelect, Modal, PageHeader, PageHeaderButton, SegmentedControl, Banner } from '@/components/ui'
 import { useGoogleCalendarStore, type CalEvent, type ViewMode } from '@/stores/googleCalendar'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useConfirm } from '@/composables/useConfirm'
@@ -408,11 +408,11 @@ function openForAccount(url: string) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- Header: title + current range (left), settings popover (right) -->
     <PageHeader :title="t('calendar.title')" :count="store.accounts.length ? visibleCount : null">
       <template #meta>
-        <span v-if="store.accounts.length" class="text-sm font-medium text-foreground truncate">
+        <span v-if="store.accounts.length" class="min-w-0 text-sm font-medium text-foreground truncate">
           {{ rangeLabel }}
         </span>
       </template>
@@ -421,14 +421,14 @@ function openForAccount(url: string) {
         <DockWindowButton v-if="standalone" surface="calendar" class="order-last" />
 
         <!-- Create event -->
-        <Button
+        <PageHeaderButton
           v-if="store.accounts.length && hasWritableCalendar"
           variant="primary"
-          size="sm"
+          :label="t('calendar.createEvent')"
           @click="openCreate()"
         >
-          <Plus class="h-3.5 w-3.5" :stroke-width="1.75" /> {{ t('calendar.createEvent') }}
-        </Button>
+          <Plus class="h-3.5 w-3.5" :stroke-width="1.75" />
+        </PageHeaderButton>
 
         <!-- Standalone window: pin on top (same control as the PR Inbox window) -->
         <Button
@@ -619,7 +619,7 @@ function openForAccount(url: string) {
     <!-- Warnings: accounts missing calendar WRITE scope / per-account fetch errors -->
     <div
       v-if="store.accountsMissingWrite.length || store.errors.length"
-      class="px-6 py-2 border-b border-border/60 shrink-0"
+      class="px-3 py-2 border-b border-border/60 shrink-0 @[40rem]/screen:px-6"
     >
       <Banner tone="warning">
         <template v-if="store.accountsMissingWrite.length">

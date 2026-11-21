@@ -13,8 +13,8 @@ import { open } from '@tauri-apps/plugin-dialog'
 import { invoke } from '@/lib/tauri'
 import { parseRepoUrl, repoKey } from '@/lib/repoUrl'
 import { foldText } from '@/lib/controllerProjectScope'
-import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, Radar, GripVertical, Search, SearchX, X } from 'lucide-vue-next'
-import { Button, Input, Badge, Modal, Card, PageHeader, Banner } from '@/components/ui'
+import { Plus, FolderOpen, GitBranch, Github, Gitlab, Trash2, AlertTriangle, SquareTerminal, Code2, Settings, HardDrive, Cloud, CloudCog, Radar, GripVertical, SearchX } from 'lucide-vue-next'
+import { Button, Input, Badge, Modal, Card, PageHeader, PageHeaderButton, PageHeaderSearch, Banner } from '@/components/ui'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useDragSort } from '@/composables/useDragSort'
@@ -293,7 +293,7 @@ async function handleOpenInFolder(project: { path: string }) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- Header -->
     <PageHeader
       :title="t('projects.title')"
@@ -303,43 +303,26 @@ async function handleOpenInFolder(project: { path: string }) {
     >
       <template #actions>
         <!-- Search beside the add button, same compact pattern as Delivery Radar -->
-        <div v-if="!store.loading && !store.error && store.projects.length > 0" class="relative">
-          <Search
-            class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
-            :stroke-width="1.75"
-          />
-          <Input
-            v-model="search"
-            size="sm"
-            class="w-56 pl-7 pr-7"
-            :placeholder="t('projects.searchPlaceholder')"
-            :aria-label="t('projects.searchPlaceholder')"
-            @keydown.esc="search = ''"
-          />
-          <button
-            v-if="search"
-            type="button"
-            class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
-            :title="t('projects.clearSearch')"
-            :aria-label="t('projects.clearSearch')"
-            @click="search = ''"
-          >
-            <X class="h-3.5 w-3.5" :stroke-width="2" />
-          </button>
-        </div>
-        <Button
+        <PageHeaderSearch
+          v-if="!store.loading && !store.error && store.projects.length > 0"
+          v-model="search"
+          :placeholder="t('projects.searchPlaceholder')"
+          :clear-label="t('projects.clearSearch')"
+        />
+        <PageHeaderButton
+          variant="primary"
+          :label="detecting ? t('projects.detecting') : adding ? t('projects.adding') : t('projects.addProject')"
           :disabled="adding || detecting"
           @click="handleAdd"
         >
           <Plus class="h-3.5 w-3.5" :stroke-width="2" />
-          {{ detecting ? t('projects.detecting') : adding ? t('projects.adding') : t('projects.addProject') }}
-        </Button>
+        </PageHeaderButton>
       </template>
     </PageHeader>
 
     <!-- Content -->
-    <div class="flex-1 overflow-auto p-6">
-      <div v-if="store.loading" class="grid grid-cols-1 gap-3 sm:grid-cols-2 2xl:grid-cols-3">
+    <div class="flex-1 overflow-auto p-3 @[40rem]/screen:p-6">
+      <div v-if="store.loading" class="grid grid-cols-1 gap-3 @[36rem]/screen:grid-cols-2 @[80rem]/screen:grid-cols-3">
         <div v-for="i in 8" :key="i" class="h-32 rounded-xl border border-border bg-card animate-pulse" />
       </div>
 
@@ -375,7 +358,7 @@ async function handleOpenInFolder(project: { path: string }) {
         </button>
       </div>
 
-      <div v-else ref="gridRef" class="grid grid-cols-1 sm:grid-cols-2 2xl:grid-cols-3 gap-3">
+      <div v-else ref="gridRef" class="grid grid-cols-1 @[36rem]/screen:grid-cols-2 @[80rem]/screen:grid-cols-3 gap-3">
         <Card
           v-for="{ project, index } in visibleProjects"
           :key="project.id"

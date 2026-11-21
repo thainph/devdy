@@ -15,7 +15,7 @@ import {
 } from 'chart.js'
 import { Bar } from 'vue-chartjs'
 import { Coins, RefreshCw, Trash2, Loader2, Info, AlertTriangle } from 'lucide-vue-next'
-import { Button, Input, Card, AppSelect, PageHeader, SegmentedControl, type SegmentedOption } from '@/components/ui'
+import { Button, Input, Card, AppSelect, PageHeader, PageHeaderButton, SegmentedControl, type SegmentedOption } from '@/components/ui'
 import RankedTable, { type RankedRow } from '@/components/stats/RankedTable.vue'
 import { useProjectsStore } from '@/stores/projects'
 import { useClaudeAccountsStore } from '@/stores/claudeAccounts'
@@ -281,11 +281,12 @@ async function loadStorage() {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- Header: title, filters, actions -->
     <PageHeader :title="t('stats.title')">
+      <!-- Filters: in the header when it is wide, else in a strip below it. -->
       <template #meta>
-        <div class="ml-2 flex min-w-0 items-center gap-2 overflow-x-auto [scrollbar-width:none]">
+        <div class="ml-2 hidden min-w-0 items-center gap-2 overflow-x-auto [scrollbar-width:none] @[64rem]/page-header:flex">
           <SegmentedControl v-model="range" :options="RANGE_OPTIONS" :stretch="false" />
           <AppSelect v-model="engine" :options="engineOptions" size="sm" class="w-32 shrink-0" />
           <AppSelect v-model="projectId" :options="projectOptions" size="sm" class="w-40 shrink-0" />
@@ -294,29 +295,35 @@ async function loadStorage() {
         </div>
       </template>
       <template #actions>
-        <Button
-          variant="outline"
+        <PageHeaderButton
+          :label="t('stats.backfill')"
           :disabled="backfilling"
           :title="t('stats.backfillTitle')"
           @click="doBackfill"
         >
           <Loader2 v-if="backfilling" class="h-3.5 w-3.5 animate-spin" />
           <RefreshCw v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('stats.backfill') }}
-        </Button>
-        <Button
+        </PageHeaderButton>
+        <PageHeaderButton
           variant="destructive-ghost"
+          :label="t('stats.reset')"
           :title="t('stats.resetTitle')"
           @click="openReset"
         >
           <Trash2 class="h-3.5 w-3.5" :stroke-width="1.75" />
-          {{ t('stats.reset') }}
-        </Button>
+        </PageHeaderButton>
       </template>
     </PageHeader>
+    <div class="flex shrink-0 flex-wrap items-center gap-2 border-b border-border/60 px-3 py-2 @[40rem]/screen:px-6 @[64rem]/screen:hidden">
+      <SegmentedControl v-model="range" :options="RANGE_OPTIONS" :stretch="false" />
+      <AppSelect v-model="engine" :options="engineOptions" size="sm" class="w-32 min-w-0" />
+      <AppSelect v-model="projectId" :options="projectOptions" size="sm" class="w-40 min-w-0" />
+      <AppSelect v-if="hasAccounts" v-model="accountId" :options="accountOptions" size="sm" class="w-44 min-w-0" />
+      <Loader2 v-if="loading" class="h-3.5 w-3.5 shrink-0 animate-spin text-muted-foreground" :aria-label="t('common.loading')" />
+    </div>
 
     <!-- Body -->
-    <div class="flex-1 overflow-auto px-6 py-4 space-y-3">
+    <div class="flex-1 overflow-auto px-3 py-4 space-y-3 @[40rem]/screen:px-6">
       <p v-if="actionMsg" class="text-xs text-muted-foreground">{{ actionMsg }}</p>
       <p v-if="error" class="text-xs text-destructive">{{ error }}</p>
 
@@ -334,7 +341,7 @@ async function loadStorage() {
 
       <template v-if="hasData && stats">
         <!-- KPI strip -->
-        <Card class="border-border/60" body-class="grid grid-cols-2 lg:grid-cols-[1.6fr_1fr_1fr_1fr] divide-border/50 lg:divide-x [&>*:nth-child(n+3)]:border-t [&>*:nth-child(n+3)]:border-border/50 lg:[&>*:nth-child(n+3)]:border-t-0">
+        <Card class="border-border/60" body-class="grid grid-cols-2 @[52rem]/screen:grid-cols-[1.6fr_1fr_1fr_1fr] divide-border/50 @[52rem]/screen:divide-x [&>*:nth-child(n+3)]:border-t [&>*:nth-child(n+3)]:border-border/50 @[52rem]/screen:[&>*:nth-child(n+3)]:border-t-0">
           <div class="flex min-w-0 flex-col gap-1 px-4 py-2.5">
             <span class="text-[11px] font-semibold text-muted-foreground">{{ t('stats.summary.totalTokens') }}</span>
             <span class="text-xl font-extrabold leading-tight tabular-nums" :title="fmtNum(stats.summary.total_tokens)">{{ fmtCompact(stats.summary.total_tokens) }}</span>
@@ -375,7 +382,7 @@ async function loadStorage() {
         </Card>
 
         <!-- Daily chart + engine split -->
-        <div class="grid grid-cols-1 gap-3 lg:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)]">
+        <div class="grid grid-cols-1 gap-3 @[52rem]/screen:grid-cols-[minmax(0,2.4fr)_minmax(0,1fr)]">
           <Card class="border-border/60 min-w-0" body-class="px-3 pt-2.5 pb-3">
             <div class="mb-2 flex items-center gap-2">
               <h2 class="text-[11px] font-semibold text-muted-foreground">{{ t('stats.charts.daily') }}</h2>
@@ -409,7 +416,7 @@ async function loadStorage() {
         </div>
 
         <!-- Breakdowns -->
-        <div class="grid grid-cols-1 gap-3" :class="showAccounts ? 'lg:grid-cols-3' : 'lg:grid-cols-2'">
+        <div class="grid grid-cols-1 gap-3" :class="showAccounts ? '@[52rem]/screen:grid-cols-3' : '@[52rem]/screen:grid-cols-2'">
           <RankedTable :title="t('stats.charts.byProject')" :rows="projectRows" :total="stats.summary.total_tokens" />
           <RankedTable :title="t('stats.table.byModel')" :rows="modelRows" :total="stats.summary.total_tokens" mono />
           <RankedTable v-if="showAccounts" :title="t('stats.table.byAccount')" :rows="accountRows" :total="stats.summary.total_tokens" />
@@ -438,7 +445,7 @@ async function loadStorage() {
               <span v-if="c.size_bytes > 0" :style="{ flex: c.size_bytes, background: PALETTE[i % PALETTE.length] }" />
             </template>
           </div>
-          <div class="mt-2 grid grid-cols-1 gap-3 md:grid-cols-3">
+          <div class="mt-2 grid grid-cols-1 gap-3 @[36rem]/screen:grid-cols-3">
             <div v-for="(c, i) in storage.categories" :key="c.id" class="min-w-0" :title="c.description">
               <p class="flex items-center gap-1.5 truncate text-[11px] font-medium">
                 <span class="h-1.5 w-1.5 shrink-0 rounded-sm" :style="{ background: PALETTE[i % PALETTE.length] }" />

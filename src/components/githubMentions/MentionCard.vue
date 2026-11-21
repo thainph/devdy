@@ -113,7 +113,7 @@ function open() {
 <template>
   <Card
     class="transition-colors hover:border-primary/40"
-    body-class="flex gap-3 px-3.5 py-3"
+    body-class="flex flex-wrap gap-3 px-3.5 py-3"
     :class="[item.unread && !settled ? 'shadow-[inset_3px_0_0_0_hsl(var(--primary))]' : '', settled ? 'opacity-70' : '']"
     @contextmenu.prevent="emit('menu', item, $event.clientX, $event.clientY)"
   >
@@ -121,7 +121,8 @@ function open() {
       <PrAvatar :url="item.trigger?.author_avatar_url ?? null" :name="author || item.repo" :size="32" />
     </span>
 
-    <div class="flex min-w-0 flex-1 flex-col gap-1.5">
+    <!-- Grows from 14rem; in a narrow pane the actions wrap below it. -->
+    <div class="flex min-w-0 flex-1 basis-56 flex-col gap-1.5">
       <div class="flex min-w-0 items-center gap-1.5">
         <component :is="kindIcon" class="h-3.5 w-3.5 shrink-0" :class="kindClass" :stroke-width="2" />
         <button
@@ -173,7 +174,7 @@ function open() {
       </span>
     </div>
 
-    <div class="flex shrink-0 items-start gap-1">
+    <div class="ml-auto flex shrink-0 items-start gap-1">
       <span
         class="whitespace-nowrap pt-1.5 pr-1 text-[11px] tabular-nums"
         :class="stale ? 'text-warning' : 'text-muted-foreground'"
@@ -190,7 +191,7 @@ function open() {
       >
         <Loader2 v-if="checkStatus === 'running'" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
         <Eye v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <span class="hidden xl:inline">{{ checkStatus === 'running' ? t('githubMentions.check.runningLabel') : t('githubMentions.check.openLabel') }}</span>
+        <span class="hidden @[64rem]/screen:inline">{{ checkStatus === 'running' ? t('githubMentions.check.runningLabel') : t('githubMentions.check.openLabel') }}</span>
       </Button>
       <Button
         v-else-if="!settled"
@@ -202,7 +203,7 @@ function open() {
       >
         <Loader2 v-if="starting" class="h-3.5 w-3.5 animate-spin" :stroke-width="2" />
         <Sparkles v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-        <span class="hidden xl:inline">{{ t('githubMentions.check.label') }}</span>
+        <span class="hidden @[64rem]/screen:inline">{{ t('githubMentions.check.label') }}</span>
       </Button>
       <Button
         variant="ghost"
