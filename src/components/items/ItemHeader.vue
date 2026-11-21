@@ -163,7 +163,7 @@ const newSessionLabel = computed(() =>
           >{{ due.label }}</span>
         </template>
       </p>
-      <div class="ml-auto flex min-w-0 items-center gap-1.5">
+      <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
         <!-- The project, like a Slack thread's; it decides what can be linked. -->
         <div class="w-[11rem] min-w-[5.5rem] shrink">
           <ProjectSelect

@@ -1,7 +1,8 @@
 <script setup lang="ts">
 // The Processes screen's summary strip: CPU and RAM with their live charts (the
 // same readings the Dashboard's Resources tile shows), the process count split
-// by group, and the leftovers with a shortcut to that filter.
+// by group, and the leftovers with a shortcut to that filter. Columns follow
+// the screen's `@container/screen` (BackgroundProcessesView), not the window.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Boxes, Cpu, MemoryStick, TriangleAlert } from 'lucide-vue-next'
@@ -42,7 +43,7 @@ const SEGMENTS = [
 </script>
 
 <template>
-  <div class="grid grid-cols-2 gap-3 xl:grid-cols-[1.3fr_1.3fr_1fr_1fr]">
+  <div class="grid grid-cols-1 gap-3 @[28rem]/screen:grid-cols-2 @[64rem]/screen:grid-cols-[1.3fr_1.3fr_1fr_1fr]">
     <BentoCard :title="t('processes.col.cpu')" :icon="Cpu" :tone="cpuHot ? 'warning' : 'success'">
       <template #aside>
         <span class="ml-auto shrink-0 text-[11px] font-medium">{{ t('processes.summary.cpuOf', { n: cores }) }}</span>

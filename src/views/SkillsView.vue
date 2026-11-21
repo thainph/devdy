@@ -29,7 +29,7 @@ defineOptions({ name: 'SkillsView' })
 
 const { t } = useI18n()
 // The list column hides per screen (⌘B) and with Focus (⌘.).
-provideListPane('skills')
+provideListPane('skills', { autoHide: true })
 const route = useRoute()
 const router = useRouter()
 const store = useSkillsStore()

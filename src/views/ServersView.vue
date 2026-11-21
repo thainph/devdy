@@ -35,7 +35,7 @@ const store = useServersStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
 // The list column hides per screen (⌘B) and with Focus (⌘.).
-provideListPane('servers')
+provideListPane('servers', { autoHide: true })
 const { t } = useI18n()
 
 // ── Sidebar ─────────────────────────────────────────────────────────────────

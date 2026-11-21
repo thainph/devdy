@@ -747,9 +747,9 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- Header -->
-    <PageHeader :title="project?.name ?? t('projectDetail.projectFallback')" truncate>
+    <PageHeader :title="project?.name ?? t('projectDetail.projectFallback')">
       <template #leading>
         <BackToRunButton />
         <span class="text-muted-foreground/40">/</span>
@@ -757,7 +757,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
       <template #meta>
         <span
           v-if="project"
-          class="text-[11px] text-muted-foreground font-mono truncate hidden md:inline"
+          class="min-w-0 text-[11px] text-muted-foreground font-mono truncate hidden @[48rem]/page-header:inline"
           :title="project.path"
         >{{ project.path }}</span>
       </template>
@@ -768,31 +768,35 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
     </div>
 
     <div v-else class="flex-1 flex min-h-0">
-      <!-- Section nav -->
-      <nav class="w-48 shrink-0 border-r border-border/60 p-3 overflow-auto">
+      <!-- Section nav (icons only in a narrow pane) -->
+      <nav class="w-12 shrink-0 border-r border-border/60 p-1.5 overflow-auto @[40rem]/screen:w-48 @[40rem]/screen:p-3">
         <button
           v-for="s in SECTIONS"
           :key="s.id"
-          class="w-full flex items-center gap-2.5 px-2.5 py-2 mb-0.5 text-xs rounded-md transition-colors cursor-pointer text-left"
+          class="w-full flex items-center justify-center gap-2.5 px-0 py-2 mb-0.5 text-xs rounded-md transition-colors cursor-pointer text-left @[40rem]/screen:justify-start @[40rem]/screen:px-2.5"
+          :title="t('projectDetail.sections.' + s.id)"
+          :aria-label="t('projectDetail.sections.' + s.id)"
           :class="activeTab === s.id
             ? 'bg-accent text-foreground font-medium'
             : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'"
           @click="activeTab = s.id"
         >
           <component :is="s.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">{{ t('projectDetail.sections.' + s.id) }}</span>
+          <span class="hidden truncate @[40rem]/screen:block">{{ t('projectDetail.sections.' + s.id) }}</span>
         </button>
         <button
           v-if="totalConflicts > 0"
-          class="w-full flex items-center gap-2.5 px-2.5 py-2 mb-0.5 text-xs rounded-md transition-colors cursor-pointer text-left"
+          class="w-full flex items-center justify-center gap-2.5 px-0 py-2 mb-0.5 text-xs rounded-md transition-colors cursor-pointer text-left @[40rem]/screen:justify-start @[40rem]/screen:px-2.5"
+          :title="t('projectDetail.conflictsNav')"
+          :aria-label="t('projectDetail.conflictsNav')"
           :class="activeTab === 'conflicts'
             ? 'bg-warning/15 text-warning font-medium'
             : 'text-warning hover:bg-warning/10'"
           @click="activeTab = 'conflicts'"
         >
           <GitMerge class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">{{ t('projectDetail.conflictsNav') }}</span>
-          <span class="ml-auto text-[10px] tabular-nums">{{ totalConflicts }}</span>
+          <span class="hidden truncate @[40rem]/screen:block">{{ t('projectDetail.conflictsNav') }}</span>
+          <span class="ml-auto hidden text-[10px] tabular-nums @[40rem]/screen:inline">{{ totalConflicts }}</span>
         </button>
       </nav>
 
@@ -802,7 +806,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
         <Banner
           v-if="totalConflicts > 0 && activeTab !== 'conflicts'"
           tone="warning"
-          class="mx-6 mt-4"
+          class="mx-3 mt-4 @[40rem]/screen:mx-6"
         >
           <p class="text-xs font-medium text-warning">{{ t('projectDetail.conflictBannerTitle') }}</p>
           <p class="mt-0.5 text-muted-foreground">
@@ -818,7 +822,7 @@ async function handleToggleSkill(skill: { id: string; manual: boolean }) {
           </template>
         </Banner>
 
-        <div class="p-6">
+        <div class="p-3 @[40rem]/screen:p-6">
 
         <!-- Overview tab -->
         <div v-if="activeTab === 'overview'" class="max-w-lg space-y-4">

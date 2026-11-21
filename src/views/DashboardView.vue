@@ -251,16 +251,16 @@ const SHORTCUTS = [
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
+  <div class="@container/screen flex h-full flex-col">
     <PageHeader :title="t('dashboard.title')">
       <template #leading>
         <Activity class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
       </template>
       <template #meta>
-        <span class="hidden truncate text-[11px] text-muted-foreground md:inline">{{ t('dashboard.subtitle', { date: today }) }}</span>
+        <span class="hidden min-w-0 truncate text-[11px] text-muted-foreground @[40rem]/page-header:inline">{{ t('dashboard.subtitle', { date: today }) }}</span>
       </template>
       <template #actions>
-        <span class="hidden flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground lg:flex" :aria-label="t('dashboard.shortcuts.label')">
+        <span class="hidden flex-wrap items-center gap-1.5 text-[10px] text-muted-foreground @[56rem]/page-header:flex" :aria-label="t('dashboard.shortcuts.label')">
           <template v-for="(k, i) in SHORTCUTS" :key="k.label">
             <span v-if="i" aria-hidden="true">·</span>
             <kbd v-for="key in k.keys" :key="key" class="rt-kbd rounded border border-b-2 border-border bg-card px-1 font-mono text-[10px] text-foreground">{{ key }}</kbd>
@@ -270,14 +270,14 @@ const SHORTCUTS = [
       </template>
     </PageHeader>
 
-    <div class="min-h-0 flex-1 overflow-y-auto px-6 py-4">
+    <div class="min-h-0 flex-1 overflow-y-auto px-3 py-3 @[40rem]/screen:px-6 @[40rem]/screen:py-4">
       <div class="@container flex flex-col gap-3.5">
         <Banner v-if="dash.loadError.value" tone="destructive">{{ t('dashboard.loadError', { error: dash.loadError.value }) }}</Banner>
         <p v-else-if="dash.loaded.value && !dash.hasSnapshot.value" class="text-[11px] text-muted-foreground">{{ t('dashboard.fallbackHint') }}</p>
         <p v-else-if="dash.snapshotStale.value" class="text-[11px] text-warning">{{ t('dashboard.staleHint') }}</p>
 
-        <!-- One short row of tiles (two per row, then one, as it narrows). -->
-        <div class="grid grid-cols-1 gap-2.5 @min-[720px]:grid-cols-2 @min-[1180px]:grid-cols-[1.5fr_0.9fr_1fr_1.4fr]">
+        <!-- One short row of tiles; two per row from a mid-size pane, one in a narrow one. -->
+        <div class="grid grid-cols-1 gap-2.5 @min-[540px]:grid-cols-2 @min-[1180px]:grid-cols-[1.5fr_0.9fr_1fr_1.4fr]">
           <StatSessions :total="total" :counts="counts" :filter="filter" :activity="dash.activity.value" @filter="toggleFilter" />
           <StatQuota :quotas="dash.quotas.value" :now="dash.now.value" @open="router.push({ name: 'stats' }).catch(() => {})" />
           <StatResources :resources="dash.resources.value" :busy="cleaning" @clean="cleanUp" @open="openProcesses" />

@@ -100,7 +100,7 @@ function nowLabel(kind: SurfaceKind): string {
         >
           <component :is="SURFACE_META[kind].icon" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
           <span class="min-w-0 flex-1 truncate text-xs">{{ t(SURFACE_META[kind].labelKey) }}</span>
-          <span class="hidden sm:inline text-[11px] text-muted-foreground" :title="t('surfaces.settings.now')">{{ nowLabel(kind) }}</span>
+          <span class="hidden @[28rem]/panel:inline text-[11px] text-muted-foreground" :title="t('surfaces.settings.now')">{{ nowLabel(kind) }}</span>
           <AppSelect
             size="xs"
             class="w-40"

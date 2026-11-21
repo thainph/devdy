@@ -3,7 +3,8 @@
 //  - `mode="hide"` (in the list's own header): ⇤ hide the list — or, while it
 //    floats as a peek, ✕ close the peek.
 //  - `mode="show"` (in the detail header / empty state): while the list is
-//    hidden, ⇥ show it again and ☰ peek at it.
+//    hidden, ⇥ show it again and ☰ peek at it — only ☰ while the screen is
+//    too narrow to dock it (useListPane `autoHide`).
 // Renders nothing outside a screen that provides a pane.
 import { useI18n } from 'vue-i18n'
 import { List, PanelLeftClose, PanelLeftOpen, X } from 'lucide-vue-next'
@@ -46,6 +47,7 @@ const mod = IS_MAC ? '⌘' : 'Ctrl+'
     </template>
     <div v-else-if="pane.hidden.value" class="flex shrink-0 items-center gap-1">
       <Button
+        v-if="!pane.narrow.value"
         variant="outline"
         size="icon"
         :title="`${t('listPane.show')} (${mod}B)`"
@@ -59,7 +61,7 @@ const mod = IS_MAC ? '⌘' : 'Ctrl+'
         size="icon"
         data-list-peek
         :aria-pressed="pane.peeking.value"
-        :title="t('listPane.peek')"
+        :title="pane.narrow.value ? `${t('listPane.peek')} (${mod}B)` : t('listPane.peek')"
         :aria-label="t('listPane.peek')"
         @click="pane.togglePeek()"
       >

@@ -9,7 +9,7 @@ import { useI18n } from 'vue-i18n'
 import { onClickOutside } from '@vueuse/core'
 import { useEscapeClose } from '@/composables/useEscapeClose'
 import { usePopoverFocus } from '@/composables/usePopoverFocus'
-import { Button, Input } from '@/components/ui'
+import { Button, Input, pageHeaderCompactButton, pageHeaderWideLabel } from '@/components/ui'
 import type { PrFilterOption, PrFilterOptions, PrFilters } from '@/lib/prInboxFilters'
 import { Check, ListFilter } from 'lucide-vue-next'
 
@@ -75,7 +75,7 @@ function toggle(dimension: PrFilterDimension, value: string) {
   <div ref="wrap" class="relative shrink-0">
     <Button
       variant="outline"
-      :class="open ? 'bg-accent text-foreground' : ''"
+      :class="[pageHeaderCompactButton, open && 'bg-accent text-foreground']"
       aria-haspopup="dialog"
       :aria-expanded="open"
       :title="t('prInbox.filters.button')"
@@ -83,7 +83,7 @@ function toggle(dimension: PrFilterDimension, value: string) {
       @click="open = !open"
     >
       <ListFilter class="h-3.5 w-3.5" :stroke-width="1.75" />
-      <span class="hidden lg:inline">{{ t('prInbox.filters.button') }}</span>
+      <span :class="pageHeaderWideLabel">{{ t('prInbox.filters.button') }}</span>
       <span
         v-if="activeCount > 0"
         class="flex h-4 min-w-4 items-center justify-center rounded-full bg-primary px-1 text-[10px] font-medium text-primary-foreground"

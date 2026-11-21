@@ -419,15 +419,16 @@ function openSettings(p: Project) {
   emit(DELIVERY_RADAR_OPEN_ROUTE, { path: `/projects/${p.id}/settings` } satisfies DeliveryRadarOpenRoute).catch(() => {})
 }
 
-const GRID = 'grid grid-cols-[minmax(140px,1fr)_repeat(5,minmax(56px,92px))_minmax(48px,68px)_minmax(64px,84px)] items-center gap-x-1'
-// Narrow windows drop the board-status column (it moves to the row's second line).
-const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:grid-cols-[minmax(0,1fr)_minmax(104px,140px)_minmax(96px,124px)_minmax(64px,88px)_52px] items-center gap-x-4'
+// A narrow pane (split view) shrinks the status columns to their counts, a dot heading each.
+const GRID = 'grid grid-cols-[minmax(0,1fr)_repeat(5,24px)_32px_52px] @[40rem]/screen:grid-cols-[minmax(140px,1fr)_repeat(5,minmax(56px,92px))_minmax(48px,68px)_minmax(64px,84px)] items-center gap-x-1'
+// Narrow panes drop the board-status column (it moves to the row's second line).
+const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] @[36rem]/screen:grid-cols-[minmax(0,1fr)_minmax(104px,140px)_minmax(96px,124px)_minmax(64px,88px)_52px] items-center gap-x-4'
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- One toolbar: title, scope, grouping, search, freshness, actions -->
-    <div class="shrink-0 border-b border-border/60 px-6 py-2.5 flex items-center gap-x-2 gap-y-2 flex-wrap">
+    <div class="shrink-0 border-b border-border/60 px-3 py-2.5 flex items-center gap-x-2 gap-y-2 flex-wrap @[40rem]/screen:px-6">
       <div class="flex items-center gap-2 mr-2">
         <Radar class="h-4 w-4 text-primary shrink-0" :stroke-width="2" />
         <h1 class="text-sm font-semibold shrink-0">{{ t('radar.title') }}</h1>
@@ -440,12 +441,12 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
         <RadarProjectPicker v-model:selected="selectedProjects" :projects="boardProjects" :loading="store.loading" />
         <SegmentedControl v-model="groupMode" :options="groupModeOptions" :stretch="false" />
       </template>
-      <div class="ml-auto flex items-center gap-2">
-        <div v-if="boardProjects.length > 0" class="relative">
+      <div class="ml-auto flex min-w-0 max-w-full items-center gap-2">
+        <div v-if="boardProjects.length > 0" class="relative w-56 min-w-0">
           <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
-          <Input v-model="query" size="sm" class="w-56 pl-7" :placeholder="t('radar.searchPlaceholder')" />
+          <Input v-model="query" size="sm" class="pl-7" :placeholder="t('radar.searchPlaceholder')" :aria-label="t('radar.searchPlaceholder')" />
         </div>
-        <span v-if="updatedAt" class="hidden lg:inline text-[11px] text-muted-foreground whitespace-nowrap">
+        <span v-if="updatedAt" class="hidden @[64rem]/screen:inline text-[11px] text-muted-foreground whitespace-nowrap">
           {{ t('radar.updated', { time: relativeTime(updatedAt) }) }}
         </span>
         <Button
@@ -485,8 +486,8 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
     </div>
 
     <!-- First load: skeleton mirroring the strip + table -->
-    <div v-else-if="!hasAnyData && store.isLoading" class="flex-1 min-h-0 overflow-auto p-6 space-y-4">
-      <div class="grid grid-cols-3 lg:grid-cols-6 gap-3">
+    <div v-else-if="!hasAnyData && store.isLoading" class="flex-1 min-h-0 overflow-auto p-3 space-y-4 @[40rem]/screen:p-6">
+      <div class="grid grid-cols-3 @[52rem]/screen:grid-cols-6 gap-3">
         <div v-for="i in 6" :key="i" class="rounded-lg border border-border/60 bg-card p-3 space-y-2.5">
           <Skeleton class="h-6 w-10 rounded" />
           <Skeleton class="h-2.5 w-16 rounded" />
@@ -502,7 +503,7 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
     </div>
 
     <div v-else class="flex-1 min-h-0 overflow-auto">
-      <div class="p-6 space-y-3">
+      <div class="p-3 space-y-3 @[40rem]/screen:p-6">
         <!-- Per-project problems: one line when there are several -->
         <template v-if="banners.length">
           <button
@@ -533,15 +534,15 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
         </template>
 
         <!-- Status strip: needs attention (big, coloured) | fine (quiet). Click = filter. -->
-        <Card body-class="grid grid-cols-1 md:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
-          <section v-for="(part, pi) in [HOT, CALM]" :key="pi" :class="pi === 1 ? 'border-t md:border-t-0 md:border-l border-border/60 bg-muted/30' : ''">
+        <Card body-class="grid grid-cols-1 @[36rem]/screen:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
+          <section v-for="(part, pi) in [HOT, CALM]" :key="pi" :class="pi === 1 ? 'border-t @[36rem]/screen:border-t-0 @[36rem]/screen:border-l border-border/60 bg-muted/30' : ''">
             <h3 class="px-3.5 pt-2 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
               {{ pi === 0 ? t('radar.needsAttention') : t('radar.fine') }}
             </h3>
             <div class="grid" :style="{ gridTemplateColumns: `repeat(${part.length}, minmax(0, 1fr))` }">
               <button
                 v-for="s in part" :key="s"
-                class="relative flex flex-col items-start gap-0.5 px-3.5 pt-1 pb-2.5 text-left transition-[background-color,opacity] hover:bg-accent/50"
+                class="relative flex min-w-0 flex-col items-start gap-0.5 px-3.5 pt-1 pb-2.5 text-left transition-[background-color,opacity] hover:bg-accent/50"
                 :class="[TONE_TEXT[s], statusFilter && statusFilter !== s ? 'opacity-45' : '']"
                 :title="`${statusHint(s)} — ${t('radar.filterHint')}`"
                 :aria-pressed="statusFilter === s"
@@ -551,9 +552,9 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
                   class="font-semibold leading-tight tabular-nums"
                   :class="[pi === 0 ? 'text-2xl' : 'text-xl', counts[s] > 0 ? '' : 'text-muted-foreground/40']"
                 >{{ counts[s] }}</span>
-                <span class="flex items-center gap-1.5 text-[12px] text-muted-foreground">
-                  <span class="h-1.5 w-1.5 rounded-full" :class="TONE_BG[s]" />
-                  {{ t(`radar.status.${s}`) }}
+                <span class="flex max-w-full items-center gap-1.5 text-[12px] text-muted-foreground">
+                  <span class="h-1.5 w-1.5 shrink-0 rounded-full" :class="TONE_BG[s]" />
+                  <span class="truncate">{{ t(`radar.status.${s}`) }}</span>
                 </span>
                 <span v-if="statusFilter === s" class="absolute inset-x-2.5 bottom-0 h-0.5 rounded-t" :class="TONE_BG[s]" />
               </button>
@@ -615,9 +616,12 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
         <Card v-else body-class="text-xs">
           <div :class="GRID" class="pl-4 pr-3 h-8 border-b border-border/60 bg-muted/30 text-[11px] text-muted-foreground font-medium">
             <div class="truncate">{{ groupMode === 'person' ? t('radar.colPerson') : t('radar.colProject') }}</div>
-            <div v-for="s in COLUMNS" :key="s" class="text-center truncate" :title="statusHint(s)">{{ t(`radar.status.${s}`) }}</div>
-            <div class="text-center truncate">{{ t('radar.colTotal') }}</div>
-            <div class="text-center truncate">{{ t('radar.colWorst') }}</div>
+            <div v-for="s in COLUMNS" :key="s" class="text-center truncate" :title="statusHint(s)">
+              <span class="hidden @[40rem]/screen:inline">{{ t(`radar.status.${s}`) }}</span>
+              <span class="inline-block h-1.5 w-1.5 rounded-full @[40rem]/screen:hidden" :class="TONE_BG[s]" :aria-label="t(`radar.status.${s}`)" />
+            </div>
+            <div class="text-center truncate" :title="t('radar.colTotal')">{{ t('radar.colTotal') }}</div>
+            <div class="text-center truncate" :title="t('radar.colWorst')">{{ t('radar.colWorst') }}</div>
           </div>
 
           <div v-for="g in groups" :key="groupId(g)" class="border-b border-border/50 last:border-b-0">
@@ -636,7 +640,7 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
                   :class="{ 'rotate-90': expanded.has(groupId(g)) }"
                   :stroke-width="2"
                 />
-                <span class="flex h-6.5 w-6.5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground">
+                <span class="hidden h-6.5 w-6.5 shrink-0 items-center justify-center rounded-full bg-muted text-[11px] font-semibold text-muted-foreground @[40rem]/screen:flex">
                   {{ groupInitial(g) }}
                 </span>
                 <span class="flex min-w-0 flex-col">
@@ -665,7 +669,7 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
             <div v-if="expanded.has(groupId(g))" class="bg-muted/25 border-t border-border/40 pt-1 pb-1.5">
               <div :class="IGRID" class="pl-10 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
                 <span>{{ t('radar.colIssue') }}</span>
-                <span class="hidden md:block truncate">{{ t('radar.colBoardStatus') }}</span>
+                <span class="hidden @[36rem]/screen:block truncate">{{ t('radar.colBoardStatus') }}</span>
                 <span class="truncate">{{ t('radar.colDeadline') }}</span>
                 <span class="truncate text-right">{{ t('radar.colUpdated') }}</span>
                 <span />
@@ -744,7 +748,7 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
                     <!-- Line 2: each kind of meta has its own form (code ref, project swatch, avatars, parent link) -->
                     <span class="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
                       <span class="shrink-0 rounded bg-muted px-1.25 py-px font-mono text-[10.5px]"><template v-if="!section || section.repo !== i.repo">{{ i.repo }}</template><span class="font-medium text-foreground">#{{ i.number }}</span></span>
-                      <span class="md:hidden flex shrink-0 items-center gap-1.5">
+                      <span class="@[36rem]/screen:hidden flex shrink-0 items-center gap-1.5">
                         <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
                         <span class="h-2 w-2 rounded-full" :class="statusDotClass(i.statusColor)" />
                         {{ i.status || t('radar.noStatus') }}
@@ -779,7 +783,7 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] md:gr
                     </span>
                   </span>
                 </div>
-                <span class="hidden md:flex min-w-0">
+                <span class="hidden @[36rem]/screen:flex min-w-0">
                   <span
                     class="inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11.5px]"
                     :class="i.status ? 'border-border font-medium text-foreground' : 'border-dashed border-border text-muted-foreground/70'"

@@ -129,7 +129,7 @@ async function save() {
         />
       </div>
       <div v-if="form.notify_enabled" class="space-y-2 pl-5">
-        <div class="grid grid-cols-1 gap-1.5 sm:grid-cols-2">
+        <div class="grid grid-cols-1 gap-1.5 @[28rem]/panel:grid-cols-2">
           <label v-for="k in NOTIFY_KINDS" :key="k" class="flex cursor-pointer items-start gap-2 text-xs">
             <input v-model="form.notify_kinds[k]" type="checkbox" class="mt-0.5 accent-primary" :disabled="loading" />
             <span class="min-w-0">

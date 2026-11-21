@@ -1346,46 +1346,48 @@ watch(() => settings.value.language, (v) => {
 </script>
 
 <template>
-  <div class="flex flex-col h-full">
+  <div class="@container/screen flex flex-col h-full">
     <!-- Header -->
     <PageHeader :title="t('settings.title')" />
 
     <!-- Content -->
     <div class="flex-1 flex min-h-0">
-      <!-- Section nav -->
-      <nav class="w-48 shrink-0 border-r border-border/60 p-3 overflow-auto">
+      <!-- Section nav (icons only in a narrow pane) -->
+      <nav class="w-12 shrink-0 border-r border-border/60 p-1.5 overflow-auto @[40rem]/screen:w-48 @[40rem]/screen:p-3">
         <button
           v-for="s in SECTIONS"
           :key="s.id"
-          class="w-full flex items-center gap-2.5 px-2.5 py-2 mb-0.5 text-xs rounded-md transition-colors cursor-pointer text-left"
+          class="w-full flex items-center justify-center gap-2.5 px-0 py-2 mb-0.5 text-xs rounded-md transition-colors cursor-pointer text-left @[40rem]/screen:justify-start @[40rem]/screen:px-2.5"
+          :title="t(s.labelKey)"
+          :aria-label="t(s.labelKey)"
           :class="activeSection === s.id
             ? 'bg-accent text-foreground font-medium'
             : 'text-muted-foreground hover:bg-accent/50 hover:text-foreground'"
           @click="activeSection = s.id"
         >
           <component :is="s.icon" class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">{{ t(s.labelKey) }}</span>
+          <span class="hidden truncate @[40rem]/screen:block">{{ t(s.labelKey) }}</span>
           <span
             v-if="s.id === 'github' && ghCount"
-            class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+            class="ml-auto hidden text-[10px] tabular-nums text-muted-foreground @[40rem]/screen:inline"
           >{{ ghCount }}</span>
           <span
             v-if="s.id === 'gitlab' && glCount"
-            class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+            class="ml-auto hidden text-[10px] tabular-nums text-muted-foreground @[40rem]/screen:inline"
           >{{ glCount }}</span>
           <span
             v-if="s.id === 'aws' && awsCount"
-            class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+            class="ml-auto hidden text-[10px] tabular-nums text-muted-foreground @[40rem]/screen:inline"
           >{{ awsCount }}</span>
           <span
             v-if="s.id === 'azure' && azureCount"
-            class="ml-auto text-[10px] tabular-nums text-muted-foreground"
+            class="ml-auto hidden text-[10px] tabular-nums text-muted-foreground @[40rem]/screen:inline"
           >{{ azureCount }}</span>
         </button>
       </nav>
 
       <!-- Active section panel -->
-      <div class="flex-1 overflow-auto p-6 min-w-0">
+      <div class="@container/panel flex-1 overflow-auto p-3 min-w-0 @[40rem]/screen:p-6">
         <!-- Loading skeleton -->
         <div v-if="loading" class="max-w-lg space-y-4">
           <div v-for="i in 3" :key="i" class="h-28 bg-card rounded-lg border border-border animate-pulse" />
@@ -1482,12 +1484,12 @@ watch(() => settings.value.language, (v) => {
             <span class="text-xs font-semibold">{{ t('settings.mascot.title') }}</span>
           </template>
 
-          <div class="grid gap-5 lg:grid-cols-[minmax(0,1fr)_300px] lg:items-start">
+          <div class="grid gap-5 @[44rem]/panel:grid-cols-[minmax(0,1fr)_300px] @[44rem]/panel:items-start">
             <!-- LEFT column. Visual order via `order-*`: the realm/level preview
                  sits at the TOP (next to the live fox on the right), the config
                  controls drop below the divider. -->
             <div class="flex flex-col gap-4 min-w-0">
-          <div class="order-3 grid gap-x-4 gap-y-3 sm:grid-cols-2">
+          <div class="order-3 grid gap-x-4 gap-y-3 @[28rem]/panel:grid-cols-2">
             <div class="space-y-1.5">
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 {{ t('settings.mascot.enabled') }}
@@ -1538,7 +1540,7 @@ watch(() => settings.value.language, (v) => {
               </p>
             </div>
 
-            <div class="sm:col-span-2 grid gap-3 sm:grid-cols-[1fr_auto] sm:items-end">
+            <div class="@[28rem]/panel:col-span-2 grid gap-3 @[28rem]/panel:grid-cols-[1fr_auto] @[28rem]/panel:items-end">
               <div class="space-y-1.5">
                 <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                   {{ t('settings.mascot.size') }}
@@ -1567,7 +1569,7 @@ watch(() => settings.value.language, (v) => {
               <AppSelect size="sm" v-model="settings.cyber_fox_voice_vi" :options="cyberFoxVoiceOptions" />
             </div>
 
-            <p class="sm:col-span-2 -mt-1 text-[11px] text-muted-foreground leading-relaxed">
+            <p class="@[28rem]/panel:col-span-2 -mt-1 text-[11px] text-muted-foreground leading-relaxed">
               {{ t('settings.mascot.voiceHint') }}
             </p>
 
@@ -1611,7 +1613,7 @@ watch(() => settings.value.language, (v) => {
               <label class="text-[11px] font-medium text-muted-foreground uppercase tracking-wider">
                 {{ t('settings.mascot.previewState') }}
               </label>
-              <div class="grid grid-cols-3 gap-2 sm:grid-cols-6">
+              <div class="grid grid-cols-3 gap-2 @[28rem]/panel:grid-cols-6">
                 <button
                   v-for="state in CYBER_FOX_STATES"
                   :key="state.id"
@@ -1727,7 +1729,7 @@ watch(() => settings.value.language, (v) => {
                 </button>
               </div>
 
-              <div class="grid gap-2 grid-cols-2 sm:grid-cols-3">
+              <div class="grid gap-2 grid-cols-2 @[28rem]/panel:grid-cols-3">
                 <button
                   v-for="(realm, index) in PET_REALMS"
                   :key="realm.id"
@@ -1770,7 +1772,7 @@ watch(() => settings.value.language, (v) => {
             <!-- /left column -->
 
             <!-- RIGHT: live preview (its own sticky column) -->
-            <div class="lg:sticky lg:top-4">
+            <div class="@[44rem]/panel:sticky @[44rem]/panel:top-4">
               <div class="rounded-md border border-border/70 bg-muted/20 p-4">
                 <div class="flex min-h-[340px] flex-col items-center justify-end gap-3 pt-20">
                   <div class="relative">

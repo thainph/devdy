@@ -14,7 +14,7 @@ import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { emit as emitEvent } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Banner, Button, ContextMenu, DropdownItem, DropdownSeparator, Input, PageHeader, SegmentedControl, Skeleton } from '@/components/ui'
+import { Banner, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderButton, PageHeaderSearch, SegmentedControl, Skeleton } from '@/components/ui'
 import MentionCard from '@/components/githubMentions/MentionCard.vue'
 import MentionFiltersPopover from '@/components/githubMentions/MentionFiltersPopover.vue'
 import MentionDisplayPopover from '@/components/githubMentions/MentionDisplayPopover.vue'
@@ -48,7 +48,7 @@ import {
 } from '@/lib/githubMentions'
 import {
   AtSign, BellOff, Check, CheckCheck, ChevronRight, Copy, EyeOff, ExternalLink, FolderX, Info, Loader2, MailOpen, RefreshCw, Reply,
-  Search, SearchX, Undo2, X,
+  SearchX, Undo2, X,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -246,7 +246,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
 </script>
 
 <template>
-  <div class="flex h-full flex-col">
+  <div class="@container/screen flex h-full flex-col">
     <PageHeader
       :title="t('githubMentions.title')"
       :count="store.items.length > 0 ? store.pendingCount : null"
@@ -257,27 +257,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
       </template>
       <template #actions>
         <template v-if="store.items.length > 0">
-          <div class="relative">
-            <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
-            <Input
-              v-model="search"
-              size="sm"
-              class="w-56 pl-7 pr-7"
-              :placeholder="t('githubMentions.searchPlaceholder')"
-              :aria-label="t('githubMentions.searchPlaceholder')"
-              @keydown.esc="search = ''"
-            />
-            <button
-              v-if="search"
-              type="button"
-              class="absolute right-2 top-1/2 -translate-y-1/2 cursor-pointer text-muted-foreground hover:text-foreground"
-              :title="t('githubMentions.clearSearch')"
-              :aria-label="t('githubMentions.clearSearch')"
-              @click="search = ''"
-            >
-              <X class="h-3.5 w-3.5" :stroke-width="2" />
-            </button>
-          </div>
+          <PageHeaderSearch v-model="search" :placeholder="t('githubMentions.searchPlaceholder')" :clear-label="t('githubMentions.clearSearch')" />
           <MentionFiltersPopover
             :options="options"
             :model-value="store.filters"
@@ -288,15 +268,14 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
           />
           <MentionDisplayPopover @edit-prompt="promptEditorOpen = true" />
         </template>
-        <Button variant="outline" :disabled="store.loading" @click="store.refresh()">
+        <PageHeaderButton :label="t('common.refresh')" :disabled="store.loading" @click="store.refresh()">
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
-          {{ t('common.refresh') }}
-        </Button>
+        </PageHeaderButton>
         <DockWindowButton v-if="standalone" surface="mentions" />
       </template>
     </PageHeader>
 
-    <div v-if="chips.length > 0" class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-6 py-2">
+    <div v-if="chips.length > 0" class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-3 py-2 @[40rem]/screen:px-6">
       <span
         v-for="chip in chips"
         :key="chip.key"
@@ -319,7 +298,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
       </button>
     </div>
 
-    <div class="flex-1 overflow-auto p-6">
+    <div class="flex-1 overflow-auto p-3 @[40rem]/screen:p-6">
       <Banner v-if="store.error" tone="destructive" class="mb-4">{{ store.error }}</Banner>
       <Banner v-if="store.warnings.length > 0" tone="warning" class="mb-4">
         <p class="font-medium text-warning">{{ t('githubMentions.partialFailTitle', store.warnings.length) }}</p>

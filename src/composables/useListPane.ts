@@ -6,7 +6,10 @@
 // "peeking"), its header gets a hide button, and the detail header / empty
 // state get show + peek buttons (components/listDetail/ListPaneButtons) while
 // it is hidden. Hidden = the user hid it for this screen (remembered per
-// screen) or Focus mode (⌘.) is on.
+// screen), Focus mode (⌘.) is on, or — for a screen that opts in with
+// `autoHide` — the screen is narrower than LIST_PANE_NARROW_BELOW (a split
+// pane, a narrow window). Hidden for width is never written to the user's
+// remembered choice: widen the screen and the list comes back as it was.
 //
 // ⌘B (`toggleActiveListPane`) acts on the pane of the screen in view: every
 // provided pane registers itself with its root element, and the visible one
@@ -25,7 +28,7 @@ import {
   type Ref,
 } from 'vue'
 import { useUILayoutStore } from '@/stores/uiLayout'
-import type { ListPaneKey } from '@/lib/listPane'
+import { listPaneToggleAction, narrowFromWidth, type ListPaneKey } from '@/lib/listPane'
 
 export interface ListPane {
   key: ListPaneKey
@@ -33,6 +36,8 @@ export interface ListPane {
   hidden: ComputedRef<boolean>
   /** Hidden by Focus mode rather than by the user. */
   byFocus: ComputedRef<boolean>
+  /** The screen is too narrow for a docked list (autoHide): it can only peek. */
+  narrow: Readonly<Ref<boolean>>
   /** While hidden: the list floats over the detail for a quick pick. */
   peeking: Ref<boolean>
   hide: () => void
@@ -52,6 +57,12 @@ const registry = new Set<Registered>()
 
 function visible(el: Element | null): boolean {
   return !!el && el.isConnected && el.getClientRects().length > 0
+}
+
+/** A component's first root element (`$el` is a text anchor when the root is a fragment). */
+function rootElement(node: Node | null | undefined): Element | null {
+  for (let n = node ?? null; n; n = n.nextSibling) if (n instanceof Element) return n
+  return null
 }
 
 /** The pane of the screen in view (in the focused half of a split), if any. */
@@ -78,25 +89,33 @@ export function activeListPaneHidden(): boolean | null {
   return pane ? pane.hidden.value : null
 }
 
-export function provideListPane(key: ListPaneKey): ListPane {
+export function provideListPane(key: ListPaneKey, opts: { autoHide?: boolean } = {}): ListPane {
   const ui = useUILayoutStore()
   const peeking = ref(false)
+  const narrow = ref(false)
   const byFocus = computed(() => ui.focusMode)
-  const hidden = computed(() => ui.focusMode || ui.isListHidden(key))
+  const hidden = computed(() => ui.focusMode || ui.isListHidden(key) || narrow.value)
 
   const pane: ListPane = {
     key,
     hidden,
     byFocus,
+    narrow,
     peeking,
     hide: () => ui.setListHidden(key, true),
     show: () => {
-      peeking.value = false
       // In Focus mode "show the list" means leaving Focus.
       if (ui.focusMode) ui.focusMode = false
       ui.setListHidden(key, false)
+      // A narrow screen can only float its list.
+      peeking.value = narrow.value
     },
-    toggle: () => (hidden.value ? pane.show() : pane.hide()),
+    toggle: () => {
+      const action = listPaneToggleAction({ hidden: hidden.value, narrow: narrow.value })
+      if (action === 'peek') pane.togglePeek()
+      else if (action === 'show') pane.show()
+      else pane.hide()
+    },
     togglePeek: () => {
       peeking.value = hidden.value && !peeking.value
     },
@@ -112,9 +131,27 @@ export function provideListPane(key: ListPaneKey): ListPane {
   provide(KEY, pane)
 
   const instance = getCurrentInstance()
-  const entry: Registered = { pane, el: () => (instance?.proxy?.$el as Element | null) ?? null }
+  const el = () => rootElement(instance?.proxy?.$el as Node | null)
+  const entry: Registered = { pane, el }
   onMounted(() => registry.add(entry))
   onBeforeUnmount(() => registry.delete(entry))
+
+  // autoHide: follow the screen's own width (not the window's).
+  if (opts.autoHide && typeof ResizeObserver !== 'undefined') {
+    let observer: ResizeObserver | null = null
+    onMounted(() => {
+      const root = el()
+      if (!root) return
+      // Measured now too, so a narrow screen never flashes its docked list.
+      narrow.value = narrowFromWidth(root.getBoundingClientRect().width, narrow.value)
+      observer = new ResizeObserver((entries) => {
+        const width = entries[entries.length - 1]?.contentRect.width ?? 0
+        narrow.value = narrowFromWidth(width, narrow.value)
+      })
+      observer.observe(root)
+    })
+    onBeforeUnmount(() => observer?.disconnect())
+  }
 
   return pane
 }
@@ -137,6 +174,11 @@ export function useListPaneSidebar(el: Ref<HTMLElement | null>, own?: ListPane) 
   const floatClass = computed(() =>
     floating.value ? 'absolute inset-y-0 left-0 z-30 shadow-2xl shadow-black/20' : '',
   )
+  /**
+   * Width of a list-detail sidebar: docked, 40% of the screen between 220 and
+   * 360px (360 on a wide screen); floating, up to 340px of a narrow screen.
+   */
+  const widthClass = computed(() => (floating.value ? 'w-[min(340px,88%)]' : 'w-[clamp(220px,40%,360px)]'))
 
   function onPointerDown(e: PointerEvent) {
     if (!floating.value) return
@@ -173,5 +215,5 @@ export function useListPaneSidebar(el: Ref<HTMLElement | null>, own?: ListPane) 
     if (floating.value) pane?.closePeek()
   }
 
-  return { pane, shown, floating, floatClass, picked }
+  return { pane, shown, floating, floatClass, widthClass, picked }
 }

@@ -114,7 +114,7 @@ const metaTitle = computed(() =>
     </div>
     <div class="mt-1.5 flex flex-wrap items-center gap-x-3 gap-y-1.5">
       <p v-if="meta" class="min-w-0 flex-1 basis-40 truncate text-xs text-muted-foreground" :title="metaTitle">{{ meta }}</p>
-      <div class="ml-auto flex min-w-0 items-center gap-1.5">
+      <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
         <!-- The thread's project and its sessions: linking depends on the project. -->
         <div class="w-[11rem] min-w-[5.5rem] shrink">
           <ProjectSelect

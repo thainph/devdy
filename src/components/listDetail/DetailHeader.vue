@@ -38,9 +38,10 @@ function commit(value: string) {
 </script>
 
 <template>
-  <div class="flex shrink-0 items-center gap-3 border-b border-border/60 px-5 py-2.5">
+  <!-- Wraps in a narrow pane: the actions drop under the title, right-aligned. -->
+  <div class="flex shrink-0 flex-wrap items-center gap-x-3 gap-y-2 border-b border-border/60 px-5 py-2.5">
     <ListPaneButtons mode="show" />
-    <div class="min-w-[6rem] flex-1">
+    <div class="min-w-[6rem] flex-1 basis-40">
       <div class="flex min-w-0 items-center gap-1.5">
         <slot name="leading" />
         <InlineRenameInput
@@ -68,7 +69,7 @@ function commit(value: string) {
         <slot name="meta" />
       </p>
     </div>
-    <div class="flex min-w-0 shrink-0 items-center gap-1.5">
+    <div class="ml-auto flex min-w-0 flex-wrap items-center justify-end gap-1.5">
       <slot name="actions" />
     </div>
   </div>
