@@ -59,6 +59,14 @@ export const NAV_ROUTES: NavRoute[] = [
   { path: '/about', labelKey: 'nav.about', icon: Info, group: 'app' },
 ]
 
+/**
+ * The page (a NAV_ROUTES destination that isn't a surface: Dashboard, Skills,
+ * Settings…) a route path shows, or null. Pages are tabs of the main window too.
+ */
+export function pageRouteFor(path: string): NavRoute | null {
+  return NAV_ROUTES.find((r) => !r.surface && r.path === path) ?? null
+}
+
 /** True when `NAV_ROUTES[index]` starts a new group (and so gets a divider). */
 export function startsNavGroup(index: number): boolean {
   return index > 0 && NAV_ROUTES[index].group !== NAV_ROUTES[index - 1].group

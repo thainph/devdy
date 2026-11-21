@@ -163,11 +163,15 @@ export function surfaceTabIdOfRoute(): string | null {
 /** Navigate to a tab entry (after closing the current one), or the projects list. */
 export async function goToEntry(next: TabEntry | null) {
   if (!next) {
-    await router.push({ name: 'projects' }).catch(() => {})
+    await router.push({ name: 'dashboard' }).catch(() => {})
     return
   }
   if (next.type === 'surface') {
     await router.push(surfaceLocation(next.surface, next.params, true)).catch(() => {})
+    return
+  }
+  if (next.type === 'page') {
+    await router.push(next.fullPath).catch(() => {})
     return
   }
   if (next.lastRunId) {

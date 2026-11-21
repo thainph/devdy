@@ -29,10 +29,26 @@ export interface SurfaceTab {
   params: SurfaceParams
 }
 
+/**
+ * A page of the main window (Dashboard, Skills, Settings… — lib/navigation
+ * `pageRouteFor`) as a tab. Remembers its last full path (query included), so
+ * coming back lands where the user was.
+ */
+export interface PageTab {
+  id: string
+  path: string
+  fullPath: string
+}
+
 /** One entry of the shared tab strip, in display order. */
 export type TabEntry =
   | ({ type: 'project' } & WorkspaceTab)
   | ({ type: 'surface' } & SurfaceTab)
+  | ({ type: 'page' } & PageTab)
+
+export function pageTabId(path: string): string {
+  return `page:${path}`
+}
 
 const STORAGE_KEY = 'devdy.workspaceTabs'
 
@@ -55,6 +71,9 @@ function load(): TabEntry[] {
           projectId: t.projectId,
           lastRunId: typeof t.lastRunId === 'string' ? t.lastRunId : null,
         })
+      } else if (t.type === 'page' && typeof t.path === 'string' && t.path.startsWith('/')) {
+        const fullPath = typeof t.fullPath === 'string' && t.fullPath.startsWith(t.path) ? t.fullPath : t.path
+        out.push({ type: 'page', id: pageTabId(t.path), path: t.path, fullPath })
       } else if (t.type === 'surface' && isSurfaceKind(t.surface)) {
         const params = cleanParams(t.surface, t.params)
         out.push({ type: 'surface', id: surfaceTabId(t.surface, params), surface: t.surface, params })
@@ -179,6 +198,36 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     return surfaceTab(nextId)
   }
 
+  function pageTab(id: string): PageTab | null {
+    const e = entries.find((t) => t.type === 'page' && t.id === id)
+    return e && e.type === 'page' ? e : null
+  }
+
+  /** Open (or update) the tab of a page, remembering where in it the user is. */
+  function openPage(path: string, fullPath: string = path): PageTab {
+    const id = pageTabId(path)
+    const existing = pageTab(id)
+    if (existing) {
+      if (existing.fullPath !== fullPath) {
+        existing.fullPath = fullPath
+        persist()
+      }
+      return existing
+    }
+    entries.push({ type: 'page', id, path, fullPath })
+    persist()
+    return pageTab(id)!
+  }
+
+  /** Close a page tab; returns its neighbour like `close`. */
+  function closePage(id: string): TabEntry | null {
+    const idx = entries.findIndex((t) => t.type === 'page' && t.id === id)
+    if (idx === -1) return null
+    entries.splice(idx, 1)
+    persist()
+    return neighbour(idx)
+  }
+
   /** Close a surface tab; returns its neighbour like `close`. */
   function closeSurface(id: string): TabEntry | null {
     const idx = entries.findIndex((t) => t.type === 'surface' && t.id === id)
@@ -240,6 +289,9 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     openSurface,
     closeSurface,
     retargetSurface,
+    pageTab,
+    openPage,
+    closePage,
     split,
     unsplit,
   }
