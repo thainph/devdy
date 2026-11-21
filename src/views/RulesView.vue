@@ -1,19 +1,20 @@
 <script setup lang="ts">
 // Rules — a list-detail screen like the Notes window: the sidebar lists the
-// rules in their group folders (search, group select, Claude/Codex filter,
-// Manage groups · Re-apply all · Import .md), the right pane edits the
-// selected rule in place (components/rules/RuleDetail).
+// rules (search; group filter, sort and folders in the search menu; Manage
+// groups · Re-apply all · Import .md in ⋯), the right pane edits the selected
+// rule in place (components/rules/RuleDetail).
 //
 // The selection lives in the URL query (`?id=<rule>`, `?new=1` for a blank
 // draft) so a reload or a link reopens it.
 import { computed, onMounted, ref, watch } from 'vue'
 import { byNewest, byText, type ListSort } from '@/lib/listGroups'
+import type { ListFilterDef, ListFilterValues } from '@/lib/listSidebarView'
 import { useI18n } from 'vue-i18n'
 import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { useRoute, useRouter } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Layers, MoreHorizontal, RefreshCw, ScrollText, Upload } from 'lucide-vue-next'
-import { AppSelect, Badge, Button, DropdownItem, DropdownMenu } from '@/components/ui'
+import { Layers, RefreshCw, ScrollText, Upload } from 'lucide-vue-next'
+import { Badge, DropdownItem } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
@@ -52,8 +53,8 @@ const groupsOpen = ref(false)
 // ── Sidebar ─────────────────────────────────────────────────────────────────
 
 const search = ref('')
-/** '' = all groups, UNGROUPED, or a group id. */
-const groupFilter = ref('')
+/** `group`: '' = all groups, UNGROUPED, or a group id. */
+const filters = ref<ListFilterValues>({ group: '' })
 
 /**
  * Rule bodies, so the search reaches the content too (the list only carries
@@ -83,7 +84,7 @@ const sidebarGroups = computed(() =>
     itemGroups: groupsStore.itemGroups,
     contents: contents.value,
     search: search.value,
-    groupFilter: groupFilter.value,
+    groupFilter: filters.value.group ?? '',
     noneLabel: t('groups.ungrouped'),
   }),
 )
@@ -94,11 +95,19 @@ const sorts = computed<ListSort<RuleListRow>[]>(() => [
   { value: 'updated', label: t('common.sortByUpdated'), compare: byNewest((r) => r.rule.updated_at) },
 ])
 
-const groupOptions = computed(() => [
-  { value: '', label: t('rules.detail.allGroups') },
-  ...groupsStore.groups.map((g) => ({ value: g.id, label: `${g.name} (${g.member_count})` })),
-  { value: UNGROUPED, label: t('groups.ungrouped') },
-])
+// No groups yet: no Group section (a deleted group's filter is dropped).
+const filterDefs = computed<ListFilterDef[]>(() =>
+  groupsStore.groups.length === 0
+    ? []
+    : [{
+        key: 'group',
+        title: t('listPane.filterGroup'),
+        options: [
+          ...groupsStore.groups.map((g) => ({ value: g.id, label: g.name, count: g.member_count })),
+          { value: UNGROUPED, label: t('groups.ungrouped') },
+        ],
+      }],
+)
 
 const targetLabel = computed<Record<string, string>>(() => ({
   claude: t('rules.editor.targetClaude'),
@@ -342,9 +351,12 @@ async function handleExport(rule: Rule) {
   <div class="relative flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
+      v-model:filters="filters"
+      :title="t('nav.rules')"
       :groups="sidebarGroups"
       :selected-id="isNew ? null : selectedId"
       collapse-key="devdy.rules.collapsedGroups"
+      :filter-defs="filterDefs"
       :sorts="sorts"
       default-sort="name"
       :search-placeholder="t('rules.detail.searchPlaceholder')"
@@ -353,52 +365,28 @@ async function handleExport(rule: Rule) {
       :empty-store="store.rules.length === 0"
       :empty-title="t('rules.list.emptyTitle')"
       :empty-hint="t('rules.list.emptyHint')"
+      :busy="reapplyingId === 'all' ? t('rules.list.reapplying') : importing ? t('rules.list.importing') : null"
       @select="select"
       @add="startNew"
-      @retry="refresh"
+      @reload="refresh"
     >
-      <template #toolbar>
-        <!-- Secondary list actions in one menu, so the search box keeps its width. -->
-        <DropdownMenu align="right" class="shrink-0">
-          <template #trigger>
-            <Button
-              variant="outline"
-              size="icon"
-              class="shrink-0"
-              :title="t('common.moreActions')"
-              :aria-label="t('common.moreActions')"
-            >
-              <RefreshCw v-if="reapplyingId === 'all' || importing" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-              <MoreHorizontal v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </Button>
-          </template>
-          <DropdownItem @click="groupsOpen = true">
-            <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('groups.manageRuleGroups') }}
-          </DropdownItem>
-          <DropdownItem
-            :disabled="reapplyingId !== null || store.rules.length === 0"
-            :title="t('rules.list.reapplyAllHint')"
-            @click="handleReapply()"
-          >
-            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ reapplyingId === 'all' ? t('rules.list.reapplying') : t('rules.list.reapplyAll') }}
-          </DropdownItem>
-          <DropdownItem :disabled="importing" @click="handleImport">
-            <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ importing ? t('rules.list.importing') : t('rules.list.importMd') }}
-          </DropdownItem>
-        </DropdownMenu>
-      </template>
-
-      <template #controls>
-        <AppSelect
-          v-if="groupsStore.groups.length > 0"
-          v-model="groupFilter"
-          size="sm"
-          :options="groupOptions"
-          :title="t('groups.filterByGroup')"
-        />
+      <template #menu>
+        <DropdownItem @click="groupsOpen = true">
+          <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('groups.manageRuleGroups') }}
+        </DropdownItem>
+        <DropdownItem
+          :disabled="reapplyingId !== null || store.rules.length === 0"
+          :title="t('rules.list.reapplyAllHint')"
+          @click="handleReapply()"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ reapplyingId === 'all' ? t('rules.list.reapplying') : t('rules.list.reapplyAll') }}
+        </DropdownItem>
+        <DropdownItem :disabled="importing" @click="handleImport">
+          <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ importing ? t('rules.list.importing') : t('rules.list.importMd') }}
+        </DropdownItem>
       </template>
 
       <template #row="{ row, selected }">

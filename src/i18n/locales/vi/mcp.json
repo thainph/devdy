@@ -1,6 +1,6 @@
 {
   "list": {
-    "import": "Nhập",
+    "import": "Nhập .json",
     "importing": "Đang nhập…",
     "builtin": {
       "active": "Tích hợp sẵn · hoạt động",
@@ -41,9 +41,7 @@
       "http": "http · từ xa",
       "sse": "sse · từ xa"
     },
-    "noSelection": "Chọn một MCP server, hoặc tạo server mới",
-    "allTypes": "Tất cả loại",
-    "filterByType": "Lọc theo loại"
+    "noSelection": "Chọn một MCP server, hoặc tạo server mới"
   },
   "editor": {
     "newTitle": "MCP Server mới",

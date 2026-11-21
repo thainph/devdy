@@ -1,6 +1,6 @@
 {
   "list": {
-    "import": "Import",
+    "import": "Import .json",
     "importing": "Importing…",
     "builtin": {
       "active": "Built-in · active",
@@ -41,9 +41,7 @@
       "http": "http · remote",
       "sse": "sse · remote"
     },
-    "noSelection": "Select an MCP server, or create a new one",
-    "allTypes": "All types",
-    "filterByType": "Filter by type"
+    "noSelection": "Select an MCP server, or create a new one"
   },
   "editor": {
     "newTitle": "New MCP Server",

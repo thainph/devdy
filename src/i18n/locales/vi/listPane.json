@@ -15,5 +15,14 @@
   "lateCount": "{n} trễ",
   "ownWindow": "Khi là cửa sổ riêng",
   "pin": "Ghim trên cùng",
-  "unpin": "Bỏ ghim trên cùng"
+  "unpin": "Bỏ ghim trên cùng",
+  "reload": "Tải lại",
+  "all": "Tất cả",
+  "display": "Hiển thị",
+  "filterGroup": "Nhóm",
+  "filterType": "Loại",
+  "filterTag": "Tag",
+  "groupByGroup": "Chia thư mục theo nhóm",
+  "groupByType": "Chia theo loại",
+  "groupByTag": "Chia theo tag"
 }

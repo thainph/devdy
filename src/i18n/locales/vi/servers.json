@@ -19,7 +19,6 @@
       "testAllSummary": "{online} trực tuyến / {offline} ngoại tuyến"
     },
     "searchPlaceholder": "Tìm nhãn, host, user, thẻ",
-    "allTags": "Tất cả thẻ",
     "untagged": "Chưa gắn thẻ",
     "testAll": "Kiểm tra tất cả kết nối",
     "noSelection": "Chọn một server, hoặc tạo server mới"

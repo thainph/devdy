@@ -19,7 +19,6 @@
       "testAllSummary": "{online} online / {offline} offline"
     },
     "searchPlaceholder": "Search label, host, user, tag",
-    "allTags": "All tags",
     "untagged": "Untagged",
     "testAll": "Test all connections",
     "noSelection": "Select a server, or create a new one"

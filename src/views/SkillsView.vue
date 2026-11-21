@@ -4,16 +4,17 @@
 // The selection lives in the URL — `?id=<id>` or `?new=1` for a draft.
 import { computed, onDeactivated, onMounted, ref, watch } from 'vue'
 import { byNewest, byText, type ListSort } from '@/lib/listGroups'
+import type { ListFilterDef, ListFilterValues } from '@/lib/listSidebarView'
 import { useI18n } from 'vue-i18n'
 import { savedWithoutFolderNames } from '@/lib/savedWithoutFolder'
 import { onBeforeRouteUpdate, useRoute, useRouter, type LocationQuery } from 'vue-router'
 import { open, save } from '@tauri-apps/plugin-dialog'
-import { Layers, MoreHorizontal, Plus, Puzzle, RefreshCw, Upload } from 'lucide-vue-next'
+import { Layers, Plus, Puzzle, RefreshCw, Upload } from 'lucide-vue-next'
 import { useActivatedRefresh } from '@/composables/useActivatedRefresh'
 import { useSkillsStore, type Skill } from '@/stores/skills'
 import { useProjectsStore } from '@/stores/projects'
 import { useSkillGroupsStore } from '@/stores/groups'
-import { AppSelect, Badge, Button, DropdownItem, DropdownMenu } from '@/components/ui'
+import { Badge, Button, DropdownItem } from '@/components/ui'
 import GroupManagerModal from '@/components/GroupManagerModal.vue'
 import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
@@ -44,8 +45,8 @@ const reapplyingId = ref<string | null>(null)
 const importingZip = ref(false)
 const groupsOpen = ref(false)
 const search = ref('')
-/** '' = all groups, a group id, or FILTER_UNGROUPED. */
-const groupFilter = ref('')
+/** `group`: '' = all groups, a group id, or FILTER_UNGROUPED. */
+const filters = ref<ListFilterValues>({ group: '' })
 const targetLabel = computed<Record<string, string>>(() => ({
   claude: t('skills.editor.targetClaude'),
   codex: t('skills.editor.targetCodex'),
@@ -55,7 +56,7 @@ const targetLabel = computed<Record<string, string>>(() => ({
 const rowGroups = computed(() =>
   buildSkillGroups(store.skills, groupsStore.itemGroups, groupsStore.groups, {
     search: search.value,
-    group: groupFilter.value,
+    group: filters.value.group ?? '',
     ungroupedLabel: t('groups.ungrouped'),
   }),
 )
@@ -66,18 +67,20 @@ const sorts = computed<ListSort<SkillListRow>[]>(() => [
   { value: 'updated', label: t('common.sortByUpdated'), compare: byNewest((r) => r.skill.updated_at) },
 ])
 
-const groupOptions = computed(() => [
-  { value: '', label: t('groups.allGroups') },
-  ...groupsStore.groups.map((g) => ({ value: g.id, label: `${g.name} (${g.member_count})` })),
-  { value: FILTER_UNGROUPED, label: t('groups.ungrouped') },
-])
-
-// A filtered-out group was deleted in the group manager.
-watch(() => groupsStore.groups, (list) => {
-  if (groupFilter.value && groupFilter.value !== FILTER_UNGROUPED && !list.some((g) => g.id === groupFilter.value)) {
-    groupFilter.value = ''
-  }
-})
+// No groups yet: no Group section. A filtered group deleted in the group
+// manager drops out of the options, and the sidebar shows everything again.
+const filterDefs = computed<ListFilterDef[]>(() =>
+  groupsStore.groups.length === 0
+    ? []
+    : [{
+        key: 'group',
+        title: t('listPane.filterGroup'),
+        options: [
+          ...groupsStore.groups.map((g) => ({ value: g.id, label: g.name, count: g.member_count })),
+          { value: FILTER_UNGROUPED, label: t('groups.ungrouped') },
+        ],
+      }],
+)
 
 function groupsOf(skillId: string) {
   const ids = groupsStore.itemGroups[skillId] ?? []
@@ -333,9 +336,12 @@ async function handleExport(skill: Skill) {
   <div class="relative flex h-full overflow-hidden">
     <ListDetailSidebar
       v-model:search="search"
+      v-model:filters="filters"
+      :title="t('nav.skills')"
       :groups="rowGroups"
       :selected-id="selectedId"
       collapse-key="devdy.skills.collapsed"
+      :filter-defs="filterDefs"
       :sorts="sorts"
       default-sort="name"
       :search-placeholder="t('skills.detail.searchPlaceholder')"
@@ -344,47 +350,29 @@ async function handleExport(skill: Skill) {
       :empty-store="!store.loading && store.skills.length === 0"
       :empty-title="t('skills.list.emptyTitle')"
       :empty-hint="t('skills.list.emptyHint')"
+      :busy="reapplyingId === 'all' ? t('skills.list.reapplying') : importingZip ? t('skills.list.importing') : null"
       @select="select"
       @add="openNew"
-      @retry="refresh"
+      @reload="refresh"
     >
-      <template #toolbar>
-        <!-- Secondary list actions in one menu, so the search box keeps its width. -->
-        <DropdownMenu align="right" class="shrink-0">
-          <template #trigger>
-            <Button
-              variant="outline"
-              size="icon"
-              class="shrink-0"
-              :title="t('common.moreActions')"
-              :aria-label="t('common.moreActions')"
-            >
-              <RefreshCw v-if="reapplyingId === 'all' || importingZip" class="h-3.5 w-3.5 animate-spin" :stroke-width="1.75" />
-              <MoreHorizontal v-else class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </Button>
-          </template>
-          <DropdownItem @click="groupsOpen = true">
-            <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ t('groups.manageSkillGroups') }}
-          </DropdownItem>
-          <DropdownItem
-            v-if="store.skills.length > 0"
-            :disabled="reapplyingId !== null"
-            :title="t('skills.list.reapplyAllHint')"
-            @click="handleReapply()"
-          >
-            <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ reapplyingId === 'all' ? t('skills.list.reapplying') : t('skills.list.reapplyAll') }}
-          </DropdownItem>
-          <DropdownItem :disabled="importingZip" :title="t('skills.detail.importHint')" @click="handleImport">
-            <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
-            {{ importingZip ? t('skills.list.importing') : t('skills.list.import') }}
-          </DropdownItem>
-        </DropdownMenu>
-      </template>
-
-      <template #controls>
-        <AppSelect v-if="groupsStore.groups.length > 0" v-model="groupFilter" :options="groupOptions" />
+      <template #menu>
+        <DropdownItem @click="groupsOpen = true">
+          <Layers class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('groups.manageSkillGroups') }}
+        </DropdownItem>
+        <DropdownItem
+          v-if="store.skills.length > 0"
+          :disabled="reapplyingId !== null"
+          :title="t('skills.list.reapplyAllHint')"
+          @click="handleReapply()"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ reapplyingId === 'all' ? t('skills.list.reapplying') : t('skills.list.reapplyAll') }}
+        </DropdownItem>
+        <DropdownItem :disabled="importingZip" :title="t('skills.detail.importHint')" @click="handleImport">
+          <Upload class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ importingZip ? t('skills.list.importing') : t('skills.list.import') }}
+        </DropdownItem>
       </template>
 
       <template #row="{ row }">

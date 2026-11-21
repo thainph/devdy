@@ -1,15 +1,17 @@
 <script setup lang="ts">
 // Servers screen, laid out like the Notes window: the sidebar lists the VPS
-// servers (search, tag filter, folders by first tag) and the
+// servers (search; tag filter, sort and folders by first tag in the search
+// menu; Test all in ⋯) and the
 // right pane edits the selected one inline (ServerDetail). The selection lives
 // in the URL query — `?id=<id>` a server, `?new=1` a blank draft — so a
 // reload reopens it.
 import { computed, onMounted, reactive, ref, watch } from 'vue'
-import { byNewest, byText, type ListSort } from '@/lib/listGroups'
+import { byNewest, byText, splitTags, type ListSort } from '@/lib/listGroups'
+import type { ListFilterDef, ListFilterValues } from '@/lib/listSidebarView'
 import { useI18n } from 'vue-i18n'
 import { useRoute, useRouter } from 'vue-router'
-import { HardDrive, RotateCw } from 'lucide-vue-next'
-import { AppSelect, Button } from '@/components/ui'
+import { Activity, HardDrive } from 'lucide-vue-next'
+import { DropdownItem } from '@/components/ui'
 import { provideListPane } from '@/composables/useListPane'
 import ListDetailSidebar from '@/components/listDetail/ListDetailSidebar.vue'
 import DetailEmpty from '@/components/listDetail/DetailEmpty.vue'
@@ -41,21 +43,26 @@ const { t } = useI18n()
 // ── Sidebar ─────────────────────────────────────────────────────────────────
 
 const search = ref('')
-const tagFilter = ref('')
+/** `tag`: '' = every tag. */
+const filters = ref<ListFilterValues>({ tag: '' })
 
-const tags = computed(() => allServerTags(store.items))
-const tagOptions = computed(() => [
-  { value: '', label: t('servers.list.allTags') },
-  ...tags.value.map((tag) => ({ value: tag, label: tag })),
-])
-// The filtered tag left with its last server: show everything again.
-watch(tags, (list) => {
-  if (tagFilter.value && !list.includes(tagFilter.value)) tagFilter.value = ''
+// The filtered tag left with its last server drops out of the options, and the
+// sidebar shows everything again.
+const filterDefs = computed<ListFilterDef[]>(() => {
+  const tags = allServerTags(store.items)
+  if (tags.length === 0) return []
+  const counts = new Map<string, number>()
+  for (const s of store.items) for (const tag of splitTags(s.tags)) counts.set(tag, (counts.get(tag) ?? 0) + 1)
+  return [{
+    key: 'tag',
+    title: t('listPane.filterTag'),
+    options: tags.map((tag) => ({ value: tag, label: tag, count: counts.get(tag) ?? 0 })),
+  }]
 })
 
 const groups = computed(() =>
   groupServers(
-    filterServers(store.items, { search: search.value, tag: tagFilter.value }),
+    filterServers(store.items, { search: search.value, tag: filters.value.tag ?? '' }),
     t('servers.list.untagged'),
   ),
 )
@@ -263,37 +270,31 @@ async function handleDelete(server: VpsServer) {
   <div class="relative flex h-full min-h-0">
     <ListDetailSidebar
       v-model:search="search"
+      v-model:filters="filters"
+      :title="t('nav.servers')"
       :groups="groups"
       :selected-id="selectedId"
       collapse-key="devdy.servers.collapsedGroups"
+      :filter-defs="filterDefs"
       :sorts="sorts"
       default-sort="name"
-      :grouped-label="t('common.sortByTag')"
+      :grouped-label="t('listPane.groupByTag')"
       :search-placeholder="t('servers.list.searchPlaceholder')"
       :loading="store.loading && !loaded"
       :error="store.error"
       :empty-store="loaded && store.items.length === 0"
       :empty-title="t('servers.list.empty.title')"
       :empty-hint="t('servers.list.empty.hint')"
+      :busy="testingAll ? t('servers.list.testAll') : null"
       @select="select"
       @add="openDraft(null)"
-      @retry="refresh"
+      @reload="refresh"
     >
-      <template #toolbar>
-        <Button
-          variant="outline"
-          size="icon"
-          class="shrink-0"
-          :disabled="testingAll || store.items.length === 0"
-          :title="t('servers.list.testAll')"
-          :aria-label="t('servers.list.testAll')"
-          @click="testAll"
-        >
-          <RotateCw class="h-3.5 w-3.5" :class="testingAll && 'animate-spin'" :stroke-width="1.75" />
-        </Button>
-      </template>
-      <template #controls>
-        <AppSelect v-model="tagFilter" size="sm" :options="tagOptions" />
+      <template #menu>
+        <DropdownItem :disabled="testingAll || store.items.length === 0" @click="testAll">
+          <Activity class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('servers.list.testAll') }}
+        </DropdownItem>
       </template>
       <template #row="{ row }">
         <span class="min-w-0 truncate text-sm font-medium leading-snug">{{ row.label }}</span>

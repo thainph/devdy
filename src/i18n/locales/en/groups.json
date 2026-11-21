@@ -24,8 +24,6 @@
   "deleteGroup": "Delete group",
   "applyToAll": "Enable group for all projects",
   "dragToReorder": "Drag to reorder",
-  "filterByGroup": "Filter by group",
-  "allGroups": "All",
   "ungrouped": "Ungrouped",
   "confirmDeleteTitle": "Delete group",
   "confirmDeleteMessage": "Delete group \"{name}\"? The items themselves stay; only the grouping is removed.",

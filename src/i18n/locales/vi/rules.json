@@ -55,7 +55,6 @@
   },
   "detail": {
     "searchPlaceholder": "Tìm rule",
-    "allGroups": "Tất cả nhóm",
     "noSelection": "Chọn một rule, hoặc tạo rule mới",
     "metaDraft": "Chưa lưu",
     "metaUpdated": "Cập nhật {age}",
