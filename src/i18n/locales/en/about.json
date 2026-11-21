@@ -1,5 +1,38 @@
 {
   "title": "About",
   "tagline": "AI coding agent for developers",
-  "description": "Manage AI skills centrally and automate GitHub issue and pull request analysis using claude or codex — all from a single desktop app."
+  "description": "Manage AI skills centrally and automate GitHub issue and pull request analysis using claude or codex — all from a single desktop app.",
+  "shortcuts": {
+    "title": "Keyboard shortcuts",
+    "or": "or",
+    "groups": {
+      "general": "General",
+      "tabs": "Tabs & windows",
+      "layout": "Layout",
+      "session": "Session composer",
+      "editing": "Editing & viewing"
+    },
+    "items": {
+      "palette": "Command palette: tabs, sessions, screens, actions",
+      "quickOpen": "Quick open a tab or session",
+      "settings": "Settings",
+      "quit": "Quit Devdy",
+      "gotoTab": "Go to tab 1–8",
+      "lastTab": "Go to the last tab",
+      "closeTab": "Close the current tab",
+      "split": "Split / unsplit (show a tab on the right)",
+      "closeWindow": "Close the window",
+      "toggleList": "Hide / show the list column",
+      "focus": "Focus mode (hide the sidebar, tabs and list)",
+      "escape": "Leave Focus · close a peeked list or a menu",
+      "send": "Send",
+      "newline": "New line",
+      "slash": "Slash commands",
+      "mention": "Mention a file of the project",
+      "pick": "Move through suggestions and pick one",
+      "save": "Save a Todo / Note / secret note being edited",
+      "cancel": "Cancel the edit",
+      "find": "Find in a file being viewed"
+    }
+  }
 }

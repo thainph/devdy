@@ -1,5 +1,38 @@
 {
   "title": "Giới thiệu",
   "tagline": "AI coding agent cho lập trình viên",
-  "description": "Quản lý tập trung các AI skill và tự động phân tích issue, pull request trên GitHub bằng claude hoặc codex — tất cả trong một ứng dụng desktop."
+  "description": "Quản lý tập trung các AI skill và tự động phân tích issue, pull request trên GitHub bằng claude hoặc codex — tất cả trong một ứng dụng desktop.",
+  "shortcuts": {
+    "title": "Phím tắt",
+    "or": "hoặc",
+    "groups": {
+      "general": "Chung",
+      "tabs": "Tab & cửa sổ",
+      "layout": "Bố cục",
+      "session": "Ô chat của session",
+      "editing": "Soạn & xem"
+    },
+    "items": {
+      "palette": "Bảng lệnh: tab, session, màn hình, thao tác",
+      "quickOpen": "Mở nhanh tab hoặc session",
+      "settings": "Cài đặt",
+      "quit": "Thoát Devdy",
+      "gotoTab": "Tới tab 1–8",
+      "lastTab": "Tới tab cuối",
+      "closeTab": "Đóng tab hiện tại",
+      "split": "Chia đôi / bỏ chia (hiện một tab ở khung phải)",
+      "closeWindow": "Đóng cửa sổ",
+      "toggleList": "Ẩn / hiện cột danh sách",
+      "focus": "Chế độ Focus (ẩn sidebar, thanh tab và danh sách)",
+      "escape": "Thoát Focus · đóng danh sách xem nhanh hoặc menu",
+      "send": "Gửi",
+      "newline": "Xuống dòng",
+      "slash": "Lệnh slash",
+      "mention": "Nhắc tới một file của dự án",
+      "pick": "Di chuyển và chọn gợi ý",
+      "save": "Lưu Todo / Note / ghi chú bí mật đang sửa",
+      "cancel": "Huỷ sửa",
+      "find": "Tìm trong file đang xem"
+    }
+  }
 }
