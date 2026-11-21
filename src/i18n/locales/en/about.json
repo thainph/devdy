@@ -1,7 +1,7 @@
 {
   "title": "About",
-  "tagline": "Your whole dev day, with AI beside you",
-  "description": "Work with claude and codex, review pull requests, and keep your todos, notes and Slack threads close at hand. Your skills, rules and MCP servers live here too — all on the CLI plan you already have.",
+  "tagline": "A buddy for every developer",
+  "description": "Dev + buddy = Devdy. It sticks with you all day: working with claude and codex, reviewing pull requests, keeping your todos, notes and Slack threads within reach — on the subscription you already have, no API keys.",
   "shortcuts": {
     "title": "Keyboard shortcuts",
     "or": "or",

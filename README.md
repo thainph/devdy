@@ -1,6 +1,6 @@
 # Devdy
 
-> Your whole dev day, with AI beside you. Work with claude and codex, review pull requests, and keep your todos, notes and Slack threads close at hand. Your skills, rules and MCP servers live here too — all on the CLI plan you already have.
+> **Devdy** (dev + buddy) — a buddy for every developer. It sticks with you all day: working with claude and codex, reviewing pull requests, keeping your todos, notes and Slack threads within reach — on the subscription you already have, no API keys.
 
 ## What is Devdy?
 

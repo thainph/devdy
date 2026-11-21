@@ -1,7 +1,7 @@
 {
   "title": "Giới thiệu",
-  "tagline": "Cả ngày làm việc của dev, có AI đồng hành",
-  "description": "Làm việc cùng claude và codex, review pull request, giữ todo, ghi chú và Slack thread luôn trong tầm tay. Skill, rule và MCP server cũng gọn ở đây — chạy ngay trên gói CLI bạn đang dùng.",
+  "tagline": "Người bạn đồng hành của developer",
+  "description": "Dev + buddy = Devdy. Luôn ở bên bạn suốt ngày làm việc: cùng claude và codex xử lý việc, review pull request, giữ todo, ghi chú, thread Slack luôn trong tầm tay — dùng ngay gói đăng ký bạn đang có, không cần API key.",
   "shortcuts": {
     "title": "Phím tắt",
     "or": "hoặc",
