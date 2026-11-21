@@ -10,7 +10,7 @@ import { FOCUS_OPEN_WINDOW, type FocusOpenTodo } from '@/lib/focus'
 import { invoke } from '@/lib/tauri'
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useAppSettingsStore } from '@/stores/appSettings'
-import { useWorkspaceTabsStore } from '@/stores/workspaceTabs'
+import { pageTabId, useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
@@ -70,8 +70,9 @@ import { NAV_ROUTES, pageRouteFor, startsNavGroup } from '@/lib/navigation'
 import { dockAllSurfaceWindows, listenSurfaceRequests, openSurface } from '@/lib/surfaceOpen'
 import { monitorCount } from '@/lib/surfacePlacement'
 import { cleanParams, shouldDockOnMonitorChange, surfaceForPath, surfaceTabId } from '@/lib/surfaces'
-import { SURFACE_META } from '@/lib/surfaceMeta'
 import SurfaceHost from '@/components/surfaces/SurfaceHost.vue'
+import PaneRouter from '@/components/surfaces/PaneRouter.vue'
+import { entryIcon, entryLabel } from '@/lib/tabMeta'
 import { IS_SESSION_WINDOW, SESSION_WINDOW_PROJECT_ID, SESSION_WINDOW_RUN_ID } from '@/lib/windowMode'
 import DeliveryRadarView from '@/views/DeliveryRadarView.vue'
 import { getVersion } from '@tauri-apps/api/app'
@@ -420,14 +421,25 @@ watch(
   },
 )
 
-/** The surface tab in the right half of a split, if any. */
-const splitTab = computed(() => (tabsStore.splitId ? tabsStore.surfaceTab(tabsStore.splitId) : null))
+/** The surface or page tab in the right half of a split, if any. */
+const splitTab = computed(() => {
+  const id = tabsStore.splitId
+  if (!id) return null
+  const e = tabsStore.entries.find((x) => x.type !== 'project' && x.id === id)
+  return e && e.type !== 'project' ? e : null
+})
 function splitLabel(): string {
-  const tab = splitTab.value
-  if (!tab) return ''
-  if (tab.surface === 'file' && tab.params.path) return tab.params.path.split('/').pop() || tab.params.path
-  return t(SURFACE_META[tab.surface].labelKey)
+  return splitTab.value ? entryLabel(splitTab.value, t, () => '') : ''
 }
+
+// The router landed on the page shown on the right (sidebar, history): it can't
+// be in both halves — close the split so it shows on the left.
+watch(
+  () => route.path,
+  (path) => {
+    if (pageRouteFor(path) && pageTabId(path) === tabsStore.splitId) tabsStore.unsplit()
+  },
+)
 
 // Global listener that mirrors backend-reported active runs into the liveRuns
 // store (see onMounted). Torn down on unmount to avoid a dangling subscription.
@@ -1289,7 +1301,7 @@ onMounted(async () => {
             @pointerdown.capture="tabsStore.focusedPane = 'right'"
           >
             <div v-if="splitTab" class="flex h-8 shrink-0 items-center gap-2 border-b border-border/60 bg-sidebar/60 pl-3 pr-1.5">
-              <component :is="SURFACE_META[splitTab.surface].icon" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              <component :is="entryIcon(splitTab)" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
               <span class="min-w-0 flex-1 truncate text-xs font-medium">{{ splitLabel() }}</span>
               <Button
                 variant="ghost"
@@ -1301,7 +1313,15 @@ onMounted(async () => {
                 <X class="h-3 w-3" :stroke-width="2" />
               </Button>
             </div>
-            <div id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
+            <div v-show="splitTab?.type !== 'page'" id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
+            <!-- A page on the right gets a router of its own. -->
+            <PaneRouter
+              v-if="splitTab?.type === 'page'"
+              :key="splitTab.id"
+              :full-path="splitTab.fullPath"
+              class="min-h-0 flex-1"
+              @navigated="(fullPath) => splitTab?.type === 'page' && tabsStore.openPage(splitTab.path, fullPath)"
+            />
           </section>
         </div>
       </div>

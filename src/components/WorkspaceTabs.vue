@@ -44,16 +44,17 @@ const routedSurfaceId = computed(() => {
 
 function isActive(e: TabEntry): boolean {
   if (e.type === 'project') return e.projectId === activeProjectId.value && tabsStore.focusedPane === 'left'
-  if (e.type === 'page') return e.path === route.path && tabsStore.focusedPane === 'left'
   if (e.id === tabsStore.splitId) return tabsStore.focusedPane === 'right'
+  if (e.type === 'page') return e.path === route.path && tabsStore.focusedPane === 'left'
   return e.id === routedSurfaceId.value && tabsStore.focusedPane === 'left'
 }
 
 /** Shown in the half that doesn't have the focus — dimmer than active, still marked. */
 function isVisible(e: TabEntry): boolean {
   if (e.type === 'project') return e.projectId === activeProjectId.value
+  if (e.id === tabsStore.splitId) return true
   if (e.type === 'page') return e.path === route.path
-  return e.id === tabsStore.splitId || e.id === routedSurfaceId.value
+  return e.id === routedSurfaceId.value
 }
 
 function projectName(projectId: string): string {
@@ -106,7 +107,7 @@ function popOut(e: TabEntry, ev: MouseEvent) {
 
 function toggleRight(e: TabEntry, ev: MouseEvent) {
   ev.stopPropagation()
-  if (e.type === 'surface') toggleSplitEntry(e)
+  if (e.type !== 'project') toggleSplitEntry(e)
 }
 
 // --- Overflow (Chrome-style, lib/tabStripLayout) ------------------------------
@@ -222,6 +223,23 @@ function onTabClick(e: TabEntry) {
       <template v-else-if="tab.type === 'page'">
         <component :is="entryIcon(tab)" class="h-[13px] w-[13px] shrink-0 opacity-70" :stroke-width="1.75" />
         <span class="min-w-0 flex-1 truncate text-left">{{ label(tab) }}</span>
+        <Columns2
+          v-if="tab.id === tabsStore.splitId"
+          class="h-3 w-3 shrink-0 text-primary"
+          :stroke-width="2"
+          :aria-label="t('surfaces.tabs.focusRight')"
+        />
+        <!-- show on the right (a page splits too; it has no window to pop out to) -->
+        <span
+          class="hidden h-4 w-4 items-center justify-center rounded shrink-0 group-hover:flex hover:bg-foreground/10"
+          role="button"
+          :title="tab.id === tabsStore.splitId ? t('surfaces.tabs.unsplit') : t('surfaces.tabs.splitRight')"
+          :aria-label="tab.id === tabsStore.splitId ? t('surfaces.tabs.unsplit') : t('surfaces.tabs.splitRight')"
+          @pointerdown.stop
+          @click="toggleRight(tab, $event)"
+        >
+          <Columns2 class="h-3 w-3" :stroke-width="2" />
+        </span>
       </template>
 
       <template v-else>

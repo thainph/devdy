@@ -150,7 +150,7 @@ export async function closeSurfaceTab(id: string): Promise<void> {
 
 /** The split's right pane is not a destination of the router: skip over it. */
 export function skipSplit(next: TabEntry | null): TabEntry | null {
-  return next && next.type === 'surface' && next.id === useWorkspaceTabsStore().splitId ? null : next
+  return next && next.type !== 'project' && next.id === useWorkspaceTabsStore().splitId ? null : next
 }
 
 /** The surface tab the router shows right now, if any. */

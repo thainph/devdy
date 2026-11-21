@@ -94,9 +94,10 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
   )
 
   /**
-   * The surface tab shown in the right half of a split view, or null when the
-   * main area isn't split. Only surfaces split: a session needs the router (and
-   * its single conductor panel), so it always stays on the left.
+   * The surface or page tab shown in the right half of a split view, or null
+   * when the main area isn't split. A page there gets a router of its own
+   * (components/surfaces/PaneRouter). Sessions don't split: they need the main
+   * router (and its single conductor panel), so they always stay on the left.
    */
   const splitId = ref<string | null>(null)
   /** Which half of a split last took a click — tab clicks land there. */
@@ -224,6 +225,7 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     const idx = entries.findIndex((t) => t.type === 'page' && t.id === id)
     if (idx === -1) return null
     entries.splice(idx, 1)
+    if (splitId.value === id) unsplit()
     persist()
     return neighbour(idx)
   }
@@ -240,7 +242,7 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
 
   /** Show a surface tab in the right half (opening the split if needed). */
   function split(id: string) {
-    if (!surfaceTab(id)) return
+    if (!surfaceTab(id) && !pageTab(id)) return
     splitId.value = id
     focusedPane.value = 'right'
   }

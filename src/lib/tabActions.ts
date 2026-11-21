@@ -8,7 +8,19 @@ import { useRunsStore } from '@/stores/runs'
 import { cleanParams, surfaceForPath, surfaceTabId } from '@/lib/surfaces'
 import { goToEntry, popOutSurface } from '@/lib/surfaceOpen'
 
-type SurfaceEntry = Extract<TabEntry, { type: 'surface' }>
+/** A tab that can go to the right half of a split: a surface or a page. */
+export type SplittableEntry = Extract<TabEntry, { type: 'surface' | 'page' }>
+
+export function isSplittable(e: TabEntry): e is SplittableEntry {
+  return e.type === 'surface' || e.type === 'page'
+}
+
+/** The router (left half) shows this tab. */
+function isRouted(e: TabEntry): boolean {
+  if (e.type === 'project') return e.projectId === activeProjectId()
+  if (e.type === 'page') return e.path === router.currentRoute.value.path
+  return e.id === routedSurfaceId()
+}
 
 function activeProjectId(): string | null {
   const id = router.currentRoute.value.params.projectId
@@ -24,9 +36,8 @@ export function routedSurfaceId(): string | null {
 
 /** Shown in either half of the main area. */
 export function isEntryVisible(e: TabEntry): boolean {
-  if (e.type === 'project') return e.projectId === activeProjectId()
-  if (e.type === 'page') return e.path === router.currentRoute.value.path
-  return e.id === useWorkspaceTabsStore().splitId || e.id === routedSurfaceId()
+  if (e.type !== 'project' && e.id === useWorkspaceTabsStore().splitId) return true
+  return isRouted(e)
 }
 
 /** The tab the user is on: the focused half's tab, if it has one. */
@@ -48,7 +59,7 @@ export function currentEntry(): TabEntry | null {
 /** Go to a tab, as a click on it in the strip does. */
 export function selectEntry(e: TabEntry) {
   const tabs = useWorkspaceTabsStore()
-  if (e.type === 'surface' && e.id === tabs.splitId) {
+  if (e.type !== 'project' && e.id === tabs.splitId) {
     tabs.focusedPane = 'right'
     return
   }
@@ -67,30 +78,25 @@ export function selectEntry(e: TabEntry) {
 /** Close a tab; when the router was showing it, move to its neighbour. */
 export function closeEntry(e: TabEntry) {
   const tabs = useWorkspaceTabsStore()
-  const wasRouted =
-    e.type === 'project'
-      ? e.projectId === activeProjectId()
-      : e.type === 'page'
-        ? e.path === router.currentRoute.value.path
-        : e.id === routedSurfaceId()
+  const wasRouted = isRouted(e)
   const next =
     e.type === 'project' ? tabs.close(e.projectId) : e.type === 'page' ? tabs.closePage(e.id) : tabs.closeSurface(e.id)
   if (!wasRouted) return
   // The split's right pane is not a destination of the router: skip over it.
-  const target = next && next.type === 'surface' && next.id === tabs.splitId ? null : next
+  const target = next && next.type !== 'project' && next.id === tabs.splitId ? null : next
   tabs.focusedPane = 'left'
   void goToEntry(target)
 }
 
-/** Show a surface tab in the right half, or close the right half if it's there. */
-export function toggleSplitEntry(e: SurfaceEntry) {
+/** Show a surface / page tab in the right half, or close the right half if it's there. */
+export function toggleSplitEntry(e: SplittableEntry) {
   const tabs = useWorkspaceTabsStore()
   if (tabs.splitId === e.id) {
     tabs.unsplit()
     return
   }
-  // Moving the routed surface to the right leaves the left on another tab.
-  const wasRouted = e.id === routedSurfaceId()
+  // Moving the routed tab to the right leaves the left on another tab.
+  const wasRouted = isRouted(e)
   tabs.split(e.id)
   if (wasRouted) {
     const other = tabs.entries.find((x) => tabEntryKey(x) !== e.id)
@@ -99,16 +105,16 @@ export function toggleSplitEntry(e: SurfaceEntry) {
 }
 
 /**
- * The surface tab "split / unsplit" acts on: the current tab when it's a
- * surface, else (on a session) the right-most surface tab, to show beside it.
+ * The tab "split / unsplit" acts on: the current tab when it's a surface or a
+ * page, else (on a session) the right-most such tab, to show beside it.
  * Null when there's nothing to split — or when already split (then it unsplits).
  */
-export function splitCandidate(): SurfaceEntry | null {
+export function splitCandidate(): SplittableEntry | null {
   const tabs = useWorkspaceTabsStore()
   const cur = currentEntry()
-  if (cur?.type === 'surface') return cur
-  const surfaces = tabs.entries.filter((e): e is SurfaceEntry => e.type === 'surface')
-  return surfaces[surfaces.length - 1] ?? null
+  if (cur && isSplittable(cur)) return cur
+  const splittable = tabs.entries.filter(isSplittable)
+  return splittable[splittable.length - 1] ?? null
 }
 
 /** ⌘\ — close the right half, or open it with `splitCandidate()`. */
