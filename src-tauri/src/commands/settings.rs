@@ -102,6 +102,11 @@ pub struct AppSettings {
     /// still running: "ask" (default) | "stop_all" | "keep_leftovers". Read by
     /// `procs::quit`.
     pub quit_background_policy: String,
+    /// While Devdy is in the background, pending permission / question requests
+    /// pop out into their own always-on-top windows. "true" (default) | "false"
+    /// (= rely on the native notification only). With the main window in front
+    /// they are always answered in-app. Read by the frontend only.
+    pub permission_float_when_background: String,
 }
 
 /// `AppSettings` keys carried by a settings backup. `claude_path` / `codex_path` are left out:
@@ -146,6 +151,7 @@ pub const PORTABLE_SETTING_KEYS: &[&str] = &[
     "cyber_fox_voice_rate",
     "cyber_fox_voice_pitch",
     "quit_background_policy",
+    "permission_float_when_background",
     // PR Inbox poller (pr_inbox).
     "pr_inbox.poll_minutes",
     "pr_inbox.review_prompt",
@@ -215,6 +221,7 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
         cyber_fox_voice_rate: "1".to_string(),
         cyber_fox_voice_pitch: "1.15".to_string(),
         quit_background_policy: "ask".to_string(),
+        permission_float_when_background: "true".to_string(),
     };
 
     for row in rows {
@@ -265,6 +272,9 @@ pub async fn get_settings(db: State<'_, Db>) -> Result<AppSettings, String> {
             "cyber_fox_voice_rate" => settings.cyber_fox_voice_rate = value,
             "cyber_fox_voice_pitch" => settings.cyber_fox_voice_pitch = value,
             "quit_background_policy" => settings.quit_background_policy = value,
+            "permission_float_when_background" => {
+                settings.permission_float_when_background = value
+            }
             _ => {}
         }
     }

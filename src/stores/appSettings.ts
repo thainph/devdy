@@ -52,6 +52,12 @@ export interface AppSettings {
   cyber_fox_voice_pitch: string
   /** What quitting does with running sessions / leftover processes: 'ask' | 'stop_all' | 'keep_leftovers'. */
   quit_background_policy: string
+  /**
+   * "true" (default) | "false": while Devdy is in the background, pending permission
+   * requests open their standalone windows; "false" = native notification only.
+   * In front, the main window always answers them in-app.
+   */
+  permission_float_when_background: string
 }
 
 export const useAppSettingsStore = defineStore('appSettings', () => {

@@ -46,5 +46,19 @@
     "cancel": "Hủy",
     "allowAlways": "Luôn cho phép",
     "allowAlwaysFor": "Luôn cho phép {tool} cho project này"
+  },
+  "inline": {
+    "regionLabel": "Yêu cầu quyền đang chờ",
+    "openSession": "Mở session",
+    "hide": "Ẩn — yêu cầu vẫn đang chờ",
+    "bringToFront": "Hiện yêu cầu này",
+    "more": "+{n} nữa",
+    "waiting": "{n} đang chờ bạn",
+    "question": "Câu hỏi",
+    "plan": "Duyệt kế hoạch"
+  },
+  "pill": {
+    "label": "đang chờ",
+    "title": "{n} session đang chờ bạn duyệt"
   }
 }
