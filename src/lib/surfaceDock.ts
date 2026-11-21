@@ -1,5 +1,7 @@
-// A surface pop-out asking to come back into the main window as a tab.
-// The main window listens (lib/surfaceOpen `listenSurfaceRequests`).
+// "Dock into main window": a pop-out surface (Todos / Notes, Slack threads, a
+// file, PR Inbox, Mentions, Calendar, Delivery Radar) asks the main window to
+// reopen it as a tab, at the same place (`params`: selected id, project, file
+// path…), then closes itself. The main window listens for SURFACE_DOCK.
 import { emit } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 
@@ -11,15 +13,16 @@ export type DockSurface = 'todos' | 'notes' | 'slack' | 'file' | 'prInbox' | 'me
 
 export interface SurfaceDockRequest {
   surface: DockSurface
+  /** What reopens it at the same place; only the set values. */
   params?: Record<string, string>
 }
 
-/** Hand the surface (and where it was) to the main window, then close this window. */
+/** Hand this pop-out's surface to the main window, then close the pop-out. */
 export async function requestDock(surface: DockSurface, params?: Record<string, string>): Promise<void> {
+  await emit(SURFACE_DOCK, { surface, params } satisfies SurfaceDockRequest)
   try {
-    await emit(SURFACE_DOCK, { surface, params } satisfies SurfaceDockRequest)
     await getCurrentWindow().close()
   } catch {
-    /* outside the Tauri shell */
+    /* already closing */
   }
 }

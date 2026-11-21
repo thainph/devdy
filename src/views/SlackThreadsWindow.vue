@@ -26,6 +26,13 @@
 // Sessions (runs) live in the main window: opening a linked session or starting
 // a new one from the thread is a request to it (WINDOW_OPEN_RUN /
 // WINDOW_NEW_SESSION of lib/sessionLinks, handled in App.vue).
+//
+// `embedded`: rendered as a tab of the main window instead. The props then
+// replace the URL params (id / projectId / add) and a new `initialId` selects
+// that thread like SLACK_WINDOW_SELECT does; it fills its parent, leaves the
+// window's title, tray row, pin and URL alone, and uses the main window's
+// ConfirmModal / ToastHost. The requests above (and SLACK_WINDOW_OPEN_ROUTE)
+// are global events, so they reach the main window's listeners from here too.
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
@@ -40,6 +47,7 @@ import { useSlackText } from '@/components/slack/useSlackText'
 import { useConfirm } from '@/composables/useConfirm'
 import { useToast } from '@/composables/useToast'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
+import { requestDock } from '@/lib/surfaceDock'
 import { refreshTray } from '@/lib/tray'
 import { projectOptionsForIds } from '@/lib/projectOptions'
 import { createSeenGuard, isRecent, isUnread, matchesActivity, type ActivityFilter } from '@/lib/slackThreadUtils'
@@ -70,17 +78,29 @@ import {
   type SlackThreadsChanged,
 } from '@/stores/slackThreads'
 
+const props = defineProps<{
+  /** A tab of the main window, not its own OS window. */
+  embedded?: boolean
+  /** Thread to select (overrides the URL's `id`); a new value selects that thread. */
+  initialId?: string | null
+  /** Project to pre-filter the sidebar with (overrides the URL's `projectId`). */
+  projectId?: string | null
+  /** Open the add dialog on mount (overrides the URL's `add`). */
+  add?: boolean
+}>()
+
 const { t } = useI18n()
 const { toast } = useToast()
 const { confirm } = useConfirm()
 const { errorText } = useSlackText()
 const store = useSlackThreadsStore()
 const projects = useProjectsStore()
-const { pinned, togglePin } = useFloatingWindow()
+// Embedded, the window is the main one: never float / pin it.
+const { pinned, togglePin } = props.embedded ? { pinned: ref(false), togglePin: () => {} } : useFloatingWindow()
 
 const params = new URLSearchParams(window.location.search)
-const initialId = params.get('id') || null
-const initialProject = params.get('projectId') || null
+const initialId = props.initialId !== undefined ? props.initialId : params.get('id') || null
+const initialProject = props.projectId !== undefined ? props.projectId : params.get('projectId') || null
 
 // ── Sidebar: search (server-side) + project / activity filters (client-side) 
 
@@ -155,9 +175,11 @@ async function select(id: string | null) {
 
 // The URL follows the selection — including when the thread is deleted elsewhere
 // (event / MCP) and the store drops it — so a reload never reopens a dead id.
+// Not the main window's URL: that one is the router's.
 watch(
   () => store.selectedId,
   (id) => {
+    if (props.embedded) return
     const url = new URL(window.location.href)
     if (id) url.searchParams.set('id', id)
     else url.searchParams.delete('id')
@@ -340,7 +362,7 @@ function openMcp() {
 
 // ── Add dialog ──────────────────────────────────────────────────────────────
 
-const addOpen = ref(params.get('add') === '1')
+const addOpen = ref(props.embedded ? !!props.add : props.add || params.get('add') === '1')
 const addProjectId = ref<string | null>(initialProject)
 
 function openAdd(projectId?: string | null) {
@@ -395,6 +417,7 @@ const windowTitle = computed(() =>
 watch(
   windowTitle,
   async (value) => {
+    if (props.embedded) return
     document.title = value
     try {
       await getCurrentWindow().setTitle(value)
@@ -405,6 +428,35 @@ watch(
   },
   { immediate: true },
 )
+
+// The host re-points the tab: another thread (the SLACK_WINDOW_SELECT path),
+// another project scope, or the add dialog (SLACK_WINDOW_ADD).
+watch(
+  () => props.initialId,
+  (id) => {
+    if (id) void select(id)
+  },
+)
+watch(
+  () => props.projectId,
+  (projectId) => {
+    if (projectId !== undefined) projectFilter.value = projectId ?? ''
+  },
+)
+watch(
+  () => props.add,
+  (add) => {
+    if (add) openAdd(props.projectId ?? null)
+  },
+)
+
+/** Pop-out → a tab of the main window, at the same thread. */
+function dock() {
+  const at: Record<string, string> = {}
+  if (store.selectedId) at.id = store.selectedId
+  if (projectFilter.value && projectFilter.value !== NO_PROJECT) at.projectId = projectFilter.value
+  void requestDock('slack', at)
+}
 
 let unlisten: UnlistenFn[] = []
 
@@ -448,8 +500,10 @@ onMounted(async () => {
     /* running outside the Tauri shell */
   }
   await store.fetchList()
-  // An event may already have selected a thread meanwhile; keep it.
-  const first = store.selectedId ?? initialId ?? visibleThreads.value[0]?.id ?? null
+  // An event may already have selected a thread meanwhile; keep it. Embedded,
+  // the store is the main window's and may still hold a previous tab's thread.
+  const first =
+    (props.embedded ? initialId : null) ?? store.selectedId ?? initialId ?? visibleThreads.value[0]?.id ?? null
   if (first && first !== store.selectedId) await select(first)
 })
 
@@ -461,7 +515,10 @@ onBeforeUnmount(() => {
 </script>
 
 <template>
-  <div class="app-shell app-window flex h-screen w-screen flex-col overflow-hidden bg-background text-foreground">
+  <div
+    class="flex flex-col overflow-hidden bg-background text-foreground"
+    :class="embedded ? 'h-full min-h-0 w-full' : 'app-shell app-window h-screen w-screen'"
+  >
     <!-- Reloading the open thread failed: its last good copy stays on screen. -->
     <Banner
       v-if="view && store.viewError"
@@ -490,11 +547,13 @@ onBeforeUnmount(() => {
         :project-options="projectOptions"
         :error="store.error ? errorLine(store.error) : null"
         :pinned="pinned"
+        :embedded="embedded"
         :reloading="reloading"
         @select="select"
         @add="openAdd()"
         @retry="store.fetchList()"
         @toggle-pin="togglePin"
+        @dock="dock"
         @reload="reloadAll"
       />
 
@@ -552,7 +611,9 @@ onBeforeUnmount(() => {
     />
 
     <!-- The pop-out doesn't mount the main app's dialog/toast hosts. -->
-    <ConfirmModal />
-    <ToastHost />
+    <template v-if="!embedded">
+      <ConfirmModal />
+      <ToastHost />
+    </template>
   </div>
 </template>
