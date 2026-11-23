@@ -509,6 +509,13 @@
 .markdown-output th { background: hsl(var(--muted)); font-weight: 600; color: hsl(var(--foreground)); }
 .markdown-output tbody tr:nth-child(even) { background: hsl(var(--muted) / 0.35); }
 
+/* YAML frontmatter (FileViewer): a muted key/value table above the document. */
+.markdown-output table.frontmatter { font-size: 0.75rem; margin-bottom: 1.1rem; color: hsl(var(--muted-foreground)); }
+.markdown-output table.frontmatter th,
+.markdown-output table.frontmatter td { padding: 0.2rem 0.6rem; }
+.markdown-output table.frontmatter th { font-family: var(--font-mono, ui-monospace, monospace); font-weight: 500; color: hsl(var(--muted-foreground)); white-space: nowrap; }
+.markdown-output table.frontmatter tbody tr:nth-child(even) { background: transparent; }
+
 .markdown-output img { max-width: 100%; border-radius: 0.375rem; }
 
 /* ---------------------------------------------------------------------------
