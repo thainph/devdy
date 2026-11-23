@@ -38,8 +38,8 @@ const props = defineProps<{
 const emit = defineEmits<{
   /** Embedded: the file was deleted, close the tab. */
   close: []
-  /** Embedded: a link to another file of the project was clicked. */
-  openFile: [path: string, line: number | null]
+  /** Embedded: a link to another file of the project was clicked (`newWindow`: ⌘/Ctrl-click). */
+  openFile: [path: string, line: number | null, newWindow: boolean]
   /** Embedded: the file was renamed / moved to `path`. */
   renamed: [path: string]
 }>()
@@ -112,8 +112,8 @@ onBeforeUnmount(() => {
   unlisten = []
 })
 
-function onOpenFile(p: string, l: number | null) {
-  if (props.embedded) emit('openFile', p, l)
+function onOpenFile(p: string, l: number | null, newWindow: boolean) {
+  if (props.embedded) emit('openFile', p, l, newWindow)
   else openFileWindow(projectPath.value, p, l)
 }
 function onOpenUrl(url: string) {

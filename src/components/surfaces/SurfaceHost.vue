@@ -19,7 +19,7 @@ import FileViewerWindow from '@/views/FileViewerWindow.vue'
 const props = defineProps<{
   surface: SurfaceKind
   params: SurfaceParams
-  /** Shown in the right half of a split (files opened from here stay there). */
+  /** Shown in the right half of a split (links followed here stay there). */
   inSplit?: boolean
 }>()
 
@@ -31,11 +31,13 @@ const tabId = computed(() => surfaceTabId(props.surface, props.params))
 function onFileClose() {
   void closeSurfaceTab(tabId.value)
 }
-function onOpenFile(path: string, at: number | null) {
+// A link in a file is followed where the file is, like a browser: the new file
+// takes this half (the old one stays a tab). ⌘/Ctrl-click opens its own window.
+function onOpenFile(path: string, at: number | null, newWindow: boolean) {
   void openSurface(
     'file',
     { projectPath: props.params.projectPath, path, line: at ?? undefined },
-    { placement: 'tab', split: props.inSplit },
+    newWindow ? { placement: 'window' } : { placement: 'tab', pane: props.inSplit ? 'right' : 'left' },
   )
 }
 // A rename can arrive while the tab is hidden: re-point it in place, and move

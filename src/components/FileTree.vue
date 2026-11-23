@@ -15,6 +15,7 @@ import { getCurrentWebview } from '@tauri-apps/api/webview'
 import type { UnlistenFn } from '@tauri-apps/api/event'
 import FileTreeNode from '@/components/FileTreeNode.vue'
 import FileActionsMenu from '@/components/FileActionsMenu.vue'
+import ListSidebarHeader from '@/components/listDetail/ListSidebarHeader.vue'
 import { Button, ContextMenu } from '@/components/ui'
 import type { FileTarget } from '@/lib/fileActions'
 import { useFileTreeStore } from '@/stores/fileTree'
@@ -30,10 +31,15 @@ const props = defineProps<{
   /** Whether the Files panel is currently visible. The live FS watcher only runs
    *  while true, so a hidden tree costs nothing. Defaults to on when omitted. */
   active?: boolean
+  /** Header title (the shared list-sidebar header). */
+  title: string
+  /** Show a ✕ (emits `close`), for the rail floating over a narrow screen. */
+  closable?: boolean
 }>()
 
 const emit = defineEmits<{
   'open-file': [path: string]
+  close: []
 }>()
 
 const { t } = useI18n()
@@ -235,13 +241,13 @@ onBeforeUnmount(() => {
 
 <template>
   <div class="flex flex-col h-full min-h-0">
-    <!-- Header -->
-    <div class="flex items-center justify-between gap-2 px-3 h-9 shrink-0 border-b border-border/60">
-      <span class="text-[11px] font-semibold uppercase tracking-wide text-muted-foreground truncate">{{ t('files.tree.explorer') }}</span>
-      <div class="flex items-center gap-0.5 shrink-0">
+    <!-- Header: the same list-sidebar chrome as the Session tab's History. -->
+    <div class="run-history-head shrink-0 border-b border-border/40">
+    <ListSidebarHeader :title="title" :closable="closable" @close="emit('close')">
+      <template #actions>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="icon-sm"
           :title="t('files.tree.newFile')"
           :aria-label="t('files.tree.newFile')"
           @click="promptCreate('file', '')"
@@ -250,7 +256,7 @@ onBeforeUnmount(() => {
         </Button>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="icon-sm"
           :title="t('files.tree.newFolder')"
           :aria-label="t('files.tree.newFolder')"
           @click="promptCreate('folder', '')"
@@ -259,7 +265,7 @@ onBeforeUnmount(() => {
         </Button>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="icon-sm"
           :title="t('files.tree.collapseAll')"
           :aria-label="t('files.tree.collapseAll')"
           @click="store.collapseAll(projectPath)"
@@ -268,7 +274,7 @@ onBeforeUnmount(() => {
         </Button>
         <Button
           variant="ghost"
-          size="icon-xs"
+          size="icon-sm"
           :title="t('files.tree.reload')"
           :aria-label="t('files.tree.reload')"
           :class="reloading && 'opacity-50 pointer-events-none'"
@@ -276,7 +282,8 @@ onBeforeUnmount(() => {
         >
           <RotateCw class="h-3.5 w-3.5" :class="reloading && 'animate-spin'" :stroke-width="1.75" />
         </Button>
-      </div>
+      </template>
+    </ListSidebarHeader>
     </div>
 
     <!-- Body -->

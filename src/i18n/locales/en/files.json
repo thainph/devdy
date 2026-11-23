@@ -36,7 +36,6 @@
     "unpin": "Unpin (float only while focused)"
   },
   "tree": {
-    "explorer": "Explorer",
     "newFile": "New File",
     "newFolder": "New Folder",
     "collapseAll": "Collapse all",

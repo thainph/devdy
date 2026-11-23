@@ -84,6 +84,30 @@ export function parseLineRef(ref: string): number | null {
 }
 
 /**
+ * Resolve a markdown link href the way a browser would, relative to the
+ * directory of `fromPath` (a project-relative file path): `README.md`,
+ * `./a.md`, `../b/c.md`. A leading `/` means the project root. Strips the
+ * `#fragment` / `?query` and percent-decoding. Returns null for URLs with a
+ * scheme or a path that climbs above the project root.
+ */
+export function resolveRelativeLink(href: string, fromPath: string): string | null {
+  let target = href.replace(/[#?].*$/, '').trim()
+  if (!target || /^[a-z][a-z0-9+.-]*:/i.test(target)) return null
+  try { target = decodeURI(target) } catch { /* keep as written */ }
+  const parts = target.startsWith('/') ? [] : fromPath.split('/').slice(0, -1)
+  for (const seg of target.split('/')) {
+    if (!seg || seg === '.') continue
+    if (seg === '..') {
+      if (!parts.length) return null
+      parts.pop()
+    } else {
+      parts.push(seg)
+    }
+  }
+  return parts.length ? parts.join('/') : null
+}
+
+/**
  * Mark inline `<code>` elements that name a project file as clickable
  * `code.file-link[data-file-path]`. `matcher` resolves a token to a path.
  */

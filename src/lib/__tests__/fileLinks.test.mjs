@@ -4,7 +4,7 @@
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 
-const { matchProjectFile, parseLineRef } = await import('../fileLinks.ts')
+const { matchProjectFile, parseLineRef, resolveRelativeLink } = await import('../fileLinks.ts')
 
 // The pre-index implementation, kept verbatim as the reference semantics.
 function linearMatch(raw, fileSet) {
@@ -107,4 +107,20 @@ test('parseLineRef', () => {
   assert.equal(parseLineRef('a.ts#L42'), 42)
   assert.equal(parseLineRef('a.ts:7-9'), 7)
   assert.equal(parseLineRef('a.ts'), null)
+})
+
+test('resolveRelativeLink: relative to the linking file’s directory', () => {
+  const from = 'docs/03-design/onboarding/01-business-overview.vi.md'
+  assert.equal(resolveRelativeLink('README.md', from), 'docs/03-design/onboarding/README.md')
+  assert.equal(resolveRelativeLink('./README.md#5-lien-he', from), 'docs/03-design/onboarding/README.md')
+  assert.equal(resolveRelativeLink('../02-arch/a.md', from), 'docs/03-design/02-arch/a.md')
+  assert.equal(resolveRelativeLink('/README.md', from), 'README.md')
+  assert.equal(resolveRelativeLink('B%C3%A0n%20giao.md', from), 'docs/03-design/onboarding/Bàn giao.md')
+  assert.equal(resolveRelativeLink('a.md', 'top.md'), 'a.md')
+})
+
+test('resolveRelativeLink: rejects schemes, fragments-only and escaping the root', () => {
+  assert.equal(resolveRelativeLink('https://x.dev/a.md', 'a/b.md'), null)
+  assert.equal(resolveRelativeLink('#section', 'a/b.md'), null)
+  assert.equal(resolveRelativeLink('../../x.md', 'a/b.md'), null)
 })

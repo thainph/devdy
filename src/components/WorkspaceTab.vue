@@ -49,12 +49,14 @@ function onClose(ev: MouseEvent) {
             : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
       ]
       : [
+        // Every tab is a visible chip (faint fill + hairline) so its edges show
+        // without hovering; the focused one lifts to a card like a split half.
         'h-7',
         look === 'active'
-          ? 'bg-accent text-foreground'
+          ? 'bg-background text-foreground shadow-[0_0_0_0.5px_hsl(var(--border)),0_1px_3px_rgb(0_0_0/0.1)]'
           : look === 'visible'
-            ? 'bg-accent/50 text-foreground'
-            : 'text-muted-foreground hover:text-foreground hover:bg-accent/50',
+            ? 'bg-foreground/[0.05] text-foreground shadow-[inset_0_0_0_0.5px_hsl(var(--border))]'
+            : 'bg-foreground/[0.045] text-foreground/75 shadow-[inset_0_0_0_0.5px_hsl(var(--border))] hover:bg-foreground/[0.08] hover:text-foreground',
       ]"
   >
     <template v-if="tab.type === 'project'">

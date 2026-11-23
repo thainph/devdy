@@ -490,6 +490,12 @@
     0 1px 6px rgba(0, 0, 0, 0.06);
   transition: box-shadow 160ms ease;
 }
+/* Clip the hosted screen to the corners. The left half scrolls (overflow-auto)
+ * and so already clips; the right half is a plain flex column, so an opaque
+ * child such as the file viewer would square its corners off. */
+[data-theme='tahoe'] .split-pane[data-pane='right'] {
+  overflow: hidden;
+}
 [data-theme='tahoe'] .split-pane.is-focused {
   box-shadow:
     inset 0 1px 0 var(--tahoe-specular),

@@ -59,9 +59,9 @@ export interface OpenSurfaceOptions extends SurfaceExtras {
   split?: boolean
   /**
    * As a tab, show it in this half of the shown split (a navigation inside
-   * that half). Main window only.
+   * that half); `left` outside a split just routes to it. Main window only.
    */
-  pane?: 'right'
+  pane?: 'left' | 'right'
 }
 
 async function focusMain() {
@@ -86,6 +86,9 @@ async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: Surfa
     tabs.focusedPane = 'right'
   } else if (opts.pane === 'right' && tabs.isSplit && tabs.replaceSide('right', tab.id)) {
     tabs.focusedPane = 'right'
+  } else if (opts.pane === 'left' && tabs.isSplit && tabs.replaceSide('left', tab.id)) {
+    tabs.focusedPane = 'left'
+    await pushHere()
   } else if (opts.split && routed !== tab.id && tabs.isSplit && tabs.pair?.left !== tab.id) {
     // Beside the focused half: in the other one.
     const side = tabs.focusedPane === 'right' ? 'left' : 'right'

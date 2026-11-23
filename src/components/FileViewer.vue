@@ -29,7 +29,8 @@ import { useAppSettingsStore } from '@/stores/appSettings'
 import { useImageCompareStore } from '@/stores/imageCompare'
 import { applyMermaidFence, vMermaid } from '@/lib/mermaid'
 import { vCopyCode } from '@/lib/copyCode'
-import { matchProjectFile, parseLineRef, decorateFileLinks } from '@/lib/fileLinks'
+import { matchProjectFile, parseLineRef, decorateFileLinks, resolveRelativeLink } from '@/lib/fileLinks'
+import { splitFrontmatter, frontmatterHtml } from '@/lib/markdownFrontmatter'
 
 const props = withDefaults(defineProps<{
   projectPath: string
@@ -44,8 +45,8 @@ const props = withDefaults(defineProps<{
 })
 
 const emit = defineEmits<{
-  /** A file link inside the markdown preview was clicked. */
-  'open-file': [path: string, line: number | null]
+  /** A file link inside the markdown preview was clicked (`newWindow`: ⌘/Ctrl-click). */
+  'open-file': [path: string, line: number | null, newWindow: boolean]
   /** An http(s)/mailto link inside the markdown preview was clicked. */
   'open-url': [url: string]
   /** Renamed from the ⋯ menu; the host should follow the file to its new path. */
@@ -526,6 +527,13 @@ function renderText(md: string): string {
   // runs with csp:null.
   return _sanitize ? _sanitize(html) : html
 }
+// A markdown file's preview: frontmatter split off into its own block, since
+// markdown-it would turn it into a setext heading.
+function renderMarkdownFile(md: string): string {
+  const { frontmatter, body } = splitFrontmatter(md ?? '')
+  // frontmatterHtml escapes every value, so it needs no sanitizing.
+  return (frontmatter === null ? '' : frontmatterHtml(frontmatter)) + renderText(body)
+}
 async function loadMarkdown() {
   if (_md) return
   try {
@@ -561,16 +569,29 @@ function onProseClick(e: MouseEvent) {
   const target = e.target as HTMLElement
   const code = target.closest('code.file-link') as HTMLElement | null
   const fp = code?.getAttribute('data-file-path')
-  if (fp) { e.preventDefault(); emit('open-file', fp, null); return }
+  const newWindow = e.metaKey || e.ctrlKey
+  if (fp) { e.preventDefault(); emit('open-file', fp, null, newWindow); return }
   const anchor = target.closest('a') as HTMLAnchorElement | null
   if (anchor) {
     e.preventDefault()
     const href = anchor.getAttribute('href') ?? ''
     if (!href) return
     if (/^(https?:|mailto:)/i.test(href)) { emit('open-url', href); return }
-    const path = matchProjectFile(href.replace(/#.*$/, ''), projectFileSet.value)
-    if (path) emit('open-file', path, parseLineRef(href))
+    if (href.startsWith('#')) return
+    void openLinkedFile(href, newWindow)
   }
+}
+// A markdown link is relative to the file it's in, so try that first; fall back
+// to the loose project-wide match for links written as bare/partial paths. The
+// file list is re-read first: it's loaded when the tab opens, so a file created,
+// renamed or deleted since then would otherwise resolve to nothing or to a path
+// that no longer exists.
+async function openLinkedFile(href: string, newWindow: boolean) {
+  await loadProjectFiles()
+  const files = projectFileSet.value
+  const rel = resolveRelativeLink(href, curPath.value || props.path)
+  const path = rel && files.has(rel) ? rel : matchProjectFile(href.replace(/[#?].*$/, ''), files)
+  if (path) emit('open-file', path, parseLineRef(href), newWindow)
 }
 
 // ── Syntax highlighting (shiki) for the raw text view ───────────────────────
@@ -1375,7 +1396,7 @@ defineExpose({ onRevealInFolder, onOpenInApp })
         v-file-links
         v-mermaid
         v-copy-code
-        v-html="renderText(content)"
+        v-html="renderMarkdownFile(content)"
         class="markdown-output p-4 leading-relaxed text-foreground"
         :style="{ fontSize: fontSize + 'px' }"
         @click="onProseClick"
