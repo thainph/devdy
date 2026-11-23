@@ -4166,21 +4166,6 @@ function handleRefInput(val: string) {
             <FolderTree class="h-3.5 w-3.5" :stroke-width="2" />
             {{ t('run.files') }}
           </button>
-          <!-- The Session tab's header carries ⋯ / ✕; the Files tab keeps them here. -->
-          <div v-if="leftTab === 'files'" class="flex items-center px-1.5">
-            <Button
-              v-if="bodyNarrow"
-              variant="ghost"
-              size="icon"
-              class="shrink-0"
-              :title="t('listPane.closePeek')"
-              :aria-label="t('listPane.closePeek')"
-              @click="historyOverlay = false"
-            >
-              <X class="h-3.5 w-3.5" :stroke-width="1.75" />
-            </Button>
-            <ListPaneButtons v-else mode="hide" />
-          </div>
         </div>
 
         <!-- Session tab: the shared list-sidebar chrome (components/listDetail).
@@ -4533,7 +4518,10 @@ function handleRefInput(val: string) {
           v-if="project?.path"
           :project-path="project.path"
           :active="leftTab === 'files'"
+          :title="t('run.files')"
+          :closable="bodyNarrow"
           @open-file="openFile"
+          @close="historyOverlay = false"
         />
 
       </div>
