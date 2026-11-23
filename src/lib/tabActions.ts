@@ -91,6 +91,24 @@ export function closeEntry(e: TabEntry) {
   void removeTab(e)
 }
 
+/**
+ * Close every tab but `e`, which is left on screen full width (any split ends:
+ * its other half is closed too). The others close straight in the store, so the
+ * router moves once, to `e`, instead of hopping through each neighbour.
+ */
+export async function closeOtherEntries(e: TabEntry) {
+  const tabs = useWorkspaceTabsStore()
+  const keep = tabEntryKey(e)
+  tabs.unsplit()
+  if (keep !== routedKey()) await goToEntry(sanitized(e))
+  for (const other of [...tabs.entries]) {
+    if (tabEntryKey(other) === keep) continue
+    if (other.type === 'project') tabs.close(other.projectId)
+    else if (other.type === 'page') tabs.closePage(other.id)
+    else tabs.closeSurface(other.id)
+  }
+}
+
 /** The tab on the left half: the pair's left when split, else what's on screen. */
 function leftKey(): string | null {
   const tabs = useWorkspaceTabsStore()

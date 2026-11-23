@@ -45,6 +45,7 @@
   "tabs": {
     "project": "Project",
     "closeTab": "Close tab",
+    "closeOthers": "Close other tabs",
     "dragToReorder": "Drag to reorder",
     "allTabs": "All tabs ({n} hidden)"
   },

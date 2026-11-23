@@ -1,7 +1,7 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeftRight, ChevronDown, Columns2, ExternalLink, PanelRightClose, SquareSplitHorizontal, X } from 'lucide-vue-next'
+import { ArrowLeftRight, ChevronDown, Columns2, ExternalLink, PanelRightClose, SquareSplitHorizontal, X, XSquare } from 'lucide-vue-next'
 import { ContextMenu, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
 import WorkspaceTab from '@/components/WorkspaceTab.vue'
 import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
@@ -13,7 +13,7 @@ import { entryIcon, entryLabel } from '@/lib/tabMeta'
 import { tabStripLayout, unitWidth } from '@/lib/tabStripLayout'
 import { stripUnits } from '@/lib/workspaceState'
 import { popOutSurface, routedKey } from '@/lib/surfaceOpen'
-import { canOpenOnRight, closeEntry, openOnRight, selectEntry, swapSplit, unsplitFocused } from '@/lib/tabActions'
+import { canOpenOnRight, closeEntry, closeOtherEntries, openOnRight, selectEntry, swapSplit, unsplitFocused } from '@/lib/tabActions'
 
 /**
  * The shared tab strip of the main window: one tab per open PROJECT (its runs
@@ -293,6 +293,10 @@ function inPair(e: TabEntry): boolean {
       <DropdownItem @click="runMenu(() => closeEntry(menu.tab!))">
         <X class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
         {{ t('misc.tabs.closeTab') }}
+      </DropdownItem>
+      <DropdownItem :disabled="tabsStore.entries.length < 2" @click="runMenu(() => void closeOtherEntries(menu.tab!))">
+        <XSquare class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+        {{ t('misc.tabs.closeOthers') }}
       </DropdownItem>
     </template>
   </ContextMenu>
