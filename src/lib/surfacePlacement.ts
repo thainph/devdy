@@ -1,18 +1,10 @@
-// Where a surface opens right now (tab vs window), and opening one in its own
-// OS window. No router import here: the router's guards use this module, and
+// Surface OS windows: whether one is open, and opening one (a tab popped out,
+// or ⌘-click on a file link). No router import here: the router's guards use this module, and
 // lib/surfaceOpen.ts (which does import the router) builds on it.
 import { availableMonitors } from '@tauri-apps/api/window'
 import { WebviewWindow, getCurrentWebviewWindow } from '@tauri-apps/api/webviewWindow'
-import { useAppSettingsStore } from '@/stores/appSettings'
 import type { CalEvent } from '@/stores/googleCalendar'
-import {
-  parseOverrides,
-  parseWindowMode,
-  placementFor,
-  type Placement,
-  type SurfaceKind,
-  type SurfaceParams,
-} from '@/lib/surfaces'
+import type { SurfaceKind, SurfaceParams } from '@/lib/surfaces'
 import { PR_INBOX_WINDOW_LABEL, openPrInboxWindow } from '@/lib/prInboxWindow'
 import { GITHUB_MENTIONS_WINDOW_LABEL, openGithubMentionsWindow } from '@/lib/githubMentionsWindow'
 import { CALENDAR_WINDOW_LABEL, openCalendarWindow } from '@/lib/calendarWindow'
@@ -69,26 +61,6 @@ export async function monitorCount(fresh = false): Promise<number> {
   }
   monitorCache = { count, at: Date.now() }
   return count
-}
-
-/** The tab/window decision for `kind` with the current settings and monitors. */
-export async function resolvePlacement(kind: SurfaceKind): Promise<Placement> {
-  const settings = useAppSettingsStore()
-  try {
-    // Only the main window's store hears about edits in Settings: other
-    // windows (session pop-outs, Todos window…) re-read the row each time.
-    if (isMainWindow()) await settings.ensureLoaded()
-    else await settings.refresh()
-  } catch {
-    /* settings unavailable: defaults below */
-  }
-  const s = settings.settings
-  return placementFor(
-    kind,
-    parseWindowMode(s?.window_mode),
-    parseOverrides(s?.window_mode_overrides),
-    await monitorCount(),
-  )
 }
 
 /** Extras a surface can be opened with that don't belong in a tab's params. */

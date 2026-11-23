@@ -1,57 +1,14 @@
-// Unit tests for lib/surfaces.ts (tab vs window placement of surfaces).
+// Unit tests for lib/surfaces.ts (surface tabs: params, ids, routes).
 // Run: node --test src/lib/__tests__/surfaces.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
   cleanParams,
-  parseOverrides,
-  parseWindowMode,
-  placementFor,
   shouldDockOnMonitorChange,
   surfaceForPath,
   surfaceLocation,
   surfaceTabId,
 } from '../surfaces.ts'
-
-test('auto: one monitor opens every surface as a tab', () => {
-  for (const k of ['prInbox', 'calendar', 'slack', 'todos', 'file']) {
-    assert.equal(placementFor(k, 'auto', {}, 1), 'tab')
-  }
-})
-
-test('auto: a second monitor moves only the dashboard-like surfaces to windows', () => {
-  assert.equal(placementFor('calendar', 'auto', {}, 2), 'window')
-  assert.equal(placementFor('prInbox', 'auto', {}, 3), 'window')
-  assert.equal(placementFor('slack', 'auto', {}, 2), 'window')
-  assert.equal(placementFor('todos', 'auto', {}, 2), 'tab')
-  assert.equal(placementFor('file', 'auto', {}, 2), 'tab')
-})
-
-test('fixed modes ignore the monitor count', () => {
-  assert.equal(placementFor('calendar', 'tab', {}, 2), 'tab')
-  assert.equal(placementFor('todos', 'window', {}, 1), 'window')
-})
-
-test('a per-surface override wins over the mode', () => {
-  assert.equal(placementFor('calendar', 'auto', { calendar: 'tab' }, 2), 'tab')
-  assert.equal(placementFor('todos', 'tab', { todos: 'window' }, 1), 'window')
-})
-
-test('parseWindowMode falls back to auto', () => {
-  assert.equal(parseWindowMode('tab'), 'tab')
-  assert.equal(parseWindowMode('window'), 'window')
-  assert.equal(parseWindowMode(''), 'auto')
-  assert.equal(parseWindowMode(undefined), 'auto')
-  assert.equal(parseWindowMode('nope'), 'auto')
-})
-
-test('parseOverrides drops malformed input and unknown keys/values', () => {
-  assert.deepEqual(parseOverrides('{"calendar":"tab","todos":"window"}'), { calendar: 'tab', todos: 'window' })
-  assert.deepEqual(parseOverrides('{"calendar":"inherit","bogus":"tab"}'), {})
-  assert.deepEqual(parseOverrides('not json'), {})
-  assert.deepEqual(parseOverrides('[1,2]'), {})
-  assert.deepEqual(parseOverrides(''), {})
-})
 
 test('cleanParams keeps only known non-empty keys', () => {
   assert.deepEqual(cleanParams('todos', { id: 'a', projectId: '', junk: 'x' }), { id: 'a' })

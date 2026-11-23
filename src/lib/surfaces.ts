@@ -27,7 +27,6 @@ export const SURFACE_KINDS: readonly SurfaceKind[] = [
 ]
 
 /** Global setting `window_mode`. */
-export type WindowMode = 'auto' | 'tab' | 'window'
 export type Placement = 'tab' | 'window'
 
 /** Route path of each surface when it is shown as a tab of the main window. */
@@ -41,19 +40,6 @@ export const SURFACE_PATHS: Record<SurfaceKind, string> = {
   notes: '/notes',
   file: '/file',
 }
-
-/**
- * Surfaces that "Auto" moves to their own window once a second monitor is
- * attached — the dashboards worth keeping in view beside the work. Todos,
- * Notes and files stay tabs (the user can still pop any tab out).
- */
-export const AUTO_WINDOW_SURFACES: ReadonlySet<SurfaceKind> = new Set([
-  'prInbox',
-  'mentions',
-  'calendar',
-  'radar',
-  'slack',
-])
 
 /** Query keys each surface keeps in its route / tab (everything else is dropped). */
 const PARAM_KEYS: Record<SurfaceKind, readonly string[]> = {
@@ -71,44 +57,6 @@ export type SurfaceParams = Record<string, string>
 
 export function isSurfaceKind(v: unknown): v is SurfaceKind {
   return typeof v === 'string' && (SURFACE_KINDS as readonly string[]).includes(v)
-}
-
-export function parseWindowMode(v: string | null | undefined): WindowMode {
-  return v === 'tab' || v === 'window' ? v : 'auto'
-}
-
-/** Parse the `window_mode_overrides` JSON, dropping anything malformed. */
-export function parseOverrides(raw: string | null | undefined): Partial<Record<SurfaceKind, Placement>> {
-  const out: Partial<Record<SurfaceKind, Placement>> = {}
-  if (!raw) return out
-  let obj: unknown
-  try {
-    obj = JSON.parse(raw)
-  } catch {
-    return out
-  }
-  if (!obj || typeof obj !== 'object' || Array.isArray(obj)) return out
-  for (const [k, v] of Object.entries(obj as Record<string, unknown>)) {
-    if (isSurfaceKind(k) && (v === 'tab' || v === 'window')) out[k] = v
-  }
-  return out
-}
-
-/**
- * Where `kind` opens: its own override first, then the global mode; "auto"
- * means a tab on one monitor and — for the dashboard-like surfaces — a window
- * once there are two or more.
- */
-export function placementFor(
-  kind: SurfaceKind,
-  mode: WindowMode,
-  overrides: Partial<Record<SurfaceKind, Placement>>,
-  monitorCount: number,
-): Placement {
-  const own = overrides[kind]
-  if (own) return own
-  if (mode === 'tab' || mode === 'window') return mode
-  return monitorCount >= 2 && AUTO_WINDOW_SURFACES.has(kind) ? 'window' : 'tab'
 }
 
 /** Keep only the params a surface understands, as non-empty strings. */
@@ -142,8 +90,8 @@ export function surfaceForPath(path: string): SurfaceKind | null {
 
 /**
  * Query flag of a navigation that is explicitly a tab (switching / docking
- * tabs): the surface route's guard lets it through whatever the placement
- * says. Carried in the URL, so back / forward to a tab stays a tab too.
+ * tabs). Surfaces always open as tabs now; kept so existing URLs and the
+ * route-to-tab mapping stay unchanged.
  */
 export const TAB_INTENT = '_tab'
 

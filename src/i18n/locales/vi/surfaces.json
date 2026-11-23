@@ -12,22 +12,7 @@
   "dock": "Gắn vào cửa sổ chính",
   "settings": {
     "title": "Cửa sổ & tab",
-    "desc": "Nơi mở Duyệt PR, Lịch, Thread Slack, Todo, Note và trình xem file.",
-    "mode": "Chế độ cửa sổ",
-    "modeHint": "Tự động: với một màn hình, mọi thứ mở thành tab trong cửa sổ chính. Khi có màn hình phụ, Duyệt PR, Mentions, Lịch, Delivery Radar và Thread Slack mở cửa sổ riêng.",
-    "modes": {
-      "auto": "Tự động",
-      "tab": "Luôn mở tab",
-      "window": "Luôn mở cửa sổ"
-    },
-    "perScreen": "Theo từng màn",
-    "screen": "Màn hình",
-    "opensAs": "Cách mở",
-    "now": "Hiện tại",
-    "inherit": "Theo chế độ chung",
-    "asTab": "Tab",
-    "asWindow": "Cửa sổ riêng",
-    "monitors": "{n} màn hình | {n} màn hình",
+    "desc": "Duyệt PR, Lịch, Thread Slack, Todo, Note và file luôn mở thành tab trong cửa sổ chính. Muốn tách ra cửa sổ riêng thì chuột phải vào tab → Pop out, hoặc ⌘-click vào link file.",
     "dockOnUnplug": "Gắn cửa sổ lại thành tab khi rút màn hình phụ",
     "dockOnUnplugHint": "Khi màn hình phụ được rút ra, các cửa sổ Duyệt PR / Lịch / Slack… trên đó quay về cửa sổ chính thành tab.",
     "saveFailed": "Không lưu được cài đặt: {error}",

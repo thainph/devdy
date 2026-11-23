@@ -1,6 +1,6 @@
 // THE way to open a surface (PR Inbox, Calendar, Slack threads, Todos, a
-// file…) from anywhere: it decides tab vs window (lib/surfacePlacement) and
-// either routes the main window to the surface's tab or opens its OS window.
+// file…) from anywhere: as a tab of the main window, unless the caller asks
+// for a window or the surface already has one open (then that one is focused).
 //
 // From a pop-out webview (no router of the main window) a tab request is sent
 // to the main window over SURFACE_OPEN, handled by `listenSurfaceRequests`.
@@ -32,7 +32,6 @@ import {
 import {
   isMainWindow,
   openSurfaceWindow,
-  resolvePlacement,
   surfaceWindowOpen,
   type SurfaceExtras,
 } from '@/lib/surfacePlacement'
@@ -49,7 +48,7 @@ export interface SurfaceOpenRequest {
 }
 
 export interface OpenSurfaceOptions extends SurfaceExtras {
-  /** Skip the settings and open as this. */
+  /** Open as this (default: a tab, or the surface's window when one is open). */
   placement?: Placement
   /**
    * As a tab, show it in the right half of a split instead of switching the
@@ -134,8 +133,7 @@ export async function openSurface(
   // own window, or a window beside its own tab.
   let where = opts.placement
   if (!where && (await surfaceWindowOpen(kind, params))) where = 'window'
-  if (!where && isMainWindow() && useWorkspaceTabsStore().surfaceTab(surfaceTabId(kind, params))) where = 'tab'
-  where ??= await resolvePlacement(kind)
+  where ??= 'tab'
   if (where === 'window') {
     await openSurfaceWindow(kind, params, extras)
     return 'window'

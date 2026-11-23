@@ -6,8 +6,7 @@ import ServersView from '../views/ServersView.vue'
 import ProjectsView from '../views/ProjectsView.vue'
 import DashboardView from '../views/DashboardView.vue'
 import SurfaceRouteView from '../views/SurfaceRouteView.vue'
-import { cleanParams, SURFACE_PATHS, TAB_INTENT, type SurfaceKind } from '../lib/surfaces'
-import { openSurfaceWindow, resolvePlacement } from '../lib/surfacePlacement'
+import { SURFACE_PATHS, type SurfaceKind } from '../lib/surfaces'
 import ProjectDetailView from '../views/ProjectDetailView.vue'
 import RunView from '../views/RunView.vue'
 import SettingsView from '../views/SettingsView.vue'
@@ -26,10 +25,8 @@ function editorRedirects(base: string): RouteRecordRaw[] {
 }
 
 /**
- * Route of a surface tab. Its guard sends the surface to its own window when
- * that is where it opens now (lib/surfacePlacement) — unless the navigation is
- * explicitly a tab (the TAB_INTENT query flag: switching / docking tabs). A pop-out
- * session window never hosts surfaces: it hands them to the main window.
+ * Route of a surface tab. Surfaces always open as tabs; a pop-out session
+ * window never hosts them: it hands them to the main window.
  */
 function surfaceRoute(kind: SurfaceKind, name: string): RouteRecordRaw {
   return {
@@ -44,10 +41,7 @@ function surfaceRoute(kind: SurfaceKind, name: string): RouteRecordRaw {
         void openSurface(kind, to.query)
         return stay
       }
-      if (to.query[TAB_INTENT] === '1') return true
-      if ((await resolvePlacement(kind)) === 'tab') return true
-      void openSurfaceWindow(kind, cleanParams(kind, to.query))
-      return stay
+      return true
     },
   }
 }

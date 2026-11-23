@@ -12,22 +12,7 @@
   "dock": "Dock into main window",
   "settings": {
     "title": "Windows & tabs",
-    "desc": "Where the PR Inbox, Calendar, Slack threads, Todos, Notes and file viewers open.",
-    "mode": "Window mode",
-    "modeHint": "Auto: on one screen everything opens as a tab of the main window. With a second screen, the PR Inbox, Mentions, Calendar, Delivery Radar and Slack threads open in their own window.",
-    "modes": {
-      "auto": "Auto",
-      "tab": "Always tabs",
-      "window": "Always windows"
-    },
-    "perScreen": "Per screen",
-    "screen": "Screen",
-    "opensAs": "Opens as",
-    "now": "Right now",
-    "inherit": "Follow window mode",
-    "asTab": "Tab",
-    "asWindow": "Separate window",
-    "monitors": "{n} screen | {n} screens",
+    "desc": "Surfaces (PR Inbox, Calendar, Slack threads, Todos, Notes, files) always open as tabs of the main window. Pop a tab out from its right-click menu, or ⌘-click a file link.",
     "dockOnUnplug": "Dock windows back as tabs when a screen is unplugged",
     "dockOnUnplugHint": "When the second screen goes away, its PR Inbox / Calendar / Slack… windows come back into the main window as tabs.",
     "saveFailed": "Couldn't save the setting: {error}",
