@@ -226,10 +226,10 @@ function openTarget(t: EntryTarget): string {
 }
 
 /**
- * A screen in the right half navigated (PaneRouterView's push / replace). Stays
- * in the right half when it can: the same tab moves along, another tab takes
- * the half's place. Screens that aren't tabs (a project's settings), or that
- * can't sit beside the left half, show in the main pane instead.
+ * A screen in the right half navigated (PaneRouterView's push / replace). The
+ * same tab moves along in the right half; another tab never takes a half's
+ * place (the split is fixed) — it, and screens that aren't tabs (a project's
+ * settings), show full width while the pair waits on the strip.
  */
 export function navigateRightPane(to: RouteLocationNormalizedLoaded) {
   const tabs = useWorkspaceTabsStore()
@@ -240,12 +240,13 @@ export function navigateRightPane(to: RouteLocationNormalizedLoaded) {
     return
   }
   if (target.type === 'surface') {
-    // Surfaces may open as their own window (Settings → Windows & tabs).
-    void openSurface(target.surface, target.params, tabs.isSplit ? { pane: 'right' } : {})
+    void openSurface(target.surface, target.params)
     return
   }
   const key = openTarget(target)
-  if (key === tabs.pair?.left || !tabs.isSplit || !tabs.replaceSide('right', key)) {
+  if (!tabs.isSplit || key !== tabs.pair?.right) {
+    // Another tab: the split's halves are fixed, so it opens full width and
+    // the pair waits on the strip (its left half routes the split back).
     if (key !== tabs.pair?.left) tabs.hidePair()
     else tabs.focusedPane = 'left'
     void router.push(to.fullPath).catch(() => {})
@@ -279,8 +280,8 @@ export function interceptRightHalf(to: RouteLocationNormalizedLoaded): boolean {
 /**
  * The router landed somewhere (App.vue's route watcher). On the pair's left
  * half, the pair comes back on screen; on another tab while split, that tab
- * takes the left half (a link followed inside it) — or, when it can't sit
- * beside the right half, shows full width.
+ * shows full width and the pair waits on the strip — a split's halves only
+ * change on request (Open on the right, swap), never by navigating.
  */
 export function syncPairWithRoute() {
   if (!startupSettled) return
@@ -293,18 +294,14 @@ export function syncPairWithRoute() {
     if (!tabs.pairShown) tabs.showPair('left')
     return
   }
-  if (tabs.isSplit && !tabs.replaceSide('left', key)) tabs.hidePair()
+  if (tabs.isSplit) tabs.hidePair()
 }
 
 /**
- * The sidebar's links: in the focused half of a split (so the right half can
- * be steered from there too), else the main pane.
+ * The sidebar's links. While split, a link to the right half's tab shows it
+ * there (`interceptRightHalf`); any other tab opens full width and leaves the
+ * pair on the strip (`syncPairWithRoute`) — the halves never change under it.
  */
 export function navigateFocused(path: string) {
-  const tabs = useWorkspaceTabsStore()
-  if (tabs.isSplit && tabs.focusedPane === 'right') {
-    navigateRightPane(router.resolve(path) as unknown as RouteLocationNormalizedLoaded)
-    return
-  }
   void router.push(path).catch(() => {})
 }

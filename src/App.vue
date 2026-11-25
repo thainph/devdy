@@ -521,9 +521,9 @@ const compactSidebar = computed(
   () => tabsStore.isSplit && appSettings.settings?.split_compact_sidebar !== 'false',
 )
 
-/** Sidebar surfaces open in the focused half of a split (else as usual). */
+/** Sidebar surfaces open as a tab; a shown split stays fixed (lib/surfaceOpen). */
 function openSurfaceFocused(kind: SurfaceKind, params: Record<string, unknown> = {}) {
-  void openSurface(kind, params, tabsStore.isSplit && tabsStore.focusedPane === 'right' ? { pane: 'right' } : {})
+  void openSurface(kind, params)
 }
 
 // Global listener that mirrors backend-reported active runs into the liveRuns
@@ -1361,7 +1361,6 @@ onMounted(async () => {
                     v-if="tab.id === routedSurfaceId || tab.id === tabsStore.splitId"
                     :surface="tab.surface"
                     :params="tab.params"
-                    :in-split="tab.id === tabsStore.splitId"
                     class="h-full"
                   />
                 </KeepAlive>

@@ -51,16 +51,12 @@ export interface OpenSurfaceOptions extends SurfaceExtras {
   /** Open as this (default: a tab, or the surface's window when one is open). */
   placement?: Placement
   /**
-   * As a tab, show it in the right half of a split instead of switching the
+   * As a tab, open a split with it on the right instead of switching the
    * main area to it — e.g. a file opened from a session keeps the session in
-   * view (the other half when already split). Main window only.
+   * view. While already split it opens full width (halves are fixed). Main
+   * window only.
    */
   split?: boolean
-  /**
-   * As a tab, show it in this half of the shown split (a navigation inside
-   * that half); `left` outside a split just routes to it. Main window only.
-   */
-  pane?: 'left' | 'right'
 }
 
 async function focusMain() {
@@ -83,23 +79,11 @@ async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: Surfa
   if (tabs.isSplit && tabs.splitId === tab.id) {
     // Already in the right half: just bring that half forward.
     tabs.focusedPane = 'right'
-  } else if (opts.pane === 'right' && tabs.isSplit && tabs.replaceSide('right', tab.id)) {
-    tabs.focusedPane = 'right'
-  } else if (opts.pane === 'left' && tabs.isSplit && tabs.replaceSide('left', tab.id)) {
-    tabs.focusedPane = 'left'
+  } else if (tabs.isSplit && tabs.pair?.left !== tab.id) {
+    // The split's halves are fixed: another tab opens full width and the pair
+    // waits on the strip (`split` never replaces a half).
+    tabs.hidePair()
     await pushHere()
-  } else if (opts.split && routed !== tab.id && tabs.isSplit && tabs.pair?.left !== tab.id) {
-    // Beside the focused half: in the other one.
-    const side = tabs.focusedPane === 'right' ? 'left' : 'right'
-    if (!tabs.replaceSide(side, tab.id)) {
-      tabs.hidePair()
-      await pushHere()
-    } else if (side === 'left') {
-      tabs.focusedPane = 'left'
-      await pushHere()
-    } else {
-      tabs.focusedPane = 'right'
-    }
   } else if (opts.split && routed && routed !== tab.id && !tabs.isSplit && tabs.setPair(routed, tab.id, 'right')) {
     // Split opened beside what the router shows.
   } else {
