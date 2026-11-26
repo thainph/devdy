@@ -4225,6 +4225,7 @@ function handleRefInput(val: string) {
             <div v-if="runsStore.runs.length > 0" class="px-2.5 pb-1.5 pt-0.5">
               <ListSearchBox
                 v-model="sessionSearch"
+                :autofocus="false"
                 :placeholder="t('run.searchSessionsPlaceholder')"
                 :filter-active="historyViewChanged"
               >

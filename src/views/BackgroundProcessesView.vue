@@ -19,6 +19,7 @@ import ProcessSummary from '@/components/processes/ProcessSummary.vue'
 import { PROC_GRID } from '@/components/processes/grid'
 import '@/components/dashboard/runtime.css'
 import { useConfirm } from '@/composables/useConfirm'
+import { useSearchBox } from '@/composables/useFindShortcut'
 import { useToast } from '@/composables/useToast'
 import { useBackgroundProcessesStore } from '@/stores/backgroundProcesses'
 import { useLiveRunsStore } from '@/stores/liveRuns'
@@ -48,6 +49,8 @@ const runsStore = useRunsStore()
 const tabsStore = useWorkspaceTabsStore()
 const { confirm } = useConfirm()
 const { toast } = useToast()
+const searchBox = ref<HTMLElement | null>(null)
+useSearchBox(searchBox)
 
 const entries = computed(() => store.snapshot?.entries ?? [])
 const strays = computed(() => strayIds(entries.value))
@@ -288,7 +291,7 @@ async function openSession(e: BgEntry) {
         <!-- Toolbar -->
         <div class="flex flex-wrap items-center gap-2">
           <SegmentedControl v-model="filter" :options="filterOptions" :stretch="false" />
-          <div class="relative w-64 min-w-0 max-w-full">
+          <div ref="searchBox" data-find-shortcut class="relative w-64 min-w-0 max-w-full">
             <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
             <Input v-model="query" type="search" size="sm" class="pl-7" :placeholder="t('processes.search')" :aria-label="t('processes.search')" />
           </div>

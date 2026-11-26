@@ -13,6 +13,8 @@
 // - ⌘F / Ctrl+F focuses the field while its screen is the one in view
 //   (composables/useFindShortcut); `shortcut: false` opts out. The placeholder
 //   gets the hint appended.
+// - The field takes focus when its screen comes into view (unless the user is
+//   typing elsewhere); `autofocus: false` opts out.
 // - `focus()` is exposed.
 import { computed, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
@@ -32,8 +34,10 @@ const props = withDefaults(
     filterLabel?: string
     /** ⌘F focuses the field. */
     shortcut?: boolean
+    /** Focus the field when its screen comes into view. */
+    autofocus?: boolean
   }>(),
-  { placeholder: undefined, filterActive: false, filterLabel: undefined, shortcut: true },
+  { placeholder: undefined, filterActive: false, filterLabel: undefined, shortcut: true, autofocus: true },
 )
 
 const query = defineModel<string>({ required: true })
@@ -54,7 +58,7 @@ function focus() {
   input.value?.select()
 }
 
-if (props.shortcut) useFindShortcut(root, focus)
+if (props.shortcut) useFindShortcut(root, focus, { autoFocus: props.autofocus })
 
 function onKeydown(e: KeyboardEvent) {
   if (e.key === 'Escape' && query.value) {

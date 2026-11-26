@@ -32,6 +32,7 @@ import { groupClass, groupHeaderClass, rowClass, rowListClass, rowSubClass, rowT
 import { relativeAge } from '@/lib/itemText'
 import { formatFullDate } from '@/lib/slackThreadUtils'
 import type { SecretNoteMeta } from '@/lib/secretVault'
+import { useSearchBox } from '@/composables/useFindShortcut'
 
 const props = defineProps<{
   /** Already filtered. */
@@ -52,6 +53,8 @@ const props = defineProps<{
 }>()
 
 const search = defineModel<string>('search', { required: true })
+const searchBox = ref<HTMLElement | null>(null)
+useSearchBox(searchBox)
 const projectFilter = defineModel<string>('project', { required: true })
 const mergePassword = defineModel<string>('mergePassword', { required: true })
 
@@ -150,7 +153,7 @@ const groups = computed(() => {
     <!-- Search + pin / lock, filter + new -->
     <div class="shrink-0 space-y-2 border-b border-border/60 px-3 py-3">
       <div class="flex items-center gap-1.5">
-        <div class="relative min-w-0 flex-1">
+        <div ref="searchBox" data-find-shortcut class="relative min-w-0 flex-1">
           <Search
             class="pointer-events-none absolute left-2.5 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground"
             :stroke-width="1.75"
