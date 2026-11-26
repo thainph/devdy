@@ -2,13 +2,13 @@ import { defineStore } from 'pinia'
 import { computed, ref, watch } from 'vue'
 import { invoke } from '@/lib/tauri'
 import {
-  DEFAULT_THRESHOLDS, type DoneRules, type RadarIssue, type RadarIssueRow, type RadarRole, type RadarStage,
+  DEFAULT_THRESHOLDS, type DoneRules, type RadarIssue, type RadarMilestoneGroup, type RadarRole, type RadarStage,
   type RadarThresholds, type StageMap,
 } from '@/lib/deliveryRadar'
 
 /** Mirrors the Rust `MilestoneBoard` (only what the radar reads). */
 interface MilestoneBoard {
-  milestones: { issues: RadarIssueRow[] }[]
+  milestones: RadarMilestoneGroup[]
   fetchedAt: string
   boardLinked: boolean
   truncated: boolean
@@ -320,6 +320,13 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
     return out
   }
 
+  /** Milestone groups of each given project (that has a board loaded). */
+  function milestonesFor(projects: { id: string, name: string }[]): { project: { id: string, name: string }, milestones: RadarMilestoneGroup[] }[] {
+    return projects
+      .filter((p) => boards.value[p.id])
+      .map((p) => ({ project: p, milestones: boards.value[p.id].board.milestones }))
+  }
+
   /** Oldest snapshot among the loaded projects (what "updated …" should show). */
   function oldestSavedAt(projectIds: string[]): number | null {
     const times = projectIds.map((id) => boards.value[id]?.savedAt).filter((t): t is number => !!t)
@@ -330,6 +337,6 @@ export const useDeliveryRadarStore = defineStore('deliveryRadar', () => {
 
   return {
     boards, errors, loading, isLoading, thresholds, stages, testers, hidden, doneRules,
-    refresh, issuesFor, oldestSavedAt, setStages, statusOptionsFor, roleOf, setTesters, assigneesFor, isHidden, setHidden,
+    refresh, issuesFor, milestonesFor, oldestSavedAt, setStages, statusOptionsFor, roleOf, setTesters, assigneesFor, isHidden, setHidden,
   }
 })

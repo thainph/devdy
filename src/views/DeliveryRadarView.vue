@@ -9,7 +9,7 @@ import DockWindowButton from '@/components/surfaces/DockWindowButton.vue'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
-  BookMarked, CalendarDays, ChevronRight, Clock, CornerDownRight, CornerUpLeft, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
+  BookMarked, ChevronRight, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
 } from 'lucide-vue-next'
 import { useProjectsStore, type Project } from '@/stores/projects'
 import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
@@ -19,17 +19,20 @@ import {
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
 import DoneStatusesModal from '@/components/radar/DoneStatusesModal.vue'
+import RadarIssueRow from '@/components/radar/RadarIssueRow.vue'
+import RadarMilestoneView from '@/components/radar/RadarMilestoneView.vue'
 import RadarProjectPicker from '@/components/radar/RadarProjectPicker.vue'
+import { IGRID, TONE_BG, TONE_CHIP, TONE_TEXT } from '@/components/radar/radarStyles'
 import RadarSettingsModal from '@/components/radar/RadarSettingsModal.vue'
 import type { TodoPrefill } from '@/lib/focus'
 import { sortProjectsByName } from '@/lib/projectOptions'
 import {
   buildGroups,
+  buildMilestoneViews,
   classifyAll,
   countByStatus,
   filterIssues,
   sectionByRepo,
-  statusDotClass,
   swatchClass,
   visibleRows,
   type ClassifiedIssue,
@@ -44,7 +47,7 @@ const props = defineProps<{
   project?: string
 }>()
 
-const { t, locale } = useI18n()
+const { t } = useI18n()
 const projectsStore = useProjectsStore()
 const store = useDeliveryRadarStore()
 
@@ -52,6 +55,7 @@ const isRadarWindow = new URLSearchParams(window.location.search).get('radarWind
 const PROJECTS_KEY = 'devdy:radarProjects'
 const GROUP_KEY = 'devdy:radarGroupMode'
 const BY_REPO_KEY = 'devdy:radarByRepo'
+const VIEW_KEY = 'devdy:radarViewMode'
 
 // ── Project scope ────────────────────────────────────────────────────────────
 // Only projects with a linked GitHub Project board carry the Deadline field.
@@ -149,6 +153,27 @@ const groupModeOptions = computed(() => [
   { value: 'project' as const, label: t('radar.groupProject') },
 ])
 
+// A = open issues rolled up per person / project; B = per milestone.
+type RadarViewMode = 'issues' | 'milestones'
+const viewMode = ref<RadarViewMode>(localStorage.getItem(VIEW_KEY) === 'milestones' ? 'milestones' : 'issues')
+watch(viewMode, (m) => {
+  try { localStorage.setItem(VIEW_KEY, m) } catch { /* best-effort */ }
+})
+const viewModeOptions = computed(() => [
+  { value: 'issues' as const, label: t('radar.viewIssues') },
+  { value: 'milestones' as const, label: t('radar.viewMilestones') },
+])
+const milestoneViews = computed(() =>
+  store.milestonesFor(scopeProjects.value).flatMap(({ project, milestones }) =>
+    buildMilestoneViews(project, milestones, now.value, store.thresholds, store.doneRules)),
+)
+/** The toolbar count: open issues (A) or milestones still in progress (B). */
+const headerCount = computed(() =>
+  viewMode.value === 'milestones'
+    ? milestoneViews.value.filter((v) => !v.noMilestone && v.health !== 'done').length
+    : classified.value.length,
+)
+
 const groups = computed(() =>
   buildGroups(filterIssues(classified.value, { status: statusFilter.value, query: query.value }), groupMode.value),
 )
@@ -162,31 +187,6 @@ const COLUMNS: RadarStatus[] = ['overdue', 'due-soon', 'not-started', 'stale', '
 // Status strip: what needs someone's attention, then what is fine.
 const HOT: RadarStatus[] = ['overdue', 'due-soon', 'not-started', 'stale']
 const CALM: RadarStatus[] = ['no-deadline', 'on-track']
-
-const TONE_TEXT: Record<RadarStatus, string> = {
-  overdue: 'text-destructive',
-  'due-soon': 'text-warning',
-  'not-started': 'text-info',
-  stale: 'text-foreground',
-  'no-deadline': 'text-muted-foreground',
-  'on-track': 'text-success',
-}
-const TONE_CHIP: Record<RadarStatus, string> = {
-  overdue: 'bg-destructive/12 text-destructive',
-  'due-soon': 'bg-warning/12 text-warning',
-  'not-started': 'bg-info/12 text-info',
-  stale: 'bg-muted text-foreground',
-  'no-deadline': 'bg-muted/70 text-muted-foreground',
-  'on-track': 'bg-success/12 text-success',
-}
-const TONE_BG: Record<RadarStatus, string> = {
-  overdue: 'bg-destructive',
-  'due-soon': 'bg-warning',
-  'not-started': 'bg-info',
-  stale: 'bg-foreground/70',
-  'no-deadline': 'bg-muted-foreground/60',
-  'on-track': 'bg-success',
-}
 
 function statusHint(s: RadarStatus): string {
   const days = s === 'due-soon' ? store.thresholds.dueSoonDays : store.thresholds.staleDays
@@ -282,34 +282,11 @@ function isTesterGroup(g: RadarGroup): boolean {
 }
 
 // ── Issue rows ───────────────────────────────────────────────────────────────
-function deadlineText(i: ClassifiedIssue): string {
-  if (i.daysLeft === null) return t('radar.noDeadline')
-  if (i.daysLeft < 0) return t('radar.lateDays', { n: -i.daysLeft })
-  if (i.daysLeft === 0) return t('radar.dueToday')
-  return t('radar.daysLeft', { n: i.daysLeft })
-}
-/** "16/11 · Sat" — the weekday tells whether the deadline falls before a weekend. */
-function deadlineDate(i: ClassifiedIssue): string {
-  const m = /^(\d{4})-(\d{2})-(\d{2})/.exec(i.deadline ?? '')
-  if (!m) return ''
-  const weekday = new Date(+m[1], +m[2] - 1, +m[3]).toLocaleDateString(locale.value, { weekday: 'short' })
-  return `${m[3]}/${m[2]} · ${weekday}`
-}
 /** People shown on an issue's second line: everyone (project mode) or the co-assignees (person mode). */
 function issuePeople(i: ClassifiedIssue, g: RadarGroup): string[] {
   if (groupMode.value === 'project') return i.assignees
   return g.key === null ? [] : i.assignees.filter((a) => a !== g.key)
 }
-function initial(name: string): string {
-  return (name.replace(/^[^\p{L}\p{N}]+/u, '')[0] ?? '?').toUpperCase()
-}
-function deadlineTone(i: ClassifiedIssue): string {
-  if (i.daysLeft !== null && i.daysLeft < 0) return 'text-destructive'
-  if (i.radar === 'due-soon') return 'text-warning'
-  return 'text-foreground font-medium'
-}
-
-
 function openIssue(i: ClassifiedIssue) {
   openUrl(i.htmlUrl).catch(() => {})
 }
@@ -421,8 +398,6 @@ function openSettings(p: Project) {
 
 // A narrow pane (split view) shrinks the status columns to their counts, a dot heading each.
 const GRID = 'grid grid-cols-[minmax(0,1fr)_repeat(5,24px)_32px_52px] @[40rem]/screen:grid-cols-[minmax(140px,1fr)_repeat(5,minmax(56px,92px))_minmax(48px,68px)_minmax(64px,84px)] items-center gap-x-1'
-// Narrow panes drop the board-status column (it moves to the row's second line).
-const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] @[36rem]/screen:grid-cols-[minmax(0,1fr)_minmax(104px,140px)_minmax(96px,124px)_minmax(64px,88px)_52px] items-center gap-x-4'
 </script>
 
 <template>
@@ -434,17 +409,24 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] @[36r
         <h1 class="text-sm font-semibold shrink-0">{{ t('radar.title') }}</h1>
         <span
           class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground"
-          :title="t('radar.openIssues')"
-        >{{ classified.length }}</span>
+          :title="viewMode === 'milestones' ? t('radar.ms.inProgress') : t('radar.openIssues')"
+        >{{ headerCount }}</span>
       </div>
       <template v-if="boardProjects.length > 0">
         <RadarProjectPicker v-model:selected="selectedProjects" :projects="boardProjects" :loading="store.loading" />
-        <SegmentedControl v-model="groupMode" :options="groupModeOptions" :stretch="false" />
+        <SegmentedControl v-model="viewMode" :options="viewModeOptions" :stretch="false" />
+        <SegmentedControl v-if="viewMode === 'issues'" v-model="groupMode" :options="groupModeOptions" :stretch="false" />
       </template>
       <div class="ml-auto flex min-w-0 max-w-full items-center gap-2">
         <div v-if="boardProjects.length > 0" class="relative w-56 min-w-0">
           <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
-          <Input v-model="query" size="sm" class="pl-7" :placeholder="t('radar.searchPlaceholder')" :aria-label="t('radar.searchPlaceholder')" />
+          <Input
+            v-model="query"
+            size="sm"
+            class="pl-7"
+            :placeholder="viewMode === 'milestones' ? t('radar.ms.searchPlaceholder') : t('radar.searchPlaceholder')"
+            :aria-label="viewMode === 'milestones' ? t('radar.ms.searchPlaceholder') : t('radar.searchPlaceholder')"
+          />
         </div>
         <span v-if="updatedAt" class="hidden @[64rem]/screen:inline text-[11px] text-muted-foreground whitespace-nowrap">
           {{ t('radar.updated', { time: relativeTime(updatedAt) }) }}
@@ -533,6 +515,20 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] @[36r
           </template>
         </template>
 
+        <!-- Mode B: per milestone -->
+        <RadarMilestoneView
+          v-if="viewMode === 'milestones'"
+          :views="milestoneViews"
+          :now="now"
+          :query="query"
+          :due-soon-days="store.thresholds.dueSoonDays"
+          :lag-pct="store.thresholds.milestoneLagPct"
+          @add-todo="addTodo"
+          @open-issue="openIssue"
+          @row-menu="openRowMenu"
+        />
+
+        <template v-else>
         <!-- Status strip: needs attention (big, coloured) | fine (quiet). Click = filter. -->
         <Card body-class="grid grid-cols-1 @[36rem]/screen:grid-cols-[minmax(0,2fr)_minmax(0,1fr)]">
           <section v-for="(part, pi) in [HOT, CALM]" :key="pi" :class="pi === 1 ? 'border-t @[36rem]/screen:border-t-0 @[36rem]/screen:border-l border-border/60 bg-muted/30' : ''">
@@ -707,138 +703,29 @@ const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] @[36r
                 </span>
               </button>
               <div v-if="!section || !foldedRepos.has(repoId(g, section))" class="divide-y divide-border/40" :class="{ 'ml-3 border-l border-border/50': section }">
-              <div
+              <RadarIssueRow
                 v-for="{ issue: i, depth, hasChildren, hidden } in sectionRows(g, rows)" :key="i.key"
-                :class="IGRID"
-                class="group/row mx-1.5 rounded-md pr-1.5 py-1.5 hover:bg-accent/50"
-                :title="i.parent ? `${i.title}\n${t('radar.parentHint', { title: `#${i.parent.number} ${i.parent.title}` })}` : i.title"
-                @contextmenu.prevent="openRowMenu($event, i)"
-              >
-                <div class="flex items-start gap-2 min-w-0" :style="{ paddingLeft: `${0.5 + depth * 1.4}rem` }">
-                  <!-- Severity square, then the fold slot: chevron on parents, an elbow on leaf sub-issues. -->
-                  <span class="flex w-4.5 shrink-0 flex-col items-center gap-1 pt-1">
-                    <span class="h-2 w-2 rounded-[2px]" :class="TONE_BG[i.radar]" :title="t(`radar.status.${i.radar}`)" />
-                    <button
-                      v-if="hasChildren"
-                      class="flex h-4.5 w-4.5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
-                      :title="hidden ? t('radar.expandChildren') : t('radar.collapseChildren')"
-                      :aria-label="hidden ? t('radar.expandChildren') : t('radar.collapseChildren')"
-                      :aria-expanded="!hidden"
-                      @click="toggleChildren(g, i)"
-                    >
-                      <ChevronRight class="h-3 w-3 transition-transform" :class="{ 'rotate-90': !hidden }" :stroke-width="2" />
-                    </button>
-                    <CornerDownRight v-else-if="depth > 0" class="h-3 w-3 text-muted-foreground/60" :stroke-width="1.75" />
-                  </span>
-                  <span class="flex min-w-0 flex-1 flex-col gap-1">
-                    <!-- Line 1: title, radar status (on-track needs no chip), folded children -->
-                    <span class="flex min-w-0 items-baseline gap-2">
-                      <span class="truncate text-[13px] font-medium leading-snug text-foreground">{{ i.title }}</span>
-                      <span
-                        v-if="i.radar !== 'on-track'"
-                        class="shrink-0 rounded-full px-1.75 py-px text-[10.5px] font-semibold"
-                        :class="TONE_CHIP[i.radar]"
-                      >{{ t(`radar.status.${i.radar}`) }}</span>
-                      <span
-                        v-if="hidden"
-                        class="shrink-0 rounded-full border border-dashed border-border px-1.5 text-[10px] font-semibold text-muted-foreground"
-                        :title="t('radar.hiddenChildren', { n: hidden })"
-                      >+{{ hidden }}</span>
-                    </span>
-                    <!-- Line 2: each kind of meta has its own form (code ref, project swatch, avatars, parent link) -->
-                    <span class="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
-                      <span class="shrink-0 rounded bg-muted px-1.25 py-px font-mono text-[10.5px]"><template v-if="!section || section.repo !== i.repo">{{ i.repo }}</template><span class="font-medium text-foreground">#{{ i.number }}</span></span>
-                      <span class="@[36rem]/screen:hidden flex shrink-0 items-center gap-1.5">
-                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-                        <span class="h-2 w-2 rounded-full" :class="statusDotClass(i.statusColor)" />
-                        {{ i.status || t('radar.noStatus') }}
-                      </span>
-                      <span v-if="groupMode === 'person' && (!section || section.projectId !== i.projectId)" class="flex shrink-0 items-center gap-1.5 font-medium text-foreground/80">
-                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-                        <span class="h-1.75 w-1.75 rounded-[2px]" :class="swatchClass(i.projectName)" />
-                        {{ i.projectName }}
-                      </span>
-                      <span v-if="issuePeople(i, g).length" class="flex shrink-0 items-center gap-1.5">
-                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-                        <span class="flex">
-                          <span
-                            v-for="(p, pi) in issuePeople(i, g).slice(0, 3)" :key="p"
-                            class="flex h-4 w-4 items-center justify-center rounded-full text-[8.5px] font-bold text-white ring-[1.5px] ring-card"
-                            :class="[swatchClass(p), pi > 0 ? '-ml-1' : '']"
-                          >{{ initial(p) }}</span>
-                        </span>
-                        {{ groupMode === 'person' ? t('radar.alsoAssigned', { names: issuePeople(i, g).join(', ') }) : issuePeople(i, g).join(', ') }}
-                      </span>
-                      <span v-else-if="groupMode === 'project'" class="flex shrink-0 items-center gap-1.5 italic">
-                        <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-                        {{ t('radar.unassigned') }}
-                      </span>
-                      <!-- Parent not in this list (other assignee, done, …): say where the task belongs. -->
-                      <span v-if="depth === 0 && i.parent" class="flex min-w-0 items-center gap-1">
-                        <span class="mr-1 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
-                        <CornerUpLeft class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-                        <span class="shrink-0 font-mono text-[10.5px]">#{{ i.parent.number }}</span>
-                        <span class="truncate italic">{{ i.parent.title }}</span>
-                      </span>
-                    </span>
-                  </span>
-                </div>
-                <span class="hidden @[36rem]/screen:flex min-w-0">
-                  <span
-                    class="inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11.5px]"
-                    :class="i.status ? 'border-border font-medium text-foreground' : 'border-dashed border-border text-muted-foreground/70'"
-                  >
-                    <span v-if="i.status" class="h-2 w-2 rounded-full shrink-0" :class="statusDotClass(i.statusColor)" />
-                    <span class="truncate">{{ i.status || t('radar.noStatus') }}</span>
-                  </span>
-                </span>
-                <span
-                  class="flex min-w-0 flex-col gap-px whitespace-nowrap leading-tight"
-                  :title="i.deadlineInherited ? t('radar.inheritedDeadline') : undefined"
-                >
-                  <span v-if="i.daysLeft === null" class="text-[12px] font-medium text-muted-foreground/70">{{ t('radar.noDeadlineShort') }}</span>
-                  <span v-else class="truncate text-[12px] font-semibold" :class="deadlineTone(i)">{{ deadlineText(i) }}</span>
-                  <span v-if="deadlineDate(i)" class="flex items-center gap-1 text-[11px] text-muted-foreground tabular-nums">
-                    <CalendarDays class="h-2.75 w-2.75 shrink-0" :stroke-width="2" />
-                    <span class="truncate">{{ deadlineDate(i) }}</span>
-                  </span>
-                  <span v-if="i.deadlineInherited" class="text-[10px] italic text-muted-foreground/70">{{ t('radar.inheritedShort') }}</span>
-                </span>
-                <span
-                  class="flex min-w-0 items-center justify-end gap-1 text-right text-[11px] tabular-nums"
-                  :class="i.radar === 'stale' ? 'text-warning font-semibold' : 'text-muted-foreground/70'"
-                >
-                  <Clock v-if="i.radar === 'stale'" class="h-3 w-3 shrink-0" :stroke-width="2" />
-                  <span class="truncate">{{ relativeTime(i.updatedAt) }}</span>
-                </span>
-                <span class="flex justify-end gap-0.5 opacity-50 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    class="text-muted-foreground/70 hover:text-foreground"
-                    :title="t('focus.addTodoHint')"
-                    :aria-label="t('focus.addTodoHint')"
-                    @click="addTodo(i)"
-                  >
-                    <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  </Button>
-                  <Button
-                    variant="ghost"
-                    size="icon-xs"
-                    class="text-muted-foreground/70 hover:text-primary"
-                    :title="t('radar.openOnGithub')"
-                    :aria-label="t('radar.openOnGithub')"
-                    @click="openIssue(i)"
-                  >
-                    <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-                  </Button>
-                </span>
-              </div>
+                :issue="i"
+                :depth="depth"
+                :has-children="hasChildren"
+                :hidden="hidden"
+                :now="now"
+                :show-repo="!section || section.repo !== i.repo"
+                :show-project="groupMode === 'person' && (!section || section.projectId !== i.projectId)"
+                :people="issuePeople(i, g)"
+                :co-assigned="groupMode === 'person'"
+                :show-unassigned="groupMode === 'project'"
+                @toggle-children="toggleChildren(g, i)"
+                @add-todo="addTodo(i)"
+                @open="openIssue(i)"
+                @menu="openRowMenu($event, i)"
+              />
               </div>
               </template>
             </div>
           </div>
         </Card>
+        </template>
       </div>
     </div>
 

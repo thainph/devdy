@@ -540,3 +540,204 @@ export function compareMilestoneRisks(a: MilestoneRisk, b: MilestoneRisk): numbe
   if (a.kind !== b.kind) return a.kind === 'overdue' ? -1 : 1
   return (b.lateDays ?? 0) - (a.lateDays ?? 0) || a.title.localeCompare(b.title)
 }
+
+// ── Milestone view (mode B) ─────────────────────────────────────────────────
+
+/** A `MilestoneGroup` of the board as the milestone view reads it. */
+export interface RadarMilestoneGroup extends RadarMilestone {
+  repos?: string[]
+  /** The bucket of issues without a milestone (old snapshots: title "No milestone", counts unknown). */
+  noMilestone?: boolean
+  /** The milestone on GitHub, per repo (missing in old snapshots). */
+  links?: { repo: string, number: number, htmlUrl: string }[]
+  /** Closed on GitHub in every repo: when it was last closed. */
+  closedAt?: string | null
+}
+
+/** One milestone's health, most urgent first (see `milestoneHealth`). */
+export type MilestoneHealth = 'overdue' | 'lag' | 'at-risk' | 'due-soon' | 'on-track' | 'no-due' | 'done'
+
+export const MILESTONE_HEALTHS: MilestoneHealth[] = ['overdue', 'lag', 'at-risk', 'due-soon', 'on-track', 'no-due', 'done']
+
+const HEALTH_ORDER: Record<MilestoneHealth, number> = {
+  overdue: 0, lag: 1, 'at-risk': 2, 'due-soon': 3, 'on-track': 4, 'no-due': 5, done: 6,
+}
+
+export interface MilestoneView {
+  /** `projectId::title` (lower-case), unique across projects. */
+  key: string
+  projectId: string
+  projectName: string
+  title: string
+  dueOn: string | null
+  noMilestone: boolean
+  repos: string[]
+  links: { repo: string, number: number, htmlUrl: string }[]
+  closedAt: string | null
+  openCount: number
+  closedCount: number
+  countsKnown: boolean
+  /** Open issues past the developer's part (QA, or done but not closed yet). */
+  pastDevCount: number
+  health: MilestoneHealth
+  /** Days to the due date (negative = late); null without one. */
+  daysLeft: number | null
+  /** Share of the planned time elapsed, 0–100; null without a start (earliest issue Start date) or due date. */
+  elapsedPct: number | null
+  /** Shares of all the milestone's issues, 0–100; null when GitHub's totals are unknown. */
+  closedPct: number | null
+  pastDevPct: number | null
+  /** Open issues that are late. */
+  lateIssues: number
+  /** Keys of open issues whose deadline falls after the milestone's due date. */
+  afterDue: string[]
+  /** Open work still on someone (same rules as mode A), most urgent first. */
+  issues: ClassifiedIssue[]
+  rows: RadarRow[]
+  counts: RadarCounts
+  /** Active assignees on the open work. */
+  people: string[]
+  /** Open issues left out because only hidden people (or nobody, when unassigned work is hidden) are on them. */
+  hiddenCount: number
+}
+
+/** Elapsed share of a milestone's planned time (start = earliest issue Start date, end = end of the due day). */
+export function milestoneElapsedPct(m: RadarMilestone, now: number): number | null {
+  const due = dayStart(m.dueOn)
+  if (due === null) return null
+  const starts = (m.issues ?? []).map((i) => dayStart(i.startDate)).filter((s): s is number => s !== null)
+  if (!starts.length) return null
+  const start = Math.min(...starts)
+  const end = due + DAY
+  if (start >= end) return null
+  return Math.max(0, Math.min(100, ((now - start) / (end - start)) * 100))
+}
+
+/**
+ * The one health a milestone counts under, most urgent first: done (closed on
+ * GitHub, or no open issue left) → overdue / lag (`milestoneRisk`) → at risk
+ * (an open issue is late, or due after the milestone) → due soon → on track;
+ * no due date → no-due.
+ */
+export function milestoneHealth(
+  m: RadarMilestoneGroup,
+  open: { lateIssues: number, afterDue: number },
+  now: number,
+  th: RadarThresholds,
+): MilestoneHealth {
+  if (m.closedAt || (m.countsKnown !== false && m.openCount <= 0)) return 'done'
+  if (m.noMilestone) return 'no-due'
+  const risk = milestoneRisk(m, now, th.milestoneLagPct)
+  if (risk) return risk.kind
+  if (open.lateIssues > 0 || open.afterDue > 0) return 'at-risk'
+  const left = daysUntil(m.dueOn, now)
+  if (left === null) return 'no-due'
+  if (left <= th.dueSoonDays) return 'due-soon'
+  return 'on-track'
+}
+
+/** The no-milestone bucket, also in snapshots from before `noMilestone` existed. */
+function isNoMilestone(m: RadarMilestoneGroup): boolean {
+  return m.noMilestone ?? (m.title === 'No milestone' && m.countsKnown === false && !m.dueOn)
+}
+
+/**
+ * One view per milestone of a project. Progress and health count every open
+ * issue of the milestone; the issue list keeps only the work still on a
+ * followed person (as mode A does) and says how many were left out.
+ */
+export function buildMilestoneViews(
+  project: { id: string, name: string },
+  milestones: RadarMilestoneGroup[],
+  now: number,
+  th: RadarThresholds,
+  rules: DoneRules = {},
+): MilestoneView[] {
+  return milestones.map((m) => {
+    const issues: RadarIssue[] = m.issues.map((i) => ({ ...i, projectId: project.id, projectName: project.name }))
+    const allOpen = classifyAll(issues, now, th, { stages: rules.stages, testers: rules.testers })
+    const shown = classifyAll(issues, now, th, rules)
+    const shownKeys = new Set(shown.map((i) => i.key))
+    const due = dayStart(m.dueOn)
+    const afterDue = allOpen.filter((i) => {
+      const dl = dayStart(i.deadline)
+      return due !== null && dl !== null && dl > due
+    }).map((i) => i.key)
+    const lateIssues = allOpen.filter((i) => i.radar === 'overdue').length
+    const pastDevCount = m.issues.filter((i) => i.state !== 'CLOSED' && stageOf(i.status, rules.stages) !== 'dev').length
+    const noMilestone = isNoMilestone(m)
+    const countsKnown = m.countsKnown !== false && !noMilestone
+    const total = m.openCount + m.closedCount
+    const people: string[] = []
+    for (const i of shown) for (const a of i.activeAssignees) if (!people.includes(a)) people.push(a)
+    shown.sort(compareIssues)
+    return {
+      key: `${project.id}::${noMilestone ? '\u0000none' : m.title.toLowerCase()}`,
+      projectId: project.id,
+      projectName: project.name,
+      title: m.title,
+      dueOn: m.dueOn,
+      noMilestone,
+      repos: m.repos ?? [...new Set(m.issues.map((i) => i.repo))],
+      links: m.links ?? [],
+      closedAt: m.closedAt ?? null,
+      openCount: m.openCount,
+      closedCount: m.closedCount,
+      countsKnown,
+      pastDevCount,
+      health: milestoneHealth({ ...m, noMilestone }, { lateIssues, afterDue: afterDue.length }, now, th),
+      daysLeft: daysUntil(m.dueOn, now),
+      elapsedPct: noMilestone ? null : milestoneElapsedPct(m, now),
+      closedPct: countsKnown && total > 0 ? (m.closedCount / total) * 100 : countsKnown ? 0 : null,
+      pastDevPct: countsKnown && total > 0 ? Math.min(100, (pastDevCount / total) * 100) : countsKnown ? 0 : null,
+      lateIssues,
+      afterDue,
+      issues: shown,
+      rows: nestIssues(shown),
+      counts: countByStatus(shown),
+      people: people.sort((a, b) => a.localeCompare(b)),
+      hiddenCount: allOpen.filter((i) => !shownKeys.has(i.key)).length,
+    }
+  })
+}
+
+/** Most urgent first, then the nearest due date; done and no-milestone last. */
+export function compareMilestones(a: MilestoneView, b: MilestoneView): number {
+  return (
+    Number(a.noMilestone) - Number(b.noMilestone) ||
+    HEALTH_ORDER[a.health] - HEALTH_ORDER[b.health] ||
+    (a.daysLeft ?? Infinity) - (b.daysLeft ?? Infinity) ||
+    a.title.localeCompare(b.title)
+  )
+}
+
+export type MilestoneCounts = Record<MilestoneHealth, number>
+
+/** Milestones per health (the no-milestone bucket is not a milestone and is left out). */
+export function countMilestones(views: MilestoneView[]): MilestoneCounts {
+  const counts = Object.fromEntries(MILESTONE_HEALTHS.map((h) => [h, 0])) as MilestoneCounts
+  for (const v of views) if (!v.noMilestone) counts[v.health]++
+  return counts
+}
+
+/**
+ * Keep milestones of `health` (when set) matching `query`: by title (all its
+ * issues stay) or by some of its issues (only those stay).
+ */
+export function filterMilestones(
+  views: MilestoneView[],
+  opts: { health?: MilestoneHealth | null, query?: string },
+): MilestoneView[] {
+  const q = (opts.query ?? '').trim().toLowerCase()
+  const out: MilestoneView[] = []
+  for (const v of views) {
+    if (opts.health && v.health !== opts.health) continue
+    if (!q || v.title.toLowerCase().includes(q) || v.projectName.toLowerCase().includes(q)) {
+      out.push(v)
+      continue
+    }
+    const issues = filterIssues(v.issues, { query: q })
+    if (issues.length) out.push({ ...v, issues, rows: nestIssues(issues), counts: countByStatus(issues) })
+  }
+  return out
+}
