@@ -361,7 +361,7 @@ async fn session_spawn(
 async fn session_list(state: &HttpState, conductor_run_id: &str) -> Result<Value, String> {
     let db = db(state);
     let rows = sqlx::query(
-        "SELECT r.id, r.title, r.status, r.engine, r.role, p.name AS project, w.branch AS worktree_branch,
+        "SELECT r.id, r.title, r.status, r.finished_at, r.engine, r.role, p.name AS project, w.branch AS worktree_branch,
                 (SELECT ir.todo_id FROM todo_runs ir WHERE ir.run_id = r.id AND ir.source = 'created_from_item' ORDER BY ir.linked_at LIMIT 1) AS todo_id
          FROM runs r JOIN projects p ON p.id = r.project_id
          LEFT JOIN worktrees w ON w.path = r.worktree_path
@@ -377,6 +377,7 @@ async fn session_list(state: &HttpState, conductor_run_id: &str) -> Result<Value
         .map(|r| {
             let status: String = r.get("status");
             let id: String = r.get("id");
+            note_seen(state, conductor_run_id, &id, &status, r.get("finished_at"));
             let entry = json!({
                 "worker_id": id,
                 "title": r.get::<Option<String>, _>("title"),
@@ -401,7 +402,8 @@ async fn session_poll(
     let db = db(state);
     let mut out = Vec::new();
     for id in ids {
-        let status = worker_status(&db, &id).await?;
+        let (status, finished_at) = worker_finish(&db, &id).await?;
+        note_seen(state, conductor_run_id, &id, &status, finished_at);
         let entry = json!({ "worker_id": id, "status": normalize_status(&status) });
         out.push(with_awaiting_permission(entry, &id));
     }
@@ -436,16 +438,18 @@ pub(crate) fn wait_timeout_ms(args: &Value) -> u64 {
 /// `pending` (still running). Cheap — a single status read per worker.
 pub(crate) async fn wait_snapshot(
     state: &HttpState,
+    conductor_run_id: &str,
     ids: &[String],
 ) -> Result<(Vec<Value>, Vec<String>), String> {
     let db = db(state);
     let mut done = Vec::new();
     let mut pending = Vec::new();
     for id in ids {
-        let status = worker_status(&db, id).await?;
+        let (status, finished_at) = worker_finish(&db, id).await?;
         if status == "running" {
             pending.push(id.clone());
         } else {
+            note_seen(state, conductor_run_id, id, &status, finished_at);
             done.push(json!({ "worker_id": id, "status": normalize_status(&status) }));
         }
     }
@@ -503,7 +507,7 @@ async fn session_wait(
     let deadline = started + Duration::from_millis(timeout_ms);
 
     loop {
-        let (done, pending) = wait_snapshot(state, &ids).await?;
+        let (done, pending) = wait_snapshot(state, conductor_run_id, &ids).await?;
         if pending.is_empty() || Instant::now() >= deadline {
             let waited_ms = started.elapsed().as_millis() as u64;
             return Ok(build_wait_result(done, pending, waited_ms));
@@ -523,7 +527,7 @@ async fn session_read(
 
     let db = db(state);
     let row = sqlx::query(
-        "SELECT r.status, p.path as project_path FROM runs r
+        "SELECT r.status, r.finished_at, p.path as project_path FROM runs r
          JOIN projects p ON p.id = r.project_id WHERE r.id = ?",
     )
     .bind(&worker_id)
@@ -532,6 +536,7 @@ async fn session_read(
     .map_err(|e| e.to_string())?;
     let status: String = row.get("status");
     let project_path: String = row.get("project_path");
+    note_seen(state, conductor_run_id, &worker_id, &status, row.get("finished_at"));
 
     let log_path = Path::new(&project_path)
         .join(".devdy")
@@ -618,7 +623,21 @@ async fn session_cancel(
     ensure_owned(state, conductor_run_id, &worker_id)?;
 
     let db = db(state);
-    crate::commands::runs::cancel_run_inner(&registry(state), &db, &worker_id, false).await?;
+    // Its exit would otherwise wake this conductor to report the stop it asked for.
+    let was_running = worker_status(&db, &worker_id).await? == "running";
+    if was_running {
+        state.conductor.mark_cancelling(conductor_run_id, &worker_id);
+    }
+    if let Err(e) =
+        crate::commands::runs::cancel_run_inner(&registry(state), &db, &worker_id, false).await
+    {
+        if was_running {
+            // No exit is coming to consume the marker; don't let it swallow the
+            // worker's next real finish.
+            state.conductor.clear_cancelling(conductor_run_id, &worker_id);
+        }
+        return Err(e);
+    }
     log_event(state, conductor_run_id, "cancel", json!({ "worker_id": worker_id })).await;
     Ok(json!({ "worker_id": worker_id, "status": "cancelled" }))
 }
@@ -679,6 +698,33 @@ fn cap_reached(max_workers: usize) -> String {
     format!(
         "worker cap reached ({max_workers} running max) — wait for or cancel a running worker first"
     )
+}
+
+/// A worker's status plus the `finished_at` that identifies its latest finish.
+async fn worker_finish(db: &Db, worker_id: &str) -> Result<(String, Option<String>), String> {
+    sqlx::query_as::<_, (String, Option<String>)>("SELECT status, finished_at FROM runs WHERE id = ?")
+        .bind(worker_id)
+        .fetch_optional(db)
+        .await
+        .map_err(|e| e.to_string())?
+        .ok_or_else(|| format!("worker {} not found", worker_id))
+}
+
+/// The conductor just saw this worker's state through one of its tools; if it
+/// has finished, that finish no longer needs an auto-wake nudge.
+fn note_seen(
+    state: &HttpState,
+    conductor_run_id: &str,
+    worker_id: &str,
+    status: &str,
+    finished_at: Option<String>,
+) {
+    if status == "running" {
+        return;
+    }
+    if let Some(f) = finished_at {
+        state.conductor.mark_finish_seen(conductor_run_id, worker_id, &f);
+    }
 }
 
 async fn worker_status(db: &Db, worker_id: &str) -> Result<String, String> {
@@ -825,7 +871,7 @@ pub async fn on_run_finished(app: &tauri::AppHandle, run_id: &str) {
     // a worker that finished during the conductor's turn can wake it next.
     if cst.session(run_id).is_some() {
         if cst.turn_ended(run_id) {
-            wake_conductor(app, &cst, run_id).await;
+            wake_conductor(app, &cst, run_id, None).await;
         }
         return;
     }
@@ -844,7 +890,7 @@ async fn wake_conductor_for_worker(
     let db = db_from(app);
 
     // DB is the source of truth for the role + conductor link.
-    let row = match sqlx::query("SELECT role, conductor_run_id FROM runs WHERE id = ?")
+    let row = match sqlx::query("SELECT role, conductor_run_id, finished_at FROM runs WHERE id = ?")
         .bind(worker_run_id)
         .fetch_optional(&db)
         .await
@@ -867,7 +913,15 @@ async fn wake_conductor_for_worker(
         return;
     }
 
-    wake_conductor(app, cst, &conductor_run_id).await;
+    // A finish the conductor already saw for itself (its `session_wait` returned
+    // it, it polled it idle) or a stop it asked for needs no nudge — that was
+    // the redundant extra turn after every waited-on worker.
+    let finished_at: String = row.get::<Option<String>, _>("finished_at").unwrap_or_default();
+    if cst.take_finish_seen(&conductor_run_id, worker_run_id, &finished_at) {
+        return;
+    }
+
+    wake_conductor(app, cst, &conductor_run_id, Some((worker_run_id, &finished_at))).await;
 }
 
 /// Nudge a conductor to read its finished workers. Three cases:
@@ -877,15 +931,18 @@ async fn wake_conductor_for_worker(
 ///     backgrounded Bash) → send the nudge straight to the live sidecar;
 ///   • sidecar exited → resume the conductor, then send the nudge.
 /// A burst of workers finishing produces one nudge: the woken conductor polls
-/// ALL its workers, covering the rest.
+/// ALL its workers, covering the rest. `finish` is the worker + `finished_at`
+/// behind the wake, so a deferred one is dropped if the conductor observes that
+/// finish itself before its turn ends.
 async fn wake_conductor(
     app: &tauri::AppHandle,
     cst: &crate::conductor::ConductorState,
     conductor_run_id: &str,
+    finish: Option<(&str, &str)>,
 ) {
     let db = db_from(app);
 
-    if cst.defer_wake_if_busy(conductor_run_id) {
+    if cst.defer_wake_if_busy(conductor_run_id, finish) {
         return;
     }
     let alive = match worker_status(&db, conductor_run_id).await {
