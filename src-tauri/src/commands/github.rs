@@ -1725,6 +1725,20 @@ pub struct MilestoneGroup {
     /// listed open issues and `closed_count` is unknown (0).
     pub counts_known: bool,
     pub issues: Vec<IssueRow>,
+    /// The bucket of open issues without a milestone.
+    pub no_milestone: bool,
+    /// The milestone on GitHub, per repo it exists in.
+    pub links: Vec<MilestoneLink>,
+    /// Set when the milestone is closed on GitHub in every repo: the latest close.
+    pub closed_at: Option<String>,
+}
+
+#[derive(Debug, Serialize, Clone)]
+#[serde(rename_all = "camelCase")]
+pub struct MilestoneLink {
+    pub repo: String,
+    pub number: u64,
+    pub html_url: String,
 }
 
 #[derive(Debug, Serialize, Clone)]
@@ -2142,11 +2156,25 @@ fn inherit_parent_deadlines(
 const MILESTONE_PAGE: usize = 100;
 const MILESTONE_MAX_PAGES: usize = 10;
 
-/// One page of a repository's `milestones` connection: (title, open, closed,
-/// due) per milestone, plus the cursor of the next page when there is one.
+/// One milestone of one repository, as GitHub reports it.
+#[derive(Debug, Clone, PartialEq)]
+struct MilestoneSummary {
+    title: String,
+    open: u64,
+    closed: u64,
+    due: Option<String>,
+    number: u64,
+    html_url: String,
+    /// Closed on GitHub (`state: CLOSED`).
+    closed_state: bool,
+    closed_at: Option<String>,
+}
+
+/// One page of a repository's `milestones` connection, plus the cursor of the
+/// next page when there is one.
 fn parse_milestone_page(
     conn: Option<&serde_json::Value>,
-) -> (Vec<(String, u64, u64, Option<String>)>, Option<String>) {
+) -> (Vec<MilestoneSummary>, Option<String>) {
     let Some(conn) = conn.filter(|c| c.is_object()) else {
         return (Vec::new(), None);
     };
@@ -2159,7 +2187,17 @@ fn parse_milestone_page(
         let open = ms.pointer("/open/totalCount").and_then(|v| v.as_u64()).unwrap_or(0);
         let closed = ms.pointer("/closed/totalCount").and_then(|v| v.as_u64()).unwrap_or(0);
         let due = ms.get("dueOn").and_then(|d| d.as_str()).map(|s| s.to_string());
-        out.push((title, open, closed, due));
+        let str_of = |k: &str| ms.get(k).and_then(|v| v.as_str()).map(str::to_string);
+        out.push(MilestoneSummary {
+            title,
+            open,
+            closed,
+            due,
+            number: ms.get("number").and_then(|v| v.as_u64()).unwrap_or(0),
+            html_url: str_of("url").unwrap_or_default(),
+            closed_state: ms.get("state").and_then(|v| v.as_str()) == Some("CLOSED"),
+            closed_at: str_of("closedAt"),
+        });
     }
     let next = (conn.pointer("/pageInfo/hasNextPage").and_then(|b| b.as_bool()) == Some(true))
         .then(|| conn.pointer("/pageInfo/endCursor").and_then(|c| c.as_str()).map(str::to_string))
@@ -2174,9 +2212,9 @@ async fn fetch_more_milestones(
     owner: &str,
     name: &str,
     mut cursor: Option<String>,
-    milestones: &mut Vec<(String, u64, u64, Option<String>)>,
+    milestones: &mut Vec<MilestoneSummary>,
 ) -> Result<bool, String> {
-    const QUERY: &str = "query($owner:String!,$repo:String!,$cursor:String,$n:Int!){ repository(owner:$owner,name:$repo){ milestones(first:$n, after:$cursor, states:[OPEN,CLOSED]){ pageInfo{ hasNextPage endCursor } nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } } }";
+    const QUERY: &str = "query($owner:String!,$repo:String!,$cursor:String,$n:Int!){ repository(owner:$owner,name:$repo){ milestones(first:$n, after:$cursor, states:[OPEN,CLOSED]){ pageInfo{ hasNextPage endCursor } nodes{ title number url state closedAt dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } } }";
     for _ in 1..MILESTONE_MAX_PAGES {
         let Some(after) = cursor.take() else { return Ok(false) };
         let payload = serde_json::json!({
@@ -2202,8 +2240,7 @@ struct RepoFetch {
     owner: String,
     name: String,
     issues: Vec<IssueRow>,
-    /// (milestone title, open count, closed count, due date)
-    milestones: Vec<(String, u64, u64, Option<String>)>,
+    milestones: Vec<MilestoneSummary>,
     truncated: bool,
 }
 
@@ -2215,14 +2252,14 @@ async fn fetch_repo_board(
     name: &str,
 ) -> Result<RepoFetch, String> {
     let mut issues: Vec<IssueRow> = Vec::new();
-    let mut milestones: Vec<(String, u64, u64, Option<String>)> = Vec::new();
+    let mut milestones: Vec<MilestoneSummary> = Vec::new();
     let mut truncated = false;
     let mut cursor: Option<String> = None;
     let mut first_page = true;
     let mut ms_cursor: Option<String> = None;
 
     for page in 0..10 {
-        let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:100, states:[OPEN,CLOSED]) @include(if:$withMs){ pageInfo{ hasNextPage endCursor } nodes{ title dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url state createdAt updatedAt closedAt comments{ totalCount } milestone{ title dueOn } parent{ number title url repository{ name owner{ login } } } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
+        let query = "query($owner:String!,$repo:String!,$cursor:String,$withMs:Boolean!){ repository(owner:$owner,name:$repo){ milestones(first:100, states:[OPEN,CLOSED]) @include(if:$withMs){ pageInfo{ hasNextPage endCursor } nodes{ title number url state closedAt dueOn open:issues(states:OPEN){ totalCount } closed:issues(states:CLOSED){ totalCount } } } issues(first:100, after:$cursor, states:OPEN, orderBy:{field:UPDATED_AT,direction:DESC}){ pageInfo{ hasNextPage endCursor } nodes{ number title url state createdAt updatedAt closedAt comments{ totalCount } milestone{ title dueOn } parent{ number title url repository{ name owner{ login } } } assignees(first:5){ nodes{ login } } labels(first:10){ nodes{ name color } } } } } }";
         let payload = serde_json::json!({
             "query": query,
             "variables": { "owner": owner, "repo": name, "cursor": cursor, "withMs": first_page }
@@ -2295,6 +2332,9 @@ pub async fn list_milestone_board(
 ) -> Result<MilestoneBoard, String> {
     crate::commands::radar::fetch_and_save(db.inner(), &project_id).await
 }
+
+/// Milestones closed on GitHub this recently still show on the radar.
+const RECENTLY_CLOSED_DAYS: i64 = 14;
 
 /// The work of `list_milestone_board`, without persisting the snapshot.
 pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<MilestoneBoard, String> {
@@ -2369,8 +2409,14 @@ pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<Milestone
         open: u64,
         closed: u64,
         due: Option<String>,
+        links: Vec<MilestoneLink>,
+        /// Closed on GitHub in every repo so far.
+        all_closed: bool,
+        closed_at: Option<String>,
     }
     let mut ms_summary: std::collections::HashMap<String, MsAcc> = std::collections::HashMap::new();
+    // Summary keys in fetch order, for the milestones with no open issue listed.
+    let mut ms_order: Vec<String> = Vec::new();
     // Keyed `owner/repo#n` so sub-issues can find their parents.
     let mut all_issues: Vec<(String, IssueRow)> = Vec::new();
 
@@ -2379,22 +2425,35 @@ pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<Milestone
         if fetch.truncated {
             truncated = true;
         }
-        for (title, open, closed, due) in fetch.milestones {
-            let key = title.to_lowercase();
-            let entry = ms_summary.entry(key).or_insert(MsAcc {
-                title: title.clone(),
-                open: 0,
-                closed: 0,
-                due: None,
+        for ms in fetch.milestones {
+            let key = ms.title.to_lowercase();
+            let entry = ms_summary.entry(key.clone()).or_insert_with(|| {
+                ms_order.push(key);
+                MsAcc {
+                    title: ms.title.clone(),
+                    open: 0,
+                    closed: 0,
+                    due: None,
+                    links: Vec::new(),
+                    all_closed: true,
+                    closed_at: None,
+                }
             });
-            entry.open += open;
-            entry.closed += closed;
+            entry.open += ms.open;
+            entry.closed += ms.closed;
             // Keep the earliest due date when the same milestone spans repos.
-            entry.due = match (entry.due.take(), due) {
+            entry.due = match (entry.due.take(), ms.due) {
                 (Some(a), Some(b)) => Some(if a <= b { a } else { b }),
                 (Some(a), None) => Some(a),
                 (None, b) => b,
             };
+            entry.all_closed &= ms.closed_state;
+            if ms.closed_state && ms.closed_at > entry.closed_at {
+                entry.closed_at = ms.closed_at;
+            }
+            if !ms.html_url.is_empty() {
+                entry.links.push(MilestoneLink { repo: fetch.name.clone(), number: ms.number, html_url: ms.html_url });
+            }
         }
         let owner_l = fetch.owner.to_lowercase();
         let name_l = fetch.name.to_lowercase();
@@ -2411,6 +2470,19 @@ pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<Milestone
     }
     inherit_parent_deadlines(&mut all_issues, &board_map);
 
+    let summary_group = |acc: &MsAcc| MilestoneGroup {
+        title: acc.title.clone(),
+        due_on: acc.due.clone(),
+        repos: acc.links.iter().map(|l| l.repo.clone()).collect(),
+        open_count: acc.open,
+        closed_count: acc.closed,
+        counts_known: true,
+        issues: Vec::new(),
+        no_milestone: false,
+        links: acc.links.clone(),
+        closed_at: if acc.all_closed { acc.closed_at.clone() } else { None },
+    };
+
     // 6) Group issues by milestone title.
     const NO_MS: &str = "__no_milestone__";
     let mut order: Vec<String> = Vec::new();
@@ -2423,27 +2495,38 @@ pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<Milestone
             .unwrap_or_else(|| NO_MS.to_string());
         if !groups.contains_key(&key) {
             order.push(key.clone());
-            let (title, due, open, closed, counts_known) = if key == NO_MS {
-                ("No milestone".to_string(), None, 0, 0, false)
+            let group = if key == NO_MS {
+                MilestoneGroup {
+                    title: "No milestone".to_string(),
+                    due_on: None,
+                    repos: Vec::new(),
+                    open_count: 0,
+                    closed_count: 0,
+                    counts_known: false,
+                    issues: Vec::new(),
+                    no_milestone: true,
+                    links: Vec::new(),
+                    closed_at: None,
+                }
             } else if let Some(acc) = ms_summary.get(&key) {
-                (acc.title.clone(), acc.due.clone(), acc.open, acc.closed, true)
+                summary_group(acc)
             } else {
                 // Not in the summary (cut milestone list): only the listed
                 // open issues are known — counted below.
-                (issue.milestone_title.clone().unwrap_or_default(), issue.milestone_due_on.clone(), 0, 0, false)
-            };
-            groups.insert(
-                key.clone(),
                 MilestoneGroup {
-                    title,
-                    due_on: due,
+                    title: issue.milestone_title.clone().unwrap_or_default(),
+                    due_on: issue.milestone_due_on.clone(),
                     repos: Vec::new(),
-                    open_count: open,
-                    closed_count: closed,
-                    counts_known,
+                    open_count: 0,
+                    closed_count: 0,
+                    counts_known: false,
                     issues: Vec::new(),
-                },
-            );
+                    no_milestone: false,
+                    links: Vec::new(),
+                    closed_at: None,
+                }
+            };
+            groups.insert(key.clone(), group);
         }
         let g = groups.get_mut(&key).unwrap();
         if !g.repos.contains(&issue.repo) {
@@ -2456,6 +2539,24 @@ pub async fn load_milestone_board(db: &Db, project_id: &str) -> Result<Milestone
     for g in groups.values_mut() {
         if !g.counts_known {
             g.open_count = g.issues.len() as u64;
+        }
+    }
+
+    // Milestones with no open issue listed (finished, or beyond a cut issue
+    // list) still show their progress: every open one, and the ones closed on
+    // GitHub within `RECENTLY_CLOSED_DAYS`.
+    let recent_cutoff = (chrono::Utc::now() - chrono::Duration::days(RECENTLY_CLOSED_DAYS))
+        .format("%Y-%m-%dT%H:%M:%SZ")
+        .to_string();
+    for key in ms_order {
+        if groups.contains_key(&key) {
+            continue;
+        }
+        let acc = &ms_summary[&key];
+        let keep = !acc.all_closed || acc.closed_at.as_deref().is_some_and(|c| c >= recent_cutoff.as_str());
+        if keep && !acc.links.is_empty() {
+            order.push(key.clone());
+            groups.insert(key, summary_group(acc));
         }
     }
 
@@ -2637,16 +2738,20 @@ mod tests {
         let conn = serde_json::json!({
             "pageInfo": { "hasNextPage": true, "endCursor": "c2" },
             "nodes": [
-                { "title": "v1", "dueOn": "2026-11-01T00:00:00Z", "open": { "totalCount": 3 }, "closed": { "totalCount": 7 } },
+                { "title": "v1", "number": 4, "url": "https://github.com/o/r/milestone/4", "state": "OPEN",
+                  "dueOn": "2026-11-01T00:00:00Z", "open": { "totalCount": 3 }, "closed": { "totalCount": 7 } },
                 { "title": "", "dueOn": null },
-                { "title": "v2", "dueOn": null, "open": { "totalCount": 0 }, "closed": { "totalCount": 1 } }
+                { "title": "v2", "number": 5, "url": "u5", "state": "CLOSED", "closedAt": "2026-11-20T08:00:00Z",
+                  "dueOn": null, "open": { "totalCount": 0 }, "closed": { "totalCount": 1 } }
             ]
         });
         let (page, next) = super::parse_milestone_page(Some(&conn));
-        assert_eq!(page, vec![
-            ("v1".to_string(), 3, 7, Some("2026-11-01T00:00:00Z".to_string())),
-            ("v2".to_string(), 0, 1, None),
-        ]);
+        let brief: Vec<_> = page.iter().map(|m| (m.title.as_str(), m.open, m.closed, m.due.as_deref(), m.number)).collect();
+        assert_eq!(brief, vec![("v1", 3, 7, Some("2026-11-01T00:00:00Z"), 4), ("v2", 0, 1, None, 5)]);
+        assert_eq!(page[0].html_url, "https://github.com/o/r/milestone/4");
+        assert!(!page[0].closed_state && page[0].closed_at.is_none());
+        assert!(page[1].closed_state);
+        assert_eq!(page[1].closed_at.as_deref(), Some("2026-11-20T08:00:00Z"));
         assert_eq!(next.as_deref(), Some("c2"));
 
         let last = serde_json::json!({ "pageInfo": { "hasNextPage": false, "endCursor": "c3" }, "nodes": [] });
