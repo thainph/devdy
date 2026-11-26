@@ -3,9 +3,12 @@
 // field while the header is wide; below 40rem (pageHeader.ts) an icon button
 // that opens the field over the whole header row; ✕ / Esc clear and close it,
 // leaving it empty closes it, a typed search stays applied. The icon is tinted while a search is applied.
+// The wide field takes focus when its screen comes into view and on ⌘F / Ctrl+F
+// (composables/useFindShortcut).
 import { nextTick, ref } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { Search, X } from 'lucide-vue-next'
+import { useFindShortcut } from '@/composables/useFindShortcut'
 import Button from './Button.vue'
 import Input from './Input.vue'
 
@@ -20,6 +23,8 @@ const search = defineModel<string>({ required: true })
 const { t } = useI18n()
 const expanded = ref(false)
 const overlayInput = ref<InstanceType<typeof Input> | null>(null)
+const wide = ref<HTMLElement | null>(null)
+const wideInput = ref<InstanceType<typeof Input> | null>(null)
 
 async function expand() {
   expanded.value = true
@@ -41,13 +46,22 @@ function onBlur() {
 }
 
 const clearTitle = () => props.clearLabel || t('common.clear')
+
+function focusWide() {
+  const el = wideInput.value?.$el as HTMLInputElement | undefined
+  el?.focus()
+  el?.select()
+}
+
+useFindShortcut(wide, focusWide, { autoFocus: true })
 </script>
 
 <template>
   <!-- Wide: the field in the actions row. -->
-  <div class="relative hidden @[40rem]/page-header:block">
+  <div ref="wide" data-find-shortcut class="relative hidden @[40rem]/page-header:block">
     <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
     <Input
+      ref="wideInput"
       v-model="search"
       size="sm"
       class="w-56 pl-7 pr-7"

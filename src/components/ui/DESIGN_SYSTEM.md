@@ -129,6 +129,11 @@ the window and are wrong in a split):
     label stays as `title` / `aria-label`.
   - `PageHeaderSearch` (`v-model`, `placeholder`): a w-56 field when wide, an
     icon button that opens the field over the header row when narrow.
+- A screen's search box takes focus when the screen comes into view and on
+  ⌘F (`composables/useFindShortcut`): `ListSearchBox` and `PageHeaderSearch` do
+  it already; a hand-built field wraps its `<input>` in an element with
+  `data-find-shortcut` and calls `useSearchBox(ref)`. A screen whose main input
+  is something else (the session composer) opts out (`:autofocus="false"`).
   - Custom buttons (popover triggers…): `pageHeaderCompactButton` on the
     Button and `pageHeaderLabel` on the label (`pageHeaderWideLabel` for a
     secondary button in a crowded header, labelled from 56rem).

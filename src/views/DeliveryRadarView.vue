@@ -16,6 +16,7 @@ import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
 import {
   Banner, Button, Card, ContextMenu, DropdownItem, Input, SegmentedControl, Skeleton,
 } from '@/components/ui'
+import { useSearchBox } from '@/composables/useFindShortcut'
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
 import DoneStatusesModal from '@/components/radar/DoneStatusesModal.vue'
@@ -144,6 +145,8 @@ function openDoneRules() {
 }
 const statusFilter = ref<RadarStatus | null>(null)
 const query = ref('')
+const searchBox = ref<HTMLElement | null>(null)
+useSearchBox(searchBox)
 const groupMode = ref<RadarGroupMode>(localStorage.getItem(GROUP_KEY) === 'project' ? 'project' : 'person')
 watch(groupMode, (m) => {
   try { localStorage.setItem(GROUP_KEY, m) } catch { /* best-effort */ }
@@ -418,7 +421,7 @@ const GRID = 'grid grid-cols-[minmax(0,1fr)_repeat(5,24px)_32px_52px] @[40rem]/s
         <SegmentedControl v-if="viewMode === 'issues'" v-model="groupMode" :options="groupModeOptions" :stretch="false" />
       </template>
       <div class="ml-auto flex min-w-0 max-w-full items-center gap-2">
-        <div v-if="boardProjects.length > 0" class="relative w-56 min-w-0">
+        <div v-if="boardProjects.length > 0" ref="searchBox" data-find-shortcut class="relative w-56 min-w-0">
           <Search class="pointer-events-none absolute left-2 top-1/2 h-3.5 w-3.5 -translate-y-1/2 text-muted-foreground" :stroke-width="1.75" />
           <Input
             v-model="query"
