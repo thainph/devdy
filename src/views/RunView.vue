@@ -905,6 +905,44 @@ const conductorWorkers = computed(() =>
     status: live.get(w.worker_id)?.status ?? w.status,
   })),
 )
+// Bulk "switch account" for every Claude worker of this conductor. A running
+// worker keeps the env it spawned with (same rule as the per-run picker), so it
+// is skipped and reported; the user can re-apply once it settles.
+const claudeWorkers = computed(() => conductorWorkers.value.filter((w) => w.engine === 'claude'))
+const applyingWorkerAccount = ref(false)
+async function applyAccountToWorkers(accountId: string) {
+  if (applyingWorkerAccount.value) return
+  applyingWorkerAccount.value = true
+  let changed = 0
+  let skipped = 0
+  const failed: string[] = []
+  try {
+    for (const w of claudeWorkers.value) {
+      if (w.status === 'running') {
+        skipped++
+        continue
+      }
+      if (w.claude_account_id === accountId) {
+        changed++
+        continue
+      }
+      try {
+        await runsStore.setRunClaudeAccount(w.worker_id, accountId)
+        changed++
+      } catch (e) {
+        failed.push(String(e))
+      }
+    }
+  } finally {
+    applyingWorkerAccount.value = false
+    await conductorStore.refreshDetail()
+  }
+  const account = claudeStore.accounts.find((a) => a.id === accountId)?.label ?? ''
+  const summary = t('conductor.workerAccountApplied', { account, changed, skipped })
+  if (failed.length) toast.error(`${summary} ${t('conductor.workerAccountFailed', { n: failed.length, error: failed[0] })}`)
+  else if (skipped) toast.info(summary, 4000)
+  else toast.success(summary)
+}
 // The conductor's concurrent-worker cap (set at launch, editable live from the
 // sidebar header). Shown next to the live worker count so the user sees headroom
 // at a glance. (Distinct from `conductorMaxWorkers`, the launch default applied
@@ -5284,6 +5322,37 @@ function handleRefInput(val: string) {
                 :stroke-width="1.75"
               />
             </button>
+            <DropdownMenu v-if="claudeWorkers.length && claudeStore.accounts.length" align="right" class="shrink-0">
+              <template #trigger="{ open }">
+                <Button
+                  variant="ghost"
+                  size="icon-xs"
+                  :disabled="applyingWorkerAccount"
+                  :title="t('conductor.workerAccountMenu')"
+                  :aria-label="t('conductor.workerAccountMenu')"
+                  :aria-expanded="open"
+                  aria-haspopup="menu"
+                >
+                  <component
+                    :is="applyingWorkerAccount ? Loader2 : KeyRound"
+                    class="h-3.5 w-3.5"
+                    :class="{ 'animate-spin': applyingWorkerAccount }"
+                    :stroke-width="1.75"
+                  />
+                </Button>
+              </template>
+              <div class="px-2 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground">
+                {{ t('conductor.workerAccountMenu') }}
+              </div>
+              <DropdownItem
+                v-for="acc in claudeStore.accounts"
+                :key="acc.id"
+                @click="applyAccountToWorkers(acc.id)"
+              >
+                <KeyRound class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                {{ acc.label }}
+              </DropdownItem>
+            </DropdownMenu>
           </template>
         </div>
         <!-- Rail: the worker cap stays reachable (notably before launch, when
