@@ -231,9 +231,16 @@ struct Inner {
     /// ended (a backgrounded Bash keeps the sidecar alive), so the DB status alone
     /// can't tell "busy" from "idle but alive".
     turn_active: HashSet<String>,
-    /// Conductors a worker finished for while they were mid-turn. The wake is
-    /// deferred, not dropped: it is delivered when that turn ends.
-    pending_wake: HashSet<String>,
+    /// Wakes deferred while a conductor was mid-turn, delivered when that turn
+    /// ends: conductor → {worker → that finish's `finished_at`}. Keyed per finish
+    /// so a finish the conductor already saw itself mid-turn (`session_wait` /
+    /// `session_poll` / …) is dropped instead of nudging it into a redundant turn.
+    /// `FORCED_WAKE` marks a wake with no single finish behind it (a failed nudge).
+    pending_wake: HashMap<String, HashMap<String, String>>,
+    /// Finishes each conductor has observed through its own tools: conductor →
+    /// {worker → `finished_at`}, or `CANCELLED_BY_CONDUCTOR` for a worker it is
+    /// stopping itself. A finish matching this needs no wake.
+    seen_finish: HashMap<String, HashMap<String, String>>,
     /// Sender for finished-run ids. The sidecar drain pushes every run's id here on
     /// `run:done`; a dedicated consumer task (started with the MCP server) performs
     /// the actual resume. This channel hop deliberately decouples the sidecar drain
@@ -266,7 +273,8 @@ impl ConductorState {
                 token_index: HashMap::new(),
                 waking: HashSet::new(),
                 turn_active: HashSet::new(),
-                pending_wake: HashSet::new(),
+                pending_wake: HashMap::new(),
+                seen_finish: HashMap::new(),
                 wake_tx: None,
             })),
             start_lock: Arc::new(tokio::sync::Mutex::new(())),
@@ -401,19 +409,28 @@ impl ConductorState {
         if let Ok(mut g) = self.inner.lock() {
             g.turn_active.remove(conductor_run_id);
             g.waking.remove(conductor_run_id);
-            g.pending_wake.remove(conductor_run_id)
+            g.pending_wake
+                .remove(conductor_run_id)
+                .is_some_and(|p| !p.is_empty())
         } else {
             false
         }
     }
 
     /// If the conductor is mid-turn, record a deferred wake and return true; the
-    /// caller then leaves it alone. Checked under the same lock `turn_ended`
-    /// takes, so a wake can't slip between "busy" and "turn just ended".
-    pub fn defer_wake_if_busy(&self, conductor_run_id: &str) -> bool {
+    /// caller then leaves it alone. `finish` is the worker + `finished_at` that
+    /// triggered it (None when re-delivering a wake at turn end), so the
+    /// conductor observing that finish mid-turn can cancel it. Checked under the
+    /// same lock `turn_ended` takes, so a wake can't slip between "busy" and
+    /// "turn just ended".
+    pub fn defer_wake_if_busy(&self, conductor_run_id: &str, finish: Option<(&str, &str)>) -> bool {
         if let Ok(mut g) = self.inner.lock() {
             if g.turn_active.contains(conductor_run_id) {
-                g.pending_wake.insert(conductor_run_id.to_string());
+                let (worker, finished_at) = finish.unwrap_or((FORCED_WAKE, ""));
+                g.pending_wake
+                    .entry(conductor_run_id.to_string())
+                    .or_default()
+                    .insert(worker.to_string(), finished_at.to_string());
                 return true;
             }
         }
@@ -424,7 +441,76 @@ impl ConductorState {
     /// the sidecar is shutting down); the conductor's next turn end delivers it.
     pub fn defer_wake(&self, conductor_run_id: &str) {
         if let Ok(mut g) = self.inner.lock() {
-            g.pending_wake.insert(conductor_run_id.to_string());
+            g.pending_wake
+                .entry(conductor_run_id.to_string())
+                .or_default()
+                .insert(FORCED_WAKE.to_string(), String::new());
+        }
+    }
+
+    /// The conductor saw `worker_id` finished (`finished_at`) through one of its
+    /// own tools: that finish needs no wake, deferred or late.
+    pub fn mark_finish_seen(&self, conductor_run_id: &str, worker_id: &str, finished_at: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            if g.seen_finish.get(conductor_run_id).and_then(|m| m.get(worker_id)).map(String::as_str)
+                == Some(CANCELLED_BY_CONDUCTOR)
+            {
+                // Its cancel exit is still on the way; keep swallowing that one.
+                return;
+            }
+            if let Some(p) = g.pending_wake.get_mut(conductor_run_id) {
+                if p.get(worker_id).map(String::as_str) == Some(finished_at) {
+                    p.remove(worker_id);
+                }
+            }
+            g.seen_finish
+                .entry(conductor_run_id.to_string())
+                .or_default()
+                .insert(worker_id.to_string(), finished_at.to_string());
+        }
+    }
+
+    /// The conductor is cancelling `worker_id` itself: the exit that follows must
+    /// not wake it to report a stop it asked for.
+    pub fn mark_cancelling(&self, conductor_run_id: &str, worker_id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            if let Some(p) = g.pending_wake.get_mut(conductor_run_id) {
+                p.remove(worker_id);
+            }
+            g.seen_finish
+                .entry(conductor_run_id.to_string())
+                .or_default()
+                .insert(worker_id.to_string(), CANCELLED_BY_CONDUCTOR.to_string());
+        }
+    }
+
+    /// Undo `mark_cancelling` when the cancel failed and no exit will follow.
+    pub fn clear_cancelling(&self, conductor_run_id: &str, worker_id: &str) {
+        if let Ok(mut g) = self.inner.lock() {
+            if let Some(m) = g.seen_finish.get_mut(conductor_run_id) {
+                if m.get(worker_id).map(String::as_str) == Some(CANCELLED_BY_CONDUCTOR) {
+                    m.remove(worker_id);
+                }
+            }
+        }
+    }
+
+    /// Whether this worker finish needs no wake: the conductor already observed
+    /// it, or it is the exit of a cancel the conductor issued (consumed here).
+    pub fn take_finish_seen(&self, conductor_run_id: &str, worker_id: &str, finished_at: &str) -> bool {
+        let Ok(mut g) = self.inner.lock() else {
+            return false;
+        };
+        let Some(m) = g.seen_finish.get_mut(conductor_run_id) else {
+            return false;
+        };
+        match m.get(worker_id).map(String::as_str) {
+            Some(CANCELLED_BY_CONDUCTOR) => {
+                m.remove(worker_id);
+                true
+            }
+            Some(seen) => seen == finished_at,
+            None => false,
         }
     }
 
@@ -488,6 +574,7 @@ impl ConductorState {
             g.waking.remove(run_id);
             g.turn_active.remove(run_id);
             g.pending_wake.remove(run_id);
+            g.seen_finish.remove(run_id);
             for s in g.sessions.values_mut() {
                 s.worker_ids.retain(|w| w != run_id);
             }
@@ -558,6 +645,13 @@ pub fn with_conductor_codex(
     mcp
 }
 
+/// `pending_wake` key for a wake not tied to one worker finish (a nudge that
+/// failed and must be retried at the next turn end). Never a real run id.
+const FORCED_WAKE: &str = "*forced*";
+/// `seen_finish` value for a worker the conductor is cancelling: swallow the
+/// exit that follows, whatever its `finished_at`.
+const CANCELLED_BY_CONDUCTOR: &str = "*cancelled*";
+
 fn mint_token() -> String {
     use rand::RngCore;
     let mut bytes = [0u8; 24];
@@ -579,7 +673,7 @@ mod tests {
     fn wake_during_turn_is_deferred_then_delivered_at_turn_end() {
         let cst = state_with("c1");
         cst.turn_started("c1");
-        assert!(cst.defer_wake_if_busy("c1"), "mid-turn conductor must defer");
+        assert!(cst.defer_wake_if_busy("c1", Some(("w1", "t1"))), "mid-turn conductor must defer");
         assert!(cst.turn_ended("c1"), "turn end must hand back the deferred wake");
         assert!(!cst.turn_ended("c1"), "a deferred wake is delivered once");
     }
@@ -588,15 +682,69 @@ mod tests {
     fn idle_alive_conductor_is_woken_once_per_turn() {
         let cst = state_with("c1");
         // Turn ended, sidecar still alive: not busy, so the wake goes through.
-        assert!(!cst.defer_wake_if_busy("c1"));
+        assert!(!cst.defer_wake_if_busy("c1", Some(("w1", "t1"))));
         assert!(cst.begin_wake_turn("c1"));
         // A second worker finishing before the nudge's init defers instead of
         // sending a duplicate nudge.
-        assert!(cst.defer_wake_if_busy("c1"));
+        assert!(cst.defer_wake_if_busy("c1", Some(("w1", "t1"))));
         assert!(!cst.begin_wake_turn("c1"));
         // The nudged turn ends → slot released, deferred wake delivered.
         assert!(cst.turn_ended("c1"));
         assert!(cst.begin_wake_turn("c1"));
+    }
+
+    #[test]
+    fn a_finish_the_conductor_already_saw_mid_turn_does_not_wake_it() {
+        let cst = state_with("c1");
+        cst.turn_started("c1");
+        // Worker finishes while the conductor blocks in session_wait…
+        assert!(cst.defer_wake_if_busy("c1", Some(("w1", "t1"))));
+        // …and session_wait hands that same finish back to it.
+        cst.mark_finish_seen("c1", "w1", "t1");
+        assert!(!cst.turn_ended("c1"), "no redundant nudge for an observed finish");
+    }
+
+    #[test]
+    fn an_unseen_finish_still_wakes_after_another_was_seen() {
+        let cst = state_with("c1");
+        cst.turn_started("c1");
+        assert!(cst.defer_wake_if_busy("c1", Some(("w1", "t1"))));
+        assert!(cst.defer_wake_if_busy("c1", Some(("w2", "t2"))));
+        cst.mark_finish_seen("c1", "w1", "t1");
+        // An older finish of w2 being seen doesn't cover its new one.
+        cst.mark_finish_seen("c1", "w2", "t0");
+        assert!(cst.turn_ended("c1"));
+    }
+
+    #[test]
+    fn a_finish_seen_before_its_notification_is_skipped_once_per_finish() {
+        let cst = state_with("c1");
+        cst.mark_finish_seen("c1", "w1", "t1");
+        assert!(cst.take_finish_seen("c1", "w1", "t1"));
+        // The worker's next turn finishes later: a new finish, so it wakes.
+        assert!(!cst.take_finish_seen("c1", "w1", "t2"));
+    }
+
+    #[test]
+    fn a_cancel_the_conductor_issued_swallows_exactly_its_exit() {
+        let cst = state_with("c1");
+        cst.mark_cancelling("c1", "w1");
+        // Polling the cancelled worker mid-way doesn't replace the marker.
+        cst.mark_finish_seen("c1", "w1", "t-cancel");
+        assert!(cst.take_finish_seen("c1", "w1", "t-exit"));
+        assert!(!cst.take_finish_seen("c1", "w1", "t-later"));
+
+        cst.mark_cancelling("c1", "w2");
+        cst.clear_cancelling("c1", "w2");
+        assert!(!cst.take_finish_seen("c1", "w2", "t"));
+    }
+
+    #[test]
+    fn a_failed_nudge_is_always_redelivered() {
+        let cst = state_with("c1");
+        cst.defer_wake("c1");
+        cst.mark_finish_seen("c1", "w1", "t1");
+        assert!(cst.turn_ended("c1"));
     }
 
     fn launch() -> crate::commands::mcp::McpLaunch {
@@ -721,7 +869,7 @@ mod tests {
         cst.unregister_session("c1");
         assert!(cst.session("c1").is_none());
         assert!(cst.resolve_token(&t1).is_none() && cst.resolve_token(&t2).is_none());
-        assert!(!cst.defer_wake_if_busy("c1"));
+        assert!(!cst.defer_wake_if_busy("c1", Some(("w1", "t1"))));
         assert_eq!(cst.resolve_token(&other).as_deref(), Some("c2"));
         // Deleting a worker detaches it from its conductor.
         cst.unregister_session("c1-orphan");
@@ -745,6 +893,6 @@ mod tests {
     fn untracked_runs_never_become_busy() {
         let cst = ConductorState::new();
         cst.turn_started("plain-run");
-        assert!(!cst.defer_wake_if_busy("plain-run"));
+        assert!(!cst.defer_wake_if_busy("plain-run", None));
     }
 }

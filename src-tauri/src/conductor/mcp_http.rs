@@ -217,6 +217,7 @@ async fn session_wait_stream(
 
     struct WaitState {
         state: HttpState,
+        conductor_run_id: String,
         ids: Vec<String>,
         id: Value,
         progress_token: Option<Value>,
@@ -229,6 +230,7 @@ async fn session_wait_stream(
     let started = Instant::now();
     let init = WaitState {
         state: state.clone(),
+        conductor_run_id: conductor_run_id.to_string(),
         ids,
         id,
         progress_token,
@@ -244,7 +246,7 @@ async fn session_wait_stream(
         }
         let tick_start = Instant::now();
         loop {
-            let (done, pending) = match tools::wait_snapshot(&st.state, &st.ids).await {
+            let (done, pending) = match tools::wait_snapshot(&st.state, &st.conductor_run_id, &st.ids).await {
                 Ok(snap) => snap,
                 Err(msg) => {
                     st.done = true;
