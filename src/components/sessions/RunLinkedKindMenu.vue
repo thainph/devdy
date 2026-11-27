@@ -75,7 +75,7 @@ function notePreview(it: RunLinkedItem): string {
 }
 
 function open(id: string) {
-  void openSurface(props.kind === 'slack' ? 'slack' : props.kind === 'todo' ? 'todos' : 'notes', { id }, { split: true })
+  void openSurface(props.kind === 'slack' ? 'slack' : props.kind === 'todo' ? 'todos' : 'notes', { id })
 }
 </script>
 

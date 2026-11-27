@@ -29,9 +29,8 @@ const tabId = computed(() => surfaceTabId(props.surface, props.params))
 function onFileClose() {
   void closeSurfaceTab(tabId.value)
 }
-// A link in a file opens the new file as a tab (the old one stays a tab; a
-// shown split stays fixed, so it opens full width). ⌘/Ctrl-click opens its own
-// window.
+// A link in a file opens the new file as a tab (the old one stays a tab; while
+// split it takes the right half). ⌘/Ctrl-click opens its own window.
 function onOpenFile(path: string, at: number | null, newWindow: boolean) {
   void openSurface(
     'file',

@@ -1,5 +1,5 @@
-// The main window's tab strip as data: its entries, the split pair (two tabs
-// shown side by side, Chrome-style) and the split ratio — what
+// The main window's tab strip as data: its entries, the split view (on / off,
+// the session on the left, the screen on the right) and the split ratio — what
 // stores/workspaceTabs keeps and persists, as pure functions.
 //
 // Pure logic only — no Vue / router / Tauri imports — so it is unit-tested
@@ -44,16 +44,6 @@ export type TabEntry =
   | ({ type: 'surface' } & SurfaceTab)
   | ({ type: 'page' } & PageTab)
 
-/**
- * The two tabs of a split view, by `tabEntryKey`: `left` is what the router
- * shows, `right` is rendered beside it. They always sit next to each other on
- * the strip, left first.
- */
-export interface SplitPair {
-  left: string
-  right: string
-}
-
 export type PaneSide = 'left' | 'right'
 
 export function pageTabId(path: string): string {
@@ -62,16 +52,6 @@ export function pageTabId(path: string): string {
 
 export function tabEntryKey(e: TabEntry): string {
   return e.type === 'project' ? `project:${e.projectId}` : e.id
-}
-
-/**
- * Whether two tabs may share a split. Never a tab with itself, and never two
- * sessions: a session screen owns app-wide singletons (the conductor panel,
- * window key / drop listeners) that two of them would fight over.
- */
-export function canPair(a: TabEntry, b: TabEntry): boolean {
-  if (tabEntryKey(a) === tabEntryKey(b)) return false
-  return !(a.type === 'project' && b.type === 'project')
 }
 
 /**
@@ -120,83 +100,34 @@ export function clampRatio(
   return Math.min(1 - minRight / total, Math.max(minLeft / total, r))
 }
 
-// --- Strip order --------------------------------------------------------------
-
-/** Move `right` to sit right after `left` (the pair is drawn as one tab). */
-export function placePair(keys: readonly string[], pair: SplitPair): string[] {
-  if (!keys.includes(pair.left) || !keys.includes(pair.right)) return [...keys]
-  const out = keys.filter((k) => k !== pair.right)
-  out.splice(out.indexOf(pair.left) + 1, 0, pair.right)
-  return out
-}
-
-/**
- * The strip as drawable units: one per tab, except the pair which is one unit
- * of its two adjacent tabs. Each unit lists its indices into `keys`.
- */
-export function stripUnits(keys: readonly string[], pair: SplitPair | null): number[][] {
-  const units: number[][] = []
-  for (let i = 0; i < keys.length; i++) {
-    if (pair && keys[i] === pair.left && keys[i + 1] === pair.right) {
-      units.push([i, i + 1])
-      i++
-    } else {
-      units.push([i])
-    }
-  }
-  return units
-}
-
-/** Drag-and-drop on the strip: move unit `from` to unit slot `to` (the pair moves as one). */
-export function moveUnit(keys: readonly string[], pair: SplitPair | null, from: number, to: number): string[] {
-  const units = stripUnits(keys, pair)
-  if (from === to || !units[from] || !units[to]) return [...keys]
-  const groups = units.map((u) => u.map((i) => keys[i]))
-  const [moved] = groups.splice(from, 1)
-  groups.splice(to, 0, moved)
-  return groups.flat()
-}
-
-/**
- * Put `key` in one half of the pair (navigation inside that half landed on
- * another tab). It moves into that half's place on the strip; the tab it
- * replaces stays open, right after the pair. Returns the new order and pair, or
- * null when it can't (it is the other half already).
- */
-export function replacePairSide(
-  keys: readonly string[],
-  pair: SplitPair,
-  side: PaneSide,
-  key: string,
-): { keys: string[]; pair: SplitPair } | null {
-  const other = side === 'left' ? pair.right : pair.left
-  if (key === other) return null
-  const old = pair[side]
-  if (key === old) return { keys: placePair(keys, pair), pair }
-  const next: SplitPair = side === 'left' ? { left: key, right: pair.right } : { left: pair.left, right: key }
-  const out = keys.filter((k) => k !== key && k !== old)
-  const at = out.indexOf(other)
-  if (at === -1) return null
-  // [left, right], then the replaced tab.
-  out.splice(side === 'left' ? at : at + 1, 0, key)
-  if (keys.includes(old)) out.splice(out.indexOf(next.right) + 1, 0, old)
-  return { keys: out, pair: next }
-}
-
 // --- Persistence ----------------------------------------------------------------
 
-export const WORKSPACE_STATE_VERSION = 2
+export const WORKSPACE_STATE_VERSION = 3
 
 export interface WorkspaceState {
   entries: TabEntry[]
-  /** Kept across restarts, on screen or waiting on the strip. */
-  pair: SplitPair | null
-  /**
-   * Whether the pair was on screen: a restart shows exactly what the user had.
-   * Missing (v1, early v2) = false: the pair waits on the strip.
-   */
-  pairShown: boolean
+  /** Split view on: the session on the left, any other screen on the right. */
+  split: boolean
+  /** The session (project tab key) the left half shows — the last one viewed. */
+  left: string | null
+  /** The tab (never a session) in the right half, or null for an empty half. */
+  right: string | null
   ratio: number
+}
+
+/** Which half a tab shows in while split: sessions on the left, everything else on the right. */
+export function splitSide(e: TabEntry): PaneSide {
+  return e.type === 'project' ? 'left' : 'right'
+}
+
+/**
+ * The session for the left half: `preferred` while it is an open session tab,
+ * else the first session tab on the strip, else null (no session to show).
+ */
+export function pickSession(entries: readonly TabEntry[], preferred: string | null | undefined): string | null {
+  if (preferred && entries.some((e) => e.type === 'project' && tabEntryKey(e) === preferred)) return preferred
+  const first = entries.find((e) => e.type === 'project')
+  return first ? tabEntryKey(first) : null
 }
 
 function parseEntry(t: unknown): TabEntry | null {
@@ -219,12 +150,13 @@ function parseEntry(t: unknown): TabEntry | null {
 
 /**
  * Read the persisted strip. Version 1 was a bare array of entries (the split
- * was never saved); version 2 is `{ version, entries, pair, pairShown, ratio }`
- * (`pairShown` added later, absent = false). Anything malformed is dropped
- * rather than failing the whole strip.
+ * was never saved); version 2 kept a free pair of tabs (`pair`, `pairShown`),
+ * read as the split when one half is a session; version 3 is
+ * `{ version, entries, split, left, right, ratio }`. Anything malformed is
+ * dropped rather than failing the whole strip.
  */
 export function parseWorkspaceState(raw: string | null | undefined): WorkspaceState {
-  const empty: WorkspaceState = { entries: [], pair: null, pairShown: false, ratio: DEFAULT_SPLIT_RATIO }
+  const empty: WorkspaceState = { entries: [], split: false, left: null, right: null, ratio: DEFAULT_SPLIT_RATIO }
   if (!raw) return empty
   let data: unknown
   try {
@@ -248,26 +180,40 @@ export function parseWorkspaceState(raw: string | null | undefined): WorkspaceSt
   }
   const obj = Array.isArray(data) ? {} : (data as Record<string, unknown>)
   const ratio = sanitizeRatio(obj.ratio)
-  let pair: SplitPair | null = null
+  const byKey = (k: unknown) => (typeof k === 'string' ? (entries.find((e) => tabEntryKey(e) === k) ?? null) : null)
+  let left: unknown = obj.left
+  let right: unknown = obj.right
+  let split = obj.split === true
+  // v2: a pair with a session half becomes the split; any other pair is dropped.
   const p = obj.pair as Record<string, unknown> | null | undefined
-  if (p && typeof p.left === 'string' && typeof p.right === 'string') {
-    const l = entries.find((e) => tabEntryKey(e) === p.left)
-    const r = entries.find((e) => tabEntryKey(e) === p.right)
-    if (l && r && canPair(l, r)) pair = { left: p.left, right: p.right }
+  if (obj.version === 2 && p) {
+    const halves = [byKey(p.left), byKey(p.right)]
+    const session = halves.find((e) => e?.type === 'project')
+    const other = halves.find((e) => e && e.type !== 'project')
+    left = session ? tabEntryKey(session) : null
+    right = session && other ? tabEntryKey(other) : null
+    split = !!session && obj.pairShown === true
   }
-  if (pair) {
-    const order = placePair(entries.map(tabEntryKey), pair)
-    entries.sort((a, b) => order.indexOf(tabEntryKey(a)) - order.indexOf(tabEntryKey(b)))
+  const l = byKey(left)
+  const r = byKey(right)
+  const leftKey = l && splitSide(l) === 'left' ? tabEntryKey(l) : null
+  return {
+    entries,
+    left: leftKey,
+    right: r && splitSide(r) === 'right' ? tabEntryKey(r) : null,
+    // Never split without a session to show on the left.
+    split: split && !!pickSession(entries, leftKey),
+    ratio,
   }
-  return { entries, pair, pairShown: !!pair && obj.pairShown === true, ratio }
 }
 
 export function serializeWorkspaceState(s: WorkspaceState): string {
   return JSON.stringify({
     version: WORKSPACE_STATE_VERSION,
     entries: s.entries,
-    pair: s.pair,
-    pairShown: !!s.pair && s.pairShown === true,
+    split: s.split === true,
+    left: s.left,
+    right: s.right,
     ratio: s.ratio,
   })
 }

@@ -1,8 +1,8 @@
 <script setup lang="ts">
 import { computed, onBeforeUnmount, onMounted, ref, watch } from 'vue'
 import { useI18n } from 'vue-i18n'
-import { ArrowLeftRight, ChevronDown, Columns2, ExternalLink, PanelRightClose, SquareSplitHorizontal, X, XSquare } from 'lucide-vue-next'
-import { ContextMenu, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
+import { ChevronDown, Columns2, ExternalLink, PanelRightClose, X, XSquare } from 'lucide-vue-next'
+import { Button, ContextMenu, DropdownItem, DropdownMenu, DropdownSeparator } from '@/components/ui'
 import WorkspaceTab from '@/components/WorkspaceTab.vue'
 import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/workspaceTabs'
 import { useLiveRunsStore } from '@/stores/liveRuns'
@@ -10,10 +10,9 @@ import { useProjectsStore } from '@/stores/projects'
 import { useRunsStore } from '@/stores/runs'
 import { useDragSort } from '@/composables/useDragSort'
 import { entryIcon, entryLabel } from '@/lib/tabMeta'
-import { tabStripLayout, unitWidth } from '@/lib/tabStripLayout'
-import { stripUnits } from '@/lib/workspaceState'
+import { tabStripLayout } from '@/lib/tabStripLayout'
 import { popOutSurface, routedKey } from '@/lib/surfaceOpen'
-import { canOpenOnRight, closeEntry, closeOtherEntries, openOnRight, selectEntry, swapSplit, unsplitFocused } from '@/lib/tabActions'
+import { canSplit, closeEntry, closeOtherEntries, selectEntry, toggleSplit } from '@/lib/tabActions'
 
 /**
  * The shared tab strip of the main window: one tab per open PROJECT (its runs
@@ -22,14 +21,9 @@ import { canOpenOnRight, closeEntry, closeOtherEntries, openOnRight, selectEntry
  * threads, Todos, a file… shown in this window instead of their own
  * (lib/surfaces). A surface tab can pop out into its own window.
  *
- * Split view, one rule: the left half is the screen you're on, the right half
- * the tab you "Open on the right" (right-click menu or ⌘K); doing it on
- * another tab while split replaces the right half. The two then sit side by
- * side on the strip as ONE merged tab with two halves, the focused half lifted.
- * A tab itself only carries its close button; split, swap and pop-out are in
- * its right-click menu. Clicking another tab shows it full width
- * while the pair stays (idle look); clicking a half brings the split back with
- * that half focused. The pair drags as a unit; closing a half ends the split.
+ * Split view is a mode, toggled by the button at the strip's end (⌘\): on,
+ * a session tab shows in the left half and any other tab in the right half
+ * (lib/tabActions). Both tabs on screen are marked, the focused one lifted.
  *
  * Aggregate live status (any run streaming / awaiting permission) is read from
  * liveRuns.
@@ -46,9 +40,8 @@ const routed = computed(() => routedKey())
 
 function isActive(e: TabEntry): boolean {
   const key = tabEntryKey(e)
-  const pair = tabsStore.pair
-  if (tabsStore.isSplit && pair) {
-    return (key === pair.left && tabsStore.focusedPane === 'left') || (key === pair.right && tabsStore.focusedPane === 'right')
+  if (tabsStore.isSplit) {
+    return tabsStore.focusedPane === 'right' ? key === tabsStore.splitId : key === routed.value
   }
   return key === routed.value
 }
@@ -101,7 +94,7 @@ function stateOf(e: TabEntry): ProjectState {
   return (e.type === 'project' && states.value[e.projectId]) || { running: false, pending: 0 }
 }
 
-// Right-click menu of a tab: the same split actions, spelled out.
+// Right-click menu of a tab.
 const menu = ref<{ open: boolean; x: number; y: number; tab: TabEntry | null }>({ open: false, x: 0, y: 0, tab: null })
 function openMenu(e: TabEntry, ev: MouseEvent) {
   menu.value = { open: true, x: ev.clientX, y: ev.clientY, tab: e }
@@ -113,33 +106,14 @@ function runMenu(action: () => void) {
   closeMenu()
   action()
 }
-const menuInShownPair = computed(() => !!menu.value.tab && tabsStore.isSplit && inPair(menu.value.tab))
 
 function popOut(e: TabEntry) {
   if (e.type === 'surface') void popOutSurface(e.id)
 }
 
-// --- Units: tabs, and the pair as one merged tab -------------------------------
-type Unit = { kind: 'tab'; tab: TabEntry } | { kind: 'pair'; left: TabEntry; right: TabEntry }
-
-const units = computed<Unit[]>(() => {
-  const all = tabsStore.entries
-  return stripUnits(all.map(tabEntryKey), tabsStore.pair).map((u) =>
-    u.length === 2 ? { kind: 'pair', left: all[u[0]], right: all[u[1]] } : { kind: 'tab', tab: all[u[0]] },
-  )
-})
-
-function unitEntries(u: Unit): TabEntry[] {
-  return u.kind === 'pair' ? [u.left, u.right] : [u.tab]
-}
-
-function unitKey(u: Unit): string {
-  return u.kind === 'pair' ? `pair:${tabEntryKey(u.left)}|${tabEntryKey(u.right)}` : tabEntryKey(u.tab)
-}
-
 // --- Overflow (Chrome-style, lib/tabStripLayout) ------------------------------
 // Tabs never shrink below TAB_MIN so a title stays readable; the rest hide
-// behind the ▾ button, which lists every tab. The pair takes two slots.
+// behind the ▾ button, which lists every tab.
 const TAB_MIN = 140
 const TAB_MAX = 200
 const GAP = 4
@@ -161,29 +135,25 @@ watch(wrapRef, (el, old) => {
 })
 
 const layout = computed(() => {
-  const all = units.value
-  const active = all.findIndex((u) => unitEntries(u).some(isActive))
-  const current = active >= 0 ? active : all.findIndex((u) => unitEntries(u).some(isVisible))
+  const all = tabsStore.entries
+  const active = all.findIndex(isActive)
+  const current = active >= 0 ? active : all.findIndex(isVisible)
   return tabStripLayout(
-    all.map((u) => (u.kind === 'pair' ? 2 : 1)),
+    all.map(() => 1),
     avail.value,
     current,
     { min: TAB_MIN, max: TAB_MAX, gap: GAP, more: MORE_W },
   )
 })
 
-const shownUnits = computed(() => layout.value.shown.map((i) => units.value[i]).filter(Boolean))
-const hiddenCount = computed(() =>
-  layout.value.hidden.reduce((n, i) => n + (units.value[i] ? unitEntries(units.value[i]).length : 0), 0),
-)
+const shownTabs = computed(() => layout.value.shown.map((i) => tabsStore.entries[i]).filter(Boolean))
+const hiddenCount = computed(() => layout.value.hidden.length)
 
-function unitStyle(u: Unit) {
-  return { width: `${u.kind === 'pair' ? unitWidth(2, layout.value.width, GAP) : layout.value.width}px` }
-}
+const tabWidth = computed(() => ({ width: `${layout.value.width}px` }))
 
 // --- Drag & drop reorder ---------------------------------------------------
-// The tab strip is a single-row case of the shared sortable; the whole tab (or
-// the whole pair) is the handle, so a press only becomes a drag past a few
+// The tab strip is a single-row case of the shared sortable; the whole tab is
+// the handle, so a press only becomes a drag past a few
 // pixels of travel — below that it stays an ordinary click.
 const stripRef = ref<HTMLElement | null>(null)
 const { dragFrom, start: startDrag, itemStyle: tabStyle, clickWasDrag } = useDragSort({
@@ -191,7 +161,7 @@ const { dragFrom, start: startDrag, itemStyle: tabStyle, clickWasDrag } = useDra
   // Indices are positions among the SHOWN units; map them back to the strip.
   onDrop: (from, to) => {
     const { shown } = layout.value
-    if (shown[from] !== undefined && shown[to] !== undefined) tabsStore.moveUnit(shown[from], shown[to])
+    if (shown[from] !== undefined && shown[to] !== undefined) tabsStore.move(shown[from], shown[to])
   },
 })
 
@@ -201,10 +171,9 @@ function onTabClick(e: TabEntry) {
   selectEntry(e)
 }
 
-function inPair(e: TabEntry): boolean {
-  const key = tabEntryKey(e)
-  return key === tabsStore.pair?.left || key === tabsStore.pair?.right
-}
+const splitLabel = computed(() =>
+  tabsStore.isSplit ? t('surfaces.tabs.splitOff') : canSplit() ? t('surfaces.tabs.splitOn') : t('surfaces.tabs.splitNeedsSession'),
+)
 </script>
 
 <template>
@@ -216,75 +185,27 @@ function inPair(e: TabEntry): boolean {
     class="flex items-center gap-1 min-w-0 flex-1 h-full overflow-hidden"
   >
   <div ref="stripRef" class="flex items-center gap-1 min-w-0 h-full overflow-hidden">
-    <template v-for="(unit, index) in shownUnits" :key="unitKey(unit)">
-      <WorkspaceTab
-        v-if="unit.kind === 'tab'"
-        :data-drag-index="index"
-        :tab="unit.tab"
-        :label="label(unit.tab)"
-        :running="stateOf(unit.tab).running"
-        :pending="stateOf(unit.tab).pending"
-        :look="dragFrom === index ? 'active' : look(unit.tab)"
-        :class="dragFrom === index ? 'shadow-md !cursor-grabbing' : ''"
-        :style="[unitStyle(unit), tabStyle(index)]"
-        :title="`${label(unit.tab)} — ${t('misc.tabs.dragToReorder')}`"
-        @pointerdown="startDrag(index, $event)"
-        @click="onTabClick(unit.tab)"
-        @contextmenu.prevent="openMenu(unit.tab, $event)"
-        @close="closeEntry(unit.tab)"
-      />
-      <!-- The split pair: both tabs in one frame, the focused half lifted; an
-           idle frame while another tab is shown full width. -->
-      <div
-        v-else
-        :data-drag-index="index"
-        role="group"
-        :aria-label="t('surfaces.tabs.pair', { left: label(unit.left), right: label(unit.right) })"
-        class="flex h-7 shrink-0 items-stretch gap-0.5 rounded-lg p-0.5 select-none touch-none transition-colors"
-        :class="[
-          tabsStore.pairShown
-            ? 'bg-primary/10 shadow-[inset_0_0_0_1px_hsl(var(--primary)/0.4)]'
-            : 'shadow-[inset_0_0_0_1px_hsl(var(--border))]',
-          dragFrom === index ? 'shadow-md cursor-grabbing' : '',
-        ]"
-        :style="[unitStyle(unit), tabStyle(index)]"
-        :title="`${t('surfaces.tabs.pair', { left: label(unit.left), right: label(unit.right) })} — ${t('misc.tabs.dragToReorder')}`"
-        @pointerdown="startDrag(index, $event)"
-      >
-        <WorkspaceTab
-          v-for="half in [unit.left, unit.right]"
-          :key="tabEntryKey(half)"
-          half
-          :tab="half"
-          :label="label(half)"
-          :running="stateOf(half).running"
-          :pending="stateOf(half).pending"
-          :look="tabsStore.pairShown ? (isActive(half) ? 'active' : 'visible') : 'idle'"
-          :title="label(half)"
-          @click="onTabClick(half)"
-          @contextmenu.prevent="openMenu(half, $event)"
-          @close="closeEntry(half)"
-        />
-      </div>
-    </template>
+    <WorkspaceTab
+      v-for="(tab, index) in shownTabs"
+      :key="tabEntryKey(tab)"
+      :data-drag-index="index"
+      :tab="tab"
+      :label="label(tab)"
+      :running="stateOf(tab).running"
+      :pending="stateOf(tab).pending"
+      :look="dragFrom === index ? 'active' : look(tab)"
+      :class="dragFrom === index ? 'shadow-md !cursor-grabbing' : ''"
+      :style="[tabWidth, tabStyle(index)]"
+      :title="`${label(tab)} — ${t('misc.tabs.dragToReorder')}`"
+      @pointerdown="startDrag(index, $event)"
+      @click="onTabClick(tab)"
+      @contextmenu.prevent="openMenu(tab, $event)"
+      @close="closeEntry(tab)"
+    />
   </div>
 
   <ContextMenu :open="menu.open" :x="menu.x" :y="menu.y" @close="closeMenu">
     <template v-if="menu.tab">
-      <template v-if="menuInShownPair">
-        <DropdownItem @click="runMenu(swapSplit)">
-          <ArrowLeftRight class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          {{ t('surfaces.tabs.swapSplit') }}
-        </DropdownItem>
-        <DropdownItem @click="runMenu(unsplitFocused)">
-          <PanelRightClose class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-          {{ t('surfaces.tabs.unsplit') }}
-        </DropdownItem>
-      </template>
-      <DropdownItem v-else :disabled="!canOpenOnRight(menu.tab)" @click="runMenu(() => openOnRight(menu.tab!))">
-        <SquareSplitHorizontal class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
-        {{ t('surfaces.tabs.openOnRight') }}
-      </DropdownItem>
       <DropdownItem v-if="menu.tab.type === 'surface'" @click="runMenu(() => popOut(menu.tab!))">
         <ExternalLink class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
         {{ t('surfaces.tabs.popOut') }}
@@ -323,14 +244,6 @@ function inPair(e: TabEntry): boolean {
       >
         <component :is="entryIcon(entry)" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
         <span class="min-w-0 flex-1 truncate">{{ label(entry) }}</span>
-        <!-- A half of the split pair. -->
-        <Columns2
-          v-if="inPair(entry)"
-          class="h-3 w-3 shrink-0"
-          :class="tabsStore.pairShown ? 'text-primary' : 'text-muted-foreground'"
-          :stroke-width="2"
-          :aria-label="t('surfaces.tabs.pair', { left: label(tabsStore.entry(tabsStore.pair?.left) ?? entry), right: label(tabsStore.entry(tabsStore.pair?.right) ?? entry) })"
-        />
         <span
           v-if="stateOf(entry).pending > 0"
           class="flex h-4 min-w-[16px] items-center justify-center rounded-full bg-warning px-1 text-[10px] font-medium text-warning-foreground leading-none shrink-0"
@@ -346,5 +259,20 @@ function inPair(e: TabEntry): boolean {
       </DropdownItem>
     </div>
   </DropdownMenu>
+
+  <!-- Split view on / off (⌘\). -->
+  <Button
+    variant="ghost"
+    size="icon-sm"
+    class="shrink-0"
+    :class="tabsStore.isSplit && 'bg-primary/15 text-primary hover:bg-primary/25 hover:text-primary'"
+    :disabled="!canSplit()"
+    :title="splitLabel"
+    :aria-label="splitLabel"
+    :aria-pressed="tabsStore.isSplit"
+    @click="toggleSplit"
+  >
+    <component :is="tabsStore.isSplit ? PanelRightClose : Columns2" class="h-3.5 w-3.5" :stroke-width="1.75" />
+  </Button>
   </div>
 </template>

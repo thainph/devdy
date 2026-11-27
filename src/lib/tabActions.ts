@@ -3,10 +3,11 @@
 // tab shortcuts of the native menu (⌘1…⌘9, close tab, split). Main window only:
 // they drive its router.
 //
-// Split view: any two tabs can show side by side (lib/workspaceState `canPair`).
-// The router shows the pair's left half; the right half renders beside it
-// (App.vue). Clicking a tab outside the pair shows it full width and leaves the
-// pair waiting on the strip; clicking a half brings the split back.
+// Split view is a mode of the one main area, on or off. Off (full), every
+// screen shows full width. On, the left half always shows a session and the
+// right half any other screen: the router shows the session, and a navigation
+// anywhere else — a tab, the sidebar, a link, openSurface — is caught by
+// `routeSplitNavigation` and shown in the right half instead (App.vue).
 import { nextTick } from 'vue'
 import type { RouteLocationNormalizedLoaded } from 'vue-router'
 import router from '@/router'
@@ -14,10 +15,10 @@ import { tabEntryKey, useWorkspaceTabsStore, type TabEntry } from '@/stores/work
 import { useRunsStore } from '@/stores/runs'
 import { surfaceForPath } from '@/lib/surfaces'
 import { pageRouteFor } from '@/lib/navigation'
-import { entryTargetFor, entryTargetKey, withOwnRun, type EntryTarget } from '@/lib/workspaceState'
+import { entryTargetFor, withOwnRun, type EntryTarget } from '@/lib/workspaceState'
 import {
+  entryLocation,
   goToEntry,
-  openSurface,
   popOutSurface,
   removeTab,
   rightPaneLocation,
@@ -34,7 +35,7 @@ export function isEntryVisible(e: TabEntry): boolean {
 /** The tab the user is on: the focused half's tab, if it has one. */
 export function currentEntry(): TabEntry | null {
   const tabs = useWorkspaceTabsStore()
-  if (tabs.focusedPane === 'right' && tabs.splitId) return tabs.entry(tabs.splitId)
+  if (tabs.focusedPane === 'right' && tabs.isSplit) return tabs.entry(tabs.splitId)
   return tabs.entry(routedKey())
 }
 
@@ -46,10 +47,9 @@ export function sanitized(e: TabEntry): TabEntry {
 
 /**
  * Startup: the router's first navigation (`/` → `/dashboard`) is not the user
- * choosing a tab, so it must not change the split restored from the last
- * session (stores/workspaceTabs `pairShown`). Until it has landed, the pair
- * neither follows the route nor diverts it; then a restored split routes to
- * its left half.
+ * choosing a screen, so while split it must not land in the right half. Until
+ * it has landed, navigations pass untouched; then a restored split routes to
+ * its session.
  */
 let startupSettled = false
 
@@ -59,47 +59,50 @@ export async function settleStartupNavigation() {
   // Let the route watcher handle the first navigation while still gated.
   await nextTick()
   startupSettled = true
-  if (useWorkspaceTabsStore().isSplit) routeToLeft()
-}
-
-/** Make the router show the pair's left half (it is what the left pane shows). */
-function routeToLeft() {
   const tabs = useWorkspaceTabsStore()
-  const left = tabs.entry(tabs.pair?.left)
-  if (left && routedTargetKey() !== tabs.pair?.left) void goToEntry(sanitized(left))
+  if (!tabs.isSplit) return
+  if (!routeToLeft()) tabs.setSplitMode(false)
 }
 
-/** Go to a tab, as a click on it in the strip does. */
+/** Make the router show the left half's session. False when there is none. */
+function routeToLeft(): boolean {
+  const tabs = useWorkspaceTabsStore()
+  const key = tabs.sessionForLeft()
+  const left = tabs.entry(key)
+  if (!left) return false
+  if (routedTargetKey() !== key) void goToEntry(sanitized(left))
+  return true
+}
+
+/** Go to a tab, as a click on it in the strip does (split: it lands in its half). */
 export function selectEntry(e: TabEntry) {
   const tabs = useWorkspaceTabsStore()
   const key = tabEntryKey(e)
-  const pair = tabs.pair
-  if (pair && (key === pair.left || key === pair.right)) {
-    // A half of the pair: the split comes back with that half focused.
-    tabs.showPair(key === pair.left ? 'left' : 'right')
-    routeToLeft()
+  if (tabs.isSplit && key === tabs.splitId) {
+    tabs.focusedPane = 'right'
     return
   }
-  // Any other tab shows full width; the pair waits on the strip.
-  tabs.hidePair()
-  if (key === routedKey()) return
+  if (key === routedKey()) {
+    tabs.focusedPane = 'left'
+    return
+  }
   void goToEntry(sanitized(e))
 }
 
-/** Close a tab; when it was on screen, move to its neighbour (or the other half). */
+/** Close a tab; when it was on screen, move to its neighbour (or another session). */
 export function closeEntry(e: TabEntry) {
   void removeTab(e)
 }
 
 /**
- * Close every tab but `e`, which is left on screen full width (any split ends:
- * its other half is closed too). The others close straight in the store, so the
- * router moves once, to `e`, instead of hopping through each neighbour.
+ * Close every tab but `e`, which is left on screen full width (split ends).
+ * The others close straight in the store, so the router moves once, to `e`,
+ * instead of hopping through each neighbour.
  */
 export async function closeOtherEntries(e: TabEntry) {
   const tabs = useWorkspaceTabsStore()
   const keep = tabEntryKey(e)
-  tabs.unsplit()
+  tabs.setSplitMode(false)
   if (keep !== routedKey()) await goToEntry(sanitized(e))
   for (const other of [...tabs.entries]) {
     if (tabEntryKey(other) === keep) continue
@@ -109,73 +112,55 @@ export async function closeOtherEntries(e: TabEntry) {
   }
 }
 
-/** The tab on the left half: the pair's left when split, else what's on screen. */
-function leftKey(): string | null {
+/** Whether split view can be turned on: it needs a session for the left half. */
+export function canSplit(): boolean {
   const tabs = useWorkspaceTabsStore()
-  return tabs.isSplit ? (tabs.pair?.left ?? null) : routedTargetKey()
+  return tabs.isSplit || !!tabs.sessionForLeft()
 }
 
 /**
- * Split view has one rule: the left half is the screen you're on, the right
- * half is the tab you open on the right. So "Open on the right" works on any
- * tab but the one on the left (or already on the right) that may sit beside it.
+ * ⌘\ / the strip's button — split view on or off.
+ *
+ * On: the session on screen (else the last one viewed) goes left; the screen
+ * on screen, when it isn't a session, goes right (else the right half keeps
+ * what it had last). Off: the focused half shows full width.
  */
-export function canOpenOnRight(e: TabEntry): boolean {
-  const tabs = useWorkspaceTabsStore()
-  const key = tabEntryKey(e)
-  const left = leftKey()
-  if (!left || key === left) return false
-  if (tabs.isSplit && tabs.pair?.right === key) return false
-  return tabs.canSplit(left, key)
-}
-
-/** Show `e` in the right half: opens the split, or replaces the right half. */
-export function openOnRight(e: TabEntry) {
-  if (!canOpenOnRight(e)) return
-  const tabs = useWorkspaceTabsStore()
-  const key = tabEntryKey(e)
-  if (tabs.isSplit) {
-    if (tabs.replaceSide('right', key)) tabs.focusedPane = 'right'
-    return
-  }
-  const left = leftKey()
-  if (left) tabs.setPair(left, key, 'right')
-}
-
-/** Swap the two halves; the focused tab keeps the focus on its new side. */
-export function swapSplit() {
-  const tabs = useWorkspaceTabsStore()
-  const p = tabs.pair
-  if (!p || !tabs.isSplit) return
-  if (tabs.setPair(p.right, p.left, tabs.focusedPane === 'left' ? 'right' : 'left')) routeToLeft()
-}
-
-/** Close the split, keeping the focused half on screen (full width). */
-export function unsplitFocused() {
-  const tabs = useWorkspaceTabsStore()
-  const right = tabs.focusedPane === 'right' ? tabs.entry(tabs.splitId) : null
-  tabs.unsplit()
-  if (right) void goToEntry(sanitized(right))
-}
-
-/** The last pair, waiting on the strip while another tab is shown, if any. */
-export function idlePair(): { left: TabEntry; right: TabEntry } | null {
-  const tabs = useWorkspaceTabsStore()
-  if (tabs.isSplit || !tabs.pair) return null
-  const left = tabs.entry(tabs.pair.left)
-  const right = tabs.entry(tabs.pair.right)
-  return left && right ? { left, right } : null
-}
-
-/** ⌘\ — close the split, or bring the last one back. Never guesses a tab. */
-export function toggleSplitCurrent() {
+export function toggleSplit() {
   const tabs = useWorkspaceTabsStore()
   if (tabs.isSplit) {
-    unsplitFocused()
+    const right = tabs.focusedPane === 'right' ? rightLocation() : null
+    tabs.setSplitMode(false)
+    if (right) void router.push(right).catch(() => {})
     return
   }
-  const pair = idlePair()
-  if (pair) selectEntry(pair.left)
+  if (!tabs.sessionForLeft()) return
+  const routedEntry = tabs.entry(routedTargetKey())
+  const route = router.currentRoute.value
+  if (routedEntry?.type === 'project') {
+    tabs.setLeft(tabEntryKey(routedEntry))
+  } else if (routedEntry) {
+    tabs.setRight(tabEntryKey(routedEntry))
+    if (routedEntry.type === 'page') rightPaneLocation.value = { key: tabEntryKey(routedEntry), fullPath: route.fullPath }
+  } else if (route.name) {
+    // A screen that isn't a tab (a project's settings).
+    tabs.setRight(null)
+    rightPaneLocation.value = { key: null, fullPath: route.fullPath }
+  }
+  tabs.setSplitMode(true)
+  tabs.focusedPane = routedEntry?.type === 'project' ? 'left' : 'right'
+  routeToLeft()
+}
+
+/** Where the right half is, as a path (to show it full width), or null when empty. */
+function rightLocation(): string | null {
+  const tabs = useWorkspaceTabsStore()
+  const moved = rightPaneLocation.value
+  const right = tabs.entry(tabs.splitId)
+  if (right) {
+    if (moved && moved.key === tabEntryKey(right)) return moved.fullPath
+    return router.resolve(entryLocation(right)).fullPath
+  }
+  return moved && moved.key === null ? moved.fullPath : null
 }
 
 /** ⌘1…⌘8 go to that tab; ⌘9 (n = 9) to the last one, as browsers do. */
@@ -206,102 +191,53 @@ export function popOutCurrent() {
   if (cur?.type === 'surface') void popOutSurface(cur.id)
 }
 
-// --- Navigation into the right half -------------------------------------------
+// --- Split: which half a navigation lands in ---------------------------------
 
 function targetOf(to: RouteLocationNormalizedLoaded): EntryTarget | null {
   return entryTargetFor(to, surfaceForPath, (p) => !!pageRouteFor(p))
 }
 
-/** Open / update the tab of a route target; returns its key. A run filed under another project moves there. */
-function openTarget(t: EntryTarget): string {
-  const tabs = useWorkspaceTabsStore()
-  if (t.type === 'project') {
-    const owner = t.runId ? useRunsStore().runMeta.get(t.runId)?.project_id : undefined
-    const projectId = owner && owner !== t.projectId ? owner : t.projectId
-    tabs.open(projectId, t.runId)
-    return `project:${projectId}`
-  }
-  if (t.type === 'page') return tabs.openPage(t.path, t.fullPath).id
-  return tabs.openSurface(t.surface, t.params).id
-}
-
 /**
- * A screen in the right half navigated (PaneRouterView's push / replace). The
- * same tab moves along in the right half; another tab never takes a half's
- * place (the split is fixed) — it, and screens that aren't tabs (a project's
- * settings), show full width while the pair waits on the strip.
+ * Global navigation guard (main window). While split, the router only ever
+ * shows the session on the left: a navigation to a session passes (the left
+ * half follows it); anything else — a surface, a page, a screen that isn't a
+ * tab — is shown in the right half and the router's navigation is cancelled
+ * (returns false).
  */
-export function navigateRightPane(to: RouteLocationNormalizedLoaded) {
-  const tabs = useWorkspaceTabsStore()
-  const target = targetOf(to)
-  if (!target) {
-    tabs.focusedPane = 'left'
-    void router.push(to.fullPath).catch(() => {})
-    return
-  }
-  if (target.type === 'surface') {
-    void openSurface(target.surface, target.params)
-    return
-  }
-  const key = openTarget(target)
-  if (!tabs.isSplit || key !== tabs.pair?.right) {
-    // Another tab: the split's halves are fixed, so it opens full width and
-    // the pair waits on the strip (its left half routes the split back).
-    if (key !== tabs.pair?.left) tabs.hidePair()
-    else tabs.focusedPane = 'left'
-    void router.push(to.fullPath).catch(() => {})
-    return
-  }
-  rightPaneLocation.value = { key, fullPath: to.fullPath }
-  tabs.focusedPane = 'right'
-}
-
-/**
- * Global navigation guard (main window): a navigation to the tab in the
- * right half of the pair shows it THERE — never on both sides — and brings the
- * split on screen. Returns false to cancel the router's navigation.
- */
-export function interceptRightHalf(to: RouteLocationNormalizedLoaded): boolean {
+export function routeSplitNavigation(to: RouteLocationNormalizedLoaded): boolean {
   if (!startupSettled) return true
   const tabs = useWorkspaceTabsStore()
-  const pair = tabs.pair
-  if (!pair) return true
+  if (!tabs.isSplit) return true
   const target = targetOf(to)
-  if (!target || entryTargetKey(target) !== pair.right) return true
-  const key = openTarget(target)
-  if (key !== pair.right) return true
-  if (target.type !== 'surface') rightPaneLocation.value = { key, fullPath: to.fullPath }
-  tabs.showPair('right')
-  // After this navigation is cancelled, not from inside its guard.
-  setTimeout(routeToLeft, 0)
+  if (target?.type === 'project') {
+    tabs.focusedPane = 'left'
+    return true
+  }
+  if (!target) {
+    tabs.setRight(null)
+    rightPaneLocation.value = { key: null, fullPath: to.fullPath }
+  } else if (target.type === 'page') {
+    const key = tabs.openPage(target.path, target.fullPath).id
+    tabs.setRight(key)
+    rightPaneLocation.value = { key, fullPath: to.fullPath }
+  } else {
+    tabs.setRight(tabs.openSurface(target.surface, target.params).id)
+  }
+  tabs.focusedPane = 'right'
   return false
 }
 
 /**
- * The router landed somewhere (App.vue's route watcher). On the pair's left
- * half, the pair comes back on screen; on another tab while split, that tab
- * shows full width and the pair waits on the strip — a split's halves only
- * change on request (Open on the right, swap), never by navigating.
+ * A screen in the right half navigated (PaneRouterView's push / replace): the
+ * router takes it, and `routeSplitNavigation` decides — a session goes left,
+ * anything else stays in the right half.
  */
-export function syncPairWithRoute() {
-  if (!startupSettled) return
-  const tabs = useWorkspaceTabsStore()
-  const pair = tabs.pair
-  if (!pair) return
-  const key = routedTargetKey()
-  if (!key) return
-  if (key === pair.left) {
-    if (!tabs.pairShown) tabs.showPair('left')
-    return
-  }
-  if (tabs.isSplit) tabs.hidePair()
+export function navigateRightPane(to: RouteLocationNormalizedLoaded, replace = false) {
+  const go = replace ? router.replace(to.fullPath) : router.push(to.fullPath)
+  void go.catch(() => {})
 }
 
-/**
- * The sidebar's links. While split, a link to the right half's tab shows it
- * there (`interceptRightHalf`); any other tab opens full width and leaves the
- * pair on the strip (`syncPairWithRoute`) — the halves never change under it.
- */
+/** The sidebar's links: the router takes them (split: into their half). */
 export function navigateFocused(path: string) {
   void router.push(path).catch(() => {})
 }

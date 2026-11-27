@@ -2,12 +2,12 @@
   "file": "File",
   "tabs": {
     "popOut": "Open in a separate window",
-    "unsplit": "Close split view",
     "focusRight": "Shown on the right",
     "resizeSplit": "Drag to resize the split view (double-click to reset)",
-    "pair": "Split view: {left} | {right}",
-    "openOnRight": "Open on the right",
-    "swapSplit": "Swap sides"
+    "splitOn": "Split view: session on the left, other screens on the right",
+    "splitOff": "Close split view",
+    "splitNeedsSession": "Open a session to use split view",
+    "rightEmpty": "Pick a screen from the sidebar or the tab bar to show it here, beside the session."
   },
   "dock": "Dock into main window",
   "settings": {
