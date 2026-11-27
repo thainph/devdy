@@ -2,7 +2,8 @@
 //!
 //! Tools served: `gh`/`glab`/`git` (tokens), `aws` (minted creds), `az` (the
 //! linked Azure account's config dir), `terraform` (AWS and/or Azure), plus
-//! data requests from the built-in MCP server (`radar`, `slack_*`).
+//! data requests from the built-in MCP server (`radar`, `slack_*`,
+//! `github_prs` / `github_mentions`).
 //!
 //! A per-run Unix-socket server that receives `{project_id,tool,argv,host}`
 //! NDJSON requests from the (future GĐ3) `gh`/`glab`/git shim, applies the pure
@@ -16,6 +17,7 @@
 
 pub mod approver;
 pub mod audit;
+pub mod github_inbox;
 pub mod mcp_creds;
 pub mod policy;
 pub mod radar;
@@ -151,6 +153,9 @@ pub struct BrokerResponse {
     /// slack_*: the thread the request acted on (id, fetch_status, …; not secret).
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub slack: Option<serde_json::Value>,
+    /// github_prs / github_mentions: the cached list (not secret).
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub data: Option<serde_json::Value>,
 }
 
 impl BrokerResponse {
@@ -416,6 +421,10 @@ async fn process_line(
     // Slack threads for the built-in MCP server: add / refresh / reply (asks).
     if slack::handles(&req.tool) {
         return slack::process(&req, db, resolver, app).await;
+    }
+    // PR Inbox / GitHub Mentions lists for the built-in MCP server (read-only).
+    if github_inbox::handles(&req.tool) {
+        return github_inbox::process(&req, db, resolver, app).await;
     }
 
     // Audit under the run that issued the request (falls back to "?").
