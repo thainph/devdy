@@ -1215,6 +1215,11 @@ fn cached_at() -> Option<Instant> {
     state().cache.lock().ok()?.as_ref().map(|c| c.at)
 }
 
+/// How old the cached list is, if there is one.
+pub fn cache_age() -> Option<Duration> {
+    cached_at().map(|at| at.elapsed())
+}
+
 fn store(app: &AppHandle, result: MentionsResult) {
     let value = CachedMentions { result, fetched_at: chrono::Utc::now().to_rfc3339() };
     if let Ok(mut cache) = state().cache.lock() {

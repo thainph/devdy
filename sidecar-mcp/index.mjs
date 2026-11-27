@@ -25,6 +25,7 @@ import { fileTree, gitStatus, gitDiff } from './lib/project.mjs';
 import { runOnServer } from './lib/ssh.mjs';
 import { slackThreadTools } from './lib/slack-thread-tools.mjs';
 import { radarTools } from './lib/radar-tools.mjs';
+import { githubInboxTools } from './lib/github-inbox-tools.mjs';
 import { formatEstimate } from './lib/todo-fields.mjs';
 
 const SERVER_INFO = { name: 'devdy', version: '0.1.0' };
@@ -254,6 +255,11 @@ const tools = {
   // Read-only: board snapshots saved by the app (migration 0079), refetched
   // through the broker when stale (see lib/radar-tools.mjs).
   ...radarTools(),
+
+  // ---- PR Inbox / GitHub Mentions -------------------------------------------
+  // Read-only: the app's in-memory lists come through the broker; past reviews
+  // are review_pr runs (see lib/github-inbox-tools.mjs).
+  ...githubInboxTools(),
 
   sessions_recent: {
     description:
