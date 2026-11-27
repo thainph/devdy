@@ -83,3 +83,9 @@ objc2-core-foundation = { version = "0.3", default-features = false, features = 
 # Process-group SIGKILL on app exit / cancel, so sidecar + CLI children don't
 # linger and burn API tokens after the app closes.
 libc = "0.2"
+
+# Xcode 27's `strip` emits proc-macro dylibs with a mis-aligned LINKEDIT string
+# pool that dyld refuses to load (sqlx_macros fails in release builds). Proc
+# macros / build scripts never ship, so skipping the strip costs nothing.
+[profile.release.build-override]
+strip = false
