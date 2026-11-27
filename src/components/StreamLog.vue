@@ -787,7 +787,9 @@ function toolResult(e: StreamEntry): unknown {
            entry (or a tool result attaching, a toggle, a copy flash) never
            re-renders the whole history. Deps list every reactive value this
            entry's markup reads: the entry itself, its late-attached result,
-           and the per-entry toggle/flash/collapse state. The text entry being
+           and the per-entry toggle/flash/collapse state, plus `fileMatcher`
+           (the project file list loads after the first render; file links
+           must appear once it does). The text entry being
            revealed swaps `entry` for `shownLength`: its deltas replace the
            object every flush, but only a reveal tick should re-render it.
            A user turn also depends on its index — `data-user-turn` carries
@@ -810,7 +812,7 @@ function toolResult(e: StreamEntry): unknown {
         v-entry-size
         :data-user-turn="entry.kind === 'user' ? i : undefined"
         :class="{ 'stream-entry': running && i !== entries.length - 1 }"
-        v-memo="[i === streamingTextIndex ? -1 : entry, toolResult(entry), expanded[keyOf(entry)], expandedCompacts.has(keyOf(entry)), copiedCmd[keyOf(entry)], fullOutput.has(keyOf(entry)), entry.kind === 'user' ? i : -1, entry.kind === 'user' && keyOf(entry) === lastUserKey, running && i === entries.length - 1, i === streamingTextIndex ? shownLength : -1]"
+        v-memo="[i === streamingTextIndex ? -1 : entry, toolResult(entry), expanded[keyOf(entry)], expandedCompacts.has(keyOf(entry)), copiedCmd[keyOf(entry)], fullOutput.has(keyOf(entry)), fileMatcher, entry.kind === 'user' ? i : -1, entry.kind === 'user' && keyOf(entry) === lastUserKey, running && i === entries.length - 1, i === streamingTextIndex ? shownLength : -1]"
       >
       <!-- System init banner -->
       <div
