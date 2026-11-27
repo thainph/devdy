@@ -841,6 +841,7 @@ const awsAccountError = ref<Record<string, string>>({})
 const awsBusyAccount = ref<string | null>(null)
 // Accounts whose last validation failed because their SSO token needs refreshing.
 const awsSsoLoginNeeded = ref<Record<string, boolean>>({})
+const awsSsoLoggingIn = ref<string | null>(null) // account whose browser SSO flow is open
 
 // Local ~/.aws profiles available to add, one click each.
 const awsProfiles = ref<AwsProfileInfo[]>([])
@@ -865,6 +866,15 @@ const addableAwsProfiles = computed(() => {
   const used = new Set(awsStore.accounts.map((a) => a.profile_name).filter(Boolean))
   return awsProfiles.value.filter((p) => !used.has(p.name))
 })
+
+// SSO login stays available on every SSO account so a token can be refreshed
+// before it expires. Until ~/.aws profiles load, assume a profile may be SSO.
+function awsCanSsoLogin(acc: { id: string; profile_name: string | null }): boolean {
+  if (awsSsoLoginNeeded.value[acc.id]) return true
+  if (!acc.profile_name) return false
+  const p = awsProfiles.value.find((x) => x.name === acc.profile_name)
+  return p ? p.isSso : true
+}
 
 function awsProfileCaption(p: AwsProfileInfo): string {
   const parts: string[] = []
@@ -967,14 +977,17 @@ async function handleValidateAws(id: string) {
 async function handleAwsSsoLogin(id: string) {
   awsBusyAccount.value = id
   awsAccountError.value[id] = ''
+  awsSsoLoggingIn.value = id
   try {
     await awsStore.ssoLogin(id)
+    awsSsoLoggingIn.value = null
     awsSsoLoginNeeded.value[id] = false
     // Re-validate straight away so a successful login turns the row green.
     await handleValidateAws(id)
   } catch (e) {
     awsAccountError.value[id] = String(e)
   } finally {
+    if (awsSsoLoggingIn.value === id) awsSsoLoggingIn.value = null
     if (awsBusyAccount.value === id) awsBusyAccount.value = null
   }
 }
@@ -2312,7 +2325,7 @@ watch(() => settings.value.language, (v) => {
                         {{ awsBusyAccount === acc.id ? '…' : t('settings.aws.validate') }}
                       </Button>
                       <Button
-                        v-if="awsSsoLoginNeeded[acc.id]"
+                        v-if="awsCanSsoLogin(acc)"
                         variant="outline"
                         size="xs"
                         :disabled="awsBusyAccount === acc.id"
@@ -2350,10 +2363,10 @@ watch(() => settings.value.language, (v) => {
                     <p class="text-muted-foreground mt-1 truncate">{{ awsValidations[acc.id].arn }}</p>
                   </Banner>
                   <Banner
-                    v-if="awsSsoLoginNeeded[acc.id]"
+                    v-if="awsSsoLoginNeeded[acc.id] || awsSsoLoggingIn === acc.id"
                     tone="warning"
                   >
-                    <span>{{ awsBusyAccount === acc.id ? t('settings.aws.ssoLoggingIn') : t('settings.aws.ssoExpired') }}</span>
+                    <span>{{ awsSsoLoggingIn === acc.id ? t('settings.aws.ssoLoggingIn') : t('settings.aws.ssoExpired') }}</span>
                   </Banner>
                 </template>
 
