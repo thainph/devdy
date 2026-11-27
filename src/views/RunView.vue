@@ -2934,7 +2934,12 @@ async function ensureProjectFiles(force = false) {
     try {
       const list = await runsStore.listProjectFiles(path)
       if (project.value?.path !== path) return // switched project meanwhile
-      projectFiles.value = list
+      // Keep the old array when nothing changed: a new one re-renders every
+      // transcript entry (fileMatcher is a StreamLog v-memo dep).
+      const prev = projectFiles.value
+      const same = projectFilesPath.value === path && prev.length === list.length
+        && prev.every((e, i) => e.path === list[i].path && e.is_dir === list[i].is_dir)
+      if (!same) projectFiles.value = list
       projectFilesPath.value = path
       projectFilesFetchedAt = Date.now()
     } catch {
@@ -2958,10 +2963,14 @@ async function ensureProjectFiles(force = false) {
 const projectFileSet = computed(() => new Set(projectFiles.value.map(e => !e.is_dir && e.path).filter(Boolean) as string[]))
 
 // Resolve a raw inline-code token (e.g. `src/foo.ts` or just `foo.ts`) to a
-// project file path, or null when it doesn't name a real file.
-function fileMatcher(raw: string): string | null {
-  return matchProjectFile(raw, projectFileSet.value)
-}
+// project file path, or null when it doesn't name a real file. A new function
+// per file set: the list loads asynchronously, often after the transcript has
+// rendered, and the changed identity is what makes StreamLog (v-memo dep) and
+// the v-file-links containers re-decorate once it arrives.
+const fileMatcher = computed(() => {
+  const set = projectFileSet.value
+  return (raw: string): string | null => matchProjectFile(raw, set)
+})
 
 /** Show a file (optionally scrolled to `line`) beside the session, or in its own window. */
 function openFile(path: string, line?: number | null) {
@@ -2973,8 +2982,10 @@ function openFile(path: string, line?: number | null) {
 // Directive for RunView's own markdown containers (issue/PR Content, legacy
 // HTML). Marks inline `<code>` that names a project file as a clickable link.
 const vFileLinks = {
-  mounted: (el: HTMLElement) => decorateFileLinks(el, fileMatcher),
-  updated: (el: HTMLElement) => decorateFileLinks(el, fileMatcher),
+  mounted: (el: HTMLElement) => decorateFileLinks(el, fileMatcher.value),
+  // Bound as `v-file-links="fileMatcher"` so the render reads it: a late file
+  // list then re-renders the container and lands here.
+  updated: (el: HTMLElement) => decorateFileLinks(el, fileMatcher.value),
 }
 function onProseClick(e: MouseEvent) {
   const target = e.target as HTMLElement
@@ -2989,7 +3000,7 @@ function onProseClick(e: MouseEvent) {
     const href = anchor.getAttribute('href') ?? ''
     if (!href) return
     if (/^(https?:|mailto:)/i.test(href)) { onOpenUrl(href); return }
-    const fp = fileMatcher(href.replace(/#.*$/, ''))
+    const fp = fileMatcher.value(href.replace(/#.*$/, ''))
     if (fp) openFile(fp, parseLineRef(href))
   }
 }
@@ -4624,7 +4635,7 @@ function handleRefInput(val: string) {
               </template>
               <template v-else-if="inputContent">
                 <div
-                  v-file-links
+                  v-file-links="fileMatcher"
                   v-mermaid
                   v-copy-code
                   v-html="renderText(inputContent)"
@@ -4832,7 +4843,7 @@ function handleRefInput(val: string) {
               </template>
               <div
                 v-else
-                v-file-links
+                v-file-links="fileMatcher"
                 v-mermaid
                 v-copy-code
                 v-html="historyLegacyHtml"
@@ -4860,7 +4871,7 @@ function handleRefInput(val: string) {
               />
               <template v-else>
                 <div
-                  v-file-links
+                  v-file-links="fileMatcher"
                   v-mermaid
                   v-copy-code
                   v-html="liveLegacyHtml"
