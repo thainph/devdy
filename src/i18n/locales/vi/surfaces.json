@@ -2,12 +2,12 @@
   "file": "File",
   "tabs": {
     "popOut": "Mở trong cửa sổ riêng",
-    "unsplit": "Đóng chế độ chia đôi",
     "focusRight": "Đang hiện ở khung phải",
     "resizeSplit": "Kéo để đổi tỉ lệ chia đôi (nhấp đúp để về 50/50)",
-    "pair": "Chia đôi: {left} | {right}",
-    "openOnRight": "Mở bên phải",
-    "swapSplit": "Đổi chỗ hai bên"
+    "splitOn": "Chia đôi màn hình: session bên trái, màn hình khác bên phải",
+    "splitOff": "Tắt chia đôi màn hình",
+    "splitNeedsSession": "Mở một session để dùng chia đôi màn hình",
+    "rightEmpty": "Chọn một màn hình từ sidebar hoặc thanh tab để hiển thị ở đây, cạnh session."
   },
   "dock": "Gắn vào cửa sổ chính",
   "settings": {

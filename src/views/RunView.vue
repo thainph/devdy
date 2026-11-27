@@ -137,7 +137,7 @@ const claudeStore = useClaudeAccountsStore()
 const appSettings = useAppSettingsStore()
 const modelCatalog = useModelCatalogStore()
 const uiLayout = useUILayoutStore()
-// RunView can sit in either half of a split, so it adapts to its OWN width (not
+// RunView can sit in the left half of a split, so it adapts to its OWN width (not
 // the window's). The header collapses through CSS container queries; the body
 // needs the width in JS: below NARROW_BODY_PX the History column stops taking
 // room and floats over the conversation instead (and the conductor worker panel
@@ -2953,11 +2953,9 @@ async function ensureProjectFiles(force = false) {
 }
 
 // ── Opening a file ────────────────────────────────────────────────────────
-// Every file opens in its own OS window (FileViewerWindow), never in a modal
-// over the conversation: reading a file is something you do ALONGSIDE the run,
-// and a modal covered the very output that made you click it. One window per
-// file, so several can sit side by side; reopening the same file focuses the
-// window already showing it.
+// A file opens as a tab, never in a modal over the conversation: full width,
+// or beside the session in the right half while split (lib/tabActions). A file
+// that already has its own OS window is focused there; ⌘/Ctrl-click opens one.
 
 // Set of known project file paths, for resolving inline-code mentions.
 const projectFileSet = computed(() => new Set(projectFiles.value.map(e => !e.is_dir && e.path).filter(Boolean) as string[]))
@@ -2972,11 +2970,25 @@ const fileMatcher = computed(() => {
   return (raw: string): string | null => matchProjectFile(raw, set)
 })
 
-/** Show a file (optionally scrolled to `line`) beside the session, or in its own window. */
+// Whether the click being handled held ⌘/Ctrl: recorded on the root in the
+// capture phase, so every file link below (transcript, tree, mentions…) opens
+// its own window on ⌘-click, as in the file viewer, without each one passing
+// the event up.
+let modifierClick = false
+function onRootClickCapture(e: MouseEvent) {
+  modifierClick = e.metaKey || e.ctrlKey
+  // Only for this click's own handlers (a later keyboard open is a plain one).
+  if (modifierClick) setTimeout(() => { modifierClick = false }, 0)
+}
+
+/**
+ * Show a file (optionally scrolled to `line`): as a tab — full width, or in
+ * the right half while split — or in its own window on ⌘/Ctrl-click.
+ */
 function openFile(path: string, line?: number | null) {
   const projectPath = project.value?.path
   if (!projectPath || !path) return
-  void openSurface('file', { projectPath, path, line: line ?? undefined }, { split: true })
+  void openSurface('file', { projectPath, path, line: line ?? undefined }, modifierClick ? { placement: 'window' } : {})
 }
 
 // Directive for RunView's own markdown containers (issue/PR Content, legacy
@@ -3480,7 +3492,7 @@ async function viewLogFile(run: RunRecord) {
   try {
     const path = await runsStore.getRunLogPath(run.id)
     if (!path) { toast.info(t('run.noLogFileYet')); return }
-    await openSurface('file', { projectPath: p.path, path }, { split: true })
+    await openSurface('file', { projectPath: p.path, path })
   } catch (e) {
     toast.error(String(e))
   }
@@ -3965,7 +3977,7 @@ function handleRefInput(val: string) {
 <template>
   <!-- A size container: RunView fits whichever half of a split it is in (down
        to ~360px), so its layout follows its own width, never the window's. -->
-  <div ref="rootEl" class="run-pane @container/run flex h-full min-w-0 flex-col overflow-hidden">
+  <div ref="rootEl" class="run-pane @container/run flex h-full min-w-0 flex-col overflow-hidden" @click.capture="onRootClickCapture">
     <!-- Header. Its left group clips instead of running under the buttons: the
          project name keeps its room (up to 45%), the badges get the rest. Below
          ~660px every account / server / cloud badge folds into one "N accounts"

@@ -1,20 +1,17 @@
-// Unit tests for lib/workspaceState.ts (tab strip data: split pair, order, persistence).
+// Unit tests for lib/workspaceState.ts (tab strip data: split view, persistence).
 // Run: node --test src/lib/__tests__/workspaceState.test.mjs
 import { test } from 'node:test'
 import assert from 'node:assert/strict'
 import {
-  canPair,
   clampRatio,
   DEFAULT_SPLIT_RATIO,
   entryTargetFor,
   entryTargetKey,
-  moveUnit,
   parseWorkspaceState,
-  placePair,
-  replacePairSide,
+  pickSession,
   sanitizeRatio,
   serializeWorkspaceState,
-  stripUnits,
+  splitSide,
   tabEntryKey,
   withOwnRun,
 } from '../workspaceState.ts'
@@ -24,49 +21,20 @@ const proj = (projectId) => ({ type: 'project', projectId, lastRunId: null })
 const page = (path) => ({ type: 'page', id: `page:${path}`, path, fullPath: path })
 const todos = { type: 'surface', id: 'surface:todos', surface: 'todos', params: {} }
 
-test('canPair: never a tab with itself, never two sessions', () => {
-  assert.equal(canPair(proj('a'), page('/dashboard')), true)
-  assert.equal(canPair(page('/skills'), page('/dashboard')), true)
-  assert.equal(canPair(todos, todos), false)
-  assert.equal(canPair(proj('a'), proj('b')), false)
+test('splitSide: sessions on the left, every other tab on the right', () => {
+  assert.equal(splitSide(proj('a')), 'left')
+  assert.equal(splitSide(page('/dashboard')), 'right')
+  assert.equal(splitSide(todos), 'right')
 })
 
-test('placePair moves the right tab next to the left one', () => {
-  assert.deepEqual(placePair(['a', 'b', 'c', 'd'], { left: 'b', right: 'd' }), ['a', 'b', 'd', 'c'])
-  assert.deepEqual(placePair(['d', 'a', 'b'], { left: 'b', right: 'd' }), ['a', 'b', 'd'])
-  // Unknown keys: untouched.
-  assert.deepEqual(placePair(['a', 'b'], { left: 'b', right: 'x' }), ['a', 'b'])
-})
-
-test('stripUnits groups the adjacent pair into one unit', () => {
-  assert.deepEqual(stripUnits(['a', 'b', 'c'], null), [[0], [1], [2]])
-  assert.deepEqual(stripUnits(['a', 'b', 'c'], { left: 'b', right: 'c' }), [[0], [1, 2]])
-  // Not adjacent (shouldn't happen): plain tabs.
-  assert.deepEqual(stripUnits(['b', 'a', 'c'], { left: 'b', right: 'c' }), [[0], [1], [2]])
-})
-
-test('moveUnit drags the pair as one unit', () => {
-  const pair = { left: 'b', right: 'c' }
-  assert.deepEqual(moveUnit(['a', 'b', 'c', 'd'], pair, 1, 0), ['b', 'c', 'a', 'd'])
-  assert.deepEqual(moveUnit(['a', 'b', 'c', 'd'], pair, 1, 2), ['a', 'd', 'b', 'c'])
-  assert.deepEqual(moveUnit(['a', 'b', 'c', 'd'], pair, 0, 2), ['b', 'c', 'd', 'a'])
-  assert.deepEqual(moveUnit(['a', 'b', 'c', 'd'], pair, 0, 9), ['a', 'b', 'c', 'd'])
-})
-
-test('replacePairSide swaps one half and keeps the old one right after the pair', () => {
-  const pair = { left: 'b', right: 'c' }
-  assert.deepEqual(replacePairSide(['a', 'b', 'c', 'd', 'e'], pair, 'left', 'e'), {
-    keys: ['a', 'e', 'c', 'b', 'd'],
-    pair: { left: 'e', right: 'c' },
-  })
-  assert.deepEqual(replacePairSide(['e', 'a', 'b', 'c', 'd'], pair, 'right', 'e'), {
-    keys: ['a', 'b', 'e', 'c', 'd'],
-    pair: { left: 'b', right: 'e' },
-  })
-  // The other half can't also be this half.
-  assert.equal(replacePairSide(['a', 'b', 'c'], pair, 'left', 'c'), null)
-  // Same tab: unchanged.
-  assert.deepEqual(replacePairSide(['a', 'b', 'c'], pair, 'right', 'c').pair, pair)
+test('pickSession: the preferred session while open, else the first one', () => {
+  const entries = [page('/dashboard'), proj('a'), todos, proj('b')]
+  assert.equal(pickSession(entries, 'project:b'), 'project:b')
+  assert.equal(pickSession(entries, 'project:gone'), 'project:a')
+  assert.equal(pickSession(entries, null), 'project:a')
+  // Never a non-session tab.
+  assert.equal(pickSession(entries, 'surface:todos'), 'project:a')
+  assert.equal(pickSession([page('/dashboard'), todos], null), null)
 })
 
 test('clampRatio keeps both minimum widths', () => {
@@ -90,7 +58,7 @@ test('clampRatio clamps a drag past an edge instead of snapping to 50/50', () =>
   // A wide window allows more than 95% — and that survives a reload.
   const wide = clampRatio(1, 10000)
   assert.ok(Math.abs(wide - 0.968) < 1e-9)
-  assert.equal(parseWorkspaceState(serializeWorkspaceState({ entries: [], pair: null, ratio: wide })).ratio, wide)
+  assert.equal(parseWorkspaceState(serializeWorkspaceState({ entries: [], split: false, left: null, right: null, ratio: wide })).ratio, wide)
   // Unknown width: clamped into (0, 1) but never reset for a finite edge value.
   assert.equal(clampRatio(0.3, 0), 0.3)
   assert.equal(clampRatio(Number.POSITIVE_INFINITY, 1000), DEFAULT_SPLIT_RATIO)
@@ -119,24 +87,36 @@ test('parseWorkspaceState migrates the v1 bare array (no split saved)', () => {
   assert.equal(s.entries[0].lastRunId, 'r1')
   assert.equal(s.entries[1].fullPath, '/skills?id=x')
   assert.deepEqual(s.entries[2].params, { id: 't1' })
-  assert.equal(s.pair, null)
+  assert.equal(s.split, false)
+  assert.equal(s.left, null)
+  assert.equal(s.right, null)
   assert.equal(s.ratio, DEFAULT_SPLIT_RATIO)
 })
 
-test('parseWorkspaceState v2 round-trips and re-validates the pair', () => {
+test('parseWorkspaceState v3 round-trips and re-validates the halves', () => {
   const entries = [proj('p1'), page('/dashboard'), todos]
-  const raw = serializeWorkspaceState({ entries, pair: { left: 'project:p1', right: 'surface:todos' }, ratio: 0.6 })
+  const raw = serializeWorkspaceState({ entries, split: true, left: 'project:p1', right: 'surface:todos', ratio: 0.6 })
   const s = parseWorkspaceState(raw)
   assert.equal(s.ratio, 0.6)
-  assert.deepEqual(s.pair, { left: 'project:p1', right: 'surface:todos' })
-  // The pair is made adjacent on load.
-  assert.deepEqual(s.entries.map(tabEntryKey), ['project:p1', 'surface:todos', 'page:/dashboard'])
+  assert.equal(s.split, true)
+  assert.equal(s.left, 'project:p1')
+  assert.equal(s.right, 'surface:todos')
+  // Strip order is the user's.
+  assert.deepEqual(s.entries.map(tabEntryKey), ['project:p1', 'page:/dashboard', 'surface:todos'])
 
-  const bad = JSON.stringify({ version: 2, entries: [proj('a'), proj('b')], pair: { left: 'project:a', right: 'project:b' } })
-  assert.equal(parseWorkspaceState(bad).pair, null)
-  const gone = JSON.stringify({ version: 2, entries: [proj('a')], pair: { left: 'project:a', right: 'page:/x' }, ratio: 7 })
-  assert.equal(parseWorkspaceState(gone).pair, null)
-  assert.equal(parseWorkspaceState(gone).ratio, DEFAULT_SPLIT_RATIO)
+  // A session can't be on the right, nor another tab on the left.
+  const swapped = JSON.stringify({ version: 3, entries, split: true, left: 'surface:todos', right: 'project:p1' })
+  assert.equal(parseWorkspaceState(swapped).left, null)
+  assert.equal(parseWorkspaceState(swapped).right, null)
+  // …but split stays on while some session can take the left half.
+  assert.equal(parseWorkspaceState(swapped).split, true)
+  // No session at all: never split.
+  const noSession = JSON.stringify({ version: 3, entries: [todos], split: true, right: 'surface:todos' })
+  assert.equal(parseWorkspaceState(noSession).split, false)
+  // Gone tabs and bad values.
+  const gone = JSON.stringify({ version: 3, entries: [proj('a')], split: 'yes', left: 'project:x', right: 'page:/x', ratio: 7 })
+  const g = parseWorkspaceState(gone)
+  assert.deepEqual([g.split, g.left, g.right, g.ratio], [false, null, null, DEFAULT_SPLIT_RATIO])
   assert.deepEqual(parseWorkspaceState('{oops').entries, [])
   assert.deepEqual(parseWorkspaceState(null).entries, [])
 })
@@ -173,21 +153,21 @@ test('withOwnRun drops a remembered run filed under another project', () => {
   assert.equal(withOwnRun(todos, ownerOf), todos)
 })
 
-test('parseWorkspaceState restores whether the pair was on screen', () => {
-  const entries = [proj('p1'), todos]
-  const pair = { left: 'project:p1', right: 'surface:todos' }
-  const shown = parseWorkspaceState(serializeWorkspaceState({ entries, pair, pairShown: true, ratio: 0.5 }))
-  assert.equal(shown.pairShown, true)
-  const waiting = parseWorkspaceState(serializeWorkspaceState({ entries, pair, pairShown: false, ratio: 0.5 }))
-  assert.equal(waiting.pairShown, false)
-  // Saved before pairShown existed: the pair waits on the strip.
-  const old = JSON.stringify({ version: 2, entries, pair, ratio: 0.5 })
-  assert.equal(parseWorkspaceState(old).pairShown, false)
-  // v1 and malformed values: false.
-  assert.equal(parseWorkspaceState(JSON.stringify([{ projectId: 'p1' }])).pairShown, false)
-  assert.equal(parseWorkspaceState(JSON.stringify({ version: 2, entries, pair, pairShown: 'yes' })).pairShown, false)
-  // Shown without a (valid) pair: nothing to show.
-  const noPair = JSON.stringify({ version: 2, entries: [proj('a'), proj('b')], pair: { left: 'project:a', right: 'project:b' }, pairShown: true })
-  assert.equal(parseWorkspaceState(noPair).pairShown, false)
-  assert.equal(JSON.parse(serializeWorkspaceState({ entries, pair: null, pairShown: true, ratio: 0.5 })).pairShown, false)
+test('parseWorkspaceState migrates a v2 pair with a session half into the split', () => {
+  const entries = [todos, proj('p1'), page('/dashboard')]
+  // Either order: the session goes left, the other tab right.
+  const shown = parseWorkspaceState(
+    JSON.stringify({ version: 2, entries, pair: { left: 'surface:todos', right: 'project:p1' }, pairShown: true, ratio: 0.5 }),
+  )
+  assert.deepEqual([shown.split, shown.left, shown.right], [true, 'project:p1', 'surface:todos'])
+  // A pair waiting on the strip: split off, halves remembered.
+  const waiting = parseWorkspaceState(
+    JSON.stringify({ version: 2, entries, pair: { left: 'project:p1', right: 'surface:todos' }, pairShown: false }),
+  )
+  assert.deepEqual([waiting.split, waiting.left, waiting.right], [false, 'project:p1', 'surface:todos'])
+  // No session half: the pair is dropped.
+  const noSession = parseWorkspaceState(
+    JSON.stringify({ version: 2, entries, pair: { left: 'page:/dashboard', right: 'surface:todos' }, pairShown: true }),
+  )
+  assert.deepEqual([noSession.split, noSession.left, noSession.right], [false, null, null])
 })

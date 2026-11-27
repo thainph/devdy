@@ -50,13 +50,6 @@ export interface SurfaceOpenRequest {
 export interface OpenSurfaceOptions extends SurfaceExtras {
   /** Open as this (default: a tab, or the surface's window when one is open). */
   placement?: Placement
-  /**
-   * As a tab, open a split with it on the right instead of switching the
-   * main area to it — e.g. a file opened from a session keeps the session in
-   * view. While already split it opens full width (halves are fixed). Main
-   * window only.
-   */
-  split?: boolean
 }
 
 async function focusMain() {
@@ -70,25 +63,15 @@ async function focusMain() {
   }
 }
 
-/** Open `kind` as a tab of the main window (must run in the main window). */
-async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: SurfaceExtras, opts: OpenSurfaceOptions = {}) {
+/**
+ * Open `kind` as a tab of the main window (must run in the main window). Full
+ * width, the main area switches to it; split, the navigation guard shows it in
+ * the right half instead (lib/tabActions `routeSplitNavigation`).
+ */
+async function openAsTab(kind: SurfaceKind, params: SurfaceParams, extras: SurfaceExtras) {
   const tabs = useWorkspaceTabsStore()
   const tab = tabs.openSurface(kind, params)
-  const routed = routedTargetKey()
-  const pushHere = () => router.push(surfaceLocation(kind, tab.params, true)).catch(() => {})
-  if (tabs.isSplit && tabs.splitId === tab.id) {
-    // Already in the right half: just bring that half forward.
-    tabs.focusedPane = 'right'
-  } else if (tabs.isSplit && tabs.pair?.left !== tab.id) {
-    // The split's halves are fixed: another tab opens full width and the pair
-    // waits on the strip (`split` never replaces a half).
-    tabs.hidePair()
-    await pushHere()
-  } else if (opts.split && routed && routed !== tab.id && !tabs.isSplit && tabs.setPair(routed, tab.id, 'right')) {
-    // Split opened beside what the router shows.
-  } else {
-    await pushHere()
-  }
+  await router.push(surfaceLocation(kind, tab.params, true)).catch(() => {})
   // Re-select even when the tab already pointed there (the user may have
   // moved on inside it): params alone wouldn't change, the views hear these.
   if (params.id && kind === 'slack') {
@@ -123,12 +106,7 @@ export async function openSurface(
     return 'window'
   }
   if (isMainWindow()) {
-    await openAsTab(kind, params, extras, opts)
-  } else if (opts.split) {
-    // "Beside what I'm looking at" from a pop-out (a session window): the main
-    // window is not beside it, so open its own window as before.
-    await openSurfaceWindow(kind, params, extras)
-    return 'window'
+    await openAsTab(kind, params, extras)
   } else {
     await emit(SURFACE_OPEN, { kind, params, extras } satisfies SurfaceOpenRequest).catch(() => {})
   }
@@ -153,25 +131,32 @@ export async function closeSurfaceTab(id: string): Promise<void> {
 }
 
 /**
- * Close a tab and move the view on: closing a half of the shown split leaves
- * the other half full width; closing the tab the router shows goes to its
- * neighbour.
+ * Close a tab and move the view on. Full width, closing the tab on screen goes
+ * to its neighbour. Split, closing the right half's tab leaves that half empty;
+ * closing the session on the left brings another session there, and with none
+ * left the split ends, the right half's screen showing full width.
  */
 export async function removeTab(e: TabEntry): Promise<void> {
   const tabs = useWorkspaceTabsStore()
   const key = tabEntryKey(e)
-  const pair = tabs.isSplit ? tabs.pair : null
-  const other = pair ? (key === pair.left ? pair.right : key === pair.right ? pair.left : null) : null
   const wasRouted = key === routedKey()
+  const wasRight = tabs.isSplit && key === tabs.splitId
+  const right = tabs.entry(tabs.splitId)
   const next =
     e.type === 'project' ? tabs.close(e.projectId) : e.type === 'page' ? tabs.closePage(e.id) : tabs.closeSurface(e.id)
   tabs.focusedPane = 'left'
-  if (other) {
-    // The pair is gone with its half; the right one moves over if needed.
-    if (pair && key === pair.left) await goToEntry(tabs.entry(other))
+  if (!tabs.isSplit) {
+    if (wasRouted) await goToEntry(next)
     return
   }
-  if (wasRouted) await goToEntry(next)
+  if (wasRight || !wasRouted) return
+  const session = tabs.entry(tabs.sessionForLeft())
+  if (session) {
+    await goToEntry(session)
+    return
+  }
+  tabs.setSplitMode(false)
+  await goToEntry(right ?? next)
 }
 
 /** The surface tab the router shows right now, if any. */
@@ -214,11 +199,12 @@ export function entryLocation(e: TabEntry): RouteLocationRaw {
 }
 
 /**
- * Where the right half of the split is inside its tab, when it moved on from
- * the tab's own location (a navigation in the pane — e.g. a session's bare
- * project route). Keyed by tab, so it only applies to the tab it was set for.
+ * Where the right half of the split is, when it isn't simply its tab's own
+ * location: a page tab moved on inside itself (keyed by that tab, so it only
+ * applies to it), or a screen that isn't a tab at all — a project's settings —
+ * with `key` null (shown while the right half has no tab).
  */
-export const rightPaneLocation = ref<{ key: string; fullPath: string } | null>(null)
+export const rightPaneLocation = ref<{ key: string | null; fullPath: string } | null>(null)
 
 /** Navigate to a tab entry (after closing the current one), or the dashboard. */
 export async function goToEntry(next: TabEntry | null) {

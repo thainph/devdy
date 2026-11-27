@@ -15,8 +15,6 @@ import {
   ListTodo,
   MessageSquare,
   PanelRightClose,
-  SquareSplitHorizontal,
-  ArrowLeftRight,
   Plus,
   Search,
   Settings,
@@ -38,11 +36,8 @@ import {
   currentEntry,
   popOutCurrent,
   selectEntry,
-  canOpenOnRight,
-  idlePair,
-  openOnRight,
-  swapSplit,
-  toggleSplitCurrent,
+  canSplit,
+  toggleSplit,
 } from '@/lib/tabActions'
 
 export type PaletteMode = 'all' | 'quick'
@@ -219,46 +214,14 @@ function actionItems(): PaletteItem[] {
       run: () => triggerMenuAction('file.newNote'),
     },
   )
-  if (tabsStore.splitId) {
-    out.push(
-      {
-        key: 'action:unsplit',
-        group: 'actions',
-        label: t('palette.actions.unsplit'),
-        icon: PanelRightClose,
-        shortcut: `${MOD}\\`,
-        run: toggleSplitCurrent,
-      },
-      {
-        key: 'action:swapSplit',
-        group: 'actions',
-        label: t('palette.actions.swapSplit'),
-        icon: ArrowLeftRight,
-        run: swapSplit,
-      },
-    )
-  } else {
-    const pair = idlePair()
-    if (pair) {
-      out.push({
-        key: 'action:restoreSplit',
-        group: 'actions',
-        label: t('palette.actions.restoreSplit', { left: entryLabel(pair.left), right: entryLabel(pair.right) }),
-        icon: Columns2,
-        shortcut: `${MOD}\\`,
-        run: toggleSplitCurrent,
-      })
-    }
-  }
-  // "Open … on the right" for every other open tab that may sit beside the left one.
-  for (const e of tabsStore.entries) {
-    if (!canOpenOnRight(e)) continue
+  if (canSplit()) {
     out.push({
-      key: `action:openRight:${tabEntryKey(e)}`,
+      key: 'action:toggleSplit',
       group: 'actions',
-      label: t('palette.actions.openOnRight', { name: entryLabel(e) }),
-      icon: SquareSplitHorizontal,
-      run: () => openOnRight(e),
+      label: tabsStore.isSplit ? t('palette.actions.splitOff') : t('palette.actions.splitOn'),
+      icon: tabsStore.isSplit ? PanelRightClose : Columns2,
+      shortcut: `${MOD}\\`,
+      run: toggleSplit,
     })
   }
   const cur = currentEntry()

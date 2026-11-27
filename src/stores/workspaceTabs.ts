@@ -2,18 +2,15 @@ import { defineStore } from 'pinia'
 import { computed, reactive, ref } from 'vue'
 import { cleanParams, surfaceTabId, type SurfaceKind } from '@/lib/surfaces'
 import {
-  canPair,
   clampRatio,
-  moveUnit as moveUnitOrder,
   pageTabId,
   parseWorkspaceState,
-  placePair,
-  replacePairSide,
+  pickSession,
   serializeWorkspaceState,
+  splitSide,
   tabEntryKey,
   type PageTab,
   type PaneSide,
-  type SplitPair,
   type SurfaceTab,
   type TabEntry,
   type WorkspaceTab,
@@ -22,7 +19,7 @@ import {
 // The entry types live in lib/workspaceState (pure, unit-tested); re-exported
 // here for the many callers that import them from the store.
 export { pageTabId, tabEntryKey }
-export type { PageTab, PaneSide, SplitPair, SurfaceTab, TabEntry, WorkspaceTab }
+export type { PageTab, PaneSide, SurfaceTab, TabEntry, WorkspaceTab }
 
 const STORAGE_KEY = 'devdy.workspaceTabs'
 
@@ -44,29 +41,24 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
   )
 
   /**
-   * The two tabs of the split view (Chrome-style: adjacent on the strip, drawn
-   * as one tab), or null. Any two tabs pair (lib/workspaceState `canPair`):
-   * the left half is what the router shows, the right half is rendered beside
-   * it (App.vue — a surface host or a pane-scoped router view).
-   *
-   * The pair outlives being on screen: clicking a tab outside it shows that tab
-   * full width while the pair waits on the strip (`pairShown` false) until one
-   * of its halves is clicked again.
+   * Split view: one screen, two modes. Off (full), everything shows full
+   * width. On, the left half always shows a session and the right half any
+   * other screen (lib/tabActions routes each navigation to its half). Persisted:
+   * a restart shows what the user had.
    */
-  const pair = ref<SplitPair | null>(initial.pair)
-  /** Whether the pair is on screen (persisted: a restart shows what the user had). */
-  const pairShown = ref(initial.pairShown)
+  const splitMode = ref(initial.split)
+  /** The session (project tab key) for the left half: the last one viewed. */
+  const leftKey = ref<string | null>(initial.left)
+  /** The tab (never a session) in the right half; null = an empty half. */
+  const rightKey = ref<string | null>(initial.right)
   /** The left pane's share of the main area while split (persisted). */
   const ratio = ref(initial.ratio)
 
-  /**
-   * Key (`tabEntryKey`) of the tab in the right half, or null when the main
-   * area isn't split. Non-null exactly while the split is on screen.
-   */
-  const splitId = computed(() => (pair.value && pairShown.value ? pair.value.right : null))
-  /** Whether the main area is split right now. */
-  const isSplit = computed(() => splitId.value != null)
-  /** Which half of a split last took a click — tab clicks land there. */
+  /** Whether the main area is split right now (the right half may be empty). */
+  const isSplit = computed(() => splitMode.value)
+  /** Key (`tabEntryKey`) of the tab in the right half while split, else null. */
+  const splitId = computed(() => (splitMode.value ? rightKey.value : null))
+  /** Which half of a split last took a click — keyboard shortcuts act there. */
   const focusedPane = ref<PaneSide>('left')
 
   function persist() {
@@ -75,8 +67,9 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
         STORAGE_KEY,
         serializeWorkspaceState({
           entries: [...entries],
-          pair: pair.value,
-          pairShown: pairShown.value,
+          split: splitMode.value,
+          left: leftKey.value,
+          right: rightKey.value,
           ratio: ratio.value,
         }),
       )
@@ -90,22 +83,13 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     return entries.find((e) => tabEntryKey(e) === key) ?? null
   }
 
-  /** Reorder the strip to `keys` (a permutation of the current keys). */
-  function applyOrder(keys: string[]) {
-    const byKey = new Map(entries.map((e) => [tabEntryKey(e), e]))
-    const next = keys.map((k) => byKey.get(k)).filter((e): e is TabEntry => !!e)
-    if (next.length !== entries.length) return
-    if (next.every((e, i) => e === entries[i])) return
-    entries.splice(0, entries.length, ...next)
-  }
-
-  /** A tab left the strip: a pair it was half of dissolves. */
+  /** A tab left the strip: the half showing it empties (the caller moves the view on). */
   function forgetKey(key: string) {
-    if (pair.value && (pair.value.left === key || pair.value.right === key)) {
-      pair.value = null
-      pairShown.value = false
+    if (rightKey.value === key) {
+      rightKey.value = null
       focusedPane.value = 'left'
     }
+    if (leftKey.value === key) leftKey.value = null
   }
 
   /**
@@ -195,8 +179,7 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
       return surfaceTab(nextId)
     }
     entries.splice(idx, 1, { type: 'surface', id: nextId, surface: old.surface, params })
-    if (pair.value?.left === id) pair.value = { ...pair.value, left: nextId }
-    if (pair.value?.right === id) pair.value = { ...pair.value, right: nextId }
+    if (rightKey.value === id) rightKey.value = nextId
     persist()
     return surfaceTab(nextId)
   }
@@ -234,70 +217,34 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     return idx === -1 ? null : removeAt(idx)
   }
 
-  /** Whether the tabs `a` and `b` (keys) may be split side by side. */
-  function canSplit(a: string | null | undefined, b: string | null | undefined): boolean {
-    const x = entry(a)
-    const y = entry(b)
-    return !!x && !!y && canPair(x, y)
+  /** The session the left half would show: the last one viewed, else any open one. */
+  function sessionForLeft(): string | null {
+    return pickSession(entries, leftKey.value)
   }
 
-  /**
-   * Show `left` and `right` side by side (the router must show `left`; the
-   * caller navigates). Replaces any previous pair, moves `right` next to `left`
-   * on the strip. Returns false when the two can't pair.
-   */
-  function setPair(left: string, right: string, focus: PaneSide = 'right'): boolean {
-    if (!canSplit(left, right)) return false
-    pair.value = { left, right }
-    applyOrder(placePair(entries.map(tabEntryKey), pair.value))
-    pairShown.value = true
-    focusedPane.value = focus
-    persist()
-    return true
-  }
-
-  /**
-   * Put `key` in one half of the shown pair (a navigation inside that half
-   * landed on another tab). The replaced tab stays open next to the pair.
-   * Returns false when it can't pair with the other half.
-   */
-  function replaceSide(side: PaneSide, key: string): boolean {
-    const p = pair.value
-    if (!p) return false
-    if (p[side] === key) return true
-    if (!canSplit(side === 'left' ? p.right : p.left, key)) return false
-    const next = replacePairSide(entries.map(tabEntryKey), p, side, key)
-    if (!next) return false
-    pair.value = next.pair
-    applyOrder(next.keys)
-    persist()
-    return true
-  }
-
-  /** Bring the pair back on screen (the caller routes to its left half). */
-  function showPair(focus: PaneSide = 'left') {
-    if (!pair.value) return
-    focusedPane.value = focus
-    if (pairShown.value) return
-    pairShown.value = true
+  /** Remember the session on screen (the left half while split). */
+  function setLeft(key: string) {
+    const e = entry(key)
+    if (!e || splitSide(e) !== 'left' || leftKey.value === key) return
+    leftKey.value = key
     persist()
   }
 
-  /** Show one tab full width; the pair, if any, stays on the strip. */
-  function hidePair() {
-    focusedPane.value = 'left'
-    if (!pairShown.value) return
-    pairShown.value = false
+  /** Put a tab (never a session) in the right half, or empty it (null). */
+  function setRight(key: string | null) {
+    const e = entry(key)
+    const next = e && splitSide(e) === 'right' ? key : null
+    if (rightKey.value === next) return
+    rightKey.value = next
     persist()
   }
 
-  /** Dissolve the pair: both halves become ordinary tabs again. */
-  function unsplit() {
-    const changed = !!pair.value || pairShown.value
-    pair.value = null
-    pairShown.value = false
-    focusedPane.value = 'left'
-    if (changed) persist()
+  /** Turn split view on / off (lib/tabActions moves the router along). */
+  function setSplitMode(on: boolean) {
+    if (!on) focusedPane.value = 'left'
+    if (splitMode.value === on) return
+    splitMode.value = on
+    persist()
   }
 
   /** Remember the divider position (`total`: the main area's width, px). */
@@ -308,23 +255,13 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     persist()
   }
 
-  /**
-   * Move the entry at `from` to `to` (drag-and-drop reorder). A pair keeps its
-   * halves together: use `moveUnit` for the strip's drawn units.
-   */
+  /** Move the entry at `from` to `to` (drag-and-drop reorder). */
   function move(from: number, to: number) {
     if (from === to) return
     if (from < 0 || from >= entries.length) return
     if (to < 0 || to >= entries.length) return
     const [moved] = entries.splice(from, 1)
     entries.splice(to, 0, moved)
-    if (pair.value) applyOrder(placePair(entries.map(tabEntryKey), pair.value))
-    persist()
-  }
-
-  /** Move drawn unit `from` to unit slot `to` (lib/workspaceState `stripUnits`). */
-  function moveUnit(from: number, to: number) {
-    applyOrder(moveUnitOrder(entries.map(tabEntryKey), pair.value, from, to))
     persist()
   }
 
@@ -343,8 +280,9 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
   return {
     entries,
     tabs,
-    pair,
-    pairShown,
+    splitMode,
+    leftKey,
+    rightKey,
     ratio,
     splitId,
     isSplit,
@@ -354,7 +292,6 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     close,
     has,
     move,
-    moveUnit,
     forgetRun,
     surfaceTab,
     openSurface,
@@ -363,12 +300,10 @@ export const useWorkspaceTabsStore = defineStore('workspaceTabs', () => {
     pageTab,
     openPage,
     closePage,
-    canSplit,
-    setPair,
-    replaceSide,
-    showPair,
-    hidePair,
-    unsplit,
+    sessionForLeft,
+    setLeft,
+    setRight,
+    setSplitMode,
     setRatio,
   }
 })

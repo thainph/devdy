@@ -5,7 +5,7 @@
 // `onBeforeRouteLeave` / `onBeforeRouteUpdate` registered by the screen in the
 // pane, and `beforeRouteLeave` / `beforeRouteUpdate` component options. Global
 // `beforeEach` guards are the app router's (they steer the window, e.g.
-// tabActions `interceptRightHalf`) and are not run here.
+// tabActions `routeSplitNavigation`) and are not run here.
 //
 // Pure logic only — no Vue / router imports — so it is unit-tested directly
 // (src/lib/__tests__/paneGuards.test.mjs).

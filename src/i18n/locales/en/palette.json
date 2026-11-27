@@ -22,13 +22,11 @@
     "newSession": "New session in this project",
     "newTodo": "New todo",
     "newNote": "New note",
-    "unsplit": "Close the right pane",
     "popOut": "Move “{name}” to its own window",
     "closeTab": "Close tab “{name}”",
     "windowSettings": "Settings: Windows & tabs",
-    "swapSplit": "Swap the split sides",
-    "restoreSplit": "Bring back split view: {left} | {right}",
-    "openOnRight": "Open “{name}” on the right"
+    "splitOn": "Turn on split view",
+    "splitOff": "Turn off split view"
   },
   "hint": {
     "navigate": "to navigate",

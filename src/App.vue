@@ -14,7 +14,7 @@ import { tabEntryKey, useWorkspaceTabsStore } from '@/stores/workspaceTabs'
 import { useUILayoutStore } from '@/stores/uiLayout'
 import { useI18n } from 'vue-i18n'
 import { setLocale } from '@/i18n'
-import { ListTodo, LockKeyhole, Minimize2, Slack, StickyNote } from 'lucide-vue-next'
+import { Columns2, ListTodo, LockKeyhole, Minimize2, Slack, StickyNote } from 'lucide-vue-next'
 import { activeListPaneHidden, toggleActiveListPane } from '@/composables/useListPane'
 import PermissionNotifier from '@/components/PermissionNotifier.vue'
 import PermissionWindowManager from '@/components/PermissionWindowManager.vue'
@@ -66,14 +66,12 @@ import {
   closeCurrentTab,
   goToTabNumber,
   goToTabOffset,
-  interceptRightHalf,
   navigateFocused,
   navigateRightPane,
   popOutCurrent,
-  sanitized,
+  routeSplitNavigation,
   settleStartupNavigation,
-  syncPairWithRoute,
-  toggleSplitCurrent,
+  toggleSplit,
 } from '@/lib/tabActions'
 import { openPath, openUrl } from '@tauri-apps/plugin-opener'
 import { appDataDir, join } from '@tauri-apps/api/path'
@@ -364,6 +362,8 @@ watch(
         return
       }
       tabsStore.open(projectId, typeof runId === 'string' ? runId : null)
+      // The session the split's left half shows (the last one viewed).
+      tabsStore.setLeft(`project:${projectId}`)
     }
   },
   { immediate: true },
@@ -371,28 +371,25 @@ watch(
 
 // Every screen the router shows is a tab of the strip: a surface (re-pointed at
 // what it shows) or a page (Dashboard, Skills, Settings…, remembering its query).
-// Projects get theirs from the run-route watcher above. Any navigation lands in
-// the left / only pane.
+// Projects get theirs from the run-route watcher above. The router shows the
+// left / only pane.
 watch(
   () => route.fullPath,
   () => {
     if (isSessionWindow) return
-    // A navigation lands in the left / only pane (while split, a click in the
-    // left pane already focused it — and a tab click may have focused the right).
     if (!tabsStore.isSplit) tabsStore.focusedPane = 'left'
     const kind = surfaceForPath(route.path)
     if (kind) tabsStore.openSurface(kind, cleanParams(kind, route.query))
     else if (pageRouteFor(route.path)) tabsStore.openPage(route.path, route.fullPath)
-    // The split follows: its left half shows what the router shows.
-    syncPairWithRoute()
   },
   { immediate: true },
 )
 
-// Split view: a navigation to the tab in the right half shows it there instead
-// (never the same tab on both sides). Main window only.
+// Split view: the router only shows the session on the left; any other screen
+// it is asked for shows in the right half instead (lib/tabActions). Main
+// window only.
 const offRightHalfGuard =
-  isPopoutWindow || isSessionWindow ? null : router.beforeEach((to) => interceptRightHalf(to))
+  isPopoutWindow || isSessionWindow ? null : router.beforeEach((to) => routeSplitNavigation(to))
 // The startup navigation leaves the restored split as it was (lib/tabActions).
 if (!isPopoutWindow && !isSessionWindow) void settleStartupNavigation()
 
@@ -438,36 +435,39 @@ watch(
 )
 
 // ── Split view ──────────────────────────────────────────────────────────────
-// The right half shows any tab: a surface through its SurfaceHost (teleported
-// into #devdy-split-body above), anything else — a session, Dashboard,
-// Settings… — through a pane-scoped router (PaneRouterView), so it reads its
-// own route and its links navigate the right half.
+// The left half is the router's session; the right half shows any other
+// screen: a surface through its SurfaceHost (teleported into #devdy-split-body
+// above), a page or a screen that isn't a tab (a project's settings) through a
+// pane-scoped router (PaneRouterView), so it reads its own route and its links
+// go through the router (lib/tabActions `navigateRightPane`). Nothing there
+// yet: a hint to pick a screen.
 
 /** The tab in the right half, while split. */
 const rightEntry = computed(() => tabsStore.entry(tabsStore.splitId))
-/** …when it is a routed screen rather than a surface. */
-const rightRouted = computed(() => (rightEntry.value && rightEntry.value.type !== 'surface' ? rightEntry.value : null))
+/** Path of the routed screen in the right half (a page, or a screen that isn't a tab), else ''. */
 const rightLocation = computed(() => {
-  const e = rightRouted.value
-  if (!e) return ''
+  const e = rightEntry.value
   const moved = rightPaneLocation.value
+  if (!e) return tabsStore.isSplit && moved && moved.key === null ? moved.fullPath : ''
+  if (e.type === 'surface') return ''
   if (moved && moved.key === tabEntryKey(e)) return moved.fullPath
-  // Never open a session tab on a run of another project (as routeToLeft / selectEntry).
-  return router.resolve(entryLocation(sanitized(e))).fullPath
+  return router.resolve(entryLocation(e)).fullPath
 })
-// Where the right half moved to inside its tab only holds for that tab.
+/** Key of the routed screen in the right half, for its PaneRouterView (one for any screen that isn't a tab). */
+const rightRoutedKey = computed(() => tabsStore.splitId ?? 'screen')
+// Where the right half moved to only holds for the tab it was set for (a
+// screen that isn't a tab holds while the half has no tab).
 watch(
-  () => tabsStore.pair?.right,
+  () => tabsStore.splitId,
   (key) => {
-    if (rightPaneLocation.value?.key !== key) rightPaneLocation.value = null
+    if (rightPaneLocation.value && rightPaneLocation.value.key !== key) rightPaneLocation.value = null
   },
 )
 /** Path the right half shows, for the sidebar highlight. */
 const rightPath = computed(() => {
   const e = rightEntry.value
-  if (!e) return null
-  if (e.type === 'surface') return SURFACE_PATHS[e.surface]
-  return router.resolve(rightLocation.value).path
+  if (e?.type === 'surface') return SURFACE_PATHS[e.surface]
+  return rightLocation.value ? router.resolve(rightLocation.value).path : null
 })
 
 // Divider (drag, arrows, double-click = 50/50). The ratio is the left pane's
@@ -521,7 +521,7 @@ const compactSidebar = computed(
   () => tabsStore.isSplit && appSettings.settings?.split_compact_sidebar !== 'false',
 )
 
-/** Sidebar surfaces open as a tab; a shown split stays fixed (lib/surfaceOpen). */
+/** Sidebar surfaces open as a tab (split: in the right half, lib/tabActions). */
 function openSurfaceFocused(kind: SurfaceKind, params: Record<string, unknown> = {}) {
   void openSurface(kind, params)
 }
@@ -673,7 +673,7 @@ function bindGlobalMenuActions() {
     registerMenuAction('tabs.prev', () => goToTabOffset(-1)),
     registerMenuAction('tabs.next', () => goToTabOffset(1)),
     registerMenuAction('tabs.close', closeCurrentTab),
-    registerMenuAction('tabs.toggleSplit', toggleSplitCurrent),
+    registerMenuAction('tabs.toggleSplit', toggleSplit),
     registerMenuAction('tabs.popOut', popOutCurrent),
     ...[1, 2, 3, 4, 5, 6, 7, 8, 9].map((n) => registerMenuAction(`tabs.goto.${n}`, () => goToTabNumber(n))),
     ...NAV_ROUTES.map((r) =>
@@ -727,9 +727,6 @@ watch(locale, () => {
 // File the capture under whatever the user is looking at, so capturing from a
 // run needs no project picking at all.
 function routeCaptureContext() {
-  // The focused right half of a split, when it is a session.
-  const right = tabsStore.focusedPane === 'right' && rightEntry.value ? sanitized(rightEntry.value) : null
-  if (right?.type === 'project') return { projectId: right.projectId, runId: right.lastRunId }
   return {
     projectId: typeof route.params.projectId === 'string' ? route.params.projectId : null,
     runId: typeof route.params.runId === 'string' ? route.params.runId : null,
@@ -1334,10 +1331,9 @@ onMounted(async () => {
              point. `routeKey` keeps its existing contract either way (see above):
              run routes get `run-<projectId>` so RunView still remounts per
              project, other routes get a stable per-view key. -->
-        <!-- Split: the routed screen on the left, any other tab on the right
-             (the paired tab of WorkspaceTabs). A click in a half focuses it,
-             so the next tab click lands there. Both halves start level at the
-             top: the pair tab carries their names and close buttons. -->
+        <!-- Split: the session (the routed screen) on the left, any other
+             screen on the right. A click in a half focuses it, so keyboard
+             shortcuts act there. -->
         <div ref="splitRef" class="split-host flex h-full min-h-0" :class="{ 'is-split': tabsStore.isSplit }">
           <div
             data-pane="left"
@@ -1397,9 +1393,16 @@ onMounted(async () => {
             :style="tabsStore.isSplit ? { flex: `${1 - splitRatio} 1 0`, minWidth: `min(${SPLIT_MIN_RIGHT}px, 50%)` } : undefined"
             @pointerdown.capture="tabsStore.focusedPane = 'right'"
           >
-            <div v-show="!rightRouted" id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
-            <div v-if="rightRouted" class="min-h-0 flex-1 overflow-auto">
-              <PaneRouterView :key="tabEntryKey(rightRouted)" :location="rightLocation" @navigate="navigateRightPane" />
+            <div v-show="rightEntry?.type === 'surface'" id="devdy-split-body" class="min-h-0 flex-1 overflow-auto" />
+            <div v-if="rightLocation" class="min-h-0 flex-1 overflow-auto">
+              <PaneRouterView :key="rightRoutedKey" :location="rightLocation" @navigate="navigateRightPane" />
+            </div>
+            <div
+              v-if="tabsStore.isSplit && !rightEntry && !rightLocation"
+              class="flex flex-1 flex-col items-center justify-center gap-2 p-6 text-center"
+            >
+              <Columns2 class="h-6 w-6 text-muted-foreground/50" :stroke-width="1.5" />
+              <p class="max-w-xs text-sm text-muted-foreground">{{ t('surfaces.tabs.rightEmpty') }}</p>
             </div>
           </section>
         </div>
