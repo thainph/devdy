@@ -76,6 +76,8 @@
   "unmarkBot": "Stop treating {login} as a bot",
   "detectedBot": "Marked as bot by GitHub",
   "openOnGitHub": "Open on GitHub",
+  "copyLink": "Copy link",
+  "linkCopied": "Link copied",
   "moreActions": "More actions",
   "staleTitle": "No updates for more than {days} days",
   "bulk": {

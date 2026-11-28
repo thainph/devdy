@@ -16,10 +16,13 @@ import { emit as emitEvent } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
 import { Banner, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderButton, PageHeaderSearch, SegmentedControl, Skeleton } from '@/components/ui'
 import MentionCard from '@/components/githubMentions/MentionCard.vue'
+import InboxGroupHeader from '@/components/inbox/InboxGroupHeader.vue'
 import MentionFiltersPopover from '@/components/githubMentions/MentionFiltersPopover.vue'
 import MentionDisplayPopover from '@/components/githubMentions/MentionDisplayPopover.vue'
 import PrAvatar from '@/components/prInbox/PrAvatar.vue'
 import PromptConfigModal from '@/components/PromptConfigModal.vue'
+import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
+import type { TodoPrefill } from '@/lib/focus'
 import { useGithubMentionsStore } from '@/stores/githubMentions'
 import { useToast } from '@/composables/useToast'
 import { useRunsStore } from '@/stores/runs'
@@ -47,7 +50,7 @@ import {
   type MentionItem,
 } from '@/lib/githubMentions'
 import {
-  AtSign, BellOff, Check, CheckCheck, ChevronRight, Copy, EyeOff, ExternalLink, FolderX, Info, Loader2, MailOpen, RefreshCw, Reply,
+  AtSign, BellOff, BookMarked, Check, CheckCheck, Copy, EyeOff, ExternalLink, FolderX, Info, ListPlus, Loader2, MailOpen, RefreshCw, Reply,
   SearchX, Undo2, X,
 } from 'lucide-vue-next'
 
@@ -192,6 +195,23 @@ async function check(item: MentionItem) {
   }
 }
 
+// "+ Todo" from the card menu (Focus §3.1), prefilled from the mention.
+const todoOpen = ref(false)
+const todoPrefill = ref<TodoPrefill>({})
+function addTodo() {
+  const item = menu.value.item
+  closeMenu()
+  if (!item) return
+  const repo = `${item.owner}/${item.repo}`
+  const refText = item.kind === 'Discussion' ? `${repo} · Discussion` : item.number !== null ? `${repo}#${item.number}` : repo
+  todoPrefill.value = {
+    text: t('githubMentions.todoText', { title: item.title, ref: refText }),
+    projectId: item.project_id ?? undefined,
+    sourceUrl: item.trigger?.html_url || item.html_url,
+  }
+  todoOpen.value = true
+}
+
 // Card menu (right-click). Teleported ContextMenu, like the PR Inbox.
 const menu = ref<{ open: boolean; x: number; y: number; item: MentionItem | null }>({ open: false, x: 0, y: 0, item: null })
 function openMenu(item: MentionItem, x: number, y: number) {
@@ -224,7 +244,10 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
   if (!item) return
   const url = item.trigger?.html_url || item.html_url
   try {
-    if (action === 'open') await openUrl(url)
+    if (action === 'open') {
+      await openUrl(url)
+      if (item.unread) await store.markRead(item.key)
+    }
     else if (action === 'read') await store.markRead(item.key)
     else if (action === 'copy') {
       await navigator.clipboard.writeText(url)
@@ -323,7 +346,9 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
         <p class="mt-1 max-w-72 text-xs text-muted-foreground">{{ t('githubMentions.emptyHint', { days: store.lookbackDays }) }}</p>
       </div>
 
-      <div v-else class="flex flex-col gap-5">
+      <!-- `@container/list`: cards and group headers size themselves against
+           the list width, at the same steps as the PR Inbox. -->
+      <div v-else class="@container/list flex flex-col gap-5">
         <div
           v-if="visible.length === 0"
           class="flex items-center gap-2 rounded-lg border border-dashed border-border/60 px-3 py-3 text-xs text-muted-foreground"
@@ -356,27 +381,26 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
           </p>
 
           <section v-for="g in groups" :key="g.key" class="flex flex-col gap-2">
-            <button
+            <InboxGroupHeader
               v-if="store.groupBy !== 'none'"
-              type="button"
-              class="flex min-w-0 items-center gap-2 text-left text-xs font-semibold cursor-pointer"
-              :aria-expanded="!collapsed.has(g.key)"
-              @click="toggleGroup(g.key)"
+              :label="g.label || t('githubMentions.unknownAuthor')"
+              :count="g.items.length"
+              :collapsed="collapsed.has(g.key)"
+              :mono="store.groupBy === 'repo'"
+              @toggle="toggleGroup(g.key)"
             >
-              <ChevronRight
-                class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
-                :class="{ 'rotate-90': !collapsed.has(g.key) }"
-                :stroke-width="2"
-              />
-              <PrAvatar v-if="store.groupBy === 'person'" :url="g.avatarUrl" :name="g.label || '?'" :size="16" />
-              <span class="min-w-0 truncate" :class="{ 'font-mono font-medium': store.groupBy === 'repo' }">{{ g.label || t('githubMentions.unknownAuthor') }}</span>
-              <span class="shrink-0 font-normal text-[11px] text-muted-foreground">{{ g.items.length }}</span>
-            </button>
+              <template #icon>
+                <PrAvatar v-if="store.groupBy === 'person'" :url="g.avatarUrl" :name="g.label || '?'" :size="16" />
+                <BookMarked v-else class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+              </template>
+            </InboxGroupHeader>
             <template v-if="!collapsed.has(g.key)">
               <MentionCard
-                v-for="item in g.items"
+                v-for="(item, i) in g.items"
                 :key="item.key"
                 :item="item"
+                :grouped="store.groupBy !== 'none'"
+                :index="i"
                 :check-status="checkStatus(item)"
                 :starting="store.busyKeys.has(item.key)"
                 @menu="openMenu"
@@ -400,6 +424,10 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
       <DropdownItem @click="menuAction('copy')">
         <Copy class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('githubMentions.menu.copyLink') }}
+      </DropdownItem>
+      <DropdownItem v-if="menu.item && categoryOf(menu.item) !== 'done'" @click="addTodo">
+        <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('focus.addTodoHint') }}
       </DropdownItem>
       <template v-if="menuMoves.length > 0">
         <DropdownSeparator />
@@ -426,6 +454,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
         {{ t('githubMentions.menu.muteRepo', { repo: menu.item ? `${menu.item.owner}/${menu.item.repo}` : '' }) }}
       </DropdownItem>
     </ContextMenu>
+    <TodoCaptureModal :open="todoOpen" :prefill="todoPrefill" @close="todoOpen = false" />
     <PromptConfigModal
       :open="promptEditorOpen"
       :title="t('githubMentions.prompt.title')"
