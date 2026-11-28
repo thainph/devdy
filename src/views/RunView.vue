@@ -40,7 +40,7 @@ import {
   HardDrive, Cloud, CloudCog, Languages, StickyNote, ListTodo, FolderTree, Loader2,
   Network, GitBranch, ChevronLeft, ChevronRight,
   Plus, ArrowUpDown,
-  KeyRound, SquareArrowOutUpRight, History
+  KeyRound, SquareArrowOutUpRight, History, UserRound, UserRoundCog
 } from 'lucide-vue-next'
 import { onClickOutside } from '@vueuse/core'
 import AppSelect from '@/components/AppSelect.vue'
@@ -5357,7 +5357,7 @@ function handleRefInput(val: string) {
                   aria-haspopup="menu"
                 >
                   <component
-                    :is="applyingWorkerAccount ? Loader2 : KeyRound"
+                    :is="applyingWorkerAccount ? Loader2 : UserRoundCog"
                     class="h-3.5 w-3.5"
                     :class="{ 'animate-spin': applyingWorkerAccount }"
                     :stroke-width="1.75"
@@ -5372,7 +5372,7 @@ function handleRefInput(val: string) {
                 :key="acc.id"
                 @click="applyAccountToWorkers(acc.id)"
               >
-                <KeyRound class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
+                <UserRound class="h-3.5 w-3.5 shrink-0" :stroke-width="1.75" />
                 {{ acc.label }}
               </DropdownItem>
             </DropdownMenu>
