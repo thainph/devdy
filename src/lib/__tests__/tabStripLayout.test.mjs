@@ -51,6 +51,21 @@ test('a hidden pair makes room for both of its slots', () => {
   assert.deepEqual(l.hidden, [1, 2, 3])
 })
 
+test('several kept tabs (split view) all come back on screen', () => {
+  // cap = 5: [0..4] shown; keep 8 (focused) and 6 (the other half).
+  const l = tabStripLayout(10, 800, [8, 6], o)
+  assert.deepEqual(l.shown, [0, 1, 2, 8, 6])
+  assert.deepEqual(l.hidden, [3, 4, 5, 7, 9])
+  // One already on screen stays where it is.
+  assert.deepEqual(tabStripLayout(10, 800, [8, 1], o).shown, [0, 1, 2, 3, 8])
+})
+
+test('when kept tabs cannot all fit, the first one wins', () => {
+  // Room for one slot only: the focused tab shows, the other gives way.
+  const l = tabStripLayout(5, 200, [3, 1], o)
+  assert.deepEqual(l.shown, [3])
+})
+
 test('unitWidth: slots plus the gaps between them', async () => {
   const { unitWidth } = await import('../tabStripLayout.ts')
   assert.equal(unitWidth(1, 150, 4), 150)

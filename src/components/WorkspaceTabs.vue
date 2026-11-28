@@ -113,11 +113,17 @@ function popOut(e: TabEntry) {
 
 // --- Overflow (Chrome-style, lib/tabStripLayout) ------------------------------
 // Tabs never shrink below TAB_MIN so a title stays readable; the rest hide
-// behind the ▾ button, which lists every tab.
+// behind the ▾ button, which lists every tab. The tab being opened always
+// lands fully on screen (in split view, both halves' tabs do): the layout
+// keeps them, and the room it lays out excludes the split button at the end
+// of the row — counting it is what used to clip the last slot, exactly where
+// a hidden tab is brought back.
 const TAB_MIN = 140
 const TAB_MAX = 200
 const GAP = 4
 const MORE_W = 52
+/** The split toggle (Button icon-sm, 28px) and the gap before it. */
+const CONTROLS_W = 28 + GAP
 
 const wrapRef = ref<HTMLElement | null>(null)
 const avail = ref(0)
@@ -136,12 +142,12 @@ watch(wrapRef, (el, old) => {
 
 const layout = computed(() => {
   const all = tabsStore.entries
-  const active = all.findIndex(isActive)
-  const current = active >= 0 ? active : all.findIndex(isVisible)
+  // The focused tab first, then the other half's tab in split view.
+  const keep = [all.findIndex(isActive), ...all.map((e, i) => (isVisible(e) ? i : -1))].filter((i) => i >= 0)
   return tabStripLayout(
     all.map(() => 1),
-    avail.value,
-    current,
+    avail.value > 0 ? Math.max(1, avail.value - CONTROLS_W) : 0,
+    keep,
     { min: TAB_MIN, max: TAB_MAX, gap: GAP, more: MORE_W },
   )
 })

@@ -1,7 +1,8 @@
 // Chrome-style overflow of the main window's tab strip (components/WorkspaceTabs):
 // tabs share the row at equal widths but never shrink below `min`, so titles
 // stay readable; what doesn't fit goes behind a "more" button. The current tab
-// always stays on screen, taking the last visible slot if it was hidden.
+// always stays on screen, taking the last visible slot if it was hidden — and
+// so does every other tab passed to keep (split view: both halves' tabs).
 //
 // The strip is laid out in units: a tab is one slot, the split pair (two tabs
 // drawn as one merged tab) is two. A unit of `w` slots is `w * width + (w - 1)
@@ -25,14 +26,17 @@ export interface TabStripLayout {
 
 /**
  * `units`: how many units there are (each one slot), or the slot count of each
- * unit in strip order. `current`: the unit to keep on screen.
+ * unit in strip order. `current`: the unit to keep on screen, or several (most
+ * important first; a later one gives way when they don't all fit).
  */
 export function tabStripLayout(
   units: number | readonly number[],
   avail: number,
-  current: number,
+  current: number | readonly number[],
   o: TabStripOptions,
 ): TabStripLayout {
+  const keep = (typeof current === 'number' ? [current] : [...current])
+    .filter((i, n, list) => Number.isInteger(i) && i >= 0 && list.indexOf(i) === n)
   const weights = typeof units === 'number' ? Array.from({ length: units }, () => 1) : units.map((w) => Math.max(1, w))
   const count = weights.length
   const all = Array.from({ length: count }, (_, i) => i)
@@ -50,12 +54,25 @@ export function tabStripLayout(
     shown.push(i)
     used += weights[i]
   }
-  if (current >= 0 && current < count && !shown.includes(current)) {
-    while (shown.length && used + weights[current] > cap) used -= weights[shown.pop()!]
-    shown.push(current)
+  // Bring each kept unit back, dropping the last shown units that aren't kept
+  // (never an earlier kept one) until it fits.
+  const placed: number[] = []
+  for (const k of keep) {
+    if (k >= count) continue
+    if (!shown.includes(k)) {
+      while (used + weights[k] > cap) {
+        const drop = shown.map((_, j) => j).reverse().find((j) => !placed.includes(shown[j]))
+        if (drop === undefined) break
+        used -= weights[shown.splice(drop, 1)[0]]
+      }
+      if (used + weights[k] > cap && placed.length) continue
+      shown.push(k)
+      used += weights[k]
+    }
+    placed.push(k)
   }
   // A unit wider than the whole row still shows (squeezed by the caller).
-  if (!shown.length && count) shown.push(Math.max(0, Math.min(current, count - 1)))
+  if (!shown.length && count) shown.push(Math.max(0, Math.min(keep[0] ?? 0, count - 1)))
   const kept = new Set(shown)
   return { shown, hidden: all.filter((i) => !kept.has(i)), width: width(room, cap) }
 }
