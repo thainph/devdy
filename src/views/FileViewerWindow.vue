@@ -147,7 +147,7 @@ useDockAll(dock, !props.embedded)
 <template>
   <div
     class="bg-background text-foreground overflow-hidden"
-    :class="embedded ? 'h-full min-h-0 w-full' : 'h-screen w-screen'"
+    :class="embedded ? 'file-pane h-full min-h-0 w-full' : 'h-screen w-screen'"
   >
     <FileViewer
       :project-path="projectPath"
