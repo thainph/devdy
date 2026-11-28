@@ -48,6 +48,9 @@ const props = defineProps<{
 const emit = defineEmits<{
   openSession: [runId: string]
   backToConductor: []
+  /** Right-click (or Menu key / Shift+F10) on a worker: the parent opens the
+   * same run menu as a History row. */
+  menu: [runId: string, e: MouseEvent]
 }>()
 
 // A worker (not the session itself) is the open run — offer a way back.
@@ -280,6 +283,7 @@ onBeforeUnmount(onDragEnd)
       :title="railTooltip(w)"
       :aria-label="railTooltip(w)"
       @click="emit('openSession', w.worker_id)"
+      @contextmenu.prevent="emit('menu', w.worker_id, $event)"
     >
       <span
         v-if="hasPending(w.worker_id)"
@@ -325,6 +329,7 @@ onBeforeUnmount(onDragEnd)
           :class="density === 'comfortable' ? 'py-3' : density === 'compact' ? 'py-2' : 'py-1.5'"
           :title="density === 'comfortable' ? undefined : workerTooltip(w)"
           @click="emit('openSession', w.worker_id)"
+          @contextmenu.prevent="emit('menu', w.worker_id, $event)"
         >
           <!-- Title line: status icon (spins while running) · title · pending
                marker · time (compact/dense). -->

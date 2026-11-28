@@ -76,6 +76,7 @@ import AddTodoButton from '@/components/focus/AddTodoButton.vue'
 import { useTurnNavigator, turnLabel } from '@/composables/useTurnNavigator'
 import { useScrollMemory } from '@/composables/useScrollMemory'
 import { useConfirm } from '@/composables/useConfirm'
+import { usePrompt } from '@/composables/usePrompt'
 import { useToast } from '@/composables/useToast'
 import { openItemCreate, type ItemKind } from '@/lib/itemWindow'
 import { vMermaid } from '@/lib/mermaid'
@@ -212,6 +213,7 @@ onBeforeUnmount(() => {
   document.removeEventListener('keydown', onHistoryOverlayKeyDown, true)
 })
 const { confirm } = useConfirm()
+const { prompt } = usePrompt()
 const { toast } = useToast()
 
 const projectId = computed(() => route.params.projectId as string)
@@ -3425,22 +3427,42 @@ const clearingAll = ref(false)
 const pinningRunId = ref<string | null>(null)
 const protectingRunId = ref<string | null>(null)
 // The History row's right-click menu (the run it was opened on).
-const runMenu = ref<{ open: boolean; x: number; y: number; run: RunRecord | null }>({ open: false, x: 0, y: 0, run: null })
-function openRunMenu(run: RunRecord, e: MouseEvent) {
-  runMenu.value = { open: true, ...menuPoint(e), run }
+/** `worker`: opened from the conductor's worker panel, not a History row. */
+const runMenu = ref<{ open: boolean; x: number; y: number; run: RunRecord | null; worker: boolean }>({
+  open: false, x: 0, y: 0, run: null, worker: false,
+})
+function openRunMenu(run: RunRecord, e: MouseEvent, worker = false) {
+  runMenu.value = { open: true, ...menuPoint(e), run, worker }
+}
+/** A worker row's right-click: the same menu as its History row. A worker in
+ * another project isn't in `runs` — its cached meta row stands in. */
+function openWorkerMenu(workerId: string, e: MouseEvent) {
+  const run = runsStore.runs.find((r) => r.id === workerId) ?? runsStore.runMeta.get(workerId)
+  if (run) openRunMenu(run, e, true)
 }
 function closeRunMenu() {
   runMenu.value = { ...runMenu.value, open: false }
 }
 const actionsMenuRunId = computed(() => (runMenu.value.open ? runMenu.value.run?.id ?? null : null))
-/** The run's action handlers, each closing the menu before it acts. */
+/** The run's action handlers, each closing the menu before it acts. For a
+ * worker: rename asks in a dialog (History's inline rename lives on a History
+ * row the worker may not have), and the worker panel is re-read afterwards so
+ * its title / presence follow the change. */
 function runMenuHandlers(run: RunRecord) {
+  const worker = runMenu.value.worker
+  const handlers: Record<string, (...a: never[]) => unknown> = runActionHandlers(run)
+  if (worker) handlers.rename = () => renameWorker(run)
   return Object.fromEntries(
-    Object.entries(runActionHandlers(run)).map(([k, fn]) => [k, (...args: unknown[]) => {
+    Object.entries(handlers).map(([k, fn]) => [k, async (...args: unknown[]) => {
       closeRunMenu()
-      ;(fn as (...a: unknown[]) => unknown)(...args)
+      await (fn as (...a: unknown[]) => unknown)(...args)
+      if (worker) void conductorStore.refreshDetail()
     }]),
   )
+}
+async function renameWorker(run: RunRecord) {
+  const title = await prompt({ title: t('run.rename'), label: t('run.runNamePlaceholder'), initialValue: run.title ?? runLabel(run) })
+  if (title !== null) await applyRename(run.id, title)
 }
 
 // Inline rename state for the History list.
@@ -4411,13 +4433,6 @@ function handleRefInput(val: string) {
             </div>
           </div>
           <div ref="sessionListEl" class="run-history-list flex-1 min-h-0 overflow-auto">
-            <!-- The History row's right-click menu (teleported, anchored to the pointer). -->
-            <ContextMenu :open="runMenu.open" :x="runMenu.x" :y="runMenu.y" @close="closeRunMenu">
-              <template v-if="runMenu.run">
-                <RunActionItems v-bind="runActionProps(runMenu.run)" section="actions" v-on="runMenuHandlers(runMenu.run)" />
-                <RunActionItems v-bind="runActionProps(runMenu.run)" section="delete" v-on="runMenuHandlers(runMenu.run)" />
-              </template>
-            </ContextMenu>
             <div v-if="runsStore.loading" class="px-4 py-3 text-xs text-muted-foreground">{{ t('common.loading') }}</div>
             <div v-else-if="runsStore.runs.length === 0" class="px-4 py-6 text-center text-xs text-muted-foreground">
               {{ t('run.noSessionsYet') }}
@@ -5408,9 +5423,20 @@ function handleRefInput(val: string) {
           :conductor-run-id="conductorStore.selectedId"
           @open-session="openSession"
           @back-to-conductor="openSession(conductorStore.selectedId ?? '')"
+          @menu="openWorkerMenu"
         />
       </aside>
     </div>
+
+    <!-- Right-click menu of a History row or a conductor's worker (teleported,
+         anchored to the pointer). Lives here, not in the History list, so it
+         also works where History is hidden (a session's own window). -->
+    <ContextMenu :open="runMenu.open" :x="runMenu.x" :y="runMenu.y" @close="closeRunMenu">
+      <template v-if="runMenu.run">
+        <RunActionItems v-bind="runActionProps(runMenu.run)" section="actions" v-on="runMenuHandlers(runMenu.run)" />
+        <RunActionItems v-bind="runActionProps(runMenu.run)" section="delete" v-on="runMenuHandlers(runMenu.run)" />
+      </template>
+    </ContextMenu>
 
     <!-- Engine-switch dialog: new session vs. continue (carry context) -->
     <Modal
