@@ -57,4 +57,4 @@ export const HEALTH_BG: Record<MilestoneHealth, string> = {
 }
 
 // Narrow panes drop the board-status column (it moves to the row's second line).
-export const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px_52px] @[36rem]/screen:grid-cols-[minmax(0,1fr)_minmax(104px,140px)_minmax(96px,124px)_minmax(64px,88px)_52px] items-center gap-x-4'
+export const IGRID = 'grid grid-cols-[minmax(0,1fr)_minmax(96px,124px)_64px] @[36rem]/screen:grid-cols-[minmax(0,1fr)_minmax(104px,140px)_minmax(96px,124px)_minmax(64px,88px)] items-center gap-x-4'

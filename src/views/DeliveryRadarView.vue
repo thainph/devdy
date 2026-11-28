@@ -9,7 +9,7 @@ import DockWindowButton from '@/components/surfaces/DockWindowButton.vue'
 import { emit, listen, type UnlistenFn } from '@tauri-apps/api/event'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import {
-  BookMarked, ChevronRight, ExternalLink, EyeOff, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
+  BookMarked, ChevronRight, ExternalLink, EyeOff, Link2, FolderOpen, ListPlus, Radar, RefreshCw, Search, SearchX, Settings2, X,
 } from 'lucide-vue-next'
 import { useProjectsStore, type Project } from '@/stores/projects'
 import { useDeliveryRadarStore } from '@/stores/deliveryRadar'
@@ -17,6 +17,7 @@ import {
   Banner, Button, Card, ContextMenu, DropdownItem, Input, SegmentedControl, Skeleton,
 } from '@/components/ui'
 import { useSearchBox } from '@/composables/useFindShortcut'
+import { useToast } from '@/composables/useToast'
 import { DELIVERY_RADAR_OPEN_ROUTE, type DeliveryRadarOpenRoute } from '@/lib/deliveryRadarWindow'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
 import DoneStatusesModal from '@/components/radar/DoneStatusesModal.vue'
@@ -51,6 +52,7 @@ const props = defineProps<{
 const { t } = useI18n()
 const projectsStore = useProjectsStore()
 const store = useDeliveryRadarStore()
+const { toast } = useToast()
 
 const isRadarWindow = new URLSearchParams(window.location.search).get('radarWindow') === '1'
 const PROJECTS_KEY = 'devdy:radarProjects'
@@ -331,7 +333,7 @@ const hiddenCount = computed(() => store.hidden.length)
 const warningsOpen = ref(false)
 
 // Row menu (right-click): "+ Todo" from the issue (title, project, link and
-// deadline prefilled), open it on GitHub.
+// deadline prefilled), open it on GitHub, copy its link.
 const rowMenu = ref<{ x: number, y: number, issue: ClassifiedIssue } | null>(null)
 const todoPrefill = ref<TodoPrefill | null>(null)
 function openRowMenu(e: MouseEvent, issue: ClassifiedIssue) {
@@ -350,6 +352,17 @@ function openFromMenu() {
   const issue = rowMenu.value?.issue
   rowMenu.value = null
   if (issue) openIssue(issue)
+}
+async function copyLinkFromMenu() {
+  const issue = rowMenu.value?.issue
+  rowMenu.value = null
+  if (!issue) return
+  try {
+    await navigator.clipboard.writeText(issue.htmlUrl)
+    toast.success(t('radar.linkCopied'))
+  } catch (e) {
+    toast.error(String(e))
+  }
 }
 
 // ── Banners ──────────────────────────────────────────────────────────────────
@@ -526,7 +539,6 @@ const GRID = 'grid grid-cols-[minmax(0,1fr)_repeat(5,24px)_32px_52px] @[40rem]/s
           :query="query"
           :due-soon-days="store.thresholds.dueSoonDays"
           :lag-pct="store.thresholds.milestoneLagPct"
-          @add-todo="addTodo"
           @open-issue="openIssue"
           @row-menu="openRowMenu"
         />
@@ -666,12 +678,11 @@ const GRID = 'grid grid-cols-[minmax(0,1fr)_repeat(5,24px)_32px_52px] @[40rem]/s
 
             <!-- Issues of the group -->
             <div v-if="expanded.has(groupId(g))" class="bg-muted/25 border-t border-border/40 pt-1 pb-1.5">
-              <div :class="IGRID" class="pl-10 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+              <div :class="IGRID" class="pl-9 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
                 <span>{{ t('radar.colIssue') }}</span>
                 <span class="hidden @[36rem]/screen:block truncate">{{ t('radar.colBoardStatus') }}</span>
                 <span class="truncate">{{ t('radar.colDeadline') }}</span>
                 <span class="truncate text-right">{{ t('radar.colUpdated') }}</span>
-                <span />
               </div>
               <template v-for="{ section, rows } in groupSections(g)" :key="section?.key ?? 'all'">
               <!-- Repo header: project (person mode), repo, open count, what needs attention. Click = fold. -->
@@ -719,7 +730,6 @@ const GRID = 'grid grid-cols-[minmax(0,1fr)_repeat(5,24px)_32px_52px] @[40rem]/s
                 :co-assigned="groupMode === 'person'"
                 :show-unassigned="groupMode === 'project'"
                 @toggle-children="toggleChildren(g, i)"
-                @add-todo="addTodo(i)"
                 @open="openIssue(i)"
                 @menu="openRowMenu($event, i)"
               />
@@ -740,6 +750,10 @@ const GRID = 'grid grid-cols-[minmax(0,1fr)_repeat(5,24px)_32px_52px] @[40rem]/s
       <DropdownItem @click="openFromMenu">
         <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
         {{ t('radar.openOnGithub') }}
+      </DropdownItem>
+      <DropdownItem @click="copyLinkFromMenu">
+        <Link2 class="h-3.5 w-3.5" :stroke-width="1.75" />
+        {{ t('radar.copyLink') }}
       </DropdownItem>
     </ContextMenu>
     <ContextMenu :open="!!groupMenu" :x="groupMenu?.x ?? 0" :y="groupMenu?.y ?? 0" @close="groupMenu = null">

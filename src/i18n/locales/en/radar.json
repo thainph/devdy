@@ -78,6 +78,8 @@
   "byRepoHint": "Split each group's issues by repo",
   "alsoAssigned": "with {names}",
   "openOnGithub": "Open on GitHub",
+  "copyLink": "Copy link",
+  "linkCopied": "Link copied",
   "nothingTitle": "Nothing to show",
   "nothingHint": "No open issue matches the current filters.",
   "updated": "Updated {time}",

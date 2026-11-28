@@ -31,7 +31,6 @@ const props = defineProps<{
 }>()
 
 const emit = defineEmits<{
-  'add-todo': [issue: ClassifiedIssue]
   'open-issue': [issue: ClassifiedIssue]
   'row-menu': [e: MouseEvent, issue: ClassifiedIssue]
 }>()
@@ -409,12 +408,11 @@ const PAST_DEV_STRIPES = { backgroundImage: 'repeating-linear-gradient(135deg, h
 
               <!-- Open work of the milestone -->
               <div v-if="expanded.has(v.key)" class="bg-muted/25 border-t border-border/40 pt-1 pb-1.5 pl-6">
-                <div :class="IGRID" class="pl-4 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
+                <div :class="IGRID" class="pl-9 pr-3 py-1 text-[10px] font-semibold uppercase tracking-wider text-muted-foreground/80">
                   <span>{{ t('radar.colIssue') }}</span>
                   <span class="hidden @[36rem]/screen:block truncate">{{ t('radar.colBoardStatus') }}</span>
                   <span class="truncate">{{ t('radar.colDeadline') }}</span>
                   <span class="truncate text-right">{{ t('radar.colUpdated') }}</span>
-                  <span />
                 </div>
                 <div class="divide-y divide-border/40">
                   <RadarIssueRow
@@ -430,7 +428,6 @@ const PAST_DEV_STRIPES = { backgroundImage: 'repeating-linear-gradient(135deg, h
                     show-unassigned
                     :deadline-note="v.afterDue.includes(i.key) ? t('radar.ms.afterDueShort') : undefined"
                     @toggle-children="toggleChildren(v, i)"
-                    @add-todo="emit('add-todo', i)"
                     @open="emit('open-issue', i)"
                     @menu="emit('row-menu', $event, i)"
                   />

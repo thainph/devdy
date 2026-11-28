@@ -1,13 +1,16 @@
 <script setup lang="ts">
 // One issue row of the Delivery Radar, shared by the issue view (mode A) and
 // the milestone view (mode B). Lays out on `IGRID`; the header row is the caller's.
+// Reads like the inbox rows (InboxCard): title (click = open on
+// GitHub) · meta (repo#num · project · people · parent). No buttons — + Todo,
+// open and copy link live in the right-click menu the view owns (`menu`).
 import { useI18n } from 'vue-i18n'
 import {
-  CalendarDays, ChevronRight, Clock, CornerDownRight, CornerUpLeft, ExternalLink, ListPlus,
+  CalendarDays, ChevronRight, Clock, CornerDownRight, CornerUpLeft, ExternalLink, User, Users,
 } from 'lucide-vue-next'
-import { Button } from '@/components/ui'
-import { statusDotClass, swatchClass, type ClassifiedIssue } from '@/lib/deliveryRadar'
-import { IGRID, TONE_BG, TONE_CHIP } from './radarStyles'
+import { Badge } from '@/components/ui'
+import { statusDotClass, type ClassifiedIssue } from '@/lib/deliveryRadar'
+import { IGRID, TONE_CHIP } from './radarStyles'
 
 const props = defineProps<{
   issue: ClassifiedIssue
@@ -33,7 +36,6 @@ const props = defineProps<{
 
 const emit = defineEmits<{
   'toggle-children': []
-  'add-todo': []
   open: []
   menu: [e: MouseEvent]
 }>()
@@ -58,9 +60,6 @@ function deadlineTone(i: ClassifiedIssue): string {
   if (i.radar === 'due-soon') return 'text-warning'
   return 'text-foreground font-medium'
 }
-function initial(name: string): string {
-  return (name.replace(/^[^\p{L}\p{N}]+/u, '')[0] ?? '?').toUpperCase()
-}
 function relativeTime(iso: string): string {
   const then = new Date(iso).getTime()
   if (Number.isNaN(then)) return ''
@@ -76,14 +75,12 @@ function relativeTime(iso: string): string {
 <template>
   <div
     :class="IGRID"
-    class="group/row mx-1.5 rounded-md pr-1.5 py-1.5 hover:bg-accent/50"
-    :title="issue.parent ? `${issue.title}\n${t('radar.parentHint', { title: `#${issue.parent.number} ${issue.parent.title}` })}` : issue.title"
+    class="group/row pr-3 py-2 transition-colors hover:bg-accent/50"
     @contextmenu.prevent="emit('menu', $event)"
   >
-    <div class="flex items-start gap-2 min-w-0" :style="{ paddingLeft: `${0.5 + depth * 1.4}rem` }">
-      <!-- Severity square, then the fold slot: chevron on parents, an elbow on leaf sub-issues. -->
-      <span class="flex w-4.5 shrink-0 flex-col items-center gap-1 pt-1">
-        <span class="h-2 w-2 rounded-[2px]" :class="TONE_BG[issue.radar]" :title="t(`radar.status.${issue.radar}`)" />
+    <div class="flex items-start gap-1.5 min-w-0" :style="{ paddingLeft: `${0.75 + depth * 1.4}rem` }">
+      <!-- Fold slot: chevron on parents, an elbow on leaf sub-issues, else the issue icon. -->
+      <span class="flex h-4.5 w-4.5 shrink-0 items-center justify-center">
         <button
           v-if="hasChildren"
           class="flex h-4.5 w-4.5 items-center justify-center rounded text-muted-foreground hover:bg-accent hover:text-foreground"
@@ -97,66 +94,53 @@ function relativeTime(iso: string): string {
         <CornerDownRight v-else-if="depth > 0" class="h-3 w-3 text-muted-foreground/60" :stroke-width="1.75" />
       </span>
       <span class="flex min-w-0 flex-1 flex-col gap-1">
-        <!-- Line 1: title, radar status (on-track needs no chip), folded children -->
-        <span class="flex min-w-0 items-baseline gap-2">
-          <span class="truncate text-[13px] font-medium leading-snug text-foreground">{{ issue.title }}</span>
+        <!-- Line 1: title (opens on GitHub), radar status (on-track needs no chip), folded children -->
+        <span class="flex min-w-0 items-center gap-1.5">
+          <button
+            type="button"
+            class="min-w-0 truncate text-left text-[13px] font-semibold leading-tight text-foreground transition-colors hover:text-primary cursor-pointer"
+            :title="issue.parent ? `${issue.title}\n${t('radar.parentHint', { title: `#${issue.parent.number} ${issue.parent.title}` })}` : issue.title"
+            @click="emit('open')"
+          >{{ issue.title }}</button>
+          <ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-0 transition-opacity group-hover/row:opacity-100" :stroke-width="2" />
           <span
             v-if="issue.radar !== 'on-track'"
-            class="shrink-0 rounded-full px-1.75 py-px text-[10.5px] font-semibold"
+            class="shrink-0 rounded-[5px] px-1.5 py-0.5 text-[10px] font-medium"
             :class="TONE_CHIP[issue.radar]"
           >{{ t(`radar.status.${issue.radar}`) }}</span>
           <span
             v-if="hidden"
-            class="shrink-0 rounded-full border border-dashed border-border px-1.5 text-[10px] font-semibold text-muted-foreground"
+            class="shrink-0 text-[10px] font-medium text-muted-foreground"
             :title="t('radar.hiddenChildren', { n: hidden })"
           >+{{ hidden }}</span>
         </span>
-        <!-- Line 2: each kind of meta has its own form (code ref, project swatch, avatars, parent link) -->
+        <!-- Line 2: repo#num · status (narrow) · project · people · parent -->
         <span class="flex min-w-0 items-center gap-2 overflow-hidden whitespace-nowrap text-[11px] text-muted-foreground">
-          <span class="shrink-0 rounded bg-muted px-1.25 py-px font-mono text-[10.5px]"><template v-if="showRepo">{{ issue.repo }}</template><span class="font-medium text-foreground">#{{ issue.number }}</span></span>
-          <span class="@[36rem]/screen:hidden flex shrink-0 items-center gap-1.5">
-            <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-            <span class="h-2 w-2 rounded-full" :class="statusDotClass(issue.statusColor)" />
-            {{ issue.status || t('radar.noStatus') }}
-          </span>
-          <span v-if="showProject" class="flex shrink-0 items-center gap-1.5 font-medium text-foreground/80">
-            <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-            <span class="h-1.75 w-1.75 rounded-[2px]" :class="swatchClass(issue.projectName)" />
+          <span class="shrink-0 font-mono"><template v-if="showRepo">{{ issue.repo }} </template><span class="text-muted-foreground/70">#{{ issue.number }}</span></span>
+          <span class="@[36rem]/screen:hidden shrink-0">{{ issue.status || t('radar.noStatus') }}</span>
+          <Badge v-if="showProject" tone="primary" size="xs" class="shrink-0 max-w-32 truncate" :title="issue.projectName">
             {{ issue.projectName }}
+          </Badge>
+          <span v-if="people.length" class="flex min-w-0 shrink-0 items-center gap-1" :title="people.join(', ')">
+            <component :is="people.length > 1 ? Users : User" class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+            <span class="truncate">{{ coAssigned ? t('radar.alsoAssigned', { names: people.join(', ') }) : people.join(', ') }}</span>
           </span>
-          <span v-if="people.length" class="flex shrink-0 items-center gap-1.5">
-            <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
-            <span class="flex">
-              <span
-                v-for="(p, pi) in people.slice(0, 3)" :key="p"
-                class="flex h-4 w-4 items-center justify-center rounded-full text-[8.5px] font-bold text-white ring-[1.5px] ring-card"
-                :class="[swatchClass(p), pi > 0 ? '-ml-1' : '']"
-              >{{ initial(p) }}</span>
-            </span>
-            {{ coAssigned ? t('radar.alsoAssigned', { names: people.join(', ') }) : people.join(', ') }}
-          </span>
-          <span v-else-if="showUnassigned" class="flex shrink-0 items-center gap-1.5 italic">
-            <span class="h-1.5 w-1.5 rounded-full bg-muted-foreground/40" />
+          <span v-else-if="showUnassigned" class="flex shrink-0 items-center gap-1 italic">
+            <User class="h-3 w-3 shrink-0" :stroke-width="1.75" />
             {{ t('radar.unassigned') }}
           </span>
           <!-- Parent not in this list (other assignee, done, …): say where the task belongs. -->
           <span v-if="depth === 0 && issue.parent" class="flex min-w-0 items-center gap-1">
-            <span class="mr-1 h-1.5 w-1.5 shrink-0 rounded-full bg-muted-foreground/40" />
             <CornerUpLeft class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-            <span class="shrink-0 font-mono text-[10.5px]">#{{ issue.parent.number }}</span>
+            <span class="shrink-0 font-mono">#{{ issue.parent.number }}</span>
             <span class="truncate italic">{{ issue.parent.title }}</span>
           </span>
         </span>
       </span>
     </div>
-    <span class="hidden @[36rem]/screen:flex min-w-0">
-      <span
-        class="inline-flex max-w-full items-center gap-1.5 rounded-md border px-2 py-0.5 text-[11.5px]"
-        :class="issue.status ? 'border-border font-medium text-foreground' : 'border-dashed border-border text-muted-foreground/70'"
-      >
-        <span v-if="issue.status" class="h-2 w-2 rounded-full shrink-0" :class="statusDotClass(issue.statusColor)" />
-        <span class="truncate">{{ issue.status || t('radar.noStatus') }}</span>
-      </span>
+    <span class="hidden @[36rem]/screen:flex min-w-0 items-center gap-1.5 text-[11.5px]">
+      <span v-if="issue.status" class="h-1.5 w-1.5 shrink-0 rounded-full" :class="statusDotClass(issue.statusColor)" />
+      <span class="truncate" :class="issue.status ? 'text-foreground' : 'text-muted-foreground/70'">{{ issue.status || t('radar.noStatus') }}</span>
     </span>
     <span
       class="flex min-w-0 flex-col gap-px whitespace-nowrap leading-tight"
@@ -177,28 +161,6 @@ function relativeTime(iso: string): string {
     >
       <Clock v-if="issue.radar === 'stale'" class="h-3 w-3 shrink-0" :stroke-width="2" />
       <span class="truncate">{{ relativeTime(issue.updatedAt) }}</span>
-    </span>
-    <span class="flex justify-end gap-0.5 opacity-50 transition-opacity group-hover/row:opacity-100 focus-within:opacity-100">
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="text-muted-foreground/70 hover:text-foreground"
-        :title="t('focus.addTodoHint')"
-        :aria-label="t('focus.addTodoHint')"
-        @click="emit('add-todo')"
-      >
-        <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </Button>
-      <Button
-        variant="ghost"
-        size="icon-xs"
-        class="text-muted-foreground/70 hover:text-primary"
-        :title="t('radar.openOnGithub')"
-        :aria-label="t('radar.openOnGithub')"
-        @click="emit('open')"
-      >
-        <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
-      </Button>
     </span>
   </div>
 </template>
