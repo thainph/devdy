@@ -13,10 +13,13 @@ import {
   Button, Skeleton, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderButton, PageHeaderSearch, Banner,
 } from '@/components/ui'
 import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
+import InboxGroupHeader from '@/components/inbox/InboxGroupHeader.vue'
 import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
 import PrInboxDisplayPopover from '@/components/prInbox/PrInboxDisplayPopover.vue'
 import PrInboxBotAccountsModal from '@/components/prInbox/PrInboxBotAccountsModal.vue'
 import PrInboxPromptModal from '@/components/prInbox/PrInboxPromptModal.vue'
+import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
+import type { TodoPrefill } from '@/lib/focus'
 import {
   groupPrInbox,
   isGroupCollapsedByDefault,
@@ -48,8 +51,8 @@ import { useRunStatusEvents } from '@/composables/useRunStatusEvents'
 import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
-  GitPullRequest, RefreshCw, Sparkles, User, Bot, ChevronRight, Folder, BookMarked,
-  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, X, RotateCcw,
+  GitPullRequest, RefreshCw, Sparkles, User, Bot, Folder, BookMarked,
+  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, X, RotateCcw, Link, ListPlus, FolderPlus,
 } from 'lucide-vue-next'
 
 // Named explicitly (devtools / warnings): an inferred name is a build detail
@@ -248,6 +251,27 @@ function closeMenu() {
 
 function openPr(item: PrInboxItem) {
   openUrl(item.html_url).catch(() => { /* opener unavailable */ })
+}
+
+async function copyPrLink(item: PrInboxItem) {
+  try {
+    await navigator.clipboard.writeText(item.html_url)
+    toast.success(t('prInbox.linkCopied'))
+  } catch (e) {
+    toast.error(String(e))
+  }
+}
+
+// "+ Todo" from the card menu (Focus §3.1), prefilled from the PR.
+const todoOpen = ref(false)
+const todoPrefill = ref<TodoPrefill>({})
+function addTodo(item: PrInboxItem) {
+  todoPrefill.value = {
+    text: t('focus.capture.reviewPr', { title: item.title, number: item.number }),
+    projectId: item.project_id,
+    sourceUrl: item.html_url,
+  }
+  todoOpen.value = true
 }
 
 // --- Review actions -------------------------------------------------------
@@ -490,18 +514,15 @@ async function reviewAll(group: PrGroup) {
           <!-- Header: the name truncates first (counts stay); "N unreviewed"
                drops below 36rem, "AI review all" goes icon-only below 44rem,
                "Mark as bot" takes no space until hover / keyboard focus. -->
-          <div v-if="group.kind !== 'all'" class="group/header flex items-center gap-2 min-w-0">
-            <button
-              type="button"
-              class="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
-              :aria-expanded="!isCollapsed(group)"
-              @click="toggleGroup(group)"
-            >
-              <ChevronRight
-                class="h-3.5 w-3.5 shrink-0 text-muted-foreground transition-transform"
-                :class="{ 'rotate-90': !isCollapsed(group) }"
-                :stroke-width="2"
-              />
+          <InboxGroupHeader
+            v-if="group.kind !== 'all'"
+            :label="groupLabel(group)"
+            :count="group.items.length"
+            :collapsed="isCollapsed(group)"
+            :mono="store.groupBy === 'repo' && group.kind === 'normal'"
+            @toggle="toggleGroup(group)"
+          >
+            <template #icon>
               <img
                 v-if="group.avatarUrl"
                 :src="group.avatarUrl"
@@ -514,25 +535,17 @@ async function reviewAll(group: PrGroup) {
               <BookMarked v-else-if="store.groupBy === 'repo'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
               <KeyRound v-else-if="store.groupBy === 'reviewer_account'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
               <User v-else class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
-              <span
-                class="min-w-0 text-xs font-semibold truncate group-hover/header:text-primary transition-colors"
-                :class="{ 'font-mono': store.groupBy === 'repo' && group.kind === 'normal' }"
-              >
-                {{ groupLabel(group) }}
-              </span>
-              <span class="flex h-4 min-w-4 shrink-0 items-center justify-center rounded-full bg-muted px-1.5 text-[10px] font-medium text-muted-foreground">
-                {{ group.items.length }}
-              </span>
+            </template>
+            <template #extra>
               <span v-if="group.unreviewedCount > 0" class="hidden @[36rem]/list:inline shrink-0 text-[10px] text-warning">
                 {{ t('prInbox.unreviewed', group.unreviewedCount) }}
               </span>
-            </button>
-
-            <div class="flex items-center gap-1 shrink-0">
+            </template>
+            <template #actions>
               <!-- Author group: treat this login as a bot from now on. Space is
                    reserved (visibility, not display) so the group name doesn't
                    shift on hover; revealed on hover or when the header holds
-                   keyboard focus. The card ⋯ menu offers the same action. -->
+                   keyboard focus. The card's right-click menu offers the same action. -->
               <Button
                 v-if="store.groupBy === 'author' && group.kind === 'normal' && group.label"
                 variant="ghost"
@@ -570,13 +583,13 @@ async function reviewAll(group: PrGroup) {
                   {{ t('prInbox.bulk.action', { count: Math.min(bulkCandidates(group).total, BULK_REVIEW_CAP) }) }}
                 </span>
               </Button>
-            </div>
-          </div>
+            </template>
+          </InboxGroupHeader>
 
           <div
             v-if="group.kind === 'all' || !isCollapsed(group)"
             class="flex flex-col"
-            :class="store.density === 'compact' ? 'gap-1.5' : group.kind === 'all' ? 'gap-3' : 'gap-2'"
+            :class="store.density === 'compact' ? 'gap-1.5' : 'gap-2'"
           >
             <!-- Keyed per group: in reviewer-account mode one PR can sit in
                  two groups, but never twice in the same one. -->
@@ -596,9 +609,7 @@ async function reviewAll(group: PrGroup) {
               :now="now"
               :index="i"
               @review="handleReview"
-              @re-review="handleReReview"
               @open-run="openRun"
-              @add-to-devdy="openProjects"
               @menu="openMenu"
             />
           </div>
@@ -623,13 +634,18 @@ async function reviewAll(group: PrGroup) {
       </div>
     </div>
 
-    <!-- Card menu (⋯ / right-click) -->
+    <!-- Card menu (right-click): every action but the primary review button -->
     <ContextMenu :open="menu.open" :x="menu.x" :y="menu.y" @close="closeMenu">
       <template v-if="menu.item">
         <DropdownItem @click="openPr(menu.item)">
           <ExternalLink class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('prInbox.openOnGitHub') }}
         </DropdownItem>
+        <DropdownItem @click="copyPrLink(menu.item)">
+          <Link class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('prInbox.copyLink') }}
+        </DropdownItem>
+        <DropdownSeparator />
         <DropdownItem
           v-if="menu.item.existing_run_id && menu.item.mapped"
           :disabled="!canReReview(menu.item, runStatus(menu.item), store.reviewingKeys.has(prKey(menu.item)))"
@@ -637,6 +653,14 @@ async function reviewAll(group: PrGroup) {
         >
           <RotateCcw class="h-3.5 w-3.5" :stroke-width="1.75" />
           {{ t('prInbox.reReview') }}
+        </DropdownItem>
+        <DropdownItem @click="addTodo(menu.item)">
+          <ListPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('focus.addTodoHint') }}
+        </DropdownItem>
+        <DropdownItem v-if="!menu.item.mapped" @click="openProjects">
+          <FolderPlus class="h-3.5 w-3.5" :stroke-width="1.75" />
+          {{ t('prInbox.addToDevdy') }}
         </DropdownItem>
         <DropdownSeparator />
         <DropdownItem v-if="isCustomBot(menu.item.author_login)" @click="store.removeBotLogin(menu.item.author_login)">
@@ -656,5 +680,6 @@ async function reviewAll(group: PrGroup) {
 
     <PrInboxBotAccountsModal :open="botAccountsOpen" @close="botAccountsOpen = false" />
     <PrInboxPromptModal :open="promptEditorOpen" :kind="promptEditorKind" @close="promptEditorOpen = false" />
+    <TodoCaptureModal :open="todoOpen" :prefill="todoPrefill" @close="todoOpen = false" />
   </div>
 </template>

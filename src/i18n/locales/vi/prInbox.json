@@ -76,6 +76,8 @@
   "unmarkBot": "Không coi {login} là bot nữa",
   "detectedBot": "GitHub đã đánh dấu là bot",
   "openOnGitHub": "Mở trên GitHub",
+  "copyLink": "Sao chép link",
+  "linkCopied": "Đã sao chép link",
   "moreActions": "Thao tác khác",
   "staleTitle": "Không có cập nhật hơn {days} ngày",
   "bulk": {

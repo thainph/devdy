@@ -1,8 +1,9 @@
 <script setup lang="ts">
-// One PR in the inbox (PrInboxView). `comfortable` is the full two-line card;
-// `compact` squeezes it into a single row: avatar · title · repo#num · author ·
-// time · action. Review / navigation stay in the view — this only renders and
-// emits, so both densities share one action path.
+// One PR in the inbox (PrInboxView), on the shared InboxCard layout (same as
+// GitHub Mentions). `comfortable` is the full two-line card; `compact`
+// squeezes it into a single row: avatar · title · repo#num · author · time ·
+// action. Review / navigation stay in the view — this only renders and emits,
+// so both densities share one action path.
 //
 // Context-aware: whatever the current group header already says (project,
 // repo, author, reviewer account — `groupBy`) is not repeated on the card.
@@ -12,7 +13,9 @@
 // meta row sheds, in order: other reviewers (< 52rem) → labels (< 44rem) →
 // time (< 38rem; a stale time is never hidden) → author (< 36rem). Title and
 // the action button always stay (the button goes icon-only, title + aria-label
-// kept). "+ Todo" (icon) files a todo for the PR (Focus §3.1).
+// kept). Only the primary action (AI review / view review) is a button; every
+// other action (copy link, re-review, + Todo, add to devdy, bot marking) lives
+// in the right-click menu owned by the view.
 import { computed } from 'vue'
 import { useI18n } from 'vue-i18n'
 import { openUrl } from '@tauri-apps/plugin-opener'
@@ -20,11 +23,12 @@ import type { PrInboxItem } from '@/stores/prInbox'
 import type { PrGroupBy } from '@/lib/prInboxGrouping'
 import { isStale, reviewerAccountsOf, STALE_AFTER_DAYS } from '@/lib/prInboxFilters'
 import { runStatusDotClass } from '@/lib/runDisplay'
-import { Button, Card, Badge } from '@/components/ui'
-import AddTodoButton from '@/components/focus/AddTodoButton.vue'
+import { Button, Badge } from '@/components/ui'
+import InboxCard from '@/components/inbox/InboxCard.vue'
+import { actionLabelClass as labelClassFor } from '@/components/inbox/inboxCard'
 import PrAvatar from './PrAvatar.vue'
 import {
-  RefreshCw, Sparkles, FolderPlus, ExternalLink, User, Users, Eye, Bot, Tag, RotateCcw,
+  RefreshCw, Sparkles, User, Users, Eye, Bot, Tag,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -53,12 +57,7 @@ const props = withDefaults(defineProps<{
 
 const emit = defineEmits<{
   review: [item: PrInboxItem]
-  /** Continue the linked review session (new commits since that review). */
-  're-review': [item: PrInboxItem]
   'open-run': [item: PrInboxItem]
-  /** "Add to devdy" on an unmapped PR — the host decides how to navigate
-   * (router in the main window, a request to it from the PR Inbox window). */
-  'add-to-devdy': []
   /** Open the card menu at a viewport point (right-click). */
   menu: [item: PrInboxItem, x: number, y: number]
 }>()
@@ -78,12 +77,6 @@ const showAccountChip = computed(() =>
 
 const fullRef = computed(() => `${props.item.owner}/${props.item.repo}#${props.item.number}`)
 const repoText = computed(() => (props.showOwner ? `${props.item.owner}/${props.item.repo}` : props.item.repo))
-
-const todoPrefill = computed(() => ({
-  text: t('focus.capture.reviewPr', { title: props.item.title, number: props.item.number }),
-  projectId: props.item.project_id,
-  sourceUrl: props.item.html_url,
-}))
 
 const stale = computed(() => isStale(props.item.updated_at, props.now))
 const labels = computed(() => props.item.labels ?? [])
@@ -117,12 +110,8 @@ const statusText = computed(() => {
 const runLabel = computed(() => (running.value ? t('prInbox.reviewingShort') : t('prInbox.viewReview')))
 const runTitle = computed(() => (statusText.value ? `${runLabel.value} · ${statusText.value}` : runLabel.value))
 const reviewLabel = computed(() => (props.reviewing ? t('prInbox.opening') : t('prInbox.aiReview')))
-// New commits since the finished review → a "Re-review" button next to it
-// (any finished review can also be re-run from the right-click menu).
-const showReReview = computed(() => !!props.item.existing_run_id && props.item.updated_since_review && !running.value)
-const reReviewLabel = computed(() => (props.reviewing ? t('prInbox.opening') : t('prInbox.reReview')))
 // Action labels show from this container width up; below it, icon-only.
-const actionLabelClass = computed(() => (compact.value ? 'hidden @[44rem]/list:inline' : 'hidden @[36rem]/list:inline'))
+const actionLabelClass = computed(() => labelClassFor(compact.value))
 
 function openPr() {
   openUrl(props.item.html_url).catch(() => { /* opener unavailable */ })
@@ -143,205 +132,162 @@ function relativeTime(iso: string): string {
 </script>
 
 <template>
-  <Card
-    class="group relative flex flex-row items-center animate-fade-rise transition-all duration-150 hover:border-primary/40 hover:shadow-[0_1px_3px_0_rgb(0_0_0/0.08)]"
-    :style="{ animationDelay: `${Math.min(index, 12) * 40}ms` }"
-    :body-class="`flex flex-row items-center flex-1 min-w-0 ${compact ? 'gap-2.5 px-3 py-1.5' : grouped ? 'gap-3 p-3' : 'gap-3 p-4'}`"
-    @contextmenu.prevent="emit('menu', item, $event.clientX, $event.clientY)"
+  <InboxCard
+    :title="item.title"
+    :compact="compact"
+    :grouped="grouped"
+    :index="index"
+    @open="openPr"
+    @menu="(x, y) => emit('menu', item, x, y)"
   >
     <!-- Author avatar: dimmed for drafts, Bot mark in the corner for bots -->
-    <span class="relative shrink-0" :class="{ 'opacity-50': item.draft }" :title="item.author_login">
-      <PrAvatar :url="item.author_avatar_url" :name="item.author_login" :size="compact ? 20 : 32" />
-      <span
-        v-if="isBot"
-        class="absolute -bottom-0.5 -right-1 flex items-center justify-center rounded-full bg-violet-600 text-white ring-2 ring-card"
-        :class="compact ? 'h-3 w-3' : 'h-4 w-4'"
-        :title="t('prInbox.bot')"
-      >
-        <Bot :class="compact ? 'h-2 w-2' : 'h-2.5 w-2.5'" :stroke-width="2.5" aria-hidden="true" />
-        <!-- PrAvatar is aria-hidden; this is the only bot cue for screen readers -->
-        <span class="sr-only">{{ t('prInbox.bot') }}</span>
+    <template #avatar>
+      <span class="relative block" :class="{ 'opacity-50': item.draft }" :title="item.author_login">
+        <PrAvatar :url="item.author_avatar_url" :name="item.author_login" :size="compact ? 20 : 32" />
+        <span
+          v-if="isBot"
+          class="absolute -bottom-0.5 -right-1 flex items-center justify-center rounded-full bg-violet-600 text-white ring-2 ring-card"
+          :class="compact ? 'h-3 w-3' : 'h-4 w-4'"
+          :title="t('prInbox.bot')"
+        >
+          <Bot :class="compact ? 'h-2 w-2' : 'h-2.5 w-2.5'" :stroke-width="2.5" aria-hidden="true" />
+          <!-- PrAvatar is aria-hidden; this is the only bot cue for screen readers -->
+          <span class="sr-only">{{ t('prInbox.bot') }}</span>
+        </span>
       </span>
-    </span>
+    </template>
 
-    <!-- Main info. Compact: title block grows (floor min-w-24), meta block is
-         capped and truncates, so neither collapses nor overlaps the actions. -->
-    <div class="min-w-0 flex-1" :class="{ 'flex items-center gap-2': compact }">
-      <div class="flex items-center gap-1.5 min-w-0" :class="{ 'flex-1 min-w-24': compact }">
-        <button
-          class="min-w-0 font-semibold truncate leading-tight hover:text-primary transition-colors cursor-pointer text-left"
-          :class="compact ? 'text-xs' : 'text-sm'"
-          :title="item.title"
-          @click="openPr"
-        >
-          {{ item.title }}
-        </button>
-        <ExternalLink class="h-3 w-3 shrink-0 text-muted-foreground/50 opacity-0 group-hover:opacity-100 transition-opacity" :stroke-width="2" />
-        <Badge v-if="item.draft" tone="neutral" size="xs" class="shrink-0">{{ t('prInbox.draft') }}</Badge>
-      </div>
+    <template #badges>
+      <Badge v-if="item.draft" tone="neutral" size="xs" class="shrink-0">{{ t('prInbox.draft') }}</Badge>
+    </template>
 
-      <!-- Meta: at most repo#num · project (narrow) · author · time · labels · reviewers -->
-      <div
-        class="flex min-w-0 items-center gap-2 text-[11px] text-muted-foreground"
-        :class="compact ? 'max-w-[45%]' : 'mt-1'"
+    <!-- Meta: at most repo#num · project (narrow) · author · time · labels · reviewers -->
+    <template #meta>
+      <span class="min-w-0 font-mono truncate" :title="fullRef">
+        <template v-if="showRepoName">{{ repoText }} </template><span class="text-muted-foreground/70">#{{ item.number }}</span>
+      </span>
+      <!-- Project moves here from the right side on narrow containers -->
+      <Badge
+        v-if="!compact && showProject"
+        tone="primary"
+        size="xs"
+        class="shrink-0 max-w-32 truncate @[44rem]/list:hidden"
+        :title="item.project_name ?? ''"
       >
-        <span class="min-w-0 font-mono truncate" :title="fullRef">
-          <template v-if="showRepoName">{{ repoText }} </template><span class="text-muted-foreground/70">#{{ item.number }}</span>
-        </span>
-        <!-- Project moves here from the right side on narrow containers -->
-        <Badge
-          v-if="!compact && showProject"
-          tone="primary"
-          size="xs"
-          class="shrink-0 max-w-32 truncate @[44rem]/list:hidden"
-          :title="item.project_name ?? ''"
-        >
-          {{ item.project_name }}
-        </Badge>
-        <span v-if="showAuthor" class="hidden @[36rem]/list:flex min-w-0 items-center gap-1">
-          <User class="h-3 w-3 shrink-0" :stroke-width="1.75" />
-          <span class="truncate">{{ item.author_login }}</span>
-        </span>
-        <!-- Time: hidden on narrow containers unless stale — staleness is a
-             signal worth the space. sr-only text so it isn't colour-only. -->
-        <span
-          class="shrink-0"
-          :class="stale ? 'text-warning' : 'hidden @[38rem]/list:inline text-muted-foreground/60'"
-          :title="stale ? t('prInbox.staleTitle', { days: STALE_AFTER_DAYS }) : undefined"
-        >
-          {{ relativeTime(item.updated_at) }}
-          <span v-if="stale" class="sr-only">({{ t('prInbox.staleTitle', { days: STALE_AFTER_DAYS }) }})</span>
-        </span>
-        <span
-          v-if="labels.length > 0"
-          role="img"
-          class="hidden @[44rem]/list:flex shrink-0 items-center gap-0.5"
-          :title="labelsTitle"
-          :aria-label="labelsTitle"
-        >
-          <Tag class="h-3 w-3" :stroke-width="1.75" />
-          {{ labels.length }}
-        </span>
-        <span
-          v-if="reviewers.length > 0"
-          role="img"
-          class="hidden @[52rem]/list:flex shrink-0 items-center gap-1"
-          :title="reviewersTitle"
-          :aria-label="reviewersTitle"
-        >
-          <template v-if="compact">
-            <Users class="h-3 w-3" :stroke-width="1.75" />
-            {{ reviewers.length }}
-          </template>
-          <template v-else>
-            <span class="flex -space-x-1.5">
-              <span
-                v-for="r in shownReviewers"
-                :key="`${r.kind}:${r.login_or_slug}`"
-                class="rounded-full ring-2 ring-card"
-              >
-                <PrAvatar v-if="r.kind === 'user'" :url="r.avatar_url" :name="r.login_or_slug" :size="16" />
-                <span v-else class="flex h-4 w-4 items-center justify-center rounded-full bg-muted text-muted-foreground">
-                  <Users class="h-2.5 w-2.5" :stroke-width="2" />
-                </span>
+        {{ item.project_name }}
+      </Badge>
+      <span v-if="showAuthor" class="hidden @[36rem]/list:flex min-w-0 items-center gap-1">
+        <User class="h-3 w-3 shrink-0" :stroke-width="1.75" />
+        <span class="truncate">{{ item.author_login }}</span>
+      </span>
+      <!-- Time: hidden on narrow containers unless stale — staleness is a
+           signal worth the space. sr-only text so it isn't colour-only. -->
+      <span
+        class="shrink-0"
+        :class="stale ? 'text-warning' : 'hidden @[38rem]/list:inline text-muted-foreground/60'"
+        :title="stale ? t('prInbox.staleTitle', { days: STALE_AFTER_DAYS }) : undefined"
+      >
+        {{ relativeTime(item.updated_at) }}
+        <span v-if="stale" class="sr-only">({{ t('prInbox.staleTitle', { days: STALE_AFTER_DAYS }) }})</span>
+      </span>
+      <span
+        v-if="labels.length > 0"
+        role="img"
+        class="hidden @[44rem]/list:flex shrink-0 items-center gap-0.5"
+        :title="labelsTitle"
+        :aria-label="labelsTitle"
+      >
+        <Tag class="h-3 w-3" :stroke-width="1.75" />
+        {{ labels.length }}
+      </span>
+      <span
+        v-if="reviewers.length > 0"
+        role="img"
+        class="hidden @[52rem]/list:flex shrink-0 items-center gap-1"
+        :title="reviewersTitle"
+        :aria-label="reviewersTitle"
+      >
+        <template v-if="compact">
+          <Users class="h-3 w-3" :stroke-width="1.75" />
+          {{ reviewers.length }}
+        </template>
+        <template v-else>
+          <span class="flex -space-x-1.5">
+            <span
+              v-for="r in shownReviewers"
+              :key="`${r.kind}:${r.login_or_slug}`"
+              class="rounded-full ring-2 ring-card"
+            >
+              <PrAvatar v-if="r.kind === 'user'" :url="r.avatar_url" :name="r.login_or_slug" :size="16" />
+              <span v-else class="flex h-4 w-4 items-center justify-center rounded-full bg-muted text-muted-foreground">
+                <Users class="h-2.5 w-2.5" :stroke-width="2" />
               </span>
             </span>
-            <span v-if="reviewers.length > shownReviewers.length" class="text-[10px]">
-              +{{ reviewers.length - shownReviewers.length }}
-            </span>
-          </template>
-        </span>
-      </div>
-    </div>
-
-    <!-- Right side: project (wide) · review-as account · action -->
-    <div class="flex items-center gap-2 shrink-0">
-      <template v-if="item.mapped">
-        <Badge
-          v-if="!compact && showProject"
-          tone="primary"
-          size="xs"
-          class="hidden @[44rem]/list:inline-flex shrink-0 max-w-40 truncate"
-          :title="item.project_name ?? ''"
-        >
-          {{ item.project_name }}
-        </Badge>
-        <!-- Account the review runs as: stable colour dot (+N when several of
-             the user's accounts were asked) -->
-        <span
-          v-if="showAccountChip && accounts.length > 0"
-          class="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"
-          :title="accountTitle"
-          :aria-label="accountTitle"
-          role="img"
-        >
-          <span class="h-2 w-2 shrink-0 rounded-full" :class="accountTone(accounts[0].account_id)" />
-          <span class="max-w-24 truncate" :class="compact ? 'hidden' : 'hidden @[44rem]/list:inline'">
-            {{ accounts[0].account_label }}
           </span>
-          <span v-if="accounts.length > 1" class="text-[10px]">+{{ accounts.length - 1 }}</span>
+          <span v-if="reviewers.length > shownReviewers.length" class="text-[10px]">
+            +{{ reviewers.length - shownReviewers.length }}
+          </span>
+        </template>
+      </span>
+    </template>
+
+    <!-- Right side: project (wide) · review-as account · primary action.
+         Unmapped PRs have none — "Add to devdy" is in the menu. -->
+    <template v-if="item.mapped" #actions>
+      <Badge
+        v-if="!compact && showProject"
+        tone="primary"
+        size="xs"
+        class="hidden @[44rem]/list:inline-flex shrink-0 max-w-40 truncate"
+        :title="item.project_name ?? ''"
+      >
+        {{ item.project_name }}
+      </Badge>
+      <!-- Account the review runs as: stable colour dot (+N when several of
+           the user's accounts were asked) -->
+      <span
+        v-if="showAccountChip && accounts.length > 0"
+        class="flex shrink-0 items-center gap-1 text-[11px] text-muted-foreground"
+        :title="accountTitle"
+        :aria-label="accountTitle"
+        role="img"
+      >
+        <span class="h-2 w-2 shrink-0 rounded-full" :class="accountTone(accounts[0].account_id)" />
+        <span class="max-w-24 truncate" :class="compact ? 'hidden' : 'hidden @[44rem]/list:inline'">
+          {{ accounts[0].account_label }}
         </span>
-        <!-- Linked review is behind the PR's head → offer a fresh review -->
-        <Button
-          v-if="showReReview"
-          :size="compact ? 'xs' : 'sm'"
-          :disabled="reviewing"
-          :title="t('prInbox.reReviewTitle')"
-          :aria-label="t('prInbox.reReviewTitle')"
-          @click="emit('re-review', item)"
-        >
-          <RotateCcw class="h-3.5 w-3.5" :stroke-width="2" />
-          <span :class="actionLabelClass">{{ reReviewLabel }}</span>
-        </Button>
-        <!-- Linked review session → open it; button shows its state -->
-        <Button
-          v-if="item.existing_run_id"
-          variant="outline"
-          :size="compact ? 'xs' : 'sm'"
-          :title="runTitle"
-          :aria-label="runTitle"
-          @click="emit('open-run', item)"
-        >
-          <RefreshCw v-if="running" class="h-3.5 w-3.5" :stroke-width="2" />
-          <Eye v-else class="h-3.5 w-3.5" :stroke-width="2" />
-          <span :class="actionLabelClass">{{ runLabel }}</span>
-          <span
-            v-if="runStatus"
-            class="h-1.5 w-1.5 shrink-0 rounded-full"
-            :class="[runStatusDotClass(running ? 'running' : runStatus), { 'animate-pulse': running }]"
-          />
-        </Button>
-        <!-- No session yet → start one -->
-        <Button
-          v-else
-          :size="compact ? 'xs' : 'sm'"
-          :disabled="reviewing"
-          :title="reviewLabel"
-          :aria-label="reviewLabel"
-          @click="emit('review', item)"
-        >
-          <Sparkles class="h-3.5 w-3.5" :stroke-width="2" />
-          <span :class="actionLabelClass">{{ reviewLabel }}</span>
-        </Button>
-      </template>
-      <!-- Not tracked in devdy: the add action is the whole story -->
+        <span v-if="accounts.length > 1" class="text-[10px]">+{{ accounts.length - 1 }}</span>
+      </span>
+      <!-- Linked review session → open it; button shows its state -->
+      <Button
+        v-if="item.existing_run_id"
+        variant="outline"
+        :size="compact ? 'xs' : 'sm'"
+        :title="runTitle"
+        :aria-label="runTitle"
+        @click="emit('open-run', item)"
+      >
+        <RefreshCw v-if="running" class="h-3.5 w-3.5" :stroke-width="2" />
+        <Eye v-else class="h-3.5 w-3.5" :stroke-width="2" />
+        <span :class="actionLabelClass">{{ runLabel }}</span>
+        <span
+          v-if="runStatus"
+          class="h-1.5 w-1.5 shrink-0 rounded-full"
+          :class="[runStatusDotClass(running ? 'running' : runStatus), { 'animate-pulse': running }]"
+        />
+      </Button>
+      <!-- No session yet → start one -->
       <Button
         v-else
-        variant="ghost"
-        :size="compact ? 'icon-sm' : 'sm'"
-        :title="t('prInbox.addToDevdy')"
-        :aria-label="t('prInbox.addToDevdy')"
-        @click="emit('add-to-devdy')"
+        :size="compact ? 'xs' : 'sm'"
+        :disabled="reviewing"
+        :title="reviewLabel"
+        :aria-label="reviewLabel"
+        @click="emit('review', item)"
       >
-        <FolderPlus class="h-3.5 w-3.5" :stroke-width="2" />
-        <span v-if="!compact" class="hidden @[36rem]/list:inline">{{ t('prInbox.addToDevdy') }}</span>
+        <Sparkles class="h-3.5 w-3.5" :stroke-width="2" />
+        <span :class="actionLabelClass">{{ reviewLabel }}</span>
       </Button>
-      <AddTodoButton
-        :prefill="todoPrefill"
-        variant="icon"
-        button-variant="ghost"
-        :size="compact ? 'icon-sm' : 'icon'"
-      />
-    </div>
-  </Card>
+    </template>
+  </InboxCard>
 </template>
