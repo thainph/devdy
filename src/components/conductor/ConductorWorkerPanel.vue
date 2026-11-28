@@ -81,6 +81,23 @@ const runById = computed(() => {
   return map
 })
 
+// Newest activity first, like the History list. The backend returns that
+// order, but the detail is only re-read on membership events, so a worker
+// that just finished a turn would stay where it was; sorting here on the live
+// run records keeps the order current. Workers without a run record yet keep
+// the backend's order, after the dated ones.
+const sortedWorkers = computed(() => {
+  const at = (w: ConductorWorker) => {
+    const run = runById.value.get(w.worker_id)
+    const ms = run ? new Date(runActivityAt(run)).getTime() : NaN
+    return Number.isFinite(ms) ? ms : Number.NEGATIVE_INFINITY
+  }
+  return props.workers
+    .map((w, i) => ({ w, i, t: at(w) }))
+    .sort((a, b) => b.t - a.t || a.i - b.i)
+    .map(x => x.w)
+})
+
 // The project each worker runs in. Highlighted when it isn't the session's own
 // project, since such a worker never shows up in this project's History.
 const conductorProjectId = computed(() =>
@@ -255,7 +272,7 @@ onBeforeUnmount(onDragEnd)
       <ChevronLeft class="h-3.5 w-3.5" :stroke-width="2" />
     </Button>
     <button
-      v-for="w in workers"
+      v-for="w in sortedWorkers"
       :key="w.worker_id"
       type="button"
       class="relative flex items-center justify-center h-6 w-6 shrink-0 rounded transition-colors cursor-pointer hover:bg-accent focus:outline-none focus-visible:ring-1 focus-visible:ring-ring"
@@ -296,7 +313,7 @@ onBeforeUnmount(onDragEnd)
         {{ t('conductor.noWorkers') }}
       </p>
       <div
-        v-for="w in workers"
+        v-for="w in sortedWorkers"
         :key="w.worker_id"
         class="group relative border-b border-border/30 transition-colors"
         :class="isActive(w) ? 'bg-accent/60' : 'hover:bg-accent/40'"
