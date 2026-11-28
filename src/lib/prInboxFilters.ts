@@ -258,7 +258,7 @@ export const STALE_AFTER_DAYS = 7
  * e.g. `acme/web` and `globex/web`. Cards show a bare `repo #num` and only add
  * the `owner/` prefix for these, where the short form would be ambiguous.
  */
-export function ambiguousRepoNames(items: readonly PrInboxItem[]): Set<string> {
+export function ambiguousRepoNames(items: readonly { owner: string; repo: string }[]): Set<string> {
   const owners = new Map<string, Set<string>>()
   for (const item of items) {
     const repo = item.repo.toLowerCase()

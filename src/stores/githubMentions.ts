@@ -57,7 +57,7 @@ function initialFilters(): MentionFilters {
 
 function initialGroupBy(): MentionGroupBy {
   const v = readStorage(GROUP_BY_KEY)
-  return MENTION_GROUP_BYS.includes(v as MentionGroupBy) ? (v as MentionGroupBy) : 'repo'
+  return MENTION_GROUP_BYS.includes(v as MentionGroupBy) ? (v as MentionGroupBy) : 'project'
 }
 
 function initialTab(): MentionCategory {

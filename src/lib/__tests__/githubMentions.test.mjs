@@ -56,6 +56,25 @@ test('groups by repo / person keep first-seen order', () => {
   assert.equal(groupMentions([], 'none').length, 0)
 })
 
+test('group by Devdy project; repos without a project go last in one group', () => {
+  const items = [
+    item({ key: 'a', project_id: null, repo_id: null, project_name: null }),
+    item({ key: 'b', project_id: 'p2', project_name: 'Web' }),
+    item({ key: 'c' }),
+    item({ key: 'd', project_id: null, repo_id: null, project_name: null, repo: 'other' }),
+    item({ key: 'e', project_id: 'p2', project_name: 'Web' }),
+  ]
+  const groups = groupMentions(items, 'project')
+  assert.deepEqual(
+    groups.map(g => [g.key, g.label, g.items.map(i => i.key), g.unmapped ?? false]),
+    [['project:p2', 'Web', ['b', 'e'], false], ['project:p1', 'API', ['c'], false], ['unmapped', '', ['a', 'd'], true]],
+  )
+  assert.equal(groups[2].avatarUrl, null)
+  assert.deepEqual(groupMentions([item()], 'project').map(g => g.key), ['project:p1'])
+  assert.deepEqual(groupMentions([item({ project_id: 'p3', project_name: null })], 'project')[0].label, '')
+  assert.equal(groupMentions([], 'project').length, 0)
+})
+
 test('split by category, newest first; unsorted items fall back on answered', () => {
   const items = [
     item({ key: 'old', category: 'reply', trigger: { ...item().trigger, created_at: '2026-11-01T00:00:00Z' } }),

@@ -41,13 +41,10 @@
     "author": "Tác giả",
     "account": "Tài khoản",
     "status": "Trạng thái review",
-    "clearAll": "Xoá bộ lọc",
     "noMatch": "Không có PR nào khớp bộ lọc hiện tại",
-    "button": "Bộ lọc",
     "noOptions": "Chưa có gì để lọc",
     "searchSection": "Tìm {section}…",
     "noMatchSection": "Không có kết quả",
-    "remove": "Bỏ bộ lọc {filter}",
     "clearSearchAndFilters": "Xoá tìm kiếm và bộ lọc"
   },
   "status": {
@@ -92,8 +89,8 @@
     "allFailed": "{count} review không bắt đầu được"
   },
   "display": {
-    "button": "Hiển thị",
-    "hideBotsHint": "Gộp PR của bot vào một dòng tóm tắt"
+    "hideBotsHint": "Gộp PR của bot vào một dòng tóm tắt",
+    "section": "Hiển thị"
   },
   "poll": {
     "label": "Kiểm tra PR mới",
@@ -127,6 +124,7 @@
     "noSaved": "Chưa có prompt nào trong Cài đặt → Mẫu Prompt. Thêm ở đó để chọn tại đây.",
     "savedReadonly": "Đang dùng prompt đã lưu — sửa nội dung trong Cài đặt → Mẫu Prompt.",
     "reset": "Khôi phục mặc định",
-    "saveFailed": "Không lưu được: {error}"
+    "saveFailed": "Không lưu được: {error}",
+    "section": "Prompt review"
   }
 }

@@ -10,26 +10,28 @@
     "author": "Trên issue / PR của bạn"
   },
   "filters": {
-    "button": "Bộ lọc",
     "reason": "Lý do",
     "account": "Account",
     "repo": "Repo",
     "noOptions": "Chưa có gì để lọc",
-    "clearAll": "Xoá tất cả",
-    "remove": "Bỏ bộ lọc {filter}"
+    "search": "Tìm…",
+    "noMatch": "Không có kết quả"
   },
   "display": {
-    "button": "Hiển thị",
     "groupBy": "Nhóm theo",
+    "project": "Dự án",
     "repo": "Repo",
     "person": "Người tag",
     "none": "Không nhóm",
     "lookback": "Khoảng thời gian",
     "days": "{count} ngày",
     "aiTriage": "Phân loại bằng AI",
-    "aiTriageHint": "Sau mỗi lần tải, AI đọc mention mới để xếp vào Cần trả lời / FYI / Đã xong và tóm tắt họ cần gì. Dùng engine của Focus AI."
+    "aiTriageHint": "Sau mỗi lần tải, AI đọc mention mới để xếp vào Cần trả lời / FYI / Đã xong và tóm tắt họ cần gì. Dùng engine của Focus AI.",
+    "title": "Hiển thị",
+    "lookbackHint": "Mention cũ hơn khoảng này sẽ không được tải."
   },
   "partialFailTitle": "{count} account tải thất bại",
+  "notInDevdyGroup": "Chưa có trong devdy",
   "emptyTitle": "Không ai đang chờ bạn",
   "emptyHint": "Các lần bạn bị tag trong {days} ngày qua trên các account GitHub sẽ hiện ở đây cho tới khi bạn trả lời. Đổi khoảng thời gian trong Hiển thị.",
   "firstLoadHint": "Đang đọc thông báo GitHub và comment của từng thread. Mất vài giây; các lần sau chỉ đọc lại thread có hoạt động mới.",
@@ -38,6 +40,7 @@
   "unknownAuthor": "Không rõ",
   "answered": "Bạn đã trả lời {time} trước",
   "unread": "chưa đọc",
+  "taggedAs": "Được tag dưới tài khoản {account}",
   "onFile": "trong",
   "newerComments": "+{count} comment mới sau lần tag",
   "staleTitle": "Chờ hơn 3 ngày",
@@ -87,7 +90,8 @@
   "prompt": {
     "button": "Prompt kiểm tra bằng AI",
     "title": "Prompt kiểm tra bằng AI",
-    "hint": "Lời dặn gửi khi bắt đầu phiên “Kiểm tra bằng AI”. Thông tin lần được tag (issue / PR, người tag, link và nội dung comment) luôn được thêm vào cuối."
+    "hint": "Lời dặn gửi khi bắt đầu phiên “Kiểm tra bằng AI”. Thông tin lần được tag (issue / PR, người tag, link và nội dung comment) luôn được thêm vào cuối.",
+    "buttonHint": "Lời dặn gửi khi bắt đầu phiên “Kiểm tra bằng AI”"
   },
   "tab": {
     "reply": "Cần trả lời",

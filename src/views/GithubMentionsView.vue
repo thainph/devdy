@@ -1,7 +1,7 @@
 <script setup lang="ts">
 // GitHub Mentions: comments on GitHub that @-mention the user directly and
 // wait for their answer, across all linked GitHub accounts. Header layout follows the PR Inbox:
-// search + Filters / Display beside Refresh. Mentions are split into tabs by
+// search + one "Filter & display" button beside Refresh. Mentions are split into tabs by
 // what they need: "Needs reply" (the badge), "FYI" and "Done" (answered in the
 // last week, closed / merged, acknowledged) — sorted by the backend's rules
 // and AI, movable by hand from the card menu. "Check with AI" opens a
@@ -14,11 +14,13 @@ import { useRouter } from 'vue-router'
 import { openUrl } from '@tauri-apps/plugin-opener'
 import { emit as emitEvent } from '@tauri-apps/api/event'
 import { getCurrentWindow } from '@tauri-apps/api/window'
-import { Banner, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderButton, PageHeaderSearch, SegmentedControl, Skeleton } from '@/components/ui'
+import { Banner, Button, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderSearch, SegmentedControl, Skeleton } from '@/components/ui'
 import MentionCard from '@/components/githubMentions/MentionCard.vue'
 import InboxGroupHeader from '@/components/inbox/InboxGroupHeader.vue'
-import MentionFiltersPopover from '@/components/githubMentions/MentionFiltersPopover.vue'
-import MentionDisplayPopover from '@/components/githubMentions/MentionDisplayPopover.vue'
+import InboxList from '@/components/inbox/InboxList.vue'
+import { useInboxKeyboard } from '@/composables/useInboxKeyboard'
+import MentionOptionsMenu from '@/components/githubMentions/MentionOptionsMenu.vue'
+import ListFilterSummary from '@/components/listDetail/ListFilterSummary.vue'
 import PrAvatar from '@/components/prInbox/PrAvatar.vue'
 import PromptConfigModal from '@/components/PromptConfigModal.vue'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
@@ -29,6 +31,8 @@ import { useRunsStore } from '@/stores/runs'
 import { useConductorStore } from '@/stores/conductor'
 import { useAppSettingsStore } from '@/stores/appSettings'
 import { useLiveRunsStore } from '@/stores/liveRuns'
+import { useGithubAccountsStore } from '@/stores/githubAccounts'
+import { ambiguousRepoNames, makeAccountTone } from '@/lib/prInboxFilters'
 import { resolvePermissionMode } from '@/lib/engineOptions'
 import { useFloatingWindow } from '@/composables/useFloatingWindow'
 import { useRunStatusEvents } from '@/composables/useRunStatusEvents'
@@ -47,11 +51,12 @@ import {
   type MentionCategory,
   type MentionFilterDimension,
   type MentionFilterOption,
+  type MentionGroup,
   type MentionItem,
 } from '@/lib/githubMentions'
 import {
-  AtSign, BellOff, BookMarked, Check, CheckCheck, Copy, EyeOff, ExternalLink, FolderX, Info, ListPlus, Loader2, MailOpen, RefreshCw, Reply,
-  SearchX, Undo2, X,
+  AtSign, BellOff, BookMarked, Check, CheckCheck, CircleDashed, Copy, Folder, EyeOff, ExternalLink, FolderX, Info, ListPlus, Loader2, MailOpen, RefreshCw, Reply,
+  SearchX, Undo2,
 } from 'lucide-vue-next'
 
 const props = withDefaults(defineProps<{
@@ -67,6 +72,7 @@ const runsStore = useRunsStore()
 const conductorStore = useConductorStore()
 const appSettings = useAppSettingsStore()
 const live = useLiveRunsStore()
+const githubAccounts = useGithubAccountsStore()
 
 const search = ref('')
 const collapsed = ref<Set<string>>(new Set())
@@ -74,6 +80,7 @@ const collapsed = ref<Set<string>>(new Set())
 onMounted(() => {
   void store.load()
   void store.loadMutes()
+  if (githubAccounts.accounts.length === 0) void githubAccounts.fetch()
 })
 
 // Standalone window: on top while focused (like the other pop-outs), a light
@@ -122,17 +129,21 @@ function optionLabel(d: MentionFilterDimension, o: MentionFilterOption): string 
   return o.label
 }
 
-const chips = computed(() =>
+/** "Reason: Tagged you · Repository: org/api" for the line under the header. */
+const filterParts = computed(() =>
   (Object.keys(effective.value) as MentionFilterDimension[]).flatMap(d =>
     effective.value[d].map(value => {
       const o = options.value[d].find(x => x.value === value)
-      return { key: `${d}:${value}`, dimension: d, value, title: t(`githubMentions.filters.${d === 'reasons' ? 'reason' : d === 'accounts' ? 'account' : 'repo'}`), label: o ? optionLabel(d, o) : value }
+      const title = t(`githubMentions.filters.${d === 'reasons' ? 'reason' : d === 'accounts' ? 'account' : 'repo'}`)
+      return `${title}: ${o ? optionLabel(d, o) : value}`
     }),
   ),
 )
 
-function removeChip(d: MentionFilterDimension, value: string) {
-  store.setFilter(d, store.filters[d].filter(v => v !== value))
+function groupLabel(g: MentionGroup): string {
+  if (g.unmapped) return t('githubMentions.notInDevdyGroup')
+  if (g.label) return g.label
+  return store.groupBy === 'person' ? t('githubMentions.unknownAuthor') : ''
 }
 
 function toggleGroup(key: string) {
@@ -142,13 +153,22 @@ function toggleGroup(key: string) {
   collapsed.value = next
 }
 
+// Card display, as in the PR Inbox: owner only for ambiguous repo names, the
+// tagged account (stable colour dot) only when several accounts are in play.
+const ambiguousRepos = computed(() => ambiguousRepoNames(store.items))
+const accountTone = computed(() => makeAccountTone(githubAccounts.accounts))
+const showAccount = computed(() => new Set(store.items.map(i => i.account_id)).size > 1)
+
 // ── Check with AI ────────────────────────────────────────────────────────────
 // Live status (the liveRuns store) wins over the snapshot taken at fetch time.
-function checkStatus(item: MentionItem) {
+function runStatus(item: MentionItem): string | null {
   const id = item.existing_run_id
-  const liveStatus = !id ? null : windowRuns ? windowRuns.status(id) : live.get(id)?.status
-  const runStatus = id ? (liveStatus ?? item.existing_run_status) : null
-  return checkStatusOf(item, runStatus)
+  if (!id) return null
+  const liveStatus = windowRuns ? windowRuns.status(id) : live.get(id)?.status
+  return liveStatus ?? item.existing_run_status
+}
+function checkStatus(item: MentionItem) {
+  return checkStatusOf(item, runStatus(item))
 }
 
 // From the standalone window this asks the main window to show the run
@@ -194,6 +214,48 @@ async function check(item: MentionItem) {
     toast.error(t('githubMentions.check.failed', { error: String(e) }))
   }
 }
+
+// Keyboard: j / k select a row, Enter = "Check with AI" (or open its
+// session), o = open on GitHub (marks read), c = copy link.
+const scrollEl = ref<HTMLElement | null>(null)
+const visibleRows = computed(() => {
+  const rows = new Map<string, MentionItem>()
+  for (const g of groups.value) {
+    if (store.groupBy !== 'none' && collapsed.value.has(g.key)) continue
+    for (const item of g.items) rows.set(item.key, item)
+  }
+  return rows
+})
+function rowAction(fn: (item: MentionItem) => void | Promise<void>) {
+  return (key: string) => {
+    const item = visibleRows.value.get(key)
+    if (item) void fn(item)
+  }
+}
+const keyboard = useInboxKeyboard({
+  keys: () => [...visibleRows.value.keys()],
+  root: () => scrollEl.value,
+  onPrimary: rowAction(item => {
+    if (categoryOf(item) === 'done' && checkStatus(item) === 'none') return
+    return check(item)
+  }),
+  onOpen: rowAction(async item => {
+    try {
+      await openUrl(item.trigger?.html_url || item.html_url)
+      if (item.unread) await store.markRead(item.key)
+    } catch (e) {
+      toast.error(String(e))
+    }
+  }),
+  onCopy: rowAction(async item => {
+    try {
+      await navigator.clipboard.writeText(item.trigger?.html_url || item.html_url)
+      toast.success(t('githubMentions.menu.copied'))
+    } catch (e) {
+      toast.error(String(e))
+    }
+  }),
+})
 
 // "+ Todo" from the card menu (Focus §3.1), prefilled from the mention.
 const todoOpen = ref(false)
@@ -275,53 +337,46 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
       :count="store.items.length > 0 ? store.pendingCount : null"
       :count-title="t('githubMentions.pendingTitle')"
     >
-      <template #leading>
-        <AtSign class="h-4 w-4 shrink-0 text-primary" :stroke-width="2" />
-      </template>
       <template #actions>
-        <template v-if="store.items.length > 0">
-          <PageHeaderSearch v-model="search" :placeholder="t('githubMentions.searchPlaceholder')" :clear-label="t('githubMentions.clearSearch')" />
-          <MentionFiltersPopover
-            :options="options"
-            :model-value="store.filters"
-            :active-count="activeCount"
-            :option-label="optionLabel"
-            @update="store.setFilter"
-            @clear="store.clearFilters()"
-          />
-          <MentionDisplayPopover @edit-prompt="promptEditorOpen = true" />
-        </template>
-        <PageHeaderButton :label="t('common.refresh')" :disabled="store.loading" @click="store.refresh()">
+        <!-- Search · Refresh · settings (same layout as the PR Inbox) -->
+        <PageHeaderSearch
+          v-if="store.items.length > 0"
+          v-model="search"
+          :placeholder="t('githubMentions.searchPlaceholder')"
+          :clear-label="t('githubMentions.clearSearch')"
+        />
+        <Button
+          variant="outline"
+          size="icon"
+          :disabled="store.loading"
+          :title="t('common.refresh')"
+          :aria-label="t('common.refresh')"
+          @click="store.refresh()"
+        >
           <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
-        </PageHeaderButton>
+        </Button>
+        <MentionOptionsMenu
+          :options="options"
+          :model-value="store.filters"
+          :active-count="activeCount"
+          :option-label="optionLabel"
+          @update="store.setFilter"
+          @clear="store.clearFilters()"
+          @edit-prompt="promptEditorOpen = true"
+        />
         <DockWindowButton v-if="standalone" surface="mentions" />
       </template>
     </PageHeader>
 
-    <div v-if="chips.length > 0" class="flex shrink-0 flex-wrap items-center gap-1.5 border-b border-border/60 px-3 py-2 @[40rem]/screen:px-6">
-      <span
-        v-for="chip in chips"
-        :key="chip.key"
-        class="inline-flex max-w-full items-center gap-1 rounded-md bg-muted py-1 pl-2 pr-1 text-[11px] text-foreground"
-      >
-        <span class="shrink-0 text-muted-foreground">{{ chip.title }}:</span>
-        <span class="min-w-0 max-w-40 truncate" :title="chip.label">{{ chip.label }}</span>
-        <button
-          type="button"
-          class="shrink-0 rounded p-0.5 cursor-pointer text-muted-foreground transition-colors hover:bg-accent hover:text-foreground"
-          :title="t('githubMentions.filters.remove', { filter: `${chip.title}: ${chip.label}` })"
-          :aria-label="t('githubMentions.filters.remove', { filter: `${chip.title}: ${chip.label}` })"
-          @click="removeChip(chip.dimension, chip.value)"
-        >
-          <X class="h-3 w-3" :stroke-width="2" />
-        </button>
-      </span>
-      <button type="button" class="ml-1 cursor-pointer text-[11px] font-medium text-primary hover:underline" @click="store.clearFilters()">
-        {{ t('githubMentions.filters.clearAll') }}
-      </button>
-    </div>
+    <ListFilterSummary :parts="filterParts" class="!px-0 mx-3 pt-2 @[40rem]/screen:mx-6" @clear="store.clearFilters()" />
 
-    <div class="flex-1 overflow-auto p-3 @[40rem]/screen:p-6">
+    <!-- Focusable so the list takes j / k / Enter / o / c (useInboxKeyboard) -->
+    <div
+      ref="scrollEl"
+      class="flex-1 overflow-auto p-3 outline-none @[40rem]/screen:p-6"
+      tabindex="0"
+      @keydown="keyboard.onKeydown"
+    >
       <Banner v-if="store.error" tone="destructive" class="mb-4">{{ store.error }}</Banner>
       <Banner v-if="store.warnings.length > 0" tone="warning" class="mb-4">
         <p class="font-medium text-warning">{{ t('githubMentions.partialFailTitle', store.warnings.length) }}</p>
@@ -383,7 +438,7 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
           <section v-for="g in groups" :key="g.key" class="flex flex-col gap-2">
             <InboxGroupHeader
               v-if="store.groupBy !== 'none'"
-              :label="g.label || t('githubMentions.unknownAuthor')"
+              :label="groupLabel(g)"
               :count="g.items.length"
               :collapsed="collapsed.has(g.key)"
               :mono="store.groupBy === 'repo'"
@@ -391,22 +446,31 @@ async function menuAction(action: 'open' | 'read' | 'copy' | 'dismiss' | 'muteTh
             >
               <template #icon>
                 <PrAvatar v-if="store.groupBy === 'person'" :url="g.avatarUrl" :name="g.label || '?'" :size="16" />
-                <BookMarked v-else class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                <BookMarked v-else-if="store.groupBy === 'repo'" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                <CircleDashed v-else-if="g.unmapped" class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
+                <Folder v-else class="h-3.5 w-3.5 shrink-0 text-muted-foreground" :stroke-width="1.75" />
               </template>
             </InboxGroupHeader>
-            <template v-if="!collapsed.has(g.key)">
+            <InboxList v-if="!collapsed.has(g.key)">
               <MentionCard
                 v-for="(item, i) in g.items"
                 :key="item.key"
+                :data-inbox-key="item.key"
                 :item="item"
-                :grouped="store.groupBy !== 'none'"
+                :selected="keyboard.selected.value === item.key"
+                :run-status="runStatus(item)"
+                :group-by="store.groupBy"
+                :show-owner="ambiguousRepos.has(item.repo.toLowerCase())"
+                :show-account="showAccount"
+                :account-tone="accountTone"
                 :index="i"
                 :check-status="checkStatus(item)"
                 :starting="store.busyKeys.has(item.key)"
+                @select="keyboard.select(item.key)"
                 @menu="openMenu"
                 @check="check"
               />
-            </template>
+            </InboxList>
           </section>
         </template>
       </div>

@@ -10,26 +10,28 @@
     "author": "On your issue / PR"
   },
   "filters": {
-    "button": "Filters",
     "reason": "Reason",
     "account": "Account",
     "repo": "Repository",
     "noOptions": "Nothing to filter yet",
-    "clearAll": "Clear all",
-    "remove": "Remove filter {filter}"
+    "search": "Search…",
+    "noMatch": "No match"
   },
   "display": {
-    "button": "Display",
     "groupBy": "Group by",
+    "project": "Project",
     "repo": "Repository",
     "person": "Who tagged you",
     "none": "No grouping",
     "lookback": "Look back",
     "days": "{count} day | {count} days",
     "aiTriage": "Sort with AI",
-    "aiTriageHint": "After each load, AI reads new mentions to sort them into Needs reply / FYI / Done and sums up what is wanted. Uses the Focus AI engine."
+    "aiTriageHint": "After each load, AI reads new mentions to sort them into Needs reply / FYI / Done and sums up what is wanted. Uses the Focus AI engine.",
+    "title": "Display",
+    "lookbackHint": "Mentions older than this are not loaded."
   },
   "partialFailTitle": "{count} account failed to load | {count} accounts failed to load",
+  "notInDevdyGroup": "Not in devdy",
   "emptyTitle": "No one is waiting for you",
   "emptyHint": "Mentions from the last {days} days across your GitHub accounts show up here until you answer them. Change the window under Display.",
   "firstLoadHint": "Reading your GitHub notifications and their comments. This takes a few seconds; later loads only re-read threads with new activity.",
@@ -38,6 +40,7 @@
   "unknownAuthor": "Unknown",
   "answered": "You answered {time} ago",
   "unread": "unread",
+  "taggedAs": "Tagged as {account}",
   "onFile": "on",
   "newerComments": "+{count} newer comment | +{count} newer comments",
   "staleTitle": "Waiting for more than 3 days",
@@ -87,7 +90,8 @@
   "prompt": {
     "button": "Check with AI prompt",
     "title": "Check with AI prompt",
-    "hint": "The instruction a “Check with AI” session starts with. The mention (issue / PR, who tagged you, link and comment) is always appended."
+    "hint": "The instruction a “Check with AI” session starts with. The mention (issue / PR, who tagged you, link and comment) is always appended.",
+    "buttonHint": "The instruction a “Check with AI” session starts with"
   },
   "tab": {
     "reply": "Needs reply",

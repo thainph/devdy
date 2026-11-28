@@ -10,12 +10,16 @@ import { usePrInboxStore, prKey, type PrInboxItem, type PrPromptKind } from '@/s
 import { useLiveRunsStore } from '@/stores/liveRuns'
 import { useGithubAccountsStore } from '@/stores/githubAccounts'
 import {
-  Button, Skeleton, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderButton, PageHeaderSearch, Banner,
+  Button, Skeleton, ContextMenu, DropdownItem, DropdownSeparator, PageHeader, PageHeaderSearch, Banner,
 } from '@/components/ui'
 import PrInboxCard from '@/components/prInbox/PrInboxCard.vue'
 import InboxGroupHeader from '@/components/inbox/InboxGroupHeader.vue'
-import PrInboxFiltersPopover, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPopover.vue'
-import PrInboxDisplayPopover from '@/components/prInbox/PrInboxDisplayPopover.vue'
+import InboxList from '@/components/inbox/InboxList.vue'
+import { useInboxKeyboard } from '@/composables/useInboxKeyboard'
+import PrInboxFiltersPanel, { type PrFilterDimension } from '@/components/prInbox/PrInboxFiltersPanel.vue'
+import PrInboxDisplayPanel from '@/components/prInbox/PrInboxDisplayPanel.vue'
+import InboxOptionsButton from '@/components/inbox/InboxOptionsButton.vue'
+import ListFilterSummary from '@/components/listDetail/ListFilterSummary.vue'
 import PrInboxBotAccountsModal from '@/components/prInbox/PrInboxBotAccountsModal.vue'
 import PrInboxPromptModal from '@/components/prInbox/PrInboxPromptModal.vue'
 import TodoCaptureModal from '@/components/focus/TodoCaptureModal.vue'
@@ -52,7 +56,7 @@ import { WINDOW_OPEN_RUN, type WindowOpenRun } from '@/lib/sessionLinks'
 import { PR_INBOX_WINDOW_OPEN_ROUTE, type PrInboxWindowOpenRoute } from '@/lib/prInboxWindow'
 import {
   GitPullRequest, RefreshCw, Sparkles, User, Bot, Folder, BookMarked,
-  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, X, RotateCcw, Link, ListPlus, FolderPlus,
+  CircleDashed, EyeOff, KeyRound, ExternalLink, SearchX, RotateCcw, Link, ListPlus, FolderPlus,
 } from 'lucide-vue-next'
 
 // Named explicitly (devtools / warnings): an inferred name is a build detail
@@ -188,7 +192,7 @@ const FILTER_TITLE_KEYS: Record<PrFilterDimension, string> = {
   statuses: 'prInbox.filters.status',
 }
 
-// Removable chips for every filter value that currently applies.
+// Every filter value that currently applies (the summary line under the header).
 const activeFilterChips = computed(() => (Object.keys(FILTER_TITLE_KEYS) as PrFilterDimension[]).flatMap(dimension =>
   (activeFilters.value[dimension] as string[]).map(value => {
     const option = filterOptions.value[dimension].find(o => o.value === value)
@@ -201,10 +205,6 @@ const activeFilterChips = computed(() => (Object.keys(FILTER_TITLE_KEYS) as PrFi
     }
   }),
 ))
-
-function removeFilterValue(dimension: PrFilterDimension, value: string) {
-  setFilter(dimension, (store.filters[dimension] as string[]).filter(v => v !== value))
-}
 
 function isCollapsed(group: PrGroup): boolean {
   return store.collapsedGroups[group.key] ?? isGroupCollapsedByDefault(group)
@@ -303,6 +303,39 @@ function openProjects() {
 
 const { startReview, handleReview, handleReReview } = usePrReviewActions({ openRun, runStatus })
 
+// Keyboard: j / k select a row, Enter = its primary action (AI review / view
+// review), o = open on GitHub, c = copy link. Rows are keyed per group (one
+// PR can sit in two groups); collapsed groups are skipped.
+const scrollEl = ref<HTMLElement | null>(null)
+function rowKey(group: PrGroup, item: PrInboxItem): string {
+  return `${group.key}:${prKey(item)}`
+}
+const visibleRows = computed(() => {
+  const rows = new Map<string, PrInboxItem>()
+  for (const group of grouped.value.groups) {
+    if (group.kind !== 'all' && isCollapsed(group)) continue
+    for (const item of group.items) rows.set(rowKey(group, item), item)
+  }
+  return rows
+})
+function rowAction(fn: (item: PrInboxItem) => void) {
+  return (key: string) => {
+    const item = visibleRows.value.get(key)
+    if (item) fn(item)
+  }
+}
+const keyboard = useInboxKeyboard({
+  keys: () => [...visibleRows.value.keys()],
+  root: () => scrollEl.value,
+  onPrimary: rowAction(item => {
+    if (!item.mapped) return
+    if (item.existing_run_id) openRun(item)
+    else void handleReview(item)
+  }),
+  onOpen: rowAction(openPr),
+  onCopy: rowAction(item => void copyPrLink(item)),
+})
+
 // "AI review all" on a group header: confirm, then start the group's eligible
 // PRs one at a time (sequential keeps the conductor + GitHub load sane), capped
 // per click. One failure is reported and skipped, never stops the batch.
@@ -369,63 +402,55 @@ async function reviewAll(group: PrGroup) {
       :count-title="grouped.visibleCount < store.items.length ? t('prInbox.visibleOfTotal', { visible: grouped.visibleCount, total: store.items.length }) : undefined"
     >
       <template #actions>
-        <!-- Search + Filters / Display popovers live in the header, same
-             compact pattern as Delivery Radar / Projects. The popover buttons
-             (and the search) go compact in a narrow pane. Everything but the search is
-             persisted. -->
-        <template v-if="store.items.length > 0">
-          <PageHeaderSearch v-model="search" :placeholder="t('prInbox.searchPlaceholder')" :clear-label="t('prInbox.clearSearch')" />
-          <PrInboxFiltersPopover
+        <!-- Search · Refresh · ONE settings button (Delivery Radar style:
+             icon → modal; always there, so prompts / background check stay
+             reachable with an empty inbox): every filter and view setting
+             lives in its modal. Everything but the search is persisted. -->
+        <PageHeaderSearch
+          v-if="store.items.length > 0"
+          v-model="search"
+          :placeholder="t('prInbox.searchPlaceholder')"
+          :clear-label="t('prInbox.clearSearch')"
+        />
+        <Button
+          variant="outline"
+          size="icon"
+          :disabled="store.loading || bulk !== null"
+          :title="t('common.refresh')"
+          :aria-label="t('common.refresh')"
+          @click="store.refresh()"
+        >
+          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
+        </Button>
+        <InboxOptionsButton v-slot="{ close }" :active-count="activeFilterChips.length" @clear="store.clearFilters()">
+          <PrInboxFiltersPanel
             :options="filterOptions"
             :model-value="store.filters"
-            :active-count="activeFilterChips.length"
             :option-label="filterOptionLabel"
             @update="setFilter"
-            @clear="store.clearFilters()"
           />
-          <PrInboxDisplayPopover @manage-bots="botAccountsOpen = true" @edit-prompt="editPrompt" />
-        </template>
-        <PageHeaderButton :label="t('common.refresh')" :disabled="store.loading || bulk !== null" @click="store.refresh()">
-          <RefreshCw class="h-3.5 w-3.5" :class="{ 'animate-spin': store.loading }" :stroke-width="1.75" />
-        </PageHeaderButton>
+          <PrInboxDisplayPanel :close="close" @manage-bots="botAccountsOpen = true" @edit-prompt="editPrompt" />
+        </InboxOptionsButton>
         <DockWindowButton v-if="standalone" surface="prInbox" />
       </template>
     </PageHeader>
 
-    <!-- Active filters: one removable chip per applied value (chip look of
-         SkillsView's group filter chips). -->
-    <div
-      v-if="activeFilterChips.length > 0"
-      class="flex flex-wrap items-center gap-1.5 px-3 py-2 border-b border-border/60 shrink-0 @[40rem]/screen:px-6"
-    >
-      <span
-        v-for="chip in activeFilterChips"
-        :key="chip.key"
-        class="inline-flex max-w-full items-center gap-1 rounded-md bg-muted py-1 pl-2 pr-1 text-[11px] text-foreground"
-      >
-        <span class="shrink-0 text-muted-foreground">{{ chip.title }}:</span>
-        <span class="min-w-0 truncate max-w-40" :title="chip.label">{{ chip.label }}</span>
-        <button
-          type="button"
-          class="shrink-0 rounded p-0.5 cursor-pointer text-muted-foreground hover:bg-accent hover:text-foreground transition-colors"
-          :title="t('prInbox.filters.remove', { filter: `${chip.title}: ${chip.label}` })"
-          :aria-label="t('prInbox.filters.remove', { filter: `${chip.title}: ${chip.label}` })"
-          @click="removeFilterValue(chip.dimension, chip.value)"
-        >
-          <X class="h-3 w-3" :stroke-width="2" />
-        </button>
-      </span>
-      <button
-        type="button"
-        class="ml-1 text-[11px] font-medium text-primary hover:underline cursor-pointer"
-        @click="store.clearFilters()"
-      >
-        {{ t('prInbox.filters.clearAll') }}
-      </button>
-    </div>
+    <!-- Active filters: one line, cleared all at once (list-pane pattern;
+         same placement as GitHub Mentions) -->
+    <ListFilterSummary
+      :parts="activeFilterChips.map(c => `${c.title}: ${c.label}`)"
+      class="!px-0 mx-3 pt-2 @[40rem]/screen:mx-6"
+      @clear="store.clearFilters()"
+    />
 
     <!-- Content -->
-    <div class="flex-1 overflow-auto p-3 @[40rem]/screen:p-6">
+    <!-- Focusable so the list takes j / k / Enter / o / c (useInboxKeyboard) -->
+    <div
+      ref="scrollEl"
+      class="flex-1 overflow-auto p-3 outline-none @[40rem]/screen:p-6"
+      tabindex="0"
+      @keydown="keyboard.onKeydown"
+    >
       <!-- Partial-failure warning: some accounts failed to load (rate limit,
            network, bad PAT). Shown above the list so a missing PR reads as
            "some accounts failed, try refresh" rather than "no PRs". -->
@@ -586,33 +611,31 @@ async function reviewAll(group: PrGroup) {
             </template>
           </InboxGroupHeader>
 
-          <div
-            v-if="group.kind === 'all' || !isCollapsed(group)"
-            class="flex flex-col"
-            :class="store.density === 'compact' ? 'gap-1.5' : 'gap-2'"
-          >
+          <InboxList v-if="group.kind === 'all' || !isCollapsed(group)">
             <!-- Keyed per group: in reviewer-account mode one PR can sit in
                  two groups, but never twice in the same one. -->
             <PrInboxCard
               v-for="(item, i) in group.items"
-              :key="`${group.key}:${prKey(item)}`"
+              :key="rowKey(group, item)"
+              :data-inbox-key="rowKey(group, item)"
               :item="item"
               :density="store.density"
               :group-by="group.kind === 'normal' ? store.groupBy : 'none'"
               :show-owner="ambiguousRepos.has(item.repo.toLowerCase())"
               :show-account="showAccountChip"
               :account-tone="accountTone"
-              :grouped="group.kind !== 'all'"
+              :selected="keyboard.selected.value === rowKey(group, item)"
               :is-bot="isBot(item)"
               :run-status="runStatus(item)"
               :reviewing="store.reviewingKeys.has(prKey(item))"
               :now="now"
               :index="i"
+              @select="keyboard.select(rowKey(group, item))"
               @review="handleReview"
               @open-run="openRun"
               @menu="openMenu"
             />
-          </div>
+          </InboxList>
         </section>
 
         <!-- Hidden bot PRs: one summary row instead of the noise. -->

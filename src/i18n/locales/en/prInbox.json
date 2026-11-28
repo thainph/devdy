@@ -41,13 +41,10 @@
     "author": "Author",
     "account": "Account",
     "status": "Review status",
-    "clearAll": "Clear filters",
     "noMatch": "No PRs match the current filters",
-    "button": "Filters",
     "noOptions": "Nothing to filter yet",
     "searchSection": "Search {section}…",
     "noMatchSection": "No matches",
-    "remove": "Remove filter {filter}",
     "clearSearchAndFilters": "Clear search & filters"
   },
   "status": {
@@ -92,8 +89,8 @@
     "allFailed": "{count} review failed to start | {count} reviews failed to start"
   },
   "display": {
-    "button": "Display",
-    "hideBotsHint": "Collapse bot PRs into one summary row"
+    "hideBotsHint": "Collapse bot PRs into one summary row",
+    "section": "Display"
   },
   "poll": {
     "label": "Check for new PRs",
@@ -127,6 +124,7 @@
     "noSaved": "No prompts in Settings → Prompt Templates yet. Add one there to pick it here.",
     "savedReadonly": "Using a saved prompt — edit its text in Settings → Prompt Templates.",
     "reset": "Reset to default",
-    "saveFailed": "Could not save: {error}"
+    "saveFailed": "Could not save: {error}",
+    "section": "Review prompts"
   }
 }

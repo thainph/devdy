@@ -104,8 +104,8 @@ export type MentionFilterDimension = keyof MentionFilters
 
 export const EMPTY_MENTION_FILTERS: MentionFilters = { reasons: [], accounts: [], repos: [] }
 
-export type MentionGroupBy = 'repo' | 'person' | 'none'
-export const MENTION_GROUP_BYS: MentionGroupBy[] = ['repo', 'person', 'none']
+export type MentionGroupBy = 'project' | 'repo' | 'person' | 'none'
+export const MENTION_GROUP_BYS: MentionGroupBy[] = ['project', 'repo', 'person', 'none']
 
 /** Waiting this long counts as stale (orange time), like the PR Inbox. */
 export const STALE_AFTER_DAYS = 3
@@ -179,11 +179,28 @@ export interface MentionGroup {
   /** Avatar for person groups. */
   avatarUrl: string | null
   items: MentionItem[]
+  /** Project grouping: the repos not in any Devdy project (always last). */
+  unmapped?: boolean
 }
 
 /** Pending mentions grouped (order of first appearance = newest first). */
 export function groupMentions(items: MentionItem[], by: MentionGroupBy): MentionGroup[] {
   if (by === 'none') return items.length ? [{ key: 'all', label: '', avatarUrl: null, items }] : []
+  if (by === 'project') {
+    const groups = new Map<string, MentionGroup>()
+    const unmapped: MentionGroup = { key: 'unmapped', label: '', avatarUrl: null, items: [], unmapped: true }
+    for (const i of items) {
+      if (!i.project_id) {
+        unmapped.items.push(i)
+        continue
+      }
+      const key = `project:${i.project_id}`
+      const g = groups.get(key) ?? { key, label: i.project_name ?? '', avatarUrl: null, items: [] }
+      g.items.push(i)
+      groups.set(key, g)
+    }
+    return unmapped.items.length ? [...groups.values(), unmapped] : [...groups.values()]
+  }
   const groups = new Map<string, MentionGroup>()
   for (const i of items) {
     const key = by === 'repo' ? repoOf(i).toLowerCase() : (i.trigger?.author_login ?? '').toLowerCase()

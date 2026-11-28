@@ -1,7 +1,10 @@
 <script setup lang="ts">
 // Collapsible group header of the inbox lists (PR Inbox, GitHub Mentions):
 // chevron · icon · name · count pill · optional extras, then actions on the
-// right. The name truncates first; counts stay.
+// right. The name truncates first; counts stay. Sticky: it stays at the top
+// of the scrolling list while its rows pass under it. No fill of its own (the
+// screen behind is a gradient / glass, a solid band would show): only a
+// backdrop blur, invisible until rows scroll beneath it.
 import { ChevronRight } from 'lucide-vue-next'
 
 withDefaults(defineProps<{
@@ -16,7 +19,7 @@ const emit = defineEmits<{ toggle: [] }>()
 </script>
 
 <template>
-  <div class="group/header flex min-w-0 items-center gap-2">
+  <div class="group/header sticky top-0 z-10 flex min-w-0 items-center gap-2 py-1.5 backdrop-blur-md">
     <button
       type="button"
       class="flex min-w-0 flex-1 items-center gap-2 text-left cursor-pointer"
